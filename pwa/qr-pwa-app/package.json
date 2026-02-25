@@ -1,0 +1,24 @@
+{
+  "name": "qr-pwa-app",
+  "private": true,
+  "version": "1.2.3",
+  "description": "Vue3 SPA PWA QR scanner with offline support",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "jsqr": "^1.4.0",
+    "vite-plugin-pwa": "^1.2.0",
+    "vue": "^3.5.25"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.2",
+    "vite": "^7.3.1"
+  }
+}
