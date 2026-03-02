@@ -90,14 +90,130 @@ nginx
 docker pull nginx:stable
 
 # 啟動容器
+# -d: 背景執行（detached mode）
+# --name: 指定容器名稱
+# -p 80:80: 將主機 80 port 映射到容器 80 port
 docker run -d --name my-nginx -p 80:80 nginx:stable
 
 # 掛載自訂設定檔
+# -v: 掛載 Volume(讓資料不跟容器一起消失，可持久化、可共享)，格式為 主機路徑:容器路徑[:模式]
+# :ro: 唯讀模式（read-only），容器只能讀取不能修改
 docker run -d --name my-nginx \
   -p 80:80 \
   -v /path/to/nginx.conf:/etc/nginx/nginx.conf:ro \
   -v /path/to/html:/usr/share/nginx/html:ro \
   nginx:stable
+
+# 停止容器
+docker stop my-nginx
+
+# 刪除容器
+docker rm my-nginx
+
+# 強制停止並刪除容器（容器仍在執行時可用）
+docker rm -f my-nginx
+```
+
+#### 補充：先用 Docker 跑 Ubuntu，再安裝 Nginx（可行）
+
+```bash
+# 1) 先進 Ubuntu 容器（示範用 8080 對外）
+# -i: interactive 保持 STDIN(Standard Input) 開啟（可持續輸入指令）
+# -t: pseudo-terminal，分配虛擬終端機（讓你看到互動式 shell）
+# --name ubuntu-nginx: 指定容器名稱
+# -p 8080:80: 主機 8080 對應容器 80
+# ubuntu:22.04: 使用 Ubuntu 22.04 映像
+# bash: 容器啟動後直接進入 bash shell
+docker run -it --name ubuntu-nginx -p 8080:80 ubuntu:22.04 bash
+
+# 2) 在容器內安裝 Nginx
+apt update
+apt install -y nginx
+
+# 3) 在容器內以前景模式啟動
+# 容器通常不跑 systemd（PID 1 不是 systemd），因此多半不使用 systemctl 管服務
+# -g: 傳入全域設定指令
+# 'daemon off;': 關閉背景化，讓 Nginx 留在前景當容器主行程
+nginx -g 'daemon off;'
+```
+
+離開與再次進入容器（`ubuntu-nginx`）：
+
+```bash
+# 離開容器 shell（bash 結束後，容器通常也會停止）
+exit
+
+# 或 detach（離開終端但讓容器繼續跑）
+# 快捷鍵：Ctrl + P，接著 Ctrl + Q
+
+# 查看容器狀態
+docker ps -a --filter "name=ubuntu-nginx"
+
+# 若容器已停止，先啟動
+docker start ubuntu-nginx
+
+# 再次進入容器
+docker exec -it ubuntu-nginx bash
+
+# 也可一步完成：啟動並直接附著到容器
+# -a (attach): 連到容器輸出（stdout/stderr）
+# -i (interactive): 保持輸入開啟，可互動輸入指令
+# 等同「docker start ubuntu-nginx + docker attach ubuntu-nginx」
+#（此容器最初是用 bash 啟動，所以你會回到容器 shell）
+docker start -ai ubuntu-nginx
+```
+
+實務建議：
+
+- 這種方式「可行」，很適合教學、除錯、臨時驗證。
+- 但正式環境通常更建議直接用 `nginx:stable`（映像較小、啟動更快、維護更簡單）。
+- 若真的需要 Ubuntu 基底，建議寫 `Dockerfile` 固化安裝步驟，避免每次進容器手動安裝。
+
+可直接使用的 `Dockerfile`（Ubuntu 基底）：
+
+```dockerfile
+# 基底映像：Ubuntu 22.04 LTS
+FROM ubuntu:22.04
+
+# 關閉 apt 互動式提示，避免 build 卡住
+ENV DEBIAN_FRONTEND=noninteractive
+
+# 更新套件索引並安裝 Nginx
+# -y: 自動回答 yes
+# --no-install-recommends: 不安裝建議套件，減少映像大小
+# rm -rf /var/lib/apt/lists/*: 清除 apt 快取，縮小 image
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nginx ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# 宣告容器會使用 80 埠（文件用途，不等於自動對外開放）
+EXPOSE 80
+
+# 讓 Nginx 在前景執行，符合容器執行模式
+# -g 'daemon off;': 關閉 daemon 背景化，避免容器啟動後立即退出
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+```bash
+# 1) 建立目錄並放入 Dockerfile
+# -p: 目錄已存在時不報錯
+# &&: 前一個指令成功才執行下一個
+mkdir -p ubuntu-nginx && cd ubuntu-nginx
+
+# 2) 建置映像
+# -t: 指定 image 名稱與 tag（name:tag）
+# .: 以目前目錄作為 build context
+docker build -t ubuntu-nginx:local .
+
+# 3) 啟動容器
+# -d: 背景執行
+# --name: 指定容器名稱
+# -p 8080:80: 主機 8080 對應容器 80
+docker run -d --name ubuntu-nginx -p 8080:80 ubuntu-nginx:local
+
+# 4) 驗證
+# -I: 只取 HTTP response headers（不下載 body）
+curl -I http://localhost:8080
 ```
 
 ---
@@ -194,6 +310,19 @@ nginx -s reopen
 └── 50x.html                 # 錯誤頁面
 
 /var/run/nginx.pid           # PID 檔案
+```
+
+Docker 補充（若用 `nginx:stable` 容器）：
+
+- 上面這份樹狀結構是「Ubuntu 主機直接安裝」常見路徑；Docker 時是看「容器內」路徑，不是主機本機路徑。
+- 容器內通常會有 `/etc/nginx/nginx.conf`、`/etc/nginx/conf.d/`、`/usr/share/nginx/html/`。
+- `sites-available/`、`sites-enabled/` 在官方映像檔通常不會預設提供（除非你自行建立）。
+- 若你有用 `-v` 掛載，主機檔案會映射到容器路徑（例如 `-v /path/to/nginx.conf:/etc/nginx/nginx.conf:ro`）。
+
+```bash
+# 進容器查看實際目錄
+docker exec -it my-nginx sh
+ls -la /etc/nginx
 ```
 
 ---

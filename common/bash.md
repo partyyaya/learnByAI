@@ -38,8 +38,11 @@ sudo systemctl restart nginx
 ```bash
 docker --help
 nginx -h
+# man = manual（指令手冊），該行代表打開 ls 這個指令的手冊頁
 man ls
 ```
+
+`man` 補充：按 `q` 可離開、`/關鍵字` 可搜尋、`n` 跳到下一個搜尋結果。
 
 ### 2.3 相對路徑 vs 絕對路徑
 
@@ -66,9 +69,12 @@ man ls
 pwd
 
 # 列出全部檔案（含隱藏檔）
+# -l: 長格式（權限/擁有者/大小/時間）
+# -a: 包含隱藏檔（以 . 開頭）
 ls -la
 
 # 建立多層目錄
+# -p: 父目錄不存在時一併建立；已存在不報錯
 mkdir -p /etc/nginx/snippets
 
 # 複製設定檔當備份
@@ -84,11 +90,12 @@ mv ./default.conf /etc/nginx/conf.d/
 mv ./nginx.conf /etc/nginx/nginx.conf.bak
 
 # 刪除資料夾（小心）
+# -r: 遞迴刪除（目錄內所有檔案/子目錄）
+# -f: 強制刪除（不跳確認、忽略不存在錯誤）
 rm -rf /tmp/test-dir
 ```
 
 > `rm -rf` 很危險，務必確認路徑再執行。
->
 > `mv` 注意事項：
 > - 目標檔名已存在時會直接覆蓋（預設不提示），可改用 `mv -i` 先確認
 > - 目標目錄若不存在會失敗，先用 `mkdir -p` 建立
@@ -115,19 +122,50 @@ cat /etc/nginx/nginx.conf
 less /var/log/nginx/error.log
 
 # 即時追蹤日誌（非常常用）
+# -f: 持續追蹤檔案新增內容
 tail -f /var/log/nginx/access.log
 
 # 找出 500 錯誤
+# " 500 " 兩側空白可避免匹配到 5000、1500 這種數字片段
 grep " 500 " /var/log/nginx/access.log
 
 # 看檔案有幾行
+# -l: line count（行數）
 wc -l /var/log/nginx/access.log
 
 # 看檔案有幾個單字（字數）
+# -w: word count（單字數）
 wc -w /var/log/nginx/access.log
 
 # 看檔案有幾個字元
+# -m: character count（字元數）
 wc -m /var/log/nginx/access.log
+```
+
+### 補充：Vim 常用操作
+
+| 操作 | 說明 |
+|------|------|
+| `vim <檔案>` | 開啟（或建立）檔案 |
+| `i` | 進入插入模式開始編輯 |
+| `Esc` | 回到普通模式 |
+| `:w` | 儲存檔案 |
+| `:q` | 離開（未修改或已先儲存） |
+| `:wq` | 儲存並離開 |
+| `:q!` | 放棄修改，強制離開 |
+| `/關鍵字` | 向下搜尋關鍵字 |
+| `n` / `N` | 下一筆 / 上一筆搜尋結果 |
+| `dd` | 刪除目前整行 |
+| `yy` / `p` | 複製目前行 / 貼到下一行 |
+| `u` / `Ctrl+r` | 復原 / 重做 |
+| `gg` / `G` | 跳到檔案開頭 / 結尾 |
+
+```bash
+# 開啟 Nginx 設定檔
+vim /etc/nginx/nginx.conf
+
+# 常見編輯流程：
+# i -> 輸入內容 -> Esc -> :wq
 ```
 
 ---
@@ -252,6 +290,7 @@ ps aux | grep nginx
 # 所以行程清單中的 grep [n]ginx 不會被 grep [n]ginx 自己匹配到
 ps aux | grep [n]ginx
 # 或更精準
+# -a: 顯示 PID + 完整命令列（不是只顯示 PID）
 pgrep -a nginx
 
 # 即時看資源
@@ -261,6 +300,7 @@ top
 kill 1234
 
 # 強制終止
+# -9: 傳送 SIGKILL，程序無法攔截，通常作為最後手段
 kill -9 1234
 
 # 管理服務
@@ -269,6 +309,9 @@ sudo systemctl status nginx
 sudo systemctl restart docker
 
 # 看 nginx 服務日誌
+# -u nginx: 指定服務單位
+# -n 100: 只看最近 100 行
+# --no-pager: 不進入分頁器，直接輸出完
 sudo journalctl -u nginx -n 100 --no-pager
 ```
 
@@ -294,27 +337,36 @@ sudo journalctl -u nginx -n 100 --no-pager
 
 ```bash
 # 看網站回應 header
+# -I: 只取 HTTP response headers（不下載 body）
 curl -I https://example.com
 
 # 打健康檢查 API
+# 預設是 GET 請求
 curl http://127.0.0.1:3000/health
 
 # 測網路連通性（送 4 次就結束）
+# -c 4: 只送 4 個封包
 ping -c 4 8.8.8.8
 
 # 測網域是否可達（同時可驗證 DNS + 網路）
+# -c 4: 只送 4 個封包
 ping -c 4 example.com
 
 # 看 80/443 是否在監聽
+# -tlnp: TCP / LISTEN / numeric / process
+# grep -E: 啟用延伸正規式，:80|:443 代表匹配 80 或 443
 sudo ss -tlnp | grep -E ":80|:443"
 
 # 查 DNS
+# 預設會回傳常見解析結果（如 A/AAAA 記錄）
 dig example.com
 
 # 查封包經過哪些節點（hop）
+# 顯示到目標主機的路由路徑
 traceroute example.com
 
 # 不做 DNS 反解（更快，適合排查）
+# -n: 直接顯示 IP，不反查主機名稱
 traceroute -n example.com
 ```
 
@@ -375,11 +427,17 @@ sudo nginx -T
 ### 8.2 服務管理（systemd）
 
 ```bash
+# start: 啟動服務
 sudo systemctl start nginx
+# stop: 停止服務
 sudo systemctl stop nginx
+# restart: 重新啟動（會中斷連線）
 sudo systemctl restart nginx
+# reload: 重新載入設定（不中斷既有連線）
 sudo systemctl reload nginx
+# status: 查看服務狀態
 sudo systemctl status nginx
+# enable: 設為開機自啟
 sudo systemctl enable nginx
 ```
 
@@ -406,6 +464,7 @@ sudo nginx -t
 sudo systemctl status nginx
 
 # 3. 看錯誤日誌
+# -n 100: 顯示最後 100 行
 tail -n 100 /var/log/nginx/error.log
 
 # 4. 檢查監聽 port
@@ -433,6 +492,9 @@ sudo ss -tlnp | grep nginx
 docker ps
 
 # 啟動 Nginx 容器
+# -d: 背景執行
+# --name: 指定容器名稱
+# -p 80:80: 主機 80 對應容器 80
 docker run -d --name my-nginx -p 80:80 nginx:stable
 
 # 停止與啟動
@@ -451,9 +513,12 @@ docker start my-nginx
 
 ```bash
 # 即時看日誌
+# -f: 持續追蹤最新輸出
 docker logs -f my-nginx
 
 # 進容器內看設定
+# -i: 保持 STDIN 開啟（可互動輸入）
+# -t: 分配虛擬終端機（TTY）
 docker exec -it my-nginx sh
 
 # 看容器資源
@@ -464,6 +529,8 @@ docker stats
 
 ```bash
 # 依 Dockerfile 建 image
+# -t: 指定 image 名稱與 tag
+# .: 目前目錄作為 build context
 docker build -t myapp:1.0.0 .
 
 # 打 tag
@@ -477,6 +544,7 @@ docker push myrepo/myapp:1.0.0
 
 ```bash
 # 啟動（背景）
+# -d: 背景執行 compose 服務
 docker compose up -d
 
 # 停止並刪除容器網路
@@ -486,9 +554,11 @@ docker compose down
 docker compose ps
 
 # 看某服務日誌
+# -f: 持續追蹤日誌
 docker compose logs -f nginx
 
 # 重新建置後啟動
+# --build: 啟動前先重新建置映像
 docker compose up -d --build
 ```
 
@@ -578,6 +648,7 @@ export API_URL=https://api.example.com
 
 # 檢查
 echo $APP_ENV
+# grep: 只保留包含 API_URL 的那行
 env | grep API_URL
 ```
 
@@ -590,7 +661,9 @@ env | grep API_URL
 把前一個指令的輸出，交給下一個指令。
 
 ```bash
+# wc -l: 統計輸出行數（此例可快速看容器數）
 docker ps | wc -l
+# grep " 500 ": 篩出狀態碼為 500 的存取紀錄
 cat /var/log/nginx/access.log | grep " 500 "
 ```
 
@@ -627,13 +700,16 @@ sudo nginx -t && sudo systemctl reload nginx
 ```bash
 docker compose pull && docker compose up -d
 docker compose ps
+# --tail=100: 只看最近 100 行；-f: 持續追蹤
 docker compose logs -f --tail=100
 ```
 
 ### 13.3 快速看 5xx 問題
 
 ```bash
+# 50[0-9] 代表 500~509，搭配 tail 只看最新 50 筆
 grep " 50[0-9] " /var/log/nginx/access.log | tail -n 50
+# -n 100: 只看最後 100 行
 tail -n 100 /var/log/nginx/error.log
 ```
 
