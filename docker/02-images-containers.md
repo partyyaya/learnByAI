@@ -17,6 +17,8 @@ docker pull node:20-alpine
 docker pull python:3.12-slim
 
 # 拉取特定平台的映像
+# --platform linux/amd64: 指定抓 x86_64 架構映像
+# 常見於 Apple Silicon（M1/M2）要測試 amd64 相容性時
 docker pull --platform linux/amd64 nginx:latest
 ```
 
@@ -31,6 +33,67 @@ nginx:1.25-alpine              # 指定版本與變體
 mycompany/api-server:v1.2.3    # 自訂命名空間
 ghcr.io/owner/app:latest       # GitHub Container Registry
 ```
+
+命名欄位說明：
+
+- `registry`：映像倉庫位址（例如 `docker.io`、`ghcr.io`、`registry.example.com:5000`）
+- `namespace`：使用者或組織名稱（例如 Docker Hub 帳號、GitHub org）
+- `repository`：專案/服務名稱（例如 `api-server`）
+- `tag`：版本或變體（例如 `v1.2.3`、`prod`、`latest`）
+
+是否上傳都要這樣命名？
+
+- **要上傳到遠端 registry 時，實務上要。** 至少要帶上「你有權限的 namespace/repository」。
+- 例如你不能直接 `docker push nginx:latest`（那是官方倉庫，通常你沒有寫入權限）。
+- Docker Hub 若省略 `registry`，預設就是 `docker.io`。
+
+### 常用 Registry 官網與註冊資訊
+
+| 平台 | 官網 / 文件 | 註冊入口 | 是否可免費註冊 |
+|------|-------------|----------|----------------|
+| Docker Hub | [https://hub.docker.com/](https://hub.docker.com/) | [https://hub.docker.com/signup](https://hub.docker.com/signup) | 可以（Personal 免費方案） |
+| GHCR（GitHub Container Registry） | [https://ghcr.io/](https://ghcr.io/) / [GitHub Packages 文件](https://docs.github.com/packages/working-with-a-github-packages-registry/working-with-the-container-registry) | [https://github.com/signup](https://github.com/signup) | 可以（GitHub 帳號可免費註冊） |
+
+補充：
+
+- Docker Hub 與 GHCR 都可先用免費帳號開始上傳。
+- 公開（public）映像通常最容易先免費使用；私有（private）映像的儲存與流量限制會依方案不同。
+- 實際配額與費用會變動，以上傳前請以官方方案頁為準：  
+  - Docker：`https://www.docker.com/pricing/`  
+  - GitHub Packages：`https://docs.github.com/billing/managing-billing-for-github-packages/about-billing-for-github-packages`
+
+### 上傳映像（Push）範例
+
+```bash
+# 先確認本地有這個映像
+docker images myapp
+
+# 1) 上傳到 Docker Hub
+docker login
+
+# 把本地映像改成可推送名稱（<dockerhub_user> 要換成你的帳號）
+docker tag myapp:1.0.0 <dockerhub_user>/myapp:1.0.0
+
+# 推送
+docker push <dockerhub_user>/myapp:1.0.0
+```
+
+```bash
+# 2) 上傳到 GHCR（GitHub Container Registry）
+# <github_user> / <owner> 請改成你的帳號或組織
+echo $GITHUB_TOKEN | docker login ghcr.io -u <github_user> --password-stdin
+
+# 重新打 tag（重點是要含 ghcr.io/owner/...）
+docker tag myapp:1.0.0 ghcr.io/<owner>/myapp:1.0.0
+
+# 推送
+docker push ghcr.io/<owner>/myapp:1.0.0
+```
+
+常見錯誤提示：
+
+- `denied: requested access to the resource is denied`：名稱不在你的 namespace，或尚未登入/沒權限。
+- `name unknown`：repository 路徑打錯，或 registry 上不存在該路徑。
 
 ### 常見映像變體
 
@@ -65,6 +128,8 @@ docker history nginx:latest
 
 # 標記映像（建立別名）
 docker tag nginx:latest myregistry.com/nginx:v1.0
+# 若想確認「兩個名字是不是同一份映像」，看 IMAGE ID 是否一樣
+docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}"
 
 # 刪除映像
 docker rmi nginx:latest
@@ -133,15 +198,27 @@ docker run --rm -it ubuntu:22.04 bash
 | 參數 | 說明 | 範例 |
 |------|------|------|
 | `-d` | 背景執行 | `docker run -d nginx` |
-| `-p` | Port 對映 | `-p 8080:80` |
-| `-v` | 掛載 Volume | `-v ./data:/data` |
-| `-e` | 環境變數 | `-e KEY=VALUE` |
+| `-p` | Port 映射（格式：`主機埠:容器埠`） | `-p 8080:80`（用 `localhost:8080` 連到容器 `80`） |
+| `-v` | 掛載資料（格式：`主機路徑:容器路徑[:模式]`） | `-v ./data:/data:ro`（主機 `./data` 掛到容器 `/data`，且唯讀） |
+| `-e` | 設定容器啟動時的環境變數（常用於 DB 帳密、API URL、執行模式） | `-e APP_ENV=prod -e API_URL=https://api.example.com` |
 | `--name` | 容器名稱 | `--name my-app` |
 | `-it` | 互動式終端 | `docker run -it ubuntu bash` |
 | `--rm` | 停止後自動刪除 | `docker run --rm nginx` |
 | `--network` | 指定網路 | `--network my-net` |
 | `--restart` | 重啟策略 | `--restart unless-stopped` |
 | `-w` | 工作目錄 | `-w /app` |
+
+`-e` 什麼時候會用到？
+
+- 容器啟動時要帶入設定值（例如 `APP_ENV=production`、`API_URL=...`）。
+- 啟動資料庫或應用時要傳密碼/帳號（例如 MySQL 的 `MYSQL_ROOT_PASSWORD`）。
+- 變數很多時，建議改用 `--env-file .env` 管理。
+
+`-it` 參數拆解：
+
+- `-i`（interactive）：保持 STDIN 開啟，讓你可以持續輸入指令。
+- `-t`（tty）：分配虛擬終端機，讓 shell 互動畫面（提示字元、換行）正常顯示。
+- 實務上常一起用成 `-it`，例如 `docker run -it ubuntu bash`。
 
 ### 管理容器
 
@@ -159,6 +236,14 @@ docker ps -a
 
 # 停止容器
 docker stop my-nginx
+
+# 如果 run 時沒設定 --name，可用 CONTAINER ID 停止
+docker stop a1b2c3d4e5f6
+
+# 先查目前容器的 ID / 自動名稱，再停止（擇一使用）
+docker ps
+# docker stop <CONTAINER ID>
+# docker stop <自動名稱（例如 hopeful_morse）>
 
 # 啟動已停止的容器
 docker start my-nginx
@@ -232,24 +317,24 @@ docker cp ./index.html my-nginx:/usr/share/nginx/html/
                      │
                      ▼
               ┌─────────────┐
-              │   Created    │
+              │   Created   │
               └──────┬──────┘
                      │ docker start
                      ▼
               ┌─────────────┐  docker pause   ┌─────────────┐
-              │   Running    │───────────────→ │   Paused     │
+              │   Running   │───────────────→ │   Paused    │
               └──┬───┬──────┘ ←───────────────┘─────────────┘
                  │   │         docker unpause
    docker stop   │   │ 行程結束
                  │   │
                  ▼   ▼
               ┌─────────────┐
-              │   Stopped    │
+              │   Stopped   │
               └──────┬──────┘
                      │ docker rm
                      ▼
               ┌─────────────┐
-              │   Deleted    │
+              │   Deleted   │
               └─────────────┘
 ```
 
