@@ -21,7 +21,8 @@ COPY package*.json ./
 RUN npm ci --only=production
 
 # 再複製應用程式碼（把主機端 build context 的檔案複製到容器內）
-# 左邊 `.` = 主機端目前 build context；右邊 `.` = 容器內 WORKDIR（此例是 /app）
+# 左邊 `.` = build context（預設是執行 docker build 時，終端機目前所在路徑）
+# 右邊 `.` = 容器內 WORKDIR（此例是 /app）
 COPY . .
 
 # 宣告容器內應用使用 3000 port（僅 metadata，不會自動對外開放）
