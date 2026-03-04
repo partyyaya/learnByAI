@@ -40,6 +40,8 @@ CMD ["node", "server.js"]
 # 基本建構
 # -t: 指定建出來的 image 名稱與標籤（repository:tag）
 # . : build context，代表用「主機端目前目錄」的檔案給 Dockerfile 使用（不是容器路徑）
+# 預設會讀取 build context 根目錄下名為 `Dockerfile` 的檔案（注意 D 大寫）
+# 若檔名不同（例如 Dockerfile.prod），需用 -f 明確指定
 docker build -t my-app:v1.0 .
 
 # 指定 Dockerfile 路徑
