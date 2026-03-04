@@ -40,7 +40,9 @@ FROM scratch              # 0MB
 
 ```bash
 # 使用 Docker Scout（官方工具）
+# 列出映像已知 CVE 清單
 docker scout cves my-app:latest
+# 顯示可升級的基礎映像與修補建議
 docker scout recommendations my-app:latest
 
 # 使用 Trivy（開源掃描工具）
@@ -90,7 +92,9 @@ RUN --mount=type=secret,id=npmrc,target=/root/.npmrc \
 # DOCKER_BUILDKIT=1 docker build --secret id=npmrc,src=.npmrc -t my-app .
 
 # ✅ 運行時注入
+# 用單一環境變數注入 secret（臨時測試常見）
 docker run -e API_KEY=sk-xxxxx my-app
+# 從 .env 檔案批次注入運行時環境變數
 docker run --env-file .env my-app
 ```
 
@@ -196,8 +200,8 @@ docker run --privileged my-app
 
 # ❌ 也很危險
 docker run -v /:/host my-app        # 掛載主機根目錄
-docker run --pid=host my-app        # 共享主機 PID namespace
-docker run --network=host my-app    # 在生產環境要謹慎使用
+docker run --pid=host my-app        # 與主機共用 PID namespace，可看到主機行程
+docker run --network=host my-app    # 與主機共用網路堆疊，隔離性降低
 
 # ✅ 安全的做法
 docker run \
@@ -299,8 +303,11 @@ secrets:
 
 ```bash
 # 建立 secret 檔案
+# 建立 secrets 目錄（若不存在）
 mkdir -p secrets
+# 寫入資料庫密碼示例
 echo "my_secure_password" > secrets/db_password.txt
+# 寫入 API Key 示範值
 echo "sk-xxxxxxxx" > secrets/api_key.txt
 
 # 確保 secrets 不被加入版本控制
@@ -440,12 +447,17 @@ services:
 
 # 2. 從 Git 歷史中移除 .env
 # 使用 BFG Repo-Cleaner
+# 從整段 Git 歷史刪除所有 .env 檔案記錄
 bfg --delete-files .env
+# 清掉 reflog，讓舊物件可被回收
 git reflog expire --expire=now --all
+# 進行垃圾回收，實際移除已不可達的敏感內容
 git gc --prune=now --aggressive
 
 # 3. 確保 .gitignore 有包含 .env
+# 忽略本機環境變數檔
 echo ".env" >> .gitignore
+# 忽略 secrets 目錄
 echo "secrets/" >> .gitignore
 
 # 4. 提供 .env.example 作為範本

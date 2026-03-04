@@ -255,7 +255,9 @@ jobs:
 
       - name: Run tests in Docker
         run: |
+          # 啟動測試環境並在測試容器結束後停止整組服務
           docker compose -f docker-compose.test.yml up --build --abort-on-container-exit
+          # 測試完成後清理容器與 volume，避免污染下一次 CI
           docker compose -f docker-compose.test.yml down -v
 
   # ===== 建構與推送映像 =====
@@ -338,9 +340,13 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
+            # 切到部署目錄
             cd /opt/myapp
+            # 拉取最新映像
             docker compose pull
+            # 以背景模式更新服務，並移除不再定義的孤兒容器
             docker compose up -d --remove-orphans
+            # 清掉未使用映像，回收磁碟空間
             docker image prune -f
 ```
 
@@ -421,14 +427,19 @@ CMD ["node", "dist/server.js"]
 ```bash
 # 部署腳本：deploy.sh
 #!/bin/bash
+# 遇到任何非 0 指令立即中止，避免半套部署
 set -e
 
+# 從第一個參數取版本，未提供時預設 latest
 IMAGE_TAG=${1:-latest}
+# 指定要使用的 Compose 檔
 COMPOSE_FILE="docker-compose.prod.yml"
 
+# 輸出目前部署版本
 echo "Deploying version: ${IMAGE_TAG}"
 
 # 拉取新映像
+# 將 TAG 匯出給 docker-compose.prod.yml 的 ${TAG} 使用
 export TAG=${IMAGE_TAG}
 docker compose -f ${COMPOSE_FILE} pull api
 
@@ -437,7 +448,9 @@ docker compose -f ${COMPOSE_FILE} pull api
 docker compose -f ${COMPOSE_FILE} up -d --no-deps --scale api=2 api
 
 # 等待新容器就緒（根據 healthcheck）
+# 顯示等待訊息，方便部署紀錄追蹤
 echo "Waiting for new containers to be healthy..."
+# 等待應用與 healthcheck 穩定
 sleep 30
 
 # 確認新容器健康
@@ -449,6 +462,7 @@ docker compose -f ${COMPOSE_FILE} up -d --no-deps --scale api=1 api
 # 清理舊映像
 docker image prune -f
 
+# 輸出部署完成訊息
 echo "Deployment completed successfully!"
 ```
 
@@ -609,24 +623,32 @@ scrape_configs:
 #!/bin/bash
 # backup.sh - 自動備份 Docker Volume
 
+# 備份輸出目錄
 BACKUP_DIR="/backup/docker"
+# 產生時間戳（用於備份檔命名）
 DATE=$(date +%Y%m%d_%H%M%S)
+# 保留天數（超過會刪除）
 RETENTION_DAYS=7
 
 # 備份 PostgreSQL
 echo "Backing up PostgreSQL..."
+# 透過 pg_dump 匯出資料，並壓縮成 gz
 docker compose exec -T db pg_dump -U postgres myapp | \
   gzip > "${BACKUP_DIR}/db_${DATE}.sql.gz"
 
 # 備份 Redis
 echo "Backing up Redis..."
+# 觸發 Redis 背景快照（產生 dump.rdb）
 docker compose exec -T redis redis-cli BGSAVE
+# 等待快照寫檔完成
 sleep 5
+# 從 redis 容器把 dump.rdb 複製到備份目錄
 docker cp $(docker compose ps -q redis):/data/dump.rdb \
   "${BACKUP_DIR}/redis_${DATE}.rdb"
 
 # 備份 Volume（通用方式）
 echo "Backing up volumes..."
+# 以臨時 Alpine 容器把 volume 打包成 tar.gz
 docker run --rm \
   -v myapp_pgdata:/source:ro \
   -v ${BACKUP_DIR}:/backup \
@@ -634,9 +656,12 @@ docker run --rm \
 
 # 清理過期備份
 echo "Cleaning old backups..."
+# 刪除超過保留天數的 SQL 備份
 find ${BACKUP_DIR} -name "*.gz" -mtime +${RETENTION_DAYS} -delete
+# 刪除超過保留天數的 Redis 快照備份
 find ${BACKUP_DIR} -name "*.rdb" -mtime +${RETENTION_DAYS} -delete
 
+# 輸出備份完成訊息
 echo "Backup completed: ${DATE}"
 ```
 
@@ -646,8 +671,10 @@ echo "Backup completed: ${DATE}"
 #!/bin/bash
 # restore.sh - 還原備份
 
+# 讀取第一個參數作為備份檔路徑
 BACKUP_FILE=$1
 
+# 參數檢查：未提供備份檔就顯示用法並退出
 if [ -z "$BACKUP_FILE" ]; then
   echo "Usage: ./restore.sh <backup_file>"
   exit 1
@@ -658,6 +685,7 @@ docker compose stop api celery-worker
 
 # 還原 PostgreSQL
 echo "Restoring PostgreSQL..."
+# 解壓 SQL 備份並直接 pipe 進 psql 還原
 gunzip -c ${BACKUP_FILE} | docker compose exec -T db psql -U postgres myapp
 
 # 重新啟動服務
@@ -678,15 +706,20 @@ echo "Restore completed!"
 # 回滾到上一個版本
 # 方法一：重新指定舊版標籤
 export TAG=v1.2.3    # 上一個穩定版本
+# 依指定 TAG 重新建立 api 容器
 docker compose -f docker-compose.prod.yml up -d api
 
 # 方法二：使用 Git SHA 標籤
 export TAG=abc1234
+# 用 commit SHA 標籤回滾到對應映像
 docker compose -f docker-compose.prod.yml up -d api
 
 # 確認回滾成功
+# 檢查容器狀態是否正常
 docker compose ps
+# 看最新 20 行日誌確認服務無錯
 docker compose logs --tail 20 api
+# 打健康檢查端點確認功能正常
 curl http://localhost/api/health
 ```
 
@@ -737,8 +770,10 @@ docker compose exec nginx nginx -s reload
 # ✅ 先新增欄位 → 部署新版程式 → 再刪除舊欄位
 
 # 2. 使用 Docker Compose 執行遷移
+# 在既有 api 容器內執行遷移（常見做法）
 docker compose exec api npm run migrate
 # 或
+# 起一次性容器執行 Python/Django 遷移
 docker compose run --rm api python manage.py migrate
 
 # 3. 驗證遷移結果

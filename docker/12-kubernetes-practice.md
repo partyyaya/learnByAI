@@ -642,3 +642,5 @@ kubectl delete namespace k8s-practice
 2. 觀測性（Prometheus + Grafana + Loki）
 3. GitOps（Argo CD / Flux）
 4. Progressive Delivery（Canary / Blue-Green）
+
+> 延伸閱讀：[第十三章：Docker Swarm 實戰（Stack + Overlay + Secrets + Rolling Update）](./13-docker-swarm-practice.md)

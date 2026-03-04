@@ -42,7 +42,9 @@ docker network create my-network
 docker network create --subnet=172.20.0.0/16 my-network
 
 # 在自訂網路中啟動容器
+# 啟動 API 並加入 my-network
 docker run -d --name api --network my-network my-api
+# 啟動 PostgreSQL 並加入同一網路（讓 api 可用服務名連線）
 docker run -d --name db --network my-network postgres:16
 
 # 自訂 bridge 網路的優勢：
@@ -419,6 +421,7 @@ volumes:
 ```bash
 # 2. 定期備份
 # 建立一個 cron job
+# 每天凌晨 2 點執行一次備份腳本
 0 2 * * * /usr/local/bin/backup-volumes.sh
 
 # 3. 使用 alias 防止手殘

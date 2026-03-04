@@ -368,8 +368,11 @@ docker compose up -d
 docker compose --profile dev up -d
 
 # 初始化 Laravel
+# 安裝 PHP 相依套件（依 composer.lock）
 docker compose exec php composer install
+# 產生 APP_KEY（Laravel 啟動必備）
 docker compose exec php php artisan key:generate
+# 執行資料庫遷移並灌入初始資料
 docker compose exec php php artisan migrate --seed
 
 # 網站：     http://localhost
@@ -745,9 +748,13 @@ clean:
 
 ```bash
 # 使用方式
+# 啟動所有服務（背景）
 make up
+# 持續追蹤日誌
 make logs
+# 進入 API 容器 shell
 make shell
+# 執行資料庫遷移
 make migrate
 ```
 

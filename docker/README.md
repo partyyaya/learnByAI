@@ -1,6 +1,6 @@
 # Docker 完整教學課程
 
-> 從零開始學習 Docker，涵蓋容器基礎、Dockerfile 撰寫、Docker Compose 編排到生產環境部署，並銜接 Kubernetes 入門與實戰。
+> 從零開始學習 Docker，涵蓋容器基礎、Dockerfile 撰寫、Docker Compose 編排到生產環境部署，並銜接 Kubernetes 與 Docker Swarm 實戰。
 
 ---
 
@@ -20,6 +20,7 @@
 | 10 | [10-production-cicd.md](./10-production-cicd.md) | 生產環境部署與 CI/CD |
 | 11 | [11-kubernetes-basics.md](./11-kubernetes-basics.md) | Kubernetes 入門（從 Docker 到 K8s） |
 | 12 | [12-kubernetes-practice.md](./12-kubernetes-practice.md) | Kubernetes 實戰（Ingress + HPA + Requests/Limits + Probe + Helm） |
+| 13 | [13-docker-swarm-practice.md](./13-docker-swarm-practice.md) | Docker Swarm 實戰（Stack + Overlay + Secrets + Rolling Update） |
 
 ---
 
@@ -28,7 +29,7 @@
 - **理論 + 實務並重**：每個章節都附有完整的設定範例與可執行的指令
 - **Dockerfile 深度解析**：從基礎語法到 Multi-stage Build 的最佳實踐
 - **Docker Compose 完整教學**：單機多容器編排、服務相依性管理、環境變數配置
-- **Kubernetes 銜接章節**：從 Docker 基礎過渡到 Pod / Deployment / Service，並延伸至 Ingress / HPA / Helm 實戰
+- **容器編排進階路線**：從 Docker 基礎過渡到 Kubernetes（Ingress/HPA/Helm）與 Docker Swarm（Stack/Overlay/Secrets）
 - **情境導向學習**：涵蓋開發到部署會遇到的真實問題與解決方案
 - **問題排查指南**：系統性的除錯流程，快速定位並解決容器化常見問題
 
@@ -53,6 +54,9 @@
 
 進階篇（架構師之路）
   10 生產環境部署與 CI/CD → 11 Kubernetes 入門 → 12 Kubernetes 實戰
+
+選修篇（輕量編排）
+  13 Docker Swarm 實戰
 ```
 
 ## 環境需求
@@ -62,6 +66,7 @@
 - Docker Compose：V2（已內建於 Docker Desktop）
 - Kubernetes 練習工具（選配）：kubectl、minikube 或 kind
 - Helm：3.12+（管理 Kubernetes 應用與 Chart）
+- Docker Swarm 練習建議：至少 1 台 Docker 主機（建議 2+ 台演練 manager/worker）
 - 建議搭配工具：curl、jq、dive（映像分析）、lazydocker（TUI 管理工具）
 
 ---

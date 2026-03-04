@@ -37,11 +37,15 @@ docker logout
 
 ```bash
 # 步驟一：標記映像（需要包含 Docker Hub 使用者名稱）
+# 發布固定版本標籤（建議部署使用）
 docker tag my-app:latest username/my-app:v1.0
+# 同步維護 latest 標籤（便於手動測試拉取）
 docker tag my-app:latest username/my-app:latest
 
 # 步驟二：推送到 Docker Hub
+# 推送固定版本
 docker push username/my-app:v1.0
+# 推送 latest
 docker push username/my-app:latest
 
 # 推送所有標籤
@@ -55,7 +59,9 @@ docker push username/my-app --all-tags
 docker pull username/my-app:v1.0
 
 # 從其他 Registry 拉取
+# GHCR 範例
 docker pull ghcr.io/owner/my-app:v1.0
+# AWS ECR 範例
 docker pull 123456789.dkr.ecr.ap-northeast-1.amazonaws.com/my-app:v1.0
 ```
 
@@ -176,15 +182,23 @@ docker login myregistry.example.com
 
 ```bash
 # 格式：MAJOR.MINOR.PATCH
+# 最完整版本（最推薦）
 docker tag my-app:latest myregistry.com/my-app:1.2.3
+# 同步次版本，方便追小版本更新
 docker tag my-app:latest myregistry.com/my-app:1.2
+# 同步主版本，方便追大版本線
 docker tag my-app:latest myregistry.com/my-app:1
+# 視團隊規範決定是否保留 latest
 docker tag my-app:latest myregistry.com/my-app:latest
 
 # 推送所有標籤
+# 推送完整版本
 docker push myregistry.com/my-app:1.2.3
+# 推送次版本
 docker push myregistry.com/my-app:1.2
+# 推送主版本
 docker push myregistry.com/my-app:1
+# 推送 latest
 docker push myregistry.com/my-app:latest
 ```
 
@@ -192,14 +206,17 @@ docker push myregistry.com/my-app:latest
 
 ```bash
 # 使用 Git commit hash
+# 取目前 commit 的短 SHA（例如 abc1234）
 GIT_SHA=$(git rev-parse --short HEAD)
 docker tag my-app:latest myregistry.com/my-app:${GIT_SHA}
 
 # 使用 Git tag
+# 取最近的 tag（若無 tag 則回傳 SHA）
 GIT_TAG=$(git describe --tags --always)
 docker tag my-app:latest myregistry.com/my-app:${GIT_TAG}
 
 # 使用 branch 名稱
+# 取目前分支名稱（例如 main / feature-x）
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 docker tag my-app:latest myregistry.com/my-app:${BRANCH}
 ```
@@ -232,14 +249,13 @@ docker system df
 docker image prune -a
 
 # 刪除特定 pattern 的映像
+# 篩出名稱含 my-app 的映像，取 Image ID 後批次刪除
 docker images | grep "my-app" | awk '{print $3}' | xargs docker rmi
 
 # 保留最近 N 個版本的映像
 # 使用 script 搭配 docker images --format
-docker images myregistry.com/my-app --format "{{.Tag}}" | \
-  sort -rV | \
-  tail -n +6 | \
-  xargs -I {} docker rmi myregistry.com/my-app:{}
+# 流程：列出 tag -> 版本倒序排序 -> 略過最新 5 個 -> 刪除其餘舊版
+docker images myregistry.com/my-app --format "{{.Tag}}" | sort -rV | tail -n +6 | xargs -I {} docker rmi myregistry.com/my-app:{}
 ```
 
 ### Registry 清理
@@ -308,6 +324,7 @@ curl http://localhost:5000/v2/_catalog
 
 # 2. 刪除舊的映像標籤
 # 先取得映像的 digest
+# 呼叫 Registry API 取得舊 tag 的 manifest 內容，再用 jq 擷取 digest 欄位
 DIGEST=$(curl -s -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
   http://localhost:5000/v2/my-app/manifests/old-tag | \
   jq -r '.config.digest')

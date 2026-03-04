@@ -47,7 +47,9 @@ docker logs -f my-container
 docker logs --tail 50 -t my-container
 
 # Docker Compose：查看特定服務日誌
+# 看 api 目前日誌（一次輸出）
 docker compose logs api
+# 同時持續追蹤 api 與 db 兩個服務
 docker compose logs -f api db
 
 # 查看所有服務的日誌
@@ -86,15 +88,20 @@ docker inspect --format='{{json .State.Health}}' my-container | jq
 
 ```bash
 # 進入運行中的容器
+# BusyBox/Alpine 常見 shell
 docker exec -it my-container sh
+# Debian/Ubuntu 常見 shell
 docker exec -it my-container bash
+# Alpine 預設 shell 路徑
 docker exec -it my-container /bin/ash  # Alpine
 
 # 以 root 身份進入
 docker exec -it -u root my-container sh
 
 # Docker Compose
+# 進入 api 服務容器（一般權限）
 docker compose exec api sh
+# 以 root 身份進入 api 服務容器
 docker compose exec -u root api sh
 ```
 
@@ -359,9 +366,11 @@ docker build --platform linux/amd64 -t my-app .
 docker compose config
 
 # 只列出服務名稱
+# 用來確認 service 名稱拼寫是否正確
 docker compose config --services
 
 # 檢查特定服務的設定
+# 轉成 JSON 後只看 api 節點，方便精準排查
 docker compose config --format json | jq '.services.api'
 ```
 
@@ -491,6 +500,7 @@ services:
       DB_HOST: db     # 這裡的 "db" 是 DB 服務的名稱
 
 # 3. 從容器內測試連線
+# 驗證 api 容器是否能連到 db:5432
 docker compose exec api nc -zv db 5432
 ```
 
@@ -504,6 +514,7 @@ docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}"
 
 # 2. 查看容器內的行程
 docker top my-container
+# 在容器內看更完整的行程資訊（CPU/MEM/命令）
 docker exec my-container ps aux
 
 # 3. 常見原因：
@@ -526,6 +537,7 @@ docker exec my-frontend ls -la /usr/share/nginx/html/
 
 # 2. 檢查 Multi-stage Build 的建構階段
 docker build --target builder -t my-frontend:builder .
+# 直接在 builder 階段確認 /app/dist 是否有前端建構產物
 docker run -it --rm my-frontend:builder ls /app/dist
 # 確認 dist 目錄確實有內容
 
