@@ -325,7 +325,9 @@ docker compose up -d
 docker compose --env-file .env.production up -d
 ```
 
-> 補充：`env_file` 與 `.env` 用途不同。`env_file` 是把變數注入容器執行環境；`.env` 主要是給 Compose 解析 `docker-compose.yml` 裡的 `${VAR}`。
+> 補充：`--env-file .env.production`（或預設 `.env`）主要是給 Compose 在解析 `docker-compose.yml` 時做 `${VAR}` 變數替換，**不會**自動把檔案內所有變數注入容器。  
+> 真正要把變數放進容器，請使用 service 的 `environment` 或 `env_file`。  
+> 例如：`environment: DB_PASSWORD: ${DB_PASSWORD}` 會把替換後的 `DB_PASSWORD` 傳進容器；沒有被引用的變數不會自動進容器。
 
 ### volumes — 資料掛載
 
@@ -347,14 +349,17 @@ services:
     volumes:
       # 開發用：掛載原始碼，啟用 hot reload
       - ./backend:/app
-      # 排除 node_modules（避免覆蓋容器內的版本）
+      # 這不是語法上的 exclude，而是用「子路徑掛載」覆蓋 /app/node_modules
+      # 這樣主機 ./backend/node_modules 就不會蓋到容器內安裝的依賴
       - /app/node_modules
 
-# 頂層 Volume 宣告
+# 頂層 Volume 宣告（具名 Volume）
+# 宣告後可在 services.*.volumes 以名稱引用（例如 pgdata:/var/lib/postgresql/data）
+# 具名 Volume 的生命週期獨立於容器，docker compose down 不加 -v 時資料會保留
 volumes:
   pgdata:
-    driver: local
-  redis-data:
+    driver: local   # 資料會放在 Docker 主機的 volume 儲存區（不是專案資料夾），由 Docker 自動建立與管理
+  redis-data:       # 未指定 driver 時預設也是 local，行為與上面相同
 ```
 
 ### depends_on — 服務相依性
@@ -371,9 +376,11 @@ services:
   worker:
     build: ./worker
     depends_on:
-      # 完整寫法：可設定健康檢查條件
+      # condition 是 Docker Compose 規範內建欄位（depends_on.condition）
+      # service_healthy：要等 db 的 healthcheck 狀態變成 healthy 才會啟動 worker
       db:
         condition: service_healthy
+      # service_started：只要 redis 容器已啟動（running）就會繼續，不會等健康檢查通過
       redis:
         condition: service_started
 
@@ -395,49 +402,72 @@ services:
       retries: 5
 ```
 
-> **注意**：`depends_on` 只確保啟動順序，不保證服務已經「準備好」。使用 `condition: service_healthy` 搭配 `healthcheck` 才能確保服務就緒。
+> `service_started` / `service_healthy` 不是你自訂的字串，而是 Docker Compose 在 `depends_on.condition` 內建的條件值。  
+> 常見條件有 3 種：`service_started`、`service_healthy`、`service_completed_successfully`（一次性任務常用）。
+>
+> - `service_started`：依賴服務「容器已啟動」就算成立（不等健康檢查）
+> - `service_healthy`：依賴服務必須有 `healthcheck`，且狀態要變成 `healthy`
+> - `service_completed_successfully`：依賴服務要先執行完且 exit code 為 0（常用於 migration job）
+>
+> 實務上：資料庫通常用 `service_healthy`；快取或不需嚴格就緒判定的服務可用 `service_started`。
 
 ### networks — 網路設定
+
+- networks（含 internal: true）在管「容器之間、以及容器能不能往外連」
 
 ```yaml
 services:
   web:
     networks:
-      - frontend
+      - frontend   # 前台網段（通常承接對外流量）
 
   api:
     networks:
-      - frontend
-      - backend
+      - frontend   # 可被 web 存取
+      - backend    # 可存取 db
 
   db:
     networks:
-      - backend
+      - backend    # 僅內部網段可見
 
 networks:
-  frontend:
+  frontend:        # 預設網段（可對外）
   backend:
-    internal: true  # 禁止外部存取
+    internal: true  # 外部隔離網段：同網段容器可互通，但不提供直接對外連線
 ```
+
+> 這個範例的重點是做「網路分層」：`web` 只在 `frontend`，`db` 只在 `backend`，所以 `web` 不能直接連 `db`，要透過同時連兩個網段的 `api`。  
+> `internal: true` 的主要意思是：這個網段給內部服務互連用，不讓該網段的容器直接對外連線。若你也不在 `db` 設定 `ports`，外部就更無法直接打到資料庫。
+>
+> 快速判斷（`internal` 與 `ports` 是兩個不同層次）：  
+> - `internal: true` + **無** `ports`：同網段容器可互連；主機/外部無法直接連入；容器也不能直接對外。  
+> - `internal: true` + **有** `ports`：通常仍可透過映射埠從主機連入；但容器對外連線限制依然存在。  
+> - `internal: false` + **無** `ports`：容器可對外；但主機/外部仍無法直接連入該服務。  
+> - `internal: false` + **有** `ports`：主機/外部可透過映射埠直接連入。  
+>
+> 結論：`internal: true` 不是「等設定 `ports` 才生效」，兩者互相獨立；資料庫服務通常建議不開 `ports`。
 
 ### restart — 重啟策略
 
 ```yaml
 services:
   api:
-    restart: unless-stopped    # 推薦
+    restart: unless-stopped    # 常駐服務推薦：異常退出會重啟；若你手動 stop，之後不會被自動拉起
 
   db:
-    restart: always
+    restart: always            # 強制維持運行：幾乎任何停止情況都會嘗試重啟（含 Docker daemon 重啟後）
 
   worker:
-    restart: on-failure
-    # 或帶最大重試次數
+    restart: on-failure        # 只在非 0 exit code 時重啟；正常結束（exit 0）不會重啟
+    # 或帶最大重試次數（此寫法主要用於 Swarm）
     deploy:
       restart_policy:
-        condition: on-failure
-        max_attempts: 5
+        condition: on-failure  # 只在失敗時重啟
+        max_attempts: 5        # 最多重啟 5 次
 ```
+
+> 補充：一般 `docker compose up`（非 Swarm）以 `restart` 欄位為主；`deploy.restart_policy` 主要給 `docker stack deploy`（Swarm）使用。  
+> `always` 與 `unless-stopped` 的差別在「手動 stop 之後」：`unless-stopped` 會尊重你的手動停止，不會在 daemon 重啟後自動拉起。
 
 ### 資源限制
 
@@ -447,12 +477,23 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 512M
+          cpus: '1.0'     # 硬上限：最多使用 1 顆 CPU
+          memory: 512M    # 硬上限：最多 512MB，超過可能被 OOM Kill
         reservations:
-          cpus: '0.5'
-          memory: 256M
+          cpus: '0.5'     # 預留值：排程時預留 0.5 顆 CPU
+          memory: 256M    # 預留值：排程時預留 256MB 記憶體
 ```
+
+> `limits` 是「上限」，`reservations` 是「預留需求」（偏排程語意）。  
+> `deploy.resources` 在 Swarm（`docker stack deploy`）會完整生效；單機 `docker compose up` 是否完全套用，會受 Compose/Engine 版本影響，建議實測確認。
+>
+> 可用以下方式驗證容器實際資源限制：
+>
+> ```bash
+> docker compose up -d
+> CID=$(docker compose ps -q api)
+> docker inspect "$CID" --format 'NanoCpus={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}}'
+> ```
 
 ---
 
@@ -746,9 +787,9 @@ docker compose logs --tail 50 api  # 最後 50 行日誌
 docker compose top                 # 查看各服務的行程
 
 # === 執行指令 ===
-docker compose exec api bash              # 進入運行中的容器
+docker compose exec api bash              # 進入「已在執行」的容器（若映像沒有 bash 改用 sh）
 docker compose exec db psql -U postgres    # 連線 PostgreSQL
-docker compose run api npm test            # 建立臨時容器執行指令
+docker compose run api npm test            # 建立一次性容器執行指令（不會用到既有 api 容器）
 
 # === 建構與更新 ===
 docker compose build               # 建構所有服務的映像
@@ -845,6 +886,9 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 # 檢查最終合併的設定
 docker compose -f docker-compose.yml -f docker-compose.prod.yml config
 ```
+
+> 多檔案合併規則：後面 `-f` 的檔案優先權較高（同欄位會覆蓋前者）。  
+> 例如上例是 `docker-compose.prod.yml` 覆蓋 `docker-compose.yml` 的同名設定。
 
 ---
 
