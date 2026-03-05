@@ -403,14 +403,51 @@ services:
 # Volume 宣告
 volumes:
   pgdata:
+    # 若省略 driver，Docker Compose 預設就是 local
     driver: local
 
   api-logs:
     driver: local
     driver_opts:
+      # 掛載類型；none 常搭配 bind，表示使用主機既有路徑
       type: none
+      # 掛載參數；bind 代表用 bind mount 方式掛載
       o: bind
+      # 主機端實際路徑（會被掛載到容器內 /app/logs）
       device: /path/to/logs
+
+  # 其他常見類型範例：NFS（跨主機共享）
+  nfs-data:
+    driver: local
+    driver_opts:
+      # 使用 NFS 網路檔案系統
+      type: nfs
+      # 掛載選項：指定 NFS 伺服器、版本與讀寫模式
+      o: addr=10.0.0.10,nfsvers=4,soft,rw
+      # NFS 匯出路徑（前面的 : 不可省略）
+      device: ":/exports/app-data"
+
+  # 其他常見類型範例：CIFS/SMB（Windows/NAS 共享）
+  cifs-data:
+    driver: local
+    driver_opts:
+      # 使用 CIFS（SMB）網路共享
+      type: cifs
+      # 掛載選項：帳號密碼與檔案權限（正式環境避免明文密碼）
+      o: username=${CIFS_USERNAME},password=${CIFS_PASSWORD},rw,uid=1000,gid=1000,file_mode=0644,dir_mode=0755
+      # 共享路徑（Windows/NAS）
+      device: "//192.168.1.20/shared"
+
+  # 其他常見類型範例：tmpfs（記憶體檔案系統）
+  tmpfs-cache:
+    driver: local
+    driver_opts:
+      # 使用 tmpfs，資料存放在 RAM
+      type: tmpfs
+      # tmpfs 常見 device 寫法
+      device: tmpfs
+      # 限制容量與權限；容器停止後資料會消失
+      o: size=256m,uid=1000,gid=1000,rw
 
   # 使用外部已存在的 Volume
   shared-data:
@@ -422,9 +459,17 @@ volumes:
 > - `pgdata: { driver: local }`
 >   - 建立一個由 Docker 管理的具名 Volume（名稱 `pgdata`）。
 >   - 對應前面的 `pgdata:/var/lib/postgresql/data`：容器內是 `/var/lib/postgresql/data`，主機端實際位置由 Docker 管理（通常在 `/var/lib/docker/volumes/...`）。
+>   - 補充：如果不寫 `driver`，預設也是 `local`，與明確寫出 `driver: local` 的效果相同。
 > - `api-logs` 搭配 `driver_opts`
 >   - `type: none` + `o: bind` + `device: /path/to/logs` 代表把主機目錄 `/path/to/logs` 綁定進來（本質接近 bind mount）。
 >   - 對應前面的 `api-logs:/app/logs`：容器寫入 `/app/logs`，主機會直接看到 `/path/to/logs` 的檔案。
+>   - `type` 還可依情境改成 `nfs`、`cifs`、`tmpfs`（需搭配對應的 `o` 參數與 `device` 格式）。
+>     - `nfs`：掛載遠端 NFS 共享資料夾，常用在多台主機共享同一份資料（例如多節點讀寫同一目錄）。
+>     - `cifs`：掛載 SMB/CIFS（常見於 Windows 檔案分享或 NAS），適合需要和 Windows 生態共享資料的情境。
+>     - `tmpfs`：把資料放在記憶體（RAM）中，I/O 快但不持久；容器停止或重啟後資料會消失，適合暫存/快取。
+>   - 上方也提供了 `nfs-data`、`cifs-data`、`tmpfs-cache` 三個可直接參考的 `driver_opts` 範例。
+>   - `o` 可放 mount options，例如 `ro`（唯讀）、`rw`（可寫）；若是 bind mount 也常見 `bind,ro`。
+>   - 實務上 `driver_opts` 參數會依主機 OS 與檔案系統不同而有差異，建議以目標環境先做驗證。
 > - `shared-data: { external: true }`
 >   - 表示這個 Volume 已在 Docker 外部先建立好，Compose 不會自動建立它。
 >   - 常用於多個 Compose 專案共用同一份資料，或避免 `down -v` 時被誤刪。

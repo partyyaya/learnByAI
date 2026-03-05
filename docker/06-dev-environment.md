@@ -110,10 +110,10 @@ services:
       - "9229:9229"     # Node.js debugger
     volumes:
       - ./src:/app/src   # Hot reload
-      - /app/node_modules
+      - /app/node_modules # 匿名 Volume，避免主機端 node_modules 覆蓋容器內相依套件
     environment:
-      NODE_ENV: development
-      DEBUG: "app:*"
+      NODE_ENV: development # 啟用開發模式（較完整錯誤資訊、方便除錯）
+      DEBUG: "app:*"        # 開啟 debug 日誌，顯示 app:* 命名空間訊息
 
   mongo:
     ports:
@@ -128,6 +128,18 @@ services:
     depends_on:
       - mongo
 ```
+
+> 這段設定的目的：
+>
+> - `./src:/app/src`：把主機原始碼掛進容器，修改程式後可即時由 `nodemon` 重新載入。
+> - `/app/node_modules`：用匿名 Volume 保留容器內安裝的套件，避免被主機目錄覆蓋（特別是跨 OS 時二進位套件不相容問題）。
+> - `NODE_ENV=development`：讓應用程式以開發模式啟動。
+> - `DEBUG=app:*`：開啟 debug 套件的命名空間日誌，方便追查請求流程與錯誤來源。
+>   - 直覺對照：
+>     - `DEBUG=app:*`：顯示所有 `app:` 開頭的除錯訊息（例如 `app:api`、`app:db`）。
+>     - `DEBUG=app:db`：只顯示 `app:db` 這個命名空間。
+>     - `DEBUG=*`：顯示所有命名空間（通常訊息量很大）。
+>   - 注意：這個變數主要對 `debug` 套件生效；若程式只用 `console.log`，不會被 `DEBUG` 篩選。
 
 ```bash
 # 啟動開發環境
