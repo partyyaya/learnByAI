@@ -12,6 +12,12 @@
 | 基於 IP（IP-based） | 根據不同 IP 位址區分 | 需要 SSL 且不支援 SNI 的舊環境 |
 | 基於 Port（Port-based） | 根據不同 port 區分 | 測試環境、內部服務 |
 
+> **備註：SSL 與 SNI 的差異**
+> - **SSL/TLS**：負責連線加密與憑證驗證，重點是「安全傳輸」。
+> - **SNI（Server Name Indication）**：TLS 握手時，客戶端先告訴伺服器要連哪個網域，重點是「同 IP 多網域辨識」。
+> - **差異重點**：SSL/TLS 解決「要不要加密」；SNI 解決「同一個 `IP:443` 要用哪張憑證/哪個站點」。
+> - 若客戶端不支援 SNI，通常同一個 `IP:443` 只能穩定服務一個 HTTPS 站台，因此舊環境常需用 IP-based（每站一個 IP）。
+
 ---
 
 ## 3.2 建立虛擬主機的標準流程
@@ -39,6 +45,12 @@ echo '<h1>Welcome to mysite.com</h1>' | sudo tee /var/www/mysite.com/html/index.
 echo '<h1>API Server - api.mysite.com</h1>' | sudo tee /var/www/api.mysite.com/html/index.html
 ```
 
+> **備註：這兩行指令在做什麼？**
+> - `echo '...'`：產生一段 HTML 文字（首頁內容）。
+> - `|`（pipe）：把 `echo` 的輸出傳給後面的 `tee`。
+> - `sudo tee /path/index.html`：用 root 權限把內容寫入檔案（通常網站目錄需要較高權限）。
+> - 為何不用 `>`：`sudo echo ... > 檔案` 常因重導向權限失敗；`tee` 可正確以 sudo 權限寫入。
+
 ### 步驟三：建立 Server Block 設定檔
 
 ```bash
@@ -49,6 +61,12 @@ sudo nano /etc/nginx/sites-available/mysite.com
 sudo nano /etc/nginx/conf.d/mysite.com.conf
 ```
 
+> **備註：這段指令在做什麼？**
+> - `sudo nano ...`：用 root 權限開啟編輯器，建立或編輯 Nginx 站台設定檔（Server Block）。
+> - `/etc/nginx/sites-available/`：Ubuntu/Debian 常見做法，先放設定檔，再用符號連結啟用到 `sites-enabled`。
+> - `/etc/nginx/conf.d/`：許多發行版（含 CentOS 常見配置）會直接載入此目錄下的 `*.conf` 檔案。
+> - 兩種方式擇一使用即可，依你系統的 Nginx 預設目錄結構決定。
+
 ### 步驟四：啟用站台
 
 ```bash
@@ -58,6 +76,13 @@ sudo ln -s /etc/nginx/sites-available/mysite.com /etc/nginx/sites-enabled/
 # 測試並重載
 sudo nginx -t && sudo nginx -s reload
 ```
+
+> **備註：`ln -s` 這行的具體意義**
+> - `ln -s A B`：在 `B` 建立一個「指向 `A` 的捷徑（符號連結）」。
+> - 這裡是把 `sites-available/mysite.com` 連到 `sites-enabled/`，等於「啟用這個站台設定」。
+> - 好處是不需複製檔案：只維護 `sites-available` 那一份，修改後立即反映到 `sites-enabled`。
+> - 若要停用站台，通常刪除 `sites-enabled` 裡的連結即可，不必刪原始設定檔。
+> - 停用範例：`sudo rm /etc/nginx/sites-enabled/mysite.com && sudo nginx -t && sudo nginx -s reload`
 
 ---
 

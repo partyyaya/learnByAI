@@ -171,4 +171,4 @@ git push origin v1.1.0
 
 ---
 
-> 恭喜完成 Electron 全課程！建議下一步把課程範例拆成 template repo，方便學員直接 fork 練習。
+> 下一章：[Steam 發行實戰（上傳、迭代、測試、排錯）](./11-steam-release-workflow.md)

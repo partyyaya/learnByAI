@@ -18,6 +18,7 @@
 | 08 | [08-packaging-distribution.md](./08-packaging-distribution.md) | 打包、安裝檔產生與跨平台發佈 |
 | 09 | [09-security-auto-update.md](./09-security-auto-update.md) | 安全最佳實踐與自動更新 |
 | 10 | [10-debugging-testing-cicd.md](./10-debugging-testing-cicd.md) | 除錯、測試與 CI/CD 發佈流程 |
+| 11 | [11-steam-release-workflow.md](./11-steam-release-workflow.md) | Steam 發行實戰（上傳、迭代、測試、排錯） |
 
 ---
 
@@ -26,7 +27,7 @@
 - **完整學習路線**：從 Hello World 到可上線的桌面產品
 - **實作導向**：每章都提供可直接執行的命令與程式碼
 - **安全優先**：預設導入 `contextIsolation`、IPC 白名單與內容安全策略
-- **部署落地**：包含 `electron-builder`、簽章、更新伺服器與 GitHub Actions
+- **部署落地**：包含 `electron-builder`、簽章、更新伺服器、GitHub Actions 與 SteamPipe
 
 ## 適合對象
 
@@ -49,6 +50,9 @@
 
 工程化篇（團隊協作）
   10 除錯、測試與 CI/CD
+
+發行篇（平台整合）
+  11 Steam 發行實戰（SteamPipe）
 ```
 
 ## 環境需求
