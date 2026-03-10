@@ -105,7 +105,9 @@ server {
     access_log /var/log/nginx/mysite.com.access.log;
     error_log /var/log/nginx/mysite.com.error.log;
 
+    # 預設處理網站根路徑與其子路徑的請求
     location / {
+        # 先找檔案($uri)，再找目錄($uri/)，都不存在就回 404
         try_files $uri $uri/ =404;
     }
 
@@ -122,6 +124,13 @@ server {
     }
 }
 ```
+
+> **備註：`error_page` 與 `internal` 的作用**
+> - `error_page 404 /404.html;`：當請求結果是 404 時，改由 `/404.html` 作為回應內容。
+> - `location = /404.html`：`=` 代表精準比對，只匹配這個路徑。
+> - `internal;`：該路徑僅能被 Nginx 內部轉向使用，外部使用者不能直接請求此 URL。
+> - `error_page 500 502 503 504 /50x.html;` 同理，會把常見伺服器錯誤導向 `/50x.html`。
+> - 實務上請在網站根目錄準備 `404.html` 與 `50x.html`，避免錯誤頁不存在造成二次錯誤。
 
 ```nginx
 # /etc/nginx/sites-available/api.mysite.com
@@ -158,16 +167,28 @@ server {
     server_name _;
 
     # 方法一：回傳 444（Nginx 特殊狀態碼，直接關閉連線）
+    # 適合拒絕未匹配流量，不提供任何頁面內容
     return 444;
 
-    # 方法二：重導向到主站
+    # 方法二：重導向到主站（保留原本路徑與查詢字串）
+    # 例如 /foo?a=1 -> https://mysite.com/foo?a=1
     # return 301 https://mysite.com$request_uri;
 
-    # 方法三：顯示維護頁面
+    # 方法三：顯示維護頁面（啟用時需關閉上方 return）
     # root /var/www/default;
     # index maintenance.html;
 }
 ```
+
+> **備註：方法一到三可以同時存在嗎？**
+> - 可以同時寫在設定檔中當「備用範例」，但實際生效時建議只啟用一種策略。
+> - `return` 會立即結束請求；若啟用 `return 444;` 或 `return 301 ...;`，後面的 `root`、`index` 不會被執行。
+> - 若你要用方法三（顯示維護頁），請把 `return` 相關行註解掉，並確認目錄裡有 `maintenance.html`。
+>
+> **備註：`$request_uri` 是什麼？**
+> - `$request_uri` 是客戶端「原始請求 URI」（路徑 + 查詢字串）。
+> - 例如請求 `/docs/page?id=10`，`$request_uri` 就是 `/docs/page?id=10`。
+> - 所以 `return 301 https://mysite.com$request_uri;` 會導到 `https://mysite.com/docs/page?id=10`。
 
 ---
 
@@ -189,9 +210,39 @@ server_name ~^(?<subdomain>.+)\.example\.com$;
 # 多個名稱
 server_name example.com www.example.com blog.example.com;
 
-# 匹配所有（通常用於 default_server）
+# 佔位名稱（常與 default_server 搭配，不是「匹配所有」關鍵字）
 server_name _;
 ```
+
+> **備註：`server_name _;` 代表什麼？**
+> - `_` 只是常見的佔位字串，用來表達「這不是要服務的正式網域」。
+> - 真正負責接住未匹配請求的是 `listen ... default_server;`，不是 `_` 本身。
+> - 也就是說：`server_name _;` 常和 default server 一起出現，但它不是萬用匹配語法。
+>
+> **範例：實際匹配流程**
+> ```nginx
+> server {
+>     listen 80;
+>     server_name mysite.com;
+>     # ... 主站設定
+> }
+>
+> server {
+>     listen 80;
+>     server_name api.mysite.com;
+>     # ... API 站設定
+> }
+>
+> server {
+>     listen 80 default_server;  # 成為此 port 的兜底 server
+>     server_name _;
+>     return 444;                # 接手後的處理策略：直接關閉連線
+> }
+> ```
+> - 請求 `Host: mysite.com` -> 命中第一個 block。
+> - 請求 `Host: api.mysite.com` -> 命中第二個 block。
+> - 請求 `Host: foo.com`（未定義）-> 前兩個都不匹配，落到第三個 `default_server`。
+> - 補充：落到 `default_server` 只代表「由它處理」，不代表固定回應內容；是否回 `444`、`301` 或頁面，取決於 block 內指令。
 
 ### 匹配優先順序
 
@@ -286,6 +337,67 @@ server {
     # ...
 }
 ```
+
+> **備註：這段在做什麼？**
+> - `snippets/*.conf` 是「可重用設定片段」，把共用規則抽出來，避免每個站台重複貼同樣內容。
+> - `include snippets/security-headers.conf;` 代表把該檔案內容直接插入目前 `server` 區塊。
+> - 好處是維護集中：要調整安全標頭，只改一個 snippet，所有引用它的站台一起生效。
+>
+> **常見 snippets 內容範例**
+> ```nginx
+> # /etc/nginx/snippets/security-headers.conf
+> add_header X-Frame-Options "SAMEORIGIN" always;
+> add_header X-Content-Type-Options "nosniff" always;
+> add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+> add_header Content-Security-Policy "default-src 'self';" always;
+> ```
+>
+> **`add_header` 各欄位與這段內容代表意思**
+> - 基本語法：`add_header <Header-Name> <Header-Value> [always];`
+> - `Header-Name`：HTTP 回應標頭名稱（例如 `X-Frame-Options`）。
+> - `Header-Value`：該標頭值（例如 `"SAMEORIGIN"`）。
+> - `always`：即使是 4xx/5xx 回應，也一併附帶這個 header。
+> - `X-Frame-Options "SAMEORIGIN"`：只允許同網域 iframe 載入，降低 clickjacking 風險。
+> - `X-Content-Type-Options "nosniff"`：禁止瀏覽器 MIME 猜測，避免把非腳本檔誤當腳本執行。
+> - `X-XSS-Protection "1; mode=block"`：舊版瀏覽器的 XSS 過濾機制（現代瀏覽器多已弱化/不使用）。
+> - `Referrer-Policy "strict-origin-when-cross-origin"`：同源保留完整 Referer，跨站只送來源網域，減少 URL/參數洩漏。
+>
+> ```nginx
+> # /etc/nginx/snippets/proxy-params.conf
+> proxy_set_header Host $host;
+> proxy_set_header X-Real-IP $remote_addr;
+> proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+> proxy_set_header X-Forwarded-Proto $scheme;
+> proxy_connect_timeout 5s;
+> proxy_read_timeout 60s;
+> ```
+>
+> **反向代理參數說明**
+> - `proxy_set_header Host $host`：將客戶端請求的原始域名傳給後端，讓後端知道使用者存取的是哪個網站。
+> - `proxy_set_header X-Real-IP $remote_addr`：將客戶端的真實 IP 傳給後端（否則後端只會看到 Nginx 的 IP）。
+> - `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`：記錄請求經過的所有代理 IP 鏈，用於追蹤原始來源（支援多層代理）。
+> - `proxy_set_header X-Forwarded-Proto $scheme`：告訴後端原始請求使用的是 `http` 還是 `https`，讓後端正確處理重導向和連結產生。
+> - `proxy_connect_timeout 5s`：Nginx 與後端建立連線的超時時間為 5 秒，超過則回傳 502。
+> - `proxy_read_timeout 60s`：等待後端回應的超時時間為 60 秒，適用於處理較久的 API 請求。
+>
+> ```nginx
+> # /etc/nginx/snippets/static-cache.conf
+> location ~* \.(css|js|png|jpg|jpeg|gif|svg|woff2?)$ {
+>     expires 7d;
+>     add_header Cache-Control "public, max-age=604800, immutable";
+>     access_log off;
+> }
+> ```
+>
+> **靜態資源快取設定說明**
+> - `expires 7d`：設定 `Expires` 標頭，告訴瀏覽器該資源 7 天內有效，不需要重新請求。
+> - `add_header Cache-Control "public, max-age=604800, immutable"`：
+>   - `public`：任何人（瀏覽器、CDN、Proxy）都可以快取。
+>   - `max-age=604800`：快取有效期 604800 秒（= 7 天，與 `expires 7d` 對應）。
+>   - `immutable`：告訴瀏覽器資源不會改變，即使按重新整理也不重新驗證。
+> - `access_log off`：關閉靜態資源的存取日誌，避免大量請求造成日誌膨脹與 I/O 負擔。
+> - `expires` 和 `Cache-Control max-age` 功能重疊，同時寫是為了相容性 — 現代瀏覽器優先看 `Cache-Control`，較舊的客戶端則看 `Expires`。
+
 
 ---
 
