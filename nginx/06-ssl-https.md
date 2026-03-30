@@ -16,6 +16,34 @@
 
 ### 安裝 Certbot
 
+> Certbot 是 Let's Encrypt 官方常用工具，用來「申請憑證 + 自動續約 +（可選）自動改寫 Nginx 設定」。
+
+#### Certbot 的好處
+
+- **免費且普及**：可快速取得受主流瀏覽器信任的 TLS 憑證。
+- **高度自動化**：可自動申請、安裝、續約，降低人工維運成本。
+- **整合 Nginx 容易**：`--nginx` 可直接協助設定 HTTPS 與重導向。
+- **適合多數網站**：個人站、部落格、公司官網、API 服務都常用。
+
+#### Certbot 的壞處 / 限制
+
+- **憑證有效期短**：Let's Encrypt 憑證通常 90 天，必須確保續約機制正常。
+- **有簽發頻率限制**：重複申請或測試過量會碰到 rate limit。
+- **需要可驗證網域**：常見驗證方式需公開 DNS 與可連線的 80/443 連接埠。
+- **自動改配置有風險**：複雜 Nginx 架構下，`--nginx` 可能不符合既有規範（可改用 `certonly`）。
+
+#### 什麼時候使用 Certbot？
+
+- **建議使用**：
+  - 你有公開網域，想快速啟用 HTTPS。
+  - 你希望憑證續約自動化，減少手動更新風險。
+  - 你使用 Nginx/Apache，且部署環境標準化。
+
+- **不一定適合**：
+  - 內網或離線環境（無法完成公開驗證）。
+  - 公司政策要求私有 CA、EV/OV 憑證或特定商業憑證流程。
+  - 你需要高度客製化簽發流程（可考慮 ACME client 進階方案）。
+
 ```bash
 # Ubuntu
 sudo apt install certbot python3-certbot-nginx -y
@@ -69,34 +97,34 @@ echo "0 2 * * * root certbot renew --quiet --post-hook 'systemctl reload nginx'"
 ### 基本 HTTPS 設定
 
 ```nginx
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name mysite.com www.mysite.com;
+server { # 定義一個 HTTPS 網站（server block）
+    listen 443 ssl http2; # 監聽 IPv4 的 443 連接埠，啟用 TLS 與 HTTP/2
+    listen [::]:443 ssl http2; # 監聽 IPv6 的 443 連接埠，啟用 TLS 與 HTTP/2
+    server_name mysite.com www.mysite.com; # 這個設定區塊要處理的網域名稱
 
     # SSL 憑證
-    ssl_certificate /etc/letsencrypt/live/mysite.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/mysite.com/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/mysite.com/fullchain.pem; # 伺服器憑證 + 中繼憑證鏈
+    ssl_certificate_key /etc/letsencrypt/live/mysite.com/privkey.pem; # 對應私鑰（需嚴格保護權限）
 
     # SSL 設定
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers on;
-    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384';
+    ssl_protocols TLSv1.2 TLSv1.3; # 只允許安全版本 TLS 1.2/1.3，停用舊版協定
+    ssl_prefer_server_ciphers on; # TLS 1.2 時優先使用伺服器指定的 cipher 順序
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384'; # 限定可接受的 TLS 1.2 加密套件
 
     # SSL 效能優化
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    ssl_session_tickets off;
+    ssl_session_cache shared:SSL:10m; # 啟用 TLS session 快取（多 worker 共用），減少重複握手成本
+    ssl_session_timeout 10m; # session 快取有效時間，超過需重新握手
+    ssl_session_tickets off; # 關閉 session tickets，避免金鑰輪替不當造成風險
 
     # OCSP Stapling
-    ssl_stapling on;
-    ssl_stapling_verify on;
-    ssl_trusted_certificate /etc/letsencrypt/live/mysite.com/chain.pem;
-    resolver 8.8.8.8 8.8.4.4 valid=300s;
-    resolver_timeout 5s;
+    ssl_stapling on; # 由伺服器主動附帶憑證狀態，降低客戶端查詢延遲
+    ssl_stapling_verify on; # 驗證 OCSP 回應有效性，避免使用不可信回應
+    ssl_trusted_certificate /etc/letsencrypt/live/mysite.com/chain.pem; # 驗證 OCSP 所需的受信任憑證鏈
+    resolver 8.8.8.8 8.8.4.4 valid=300s; # 指定 DNS 解析器供 stapling/名稱解析使用，快取 300 秒
+    resolver_timeout 5s; # DNS 查詢逾時時間，避免請求被長時間阻塞
 
-    root /var/www/mysite.com/html;
-    index index.html;
+    root /var/www/mysite.com/html; # 網站根目錄（靜態檔案預設讀取位置）
+    index index.html; # 預設首頁檔名（請求目錄時回傳）
 }
 
 # HTTP → HTTPS 重導向
