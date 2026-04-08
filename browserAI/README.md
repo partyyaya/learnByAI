@@ -23,6 +23,12 @@
 
 ---
 
+## 補充講義（Deep Dive）
+
+- 01A：[模型推論流程與記憶體/計算深度解析](./01a-inference-pipeline-memory-compute-deep-dive.md)
+
+---
+
 ## 學習路線建議
 
 ```text
