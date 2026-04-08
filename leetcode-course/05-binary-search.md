@@ -164,9 +164,9 @@ nums :  [1][2][4][4][4][7]
 
 然後再减一：
 
-\[
+```text
 rightBound = firstGreater(target) - 1
-\]
+```
 
 這種想法通常比硬寫「最後一個」更穩定。
 
@@ -298,9 +298,9 @@ false false false true true true
 
 對每一堆 `pile`，若速度是 `speed`，需要的時間是：
 
-\[
-\left\lceil \frac{pile}{speed} \right\rceil
-\]
+```text
+ceil(pile / speed)
+```
 
 全部加起來，若總時數 `<= h`，則這個速度可行。
 
@@ -337,8 +337,8 @@ function minEatingSpeed(piles: number[], h: number): number {
 
 #### 複雜度整理
 
-- **時間**：每次檢查 `canFinish` 要掃一次 `piles`，是 \(O(n)\)；二分次數約 \(O(\log M)\)，`M` 為最大堆大小，所以總計 **\(O(n \log M)\)**
-- **空間**：只用常數變數 → **\(O(1)\)**
+- **時間**：每次檢查 `canFinish` 要掃一次 `piles`，是 O(n)；二分次數約 O(log M)，`M` 為最大堆大小，所以總計 **O(n log M)**
+- **空間**：只用常數變數 → **O(1)**
 
 #### 常見錯誤
 
