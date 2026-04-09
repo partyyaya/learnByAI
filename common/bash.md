@@ -49,6 +49,287 @@ man ls
 - 相對路徑：`./logs/access.log`
 - 絕對路徑：`/var/log/nginx/access.log`
 
+### 2.4 `set -Eeuo pipefail`（腳本防呆常用）
+
+通常會放在 Bash 腳本開頭，用來讓腳本「更早失敗、避免靜默錯誤」。
+
+```bash
+set -Eeuo pipefail
+```
+
+各參數意思如下：
+
+- `-e`：只要有指令回傳非 0（失敗），腳本就立刻停止
+- `-E`：讓 `ERR` trap 可以在函式、子 shell 等情境繼續生效（常和 `trap ... ERR` 搭配）
+- `-u`：使用到「未定義變數」時直接報錯，不會默默當成空字串
+- `-o pipefail`：在 `cmd1 | cmd2` 這種管線裡，只要前面任一段失敗，整條管線就視為失敗
+
+這組設定能降低部署腳本「看起來成功、其實中間早就失敗」的風險。
+
+範例情境（部署 Nginx）：
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# 任一錯誤發生時，印出錯誤行號（-E 可讓這個 trap 在函式中也生效）
+trap 'echo "[ERROR] line $LINENO" >&2' ERR
+
+# 從部署檔讀取目標機房（例如 blue / green）
+TARGET="$(grep '^TARGET=' .deploy.env | cut -d= -f2)"
+CONF="/etc/nginx/conf.d/${TARGET}.conf"
+
+sudo cp "$CONF" /etc/nginx/conf.d/current.conf
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+這段腳本有三個常見風險，而 `set -Eeuo pipefail` 會幫你擋下來：
+
+- `.deploy.env` 沒有 `TARGET` 時，`grep` 會失敗；有 `pipefail` 才會讓整段管線判定失敗並停止
+- `TARGET` 沒被正確設定時，`-u` 會直接報錯，不會默默變空字串繼續執行
+- `nginx -t` 若檢查失敗，`-e` 會立刻中止，避免把錯誤設定 reload 上線
+
+### 2.5 `if` 條件判斷（腳本一定會用到）
+
+`if` 的判斷依據是「指令退出碼」：
+
+- `0` = 成功（條件成立）
+- 非 `0` = 失敗（條件不成立）
+
+基本語法：
+
+```bash
+if 條件; then
+  # 條件成立要做的事
+elif 另一個條件; then
+  # 第二種情況
+else
+  # 其他情況
+fi
+```
+
+範例情境：腳本啟動前先確認 `curl` 是否安裝
+
+```bash
+if ! command -v curl >/dev/null 2>&1; then
+  echo "curl 未安裝"
+  exit 1
+fi
+```
+
+拆解：
+
+- `command -v curl`
+  - `command` 是 shell 內建指令，用來查「這個命令會被怎麼解析」
+  - `-v` 會顯示命令位置（例如 `/usr/bin/curl`）或命令型別
+  - 找到 `curl` 時退出碼是 `0`；找不到時是非 `0`（常見 `1`）
+- `>/dev/null 2>&1`
+  - `1` 代表標準輸出（stdout），`2` 代表錯誤輸出（stderr）
+  - `>/dev/null` 等同 `1>/dev/null`：先把 stdout 丟到黑洞裝置
+  - `2>&1`：再把 stderr 指到「目前 stdout 的目的地」
+  - 因為 stdout 已經去 `/dev/null`，所以 stderr 也會一起被丟棄
+  - 這只是在隱藏輸出，不會改變成功/失敗（退出碼）
+- `!`
+  - 反轉條件判斷（反轉退出碼語意）
+  - 原本成功（`0`）會變成不成立；原本失敗（非 `0`）會變成成立
+  - 因此這個 `if` 是「只有在找不到 `curl` 時才進入 `then`」
+- `exit 1`
+  - `exit` 會立刻結束整個腳本，不再往下執行
+  - `1` 代表失敗狀態，CI/CD 或呼叫端 shell 可據此判斷此步驟失敗
+  - 目的：避免後續需要 `curl` 的步驟在缺少依賴時繼續誤跑
+
+### 2.6 變數、陣列（array）與迴圈（`for` / `while`）
+
+先記兩個基本規則：
+
+- Bash 變數賦值時，`=` 左右不能有空白
+- 取值時盡量加雙引號（`"$VAR"`），避免空白或萬用字元造成意外切詞
+
+變數常見寫法：
+
+```bash
+# 一般變數
+APP_ENV="production"
+PORT=8080
+
+# 取值
+echo "$APP_ENV"
+echo "$PORT"
+
+# 指令結果存進變數（command substitution）
+NOW="$(date '+%F %T')"
+echo "$NOW"
+
+# 預設值：APP_REGION 沒設定時，使用 ap-northeast-1
+REGION="${APP_REGION:-ap-northeast-1}"
+echo "$REGION"
+```
+
+陣列常見寫法：
+
+```bash
+# 定義陣列（元素間用空白分隔）
+SERVERS=("api-1" "api-2" "api backup")
+
+# 取單一元素（索引從 0 開始）
+echo "${SERVERS[0]}"
+
+# 取全部元素
+echo "${SERVERS[@]}"
+# 取元素數量
+echo "${#SERVERS[@]}"
+
+# 追加元素
+SERVERS+=("api-3")
+```
+
+`for` 迴圈常見寫法：
+
+```bash
+# 1) 直接跑固定清單
+for env in dev staging prod; do
+  echo "deploy to $env"
+done
+
+# 2) 走訪陣列（最常用）
+for server in "${SERVERS[@]}"; do
+  echo "check $server"
+done
+
+# 3) C 風格計數迴圈
+for ((i=1; i<=3; i++)); do
+  echo "retry $i"
+done
+```
+
+`while` 迴圈常見寫法：
+
+```bash
+# 1) 條件式 while
+i=1
+while (( i <= 3 )); do
+  echo "retry $i"
+  ((i++))
+done
+
+# 2) 逐行讀檔（處理設定檔/清單很常見）
+while IFS= read -r line; do
+  echo "line: $line"
+done < servers.txt
+```
+
+這段可以理解成：「把 `servers.txt` 一行一行讀出來，每行放進 `line` 變數，再執行一次迴圈內容」。
+
+逐行拆解：
+
+- `while IFS= read -r line; do`
+  - `read -r line`：從標準輸入讀一行到變數 `line`
+  - `read` 每成功讀到一行會回傳 `0`，讀到檔尾（EOF）回傳非 `0`，`while` 就會結束
+  - `IFS=`：把欄位分隔字元暫時設為空，避免行首/行尾空白被自動裁掉
+  - `-r`：不要把反斜線 `\` 當跳脫字元，路徑或字串比較不會被改意義
+- `echo "line: $line"`
+  - 這是每一輪要做的事；每讀到一行就印一次
+- `done < servers.txt`
+  - 把 `servers.txt` 導到整個 `while` 迴圈的標準輸入
+  - 等於在說：這個迴圈要讀的來源就是 `servers.txt`
+
+小範例：
+
+```text
+servers.txt 內容：
+api-1
+api-2
+api backup
+```
+
+會輸出：
+
+```text
+line: api-1
+line: api-2
+line: api backup
+```
+
+範例情境：一次檢查多個必要指令是否安裝
+
+```bash
+required_cmds=(curl jq docker)
+
+for cmd in "${required_cmds[@]}"; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "$cmd 未安裝"
+    exit 1
+  fi
+done
+
+echo "必要指令檢查完成"
+```
+
+這個寫法的重點是 `for + if ! command -v`：只要缺一個依賴就立刻停止，避免部署跑到一半才出錯。
+
+### 2.7 `read` 與 `readonly`（讀輸入 + 保護變數）
+
+`read` 用來從標準輸入讀資料到變數；`readonly` 用來把變數鎖定，避免後續被改掉。
+
+`read` 常見寫法：
+
+```bash
+# 讀一個值
+read -r name
+echo "hello, $name"
+
+# 讀取時直接顯示提示文字
+read -r -p "請輸入部署環境（dev/staging/prod）: " env
+
+# 不回顯輸入內容（常用於密碼）
+read -r -s -p "請輸入 DB 密碼: " db_password
+echo
+
+# 一次讀多個欄位（以空白切割）
+read -r user region
+echo "user=$user, region=$region"
+
+# 讀進陣列（以 IFS 分割，預設空白）
+read -r -a hosts
+echo "共有 ${#hosts[@]} 台主機"
+```
+
+`read` 參數重點：
+
+- `-r`：不要把反斜線 `\` 當跳脫字元（建議預設都加）
+- `-p`：顯示提示文字（prompt）
+- `-s`：靜默輸入（不顯示使用者輸入內容）
+- `-a`：讀到陣列（array）
+
+`readonly` 常見寫法：
+
+```bash
+# 鎖定一般變數
+readonly APP_NAME="deploy-tool"
+
+# 鎖定陣列
+readonly -a REQUIRED_CMDS=("curl" "jq" "docker")
+```
+
+一旦被 `readonly` 鎖定，後面若再重新賦值會報錯，這很適合放「常數」設定（例如腳本名稱、固定路徑、必要依賴清單）。
+
+範例情境：讀取使用者輸入 + 固定常數
+
+```bash
+readonly SCRIPT_NAME="nginx-deploy"
+readonly -a ALLOWED_ENVS=("dev" "staging" "prod")
+
+read -r -p "請輸入目標環境: " target_env
+
+if [[ -z "$target_env" ]]; then
+  echo "target_env 不可為空"
+  exit 1
+fi
+
+echo "[$SCRIPT_NAME] deploy to $target_env"
+```
+
 ---
 
 ## 3. 目錄與檔案操作
