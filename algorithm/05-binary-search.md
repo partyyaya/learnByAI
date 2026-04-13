@@ -254,7 +254,7 @@ ok : F  F  F  T  T  T  T
 
 ---
 
-## 課後練習：對應 LeetCode 題目
+## 課後練習：對應題目
 
 ### 題目：875. Koko Eating Bananas（愛吃香蕉的珂珂）
 
@@ -315,20 +315,22 @@ function minEatingSpeed(piles: number[], h: number): number {
     let hours = 0;
 
     for (const pile of piles) {
-      hours += Math.floor((pile + speed - 1) / speed);
+      // 不滿一小時的剩餘也要算 1 小時，所以用 ceil
+      hours += Math.ceil(pile / speed);
     }
 
     return hours <= h;
   };
 
   while (left < right) {
-    const mid = left + Math.floor((right - left) / 2);
+   // 等同於 (left+right)/2，該寫法可避免超過整數範圍
+   const mid = left + Math.floor((right - left) / 2);
 
-    if (canFinish(mid)) {
-      right = mid;
-    } else {
-      left = mid + 1;
-    }
+   if (canFinish(mid)) {
+     right = mid;
+   } else {
+     left = mid + 1;
+   }
   }
 
   return left;
@@ -349,8 +351,8 @@ function minEatingSpeed(piles: number[], h: number): number {
    最大速度設成 `max(piles)` 就夠了，因為再快也沒有必要。
 
 3. **天花板除法寫錯**  
-   整數版常寫成：
-   `Math.floor((pile + speed - 1) / speed)`
+   TypeScript 可直接寫：`Math.ceil(pile / speed)`  
+   （整數語言常見等價寫法是 `(pile + speed - 1) / speed` 的整數除法）
 
 ---
 

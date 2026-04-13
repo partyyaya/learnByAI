@@ -149,7 +149,7 @@ left : 0 -> 5 -> 2 -> 8   (這種就不是標準滑動視窗)
 
 ---
 
-## 課後練習：對應 LeetCode 題目
+## 課後練習：對應題目
 
 ### 題目：3. Longest Substring Without Repeating Characters（無重複字元的最長子字串）
 

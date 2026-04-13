@@ -312,7 +312,7 @@ prev1 = current
 
 ---
 
-## 課後練習：對應 LeetCode 題目
+## 課後練習：對應題目
 
 ### 題目：198. House Robber（打家劫舍）
 

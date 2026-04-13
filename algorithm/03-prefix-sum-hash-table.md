@@ -138,7 +138,7 @@ P[j] - k = 0
 
 ---
 
-## 課後練習：對應 LeetCode 題目
+## 課後練習：對應題目
 
 ### 題目：560. Subarray Sum Equals K（和為 K 的子陣列）
 
