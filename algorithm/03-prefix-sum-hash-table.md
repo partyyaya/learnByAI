@@ -203,6 +203,7 @@ function subarraySum(nums: number[], k: number): number {
 
   for (const x of nums) {
     prefix += x;
+    // 計算差值是否剛好為k
     ans += freq.get(prefix - k) ?? 0;
     freq.set(prefix, (freq.get(prefix) ?? 0) + 1);
   }
