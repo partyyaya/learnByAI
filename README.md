@@ -18,6 +18,7 @@
 | 演算法 | [algorithm/README.md](./algorithm/README.md) | LeetCode 高頻題型、複雜度思維、DP、圖論基礎 | 8 |
 | 通用基礎 | [common/README.md](./common/README.md) | HTTP/HTTPS、SSL 與跨技術共通知識 | 2 |
 | TypeScript | [typescript/README.md](./typescript/README.md) | 型別系統、泛型、進階型別、框架整合 | 12 |
+| 前端 gRPC | [grpc-frontend-course/README.md](./grpc-frontend-course/README.md) | gRPC-Web、Proto、前後端對接、Streaming 與上線實戰 | 8 |
 | Vue 3 源碼解析 | [vue-source/README.md](./vue-source/README.md) | Reactivity、Renderer、Compiler、調試工作流 | 10 |
 | Browser AI | [browserAI/README.md](./browserAI/README.md) | WebGPU、ONNX Runtime Web、Transformers.js、Browser LLM | 12 + 1 Deep Dive |
 | PWA | [pwa/README.md](./pwa/README.md) | Service Worker、快取策略、推播、部署維運 | 10 |
