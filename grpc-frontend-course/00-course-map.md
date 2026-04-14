@@ -54,6 +54,7 @@
 - Node.js 20+
 - pnpm 或 npm
 - Docker / Docker Compose
+- 課程內建 demo stack：`grpc-frontend-course/compose.yaml`
 - `buf`（lint、breaking check、codegen）
 - `protoc`（或只用 `buf generate`）
 - Postman / grpcurl / Bruno（任一 API 測試工具）

@@ -377,6 +377,12 @@ items.forEach(async (item) => {
 });
 ```
 
+備註（原因）：
+
+- `forEach` 的設計是同步迭代，只負責「把 callback 逐一呼叫出去」，不會收集或等待 callback 回傳的 Promise。
+- `await` 只會暫停「當前 async callback」，不會暫停外層函式；所以外層流程通常會先往下跑完。
+- 因為沒有把每次 `save(item)` 的 Promise 集中管理，錯誤也容易變成未預期的 unhandled rejection。
+
 改用 `for...of` 或 `Promise.all`：
 
 ```js

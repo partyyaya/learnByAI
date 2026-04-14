@@ -15,7 +15,7 @@
 
 ## 3. 本章學習方式（先核心，再選讀）
 
-### A. 必修核心（所有學員都要完成）
+### A. 必修核心
 
 - codegen 流程
 - transport 與 interceptor
@@ -31,7 +31,8 @@
 
 ### 4.1 為什麼需要 SDK 封裝層
 
-- 隔離 codegen 與業務程式碼。
+- 隔離 codegen 與業務程式碼。  
+  （`codegen` = code generation，指用 `proto` 自動產生前端可呼叫的 client 與型別檔，不是手寫）
 - 集中處理重試、錯誤碼映射、metadata 注入。
 - 未來切換傳輸層時，業務側改動最小。
 

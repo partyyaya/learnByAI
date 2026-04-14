@@ -40,6 +40,25 @@
 - HTTP 與 API 串接經驗
 - React 或 Vue 任一框架基礎
 
+## 快速啟動（課程 demo stack）
+
+課程已提供 `compose.yaml` 與示範服務：
+
+- gRPC server：`localhost:50051`
+- gRPC-Web proxy（Envoy）：`http://localhost:8080`
+- 前端示範開發伺服器：`http://localhost:5173`
+
+```bash
+cd grpc-frontend-course
+docker compose up -d --build
+```
+
+停止：
+
+```bash
+docker compose down
+```
+
 ## 課程產出
 
 完成本課程後，你會有：

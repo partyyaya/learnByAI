@@ -32,6 +32,12 @@ Browser App
 - 瀏覽器對底層 HTTP/2 控制有限，不易直接操作 gRPC wire format。
 - 因此前端常透過 gRPC-Web 或 Connect 協定由 Proxy 轉換。
 
+名詞補充：
+
+- **framing（分幀）**：HTTP/2 會把資料拆成多個 frame（如 `HEADERS`、`DATA`）在同一連線多路傳輸；gRPC 依賴這層機制來傳遞訊息。
+- **trailers（尾端標頭）**：在回應 body 結束後才送出的 metadata。gRPC 常把 `grpc-status`、`grpc-message` 放在 trailers 回傳。
+- **gRPC wire format（線上傳輸格式）**：gRPC 在網路上的實際編碼規則，通常是 HTTP/2 + Protobuf 長度前綴訊息（1 byte 壓縮旗標 + 4 bytes 長度 + message bytes）+ trailers。
+
 ### 3.3 Unary 與 Streaming
 
 - **Unary**：一次請求一次回應（前端最常見）。
@@ -70,10 +76,21 @@ Browser App
 
 ### Step 1：啟動後端與 Proxy
 
-- 使用課程提供的 compose（或團隊現有環境）啟動：
-  - gRPC server
-  - gRPC-Web proxy（例如 Envoy）
-  - 前端開發伺服器
+- 使用課程提供的 `compose.yaml` 一次啟動：
+  - gRPC server（`localhost:50051`）
+  - gRPC-Web proxy（Envoy，`http://localhost:8080`）
+  - 前端示範開發伺服器（`http://localhost:5173`）
+
+```bash
+cd grpc-frontend-course
+docker compose up -d --build
+```
+
+停止環境：
+
+```bash
+docker compose down
+```
 
 ### Step 2：建立前端 transport 與 client
 
