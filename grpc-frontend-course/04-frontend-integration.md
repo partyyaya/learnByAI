@@ -20,11 +20,18 @@
 推薦分層：
 
 ```text
-Page/View
-  -> useCase hook/service
-  -> grpc client wrapper
-  -> generated client
+Page/View                 # 負責畫面渲染與互動事件（點擊、輸入、導頁）
+  -> useCase hook/service # 負責頁面流程：組合資料、管理 loading/error、呼叫業務行為
+  -> grpc client wrapper  # 負責 SDK 封裝：統一參數/錯誤轉譯，隔離 UI 與底層 RPC 細節
+  -> generated client     # 由 proto 自動生成，負責實際送出 RPC 請求與接收回應
 ```
+
+各層用途速記：
+
+- `Page/View`：只關心 UI 呈現與使用者互動，不直接寫 RPC 細節。
+- `useCase hook/service`：承接頁面需求，協調資料請求流程與狀態。
+- `grpc client wrapper`：把「可直接呼叫的業務 API」整理好，避免頁面散落 try/catch 與錯誤處理。
+- `generated client`：機器生成的低層 client，跟 proto 契約對齊，通常不直接給頁面使用。
 
 這樣可以避免：
 

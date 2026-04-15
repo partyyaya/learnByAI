@@ -56,21 +56,44 @@ src/
 
 ## 5. 必修實作步驟（JavaScript）
 
+### 5.0 先理解：step 之間的關聯、用途、使用時機
+
+- **關聯流程**：`proto 契約` -> Step 1（定義生成規則）-> Step 2（產生 SDK）-> Step 3（集中共通傳輸邏輯）-> Step 4（封裝 service client）-> Step 5（RPC model 轉 UI model）。
+- **先後依賴**：Step 2 依賴 Step 1；Step 4 依賴 Step 2 與 Step 3；Step 5 依賴 Step 4 回傳的資料結構。
+
+**各 step 的用途與常見情境**
+
+- **Step 1 設定 `buf.gen.yaml`**：定義「要怎麼生成」。  
+  **何時用**：第一次導入 gRPC 前端、調整輸出目錄、切換/新增 codegen plugin。
+- **Step 2 執行 `buf generate`**：把 proto 契約轉成前端可用程式碼。  
+  **何時用**：proto 更新後（例如欄位新增、service 方法變更）、CI 驗證 codegen 是否一致。
+- **Step 3 建立共用 transport**：集中管理 base URL、auth header、interceptor。  
+  **何時用**：登入 token 注入規則改動、需要統一 timeout/retry/觀測邏輯。
+- **Step 4 封裝 service client**：提供 `createXxxClient`，避免頁面直接 import `gen/*`。  
+  **何時用**：新增一個 service（例如 `UserService`）、想隔離 codegen 變動對業務層影響。
+- **Step 5 建立 adapter**：把 RPC response 轉成 UI 需要的資料模型。  
+  **何時用**：UI 欄位命名/型別與後端不同、需要預設值與防呆轉換。
+
+**快速範例**
+
+- 後端把 `Todo` 新增 `priority` 欄位：先做 Step 2 重新生成，再在 Step 5 決定是否映射到 UI model。
+- 你要新增「我的任務」頁：重用 Step 3 的 transport，新增 Step 4 的 `createTodoClient` 呼叫，再用 Step 5 做畫面資料轉換。
+
 ### Step 1：設定 `buf.gen.yaml`
 
 ```yaml
-version: v2
-plugins:
-  - local: protoc-gen-es
-    out: src/grpc/gen
-  - local: protoc-gen-connect-es
-    out: src/grpc/gen
+version: v2 # 使用 Buf Generation v2 設定格式
+plugins: # 宣告要執行的 codegen 外掛清單
+  - local: protoc-gen-es # 產生 protobuf message/type 的 ES 程式碼
+    out: src/grpc/gen # 將產物輸出到前端專案的 gen 目錄
+  - local: protoc-gen-connect-es # 產生 Connect client 相關程式碼
+    out: src/grpc/gen # 與上方外掛共用同一個輸出目錄
 ```
 
 ### Step 2：生成前端程式碼
 
 ```bash
-buf generate
+buf generate # 依照 buf.gen.yaml 設定產生前端程式碼
 ```
 
 ### Step 3：建立共用 transport
