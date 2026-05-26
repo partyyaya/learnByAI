@@ -579,12 +579,484 @@ buildUserOverview("u-001")
 
 ---
 
-## 11 本章小結
+## 11 手寫 Promise 實作（簡化版 Promises/A+）
+
+### 目標
+
+- 親手做一個 `MyPromise`，理解 Promise 內部的狀態機與鏈式呼叫
+- 看清楚 `then` 為什麼一定要回傳「新的」Promise
+- 釐清 microtask（用 `queueMicrotask`）的時機
+
+### Step 1：狀態與 `resolve` / `reject`
+
+```js
+const PENDING = "pending";
+const FULFILLED = "fulfilled";
+const REJECTED = "rejected";
+
+class MyPromise {
+  constructor(executor) {
+    this.state = PENDING;
+    this.value = undefined;
+    this.reason = undefined;
+
+    // 等狀態確定後要執行的 callback queue
+    this.onFulfilledCallbacks = [];
+    this.onRejectedCallbacks = [];
+
+    const resolve = (value) => {
+      if (this.state !== PENDING) return; // 一旦確定就不再變
+      this.state = FULFILLED;
+      this.value = value;
+      this.onFulfilledCallbacks.forEach((cb) => cb(value));
+    };
+
+    const reject = (reason) => {
+      if (this.state !== PENDING) return;
+      this.state = REJECTED;
+      this.reason = reason;
+      this.onRejectedCallbacks.forEach((cb) => cb(reason));
+    };
+
+    try {
+      executor(resolve, reject);
+    } catch (err) {
+      reject(err);
+    }
+  }
+}
+```
+
+### Step 2：`then` 與鏈式串接
+
+重點：
+
+- `then` 要回傳「新的」`MyPromise`，下一個 `then` 才能拿到本次的結果
+- 用 `queueMicrotask` 把 callback 排入 microtask，符合規範（保證非同步執行）
+- 如果 callback 回傳的是另一個 Promise，要「攤平」它（resolve 它的結果）
+
+```js
+class MyPromise {
+  // ...省略 constructor
+
+  then(onFulfilled, onRejected) {
+    // 沒給 callback 就讓值/錯誤透傳
+    const handleFulfilled =
+      typeof onFulfilled === "function" ? onFulfilled : (v) => v;
+    const handleRejected =
+      typeof onRejected === "function"
+        ? onRejected
+        : (e) => {
+            throw e;
+          };
+
+    const nextPromise = new MyPromise((resolve, reject) => {
+      const runFulfilled = (value) => {
+        queueMicrotask(() => {
+          try {
+            const result = handleFulfilled(value);
+            resolvePromise(nextPromise, result, resolve, reject);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      };
+
+      const runRejected = (reason) => {
+        queueMicrotask(() => {
+          try {
+            const result = handleRejected(reason);
+            resolvePromise(nextPromise, result, resolve, reject);
+          } catch (err) {
+            reject(err);
+          }
+        });
+      };
+
+      if (this.state === FULFILLED) {
+        runFulfilled(this.value);
+      } else if (this.state === REJECTED) {
+        runRejected(this.reason);
+      } else {
+        // 還在 pending：先存起來，等狀態確定再執行
+        this.onFulfilledCallbacks.push(runFulfilled);
+        this.onRejectedCallbacks.push(runRejected);
+      }
+    });
+
+    return nextPromise;
+  }
+
+  catch(onRejected) {
+    return this.then(undefined, onRejected);
+  }
+
+  finally(onFinally) {
+    return this.then(
+      (value) => MyPromise.resolve(onFinally()).then(() => value),
+      (reason) =>
+        MyPromise.resolve(onFinally()).then(() => {
+          throw reason;
+        })
+    );
+  }
+}
+
+// 處理 then callback 的回傳值
+function resolvePromise(nextPromise, result, resolve, reject) {
+  if (nextPromise === result) {
+    // 避免自己 then 自己造成循環
+    return reject(new TypeError("Chaining cycle detected"));
+  }
+
+  if (result instanceof MyPromise) {
+    // 回傳的是 Promise：等它 settle
+    result.then(resolve, reject);
+    return;
+  }
+
+  // 一般值：直接 resolve
+  resolve(result);
+}
+```
+
+### Step 3：常用靜態方法
+
+```js
+MyPromise.resolve = function (value) {
+  if (value instanceof MyPromise) return value;
+  return new MyPromise((resolve) => resolve(value));
+};
+
+MyPromise.reject = function (reason) {
+  return new MyPromise((_, reject) => reject(reason));
+};
+
+MyPromise.all = function (promises) {
+  return new MyPromise((resolve, reject) => {
+    const results = new Array(promises.length);
+    let settledCount = 0;
+
+    if (promises.length === 0) return resolve(results);
+
+    promises.forEach((p, index) => {
+      MyPromise.resolve(p).then(
+        (value) => {
+          results[index] = value;
+          settledCount += 1;
+          if (settledCount === promises.length) resolve(results);
+        },
+        (err) => reject(err) // fail fast
+      );
+    });
+  });
+};
+
+MyPromise.race = function (promises) {
+  return new MyPromise((resolve, reject) => {
+    promises.forEach((p) => {
+      MyPromise.resolve(p).then(resolve, reject);
+    });
+  });
+};
+
+MyPromise.allSettled = function (promises) {
+  return new MyPromise((resolve) => {
+    const results = new Array(promises.length);
+    let settledCount = 0;
+
+    if (promises.length === 0) return resolve(results);
+
+    promises.forEach((p, index) => {
+      MyPromise.resolve(p).then(
+        (value) => {
+          results[index] = { status: "fulfilled", value };
+          settledCount += 1;
+          if (settledCount === promises.length) resolve(results);
+        },
+        (reason) => {
+          results[index] = { status: "rejected", reason };
+          settledCount += 1;
+          if (settledCount === promises.length) resolve(results);
+        }
+      );
+    });
+  });
+};
+```
+
+### Step 4：測試自己的 Promise
+
+```js
+new MyPromise((resolve) => {
+  setTimeout(() => resolve(1), 300);
+})
+  .then((v) => {
+    console.log("step1:", v); // 1
+    return v + 1;
+  })
+  .then((v) => {
+    console.log("step2:", v); // 2
+    return new MyPromise((resolve) => setTimeout(() => resolve(v * 10), 200));
+  })
+  .then((v) => {
+    console.log("step3:", v); // 20
+    throw new Error("boom");
+  })
+  .catch((err) => {
+    console.error("caught:", err.message); // caught: boom
+  })
+  .finally(() => {
+    console.log("done");
+  });
+```
+
+### 預期輸出
+
+```text
+step1: 1
+step2: 2
+step3: 20
+caught: boom
+done
+```
+
+### 重點觀念整理
+
+| 觀念 | 在實作中對應的地方 |
+|------|------------------|
+| 狀態不可變 | `if (this.state !== PENDING) return` |
+| `then` 回傳新 Promise | `const nextPromise = new MyPromise(...)` |
+| pending 時暫存 callback | `onFulfilledCallbacks` / `onRejectedCallbacks` |
+| 鏈式攤平 Promise | `resolvePromise` 內判斷是不是 MyPromise |
+| microtask 排程 | `queueMicrotask(...)` |
+| `catch` 是語法糖 | `then(undefined, onRejected)` |
+
+---
+
+## 12 手寫 async/await（用 Generator 模擬）
+
+`async/await` 在引擎內部，其實可以視為 **「Generator + 自動 runner」** 的組合：
+
+- `function*` 可以用 `yield` 暫停執行
+- 我們自己寫一個 runner，每次拿到 `yield` 出來的 Promise，等它 settle 後再 `next()` 回 generator
+
+這就是 Babel/TypeScript 早期把 `async/await` 編譯到 ES5 時做的事。
+
+### Step 1：認識 `function*` 與 `yield`
+
+#### 為什麼需要 Generator？
+
+一般函式只有「呼叫 → 執行到底 → 回傳一次」這種單向流程：
+
+```js
+function normal() {
+  console.log("A");
+  return 1;
+  console.log("B"); // 永遠不會執行
+}
+```
+
+而 **Generator function（生成器函式）** 不一樣：
+
+- 它可以在中途「**暫停**」，把目前的值丟給呼叫者
+- 之後可以從「暫停的那一行」繼續往下跑
+- 呼叫者甚至可以「**塞值回去**」當作上次暫停點的結果
+
+這個「可暫停、可恢復、可雙向溝通」的能力，就是用來模擬 `async/await` 的關鍵。
+
+#### `function*` 是什麼？
+
+在 `function` 後面加一個 `*` 就會宣告成 generator function：
+
+```js
+function* myGen() {
+  // 函式本體
+}
+```
+
+它跟一般函式最大的差異是：
+
+| 一般 `function` | Generator `function*` |
+|----------------|----------------------|
+| 呼叫就直接執行 | 呼叫**不會執行函式本體**，只回傳一個 iterator |
+| `return` 結束 | 透過 `yield` 多次「暫停並回傳」 |
+| 只能回傳一次 | 可以 yield 任意多次 |
+
+```js
+function* myGen() {
+  console.log("start"); // 你會發現呼叫 myGen() 不會印出這行
+  yield 1;
+}
+
+const it = myGen();   // 什麼都不印，只拿到 iterator
+it.next();            // 這時才會印 "start"，並回傳 { value: 1, done: false }
+```
+
+#### `yield` 是什麼？
+
+`yield` 是 generator 專屬的關鍵字，作用是：
+
+1. **把右邊的值丟出去**（成為 `it.next()` 回傳物件的 `value`）
+2. **把函式暫停在這一行**
+3. 下次 `it.next(x)` 被呼叫時，**`x` 會變成這個 `yield` 表達式的「結果」**，函式從這裡繼續往下跑
+
+可以把它想像成一個「**雙向的門**」：值可以往外送，也可以從外面塞回來。
+
+```js
+function* demo() {
+  const received = yield "hello"; // 先送出 "hello"，暫停；下次 next(x) 時 received = x
+  console.log("received:", received);
+}
+
+const it = demo();
+console.log(it.next());        // { value: "hello", done: false }
+console.log(it.next("world")); // 印出 "received: world"，回傳 { value: undefined, done: true }
+```
+
+#### Iterator 三個方法
+
+`function*` 回傳的 iterator 有三個常用方法：
+
+| 方法 | 行為 |
+|------|------|
+| `it.next(value)` | 從暫停點繼續執行，`value` 變成上次 `yield` 的結果 |
+| `it.throw(err)` | 在暫停點「拋出錯誤」，等同於在 `yield` 那行 `throw err`（可被 generator 內的 `try/catch` 接住） |
+| `it.return(value)` | 強制結束 generator，回傳 `{ value, done: true }` |
+
+`it.throw` 是 `async/await` 能用 `try/catch` 接住 `await` 錯誤的關鍵——稍後的 runner 會用它把 Promise 的 reject 注入回 generator 內部。
+
+#### 綜合範例
+
+```js
+function* gen() {
+  const a = yield 1;
+  const b = yield 2;
+  return a + b;
+}
+
+const it = gen();
+console.log(it.next());      // { value: 1, done: false }   ← 暫停在 yield 1
+console.log(it.next(10));    // a = 10，{ value: 2, done: false }   ← 暫停在 yield 2
+console.log(it.next(20));    // b = 20，{ value: 30, done: true }   ← return 30
+```
+
+關鍵口訣：**`it.next(x)` 傳進去的 `x`，會成為「上一個 `yield` 表達式的結果」。**
+
+> 有了這個機制，我們就能寫一個 runner：每次 generator `yield` 出 Promise 時，runner 等它 settle，再把結果用 `it.next(value)` 塞回去——這就完美對應 `await` 的行為。
+
+### Step 2：寫一個 `runAsync` runner
+
+```js
+function runAsync(generatorFn) {
+  return function (...args) {
+    const iterator = generatorFn.apply(this, args);
+
+    return new Promise((resolve, reject) => {
+      function step(method, payload) {
+        let result;
+        try {
+          result = iterator[method](payload); // next / throw
+        } catch (err) {
+          return reject(err); // generator 內部拋錯
+        }
+
+        const { value, done } = result;
+        if (done) return resolve(value); // generator return → async function 的回傳值
+
+        // 把 yield 出來的值統一包成 Promise
+        Promise.resolve(value).then(
+          (v) => step("next", v),     // 正常結果 → 餵回 generator
+          (e) => step("throw", e)     // 失敗 → 在 generator 內部 throw
+        );
+      }
+
+      step("next", undefined);
+    });
+  };
+}
+```
+
+### Step 3：對比原生 async / await
+
+```js
+function fakeApi(name, ms, shouldFail = false) {
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      if (shouldFail) reject(new Error(`${name} failed`));
+      else resolve(name);
+    }, ms);
+  });
+}
+
+// 原生寫法
+async function loadNative() {
+  const a = await fakeApi("A", 200);
+  const b = await fakeApi("B", 200);
+  return [a, b];
+}
+
+// 用 generator + runAsync 模擬
+const loadEmulated = runAsync(function* () {
+  const a = yield fakeApi("A", 200);
+  const b = yield fakeApi("B", 200);
+  return [a, b];
+});
+
+loadNative().then((r) => console.log("native:", r));
+loadEmulated().then((r) => console.log("emulated:", r));
+```
+
+### Step 4：錯誤處理也能對齊
+
+```js
+const loadWithError = runAsync(function* () {
+  try {
+    const a = yield fakeApi("A", 200);
+    const b = yield fakeApi("B", 200, true); // 這裡會失敗
+    return [a, b];
+  } catch (err) {
+    // 跟 async function 裡的 try/catch 行為一致
+    return `caught: ${err.message}`;
+  }
+});
+
+loadWithError().then(console.log);
+```
+
+### 預期輸出
+
+```text
+native: [ 'A', 'B' ]
+emulated: [ 'A', 'B' ]
+caught: B failed
+```
+
+### 對應關係速查
+
+| `async/await` 語法 | Generator 模擬 |
+|--------------------|---------------|
+| `async function f()` | `runAsync(function* () {...})` |
+| `await expr` | `yield expr` |
+| `return value` | `return value`（runner 用它 resolve） |
+| `throw err` 往外拋 | generator 內未捕捉的 throw → runner reject |
+| `try/catch await` | `try/catch yield`（靠 `iterator.throw`） |
+
+### 練習
+
+1. 在 `runAsync` 內加上 log，觀察「`yield` 出一個 Promise → 等它 settle → 再 `next()`」的順序  
+2. 改成支援「`yield` 一個陣列」時自動套用 `Promise.all`（像某些舊版 co/koa 框架那樣）  
+3. 把第 11 章的 `MyPromise` 接到 `runAsync` 裡，整套都是自己手寫的版本就完成了 
+
+---
+
+## 13 本章小結
 
 - Promise 是非同步流程的核心抽象，重點是狀態與鏈式組合。
 - `then` 不是「回呼結束」，而是「回傳新 Promise 供下游串接」。
 - `async/await` 讓程式更直覺，但底層仍是 Promise。
 - 效能關鍵常在「串行 vs 並行」選擇，而不是語法本身。
 - 真實專案最需要的是：**錯誤處理、超時控制、重試策略、可觀測性**。
+- 手寫一遍 `MyPromise` 與 `runAsync`，會讓你對狀態機、microtask、generator 三者的關係更扎實。
 
 ---
