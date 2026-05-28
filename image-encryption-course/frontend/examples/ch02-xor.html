@@ -1,0 +1,83 @@
+<!-- 對應章節：Chapter 02 - XOR 全檔加密 -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Ch02 · XOR 全檔加密 Demo</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 1em auto; padding: 0 1em; }
+    img { max-width: 100%; border: 1px solid #ccc; margin: .5em 0; display: block; }
+    section { margin-bottom: 2em; }
+    .stat { font-family: monospace; font-size: 0.9em; color: #666; }
+  </style>
+</head>
+<body>
+  <h1>Ch02 · XOR 全檔加密 Demo</h1>
+  <p>上傳一張圖 → 後端用 32-byte XOR key 加密存檔 → 前端取回密文與 key，純 JS 解密還原。</p>
+
+  <section>
+    <h2>1. 上傳</h2>
+    <input type="file" id="upload" accept="image/*">
+    <div id="uploadResult" class="stat"></div>
+  </section>
+
+  <section>
+    <h2>2. 瀏覽器直接載入密文（破圖）</h2>
+    <img id="rawImg" alt="raw" />
+  </section>
+
+  <section>
+    <h2>3. 純 JS XOR 解密後</h2>
+    <img id="decImg" alt="dec" />
+    <div id="benchResult" class="stat"></div>
+  </section>
+
+  <script>
+    document.getElementById('upload').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const fd = new FormData();
+      fd.append('image', file);
+      const { id } = await fetch('/api/upload', { method: 'POST', body: fd })
+        .then((r) => r.json());
+
+      uploadResult.textContent = `已上傳，id=${id}`;
+      rawImg.src = `/api/image/${id}.enc`;
+
+      const [meta, encBuf] = await Promise.all([
+        fetch(`/api/image/${id}/key`).then((r) => r.json()),
+        fetch(`/api/image/${id}.enc`).then((r) => r.arrayBuffer()),
+      ]);
+
+      const key = hexToBytes(meta.keyHex);
+      const enc = new Uint8Array(encBuf);
+
+      const t0 = performance.now();
+      const dec = xorBytes(enc, key);
+      const t1 = performance.now();
+
+      benchResult.textContent =
+        `${(enc.length / 1024 / 1024).toFixed(2)} MB 解密耗時 ${(t1 - t0).toFixed(1)} ms`;
+
+      const blob = new Blob([dec], { type: meta.mime });
+      const url = URL.createObjectURL(blob);
+      decImg.src = url;
+      decImg.onload = () => URL.revokeObjectURL(url);
+    });
+
+    function hexToBytes(hex) {
+      const out = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+      return out;
+    }
+
+    function xorBytes(buf, key) {
+      const out = new Uint8Array(buf.length);
+      const kl = key.length;
+      for (let i = 0; i < buf.length; i++) out[i] = buf[i] ^ key[i % kl];
+      return out;
+    }
+  </script>
+</body>
+</html>

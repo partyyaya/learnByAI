@@ -4,6 +4,16 @@
 > **預計時數**：120 分鐘
 > **先備知識**：[[01-image-format-and-magic-number]]、Express 基礎
 
+> **本章對應專案**
+>
+> | 檔案 | 用途 |
+> |------|------|
+> | [`backend/lib/xor.js`](./backend/lib/xor.js) | XOR 工具函式 |
+> | [`backend/examples/ch02-xor-server.js`](./backend/examples/ch02-xor-server.js) | 本章 demo server |
+> | [`frontend/examples/ch02-xor.html`](./frontend/examples/ch02-xor.html) | 前端上傳 + 解密頁 |
+>
+> 啟動：`cd backend && npm install && npm run ch02`，打開 `http://localhost:3000/examples/ch02-xor.html`。
+
 ---
 
 ## 1 為什麼從 XOR 開始？
@@ -65,27 +75,26 @@ plaintext = encrypted ^ k    // 同一個 k 還原
 2. 提供加密後的 `.enc` 檔下載
 3. 驗證 token 後返回 key
 
-### 4.1 專案結構
+### 4.1 專案結構（已在 [`backend/`](./backend/) 建好）
 
 ```text
-image-enc-server/
+backend/
 ├── package.json
-├── server.js
 ├── lib/
-│   └── xor.js
-├── images/        ← 原圖
-└── encrypted/     ← 加密後檔案
+│   └── xor.js                       ← 加密工具
+├── examples/
+│   └── ch02-xor-server.js           ← 本章 server（npm run ch02 跑這個）
+└── data/encrypted/ch02/             ← 啟動後自動建立
 ```
 
 ### 4.2 安裝
 
 ```bash
-mkdir image-enc-server && cd image-enc-server
-npm init -y
-npm install express multer cors uuid
+cd backend
+npm install
 ```
 
-### 4.3 `lib/xor.js`
+### 4.3 `backend/lib/xor.js`
 
 ```js
 // lib/xor.js
@@ -120,7 +129,10 @@ function randomKey(byteLen = 32) {
 module.exports = { xorBuffer, randomKey };
 ```
 
-### 4.4 `server.js`
+### 4.4 `backend/examples/ch02-xor-server.js`
+
+下面是教材精簡版，**完整可跑版本以及檔案註解請看實際檔案** [`backend/examples/ch02-xor-server.js`](./backend/examples/ch02-xor-server.js)。差異是專案版把 meta 存在 `data/encrypted/ch02/_meta.json` 隔離不同章節資料。
+
 
 ```js
 // server.js
@@ -208,11 +220,11 @@ app.listen(3000, () => console.log('http://localhost:3000'));
 ### 4.5 測試後端
 
 ```bash
-# 啟動
-node server.js
+# 啟動（從 backend/ 目錄）
+npm run ch02
 
 # 上傳
-curl -F "image=@sample.jpg" http://localhost:3000/api/upload
+curl -F "image=@sample/sample.jpg" http://localhost:3000/api/upload
 # → { "id": "xxx-xxx-xxx", "size": 234567 }
 
 # 直接拉加密檔（會是壞圖）
@@ -228,7 +240,10 @@ curl -H "Authorization: Bearer dummy-token" \
 
 ## 5 前端：純 HTML + 原生 JS
 
-### 5.1 `public/index.html`
+對應檔案：[`frontend/examples/ch02-xor.html`](./frontend/examples/ch02-xor.html)。
+**前端不需要另外起伺服器**——後端的 `express.static` 已經把 `frontend/` 整個 serve 出去。直接打開 `http://localhost:3000/examples/ch02-xor.html`。
+
+### 5.1 `frontend/examples/ch02-xor.html`
 
 ```html
 <!DOCTYPE html>
@@ -268,10 +283,12 @@ curl -H "Authorization: Bearer dummy-token" \
 </html>
 ```
 
-### 5.2 `public/decrypt.js`
+### 5.2 解密邏輯（在 HTML 內 `<script>` 區塊）
+
+專案版本把 JS 寫進 HTML 同檔，方便 `file://` 也能開。教學版抽出來看更清楚：
 
 ```js
-// public/decrypt.js
+// 等同於 ch02-xor.html 的 <script> 區塊
 'use strict';
 
 const TOKEN = 'dummy-token';  // 真實系統由登入流程取得
@@ -328,7 +345,7 @@ function xorBytes(buf, key) {
 }
 ```
 
-打開 `http://localhost:3000`，丟一張圖：
+打開 `http://localhost:3000/examples/ch02-xor.html`，丟一張圖：
 - 「直接顯示密文」會破圖
 - 「解密後顯示」會看到原圖
 

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Image Encryption Course · 入口</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 2em auto; padding: 0 1em; color: #222; }
+    h1 { font-size: 1.6em; }
+    h2 { font-size: 1.2em; border-bottom: 1px solid #ddd; padding-bottom: 4px; margin-top: 2em; }
+    a { color: #0a6cf5; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    ul { line-height: 1.9; }
+    .note { background: #fffbe6; border-left: 4px solid #facc15; padding: 8px 12px; margin: 1em 0; }
+    code { background: #f3f3f3; padding: 1px 5px; border-radius: 3px; font-size: 0.92em; }
+  </style>
+</head>
+<body>
+  <h1>Image Encryption Course</h1>
+  <p>前端入口頁。每個 demo 對應到一個章節，啟動相對應的後端腳本後再進入。</p>
+
+  <h2>各章節 Demo</h2>
+  <ul>
+    <li>
+      Chapter 02 · XOR 全檔加密 —
+      <a href="/examples/ch02-xor.html">examples/ch02-xor.html</a>
+      <br><small>後端：<code>npm run ch02</code></small>
+    </li>
+    <li>
+      Chapter 03 · 只加密檔頭（AES-CTR） —
+      <a href="/examples/ch03-header.html">examples/ch03-header.html</a>
+      <br><small>後端：<code>npm run ch03</code></small>
+    </li>
+    <li>
+      Chapter 04 · AES-GCM + 簽名 URL —
+      <a href="/examples/ch04-aes.html">examples/ch04-aes.html</a>
+      <br><small>後端：<code>npm run ch04</code></small>
+    </li>
+    <li>
+      Chapter 05 · Rust + wasm-pack Hello —
+      <a href="/examples/ch05-hello-wasm.html">examples/ch05-hello-wasm.html</a>
+      <br><small>先在 <code>frontend/wasm-crypto/</code> 跑 <code>wasm-pack build --target web --release --out-dir ../pkg</code></small>
+    </li>
+    <li>
+      Chapter 06 · WASM AES-CTR 解密 —
+      <a href="/examples/ch06-wasm-decrypt.html">examples/ch06-wasm-decrypt.html</a>
+      <br><small>後端：<code>npm run ch03</code>（共用相同 API）</small>
+    </li>
+  </ul>
+
+  <h2>Chapter 08 · 畢業專題 Capstone</h2>
+  <ul>
+    <li><a href="/login.html">login.html</a> — 註冊 / 登入</li>
+    <li><a href="/gallery.html">gallery.html</a> — 圖庫主頁</li>
+  </ul>
+  <div class="note">
+    請用 <code>npm run start</code> 啟動 capstone 版伺服器，並先建好 WASM（見上方 Ch05 / Ch06）。
+  </div>
+</body>
+</html>

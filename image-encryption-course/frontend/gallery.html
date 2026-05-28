@@ -1,0 +1,81 @@
+<!-- 對應章節：Chapter 08 - 畢業專題圖庫主頁 -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Image Vault</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 960px; margin: 1em auto; padding: 0 1em; }
+    header { display: flex; justify-content: space-between; align-items: center; }
+    .upload { background: #f5f5f7; padding: 1em; border-radius: 8px; margin: 1em 0; }
+    .upload > * { margin-right: .5em; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1em; }
+    .card { background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; overflow: hidden; }
+    .card-meta { font-size: 0.85em; color: #666; padding: .5em .75em; border-top: 1px solid #f0f0f0; }
+    .vis { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 0.78em; }
+    .vis-public { background: #e0f5e9; color: #0a803a; }
+    .vis-friends { background: #fff5d9; color: #8a6500; }
+    .vis-private { background: #fde2e2; color: #a02020; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Image Vault</h1>
+    <button id="logout">登出</button>
+  </header>
+
+  <div class="upload">
+    <input type="file" id="file" accept="image/*">
+    <select id="vis">
+      <option value="private">private</option>
+      <option value="friends">friends</option>
+      <option value="public">public</option>
+    </select>
+    <button id="up">上傳</button>
+  </div>
+
+  <div id="grid" class="grid"></div>
+
+  <script type="module" src="./secure-image.js"></script>
+  <script>
+    const jwt = localStorage.getItem('jwt');
+    if (!jwt) location.href = '/login.html';
+
+    logout.onclick = () => { localStorage.clear(); location.href = '/login.html'; };
+
+    up.onclick = async () => {
+      const f = file.files[0]; if (!f) return;
+      const fd = new FormData();
+      fd.append('image', f);
+      fd.append('visibility', vis.value);
+      const r = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${jwt}` },
+        body: fd,
+      });
+      if (r.ok) { file.value = ''; loadList(); }
+      else alert((await r.json()).error || 'upload failed');
+    };
+
+    async function loadList() {
+      const list = await fetch('/api/images', {
+        headers: { Authorization: `Bearer ${jwt}` },
+      }).then(r => r.json());
+      grid.innerHTML = '';
+      for (const img of list) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.innerHTML = `
+          <secure-image image-id="${img.id}"></secure-image>
+          <div class="card-meta">
+            <span class="vis vis-${img.visibility}">${img.visibility}</span>
+            ${new Date(img.createdAt).toLocaleString()}
+          </div>
+        `;
+        grid.appendChild(card);
+      }
+    }
+    loadList();
+  </script>
+</body>
+</html>

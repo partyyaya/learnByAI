@@ -5,6 +5,22 @@
 > **先備知識**：[[00-course-map-and-threat-model]]、瀏覽器 ES Module 概念
 > **不需要**：你不用會 Rust，本章從零教你看得懂範例就好
 
+> **本章對應專案**
+>
+> | 檔案 | 用途 |
+> |------|------|
+> | [`frontend/wasm-crypto/Cargo.toml`](./frontend/wasm-crypto/Cargo.toml) | Rust 套件設定 |
+> | [`frontend/wasm-crypto/src/lib.rs`](./frontend/wasm-crypto/src/lib.rs) | 所有匯出函式（含 `add`、`greet`、`xor_inplace`） |
+> | [`frontend/pkg/`](./frontend/pkg/) | wasm-pack 編譯產物（build 後出現） |
+> | [`frontend/examples/ch05-hello-wasm.html`](./frontend/examples/ch05-hello-wasm.html) | 跑 `add` 與 `xor_inplace` 的頁面 |
+>
+> 編譯：
+> ```bash
+> cd frontend/wasm-crypto
+> wasm-pack build --target web --release --out-dir ../pkg
+> ```
+> 然後啟動任意一個後端（例如 `npm run ch02`），開 `http://localhost:3000/examples/ch05-hello-wasm.html`。
+
 ---
 
 ## 1 為什麼選 Rust 來寫 WASM？
@@ -97,6 +113,8 @@ Cargo.toml  src/lib.rs
 
 工具鏈就緒。
 
+> 本章後面的範例以「自己建一個 hello-wasm」展示流程。**如果你不想自建**，可以直接用專案內的 [`frontend/wasm-crypto/`](./frontend/wasm-crypto/)，它已經把 `add` / `greet` / `xor_inplace` 都寫好。跳到 4.3 編譯即可。
+
 ---
 
 ## 4 第一個 WASM：把兩個數字相加
@@ -142,8 +160,17 @@ pub fn greet(name: &str) -> String {
 
 ### 4.3 編譯
 
+自建 hello-wasm 專案：
+
 ```bash
 wasm-pack build --target web --release
+```
+
+或者用本課程專案：
+
+```bash
+cd frontend/wasm-crypto
+wasm-pack build --target web --release --out-dir ../pkg
 ```
 
 成功後會生成 `pkg/` 資料夾：
@@ -348,6 +375,8 @@ wasm-pack build --target web --release
 
 ### 9.3 跑一張圖
 
+完整可跑頁面已在 [`frontend/examples/ch05-hello-wasm.html`](./frontend/examples/ch05-hello-wasm.html)：
+
 ```html
 <!DOCTYPE html>
 <body>
@@ -355,7 +384,7 @@ wasm-pack build --target web --release
 <img id="show" />
 
 <script type="module">
-import init, { xor_inplace } from './pkg/hello_wasm.js';
+import init, { xor_inplace } from '/pkg/img_crypto.js';
 await init();
 
 const KEY = new Uint8Array([0x5A, 0x11, 0xAB, 0xCD]);

@@ -1,0 +1,104 @@
+<!-- 對應章節：Chapter 06 - 用 WASM 做 AES-CTR 檔頭解密 -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Ch06 · WASM AES-CTR 解密</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 1em auto; padding: 0 1em; }
+    section { margin-bottom: 2em; }
+    img { max-width: 100%; border: 1px solid #ccc; display: block; margin-top: .5em; }
+    .stat { font-family: monospace; font-size: 0.9em; color: #555; background: #f5f5f7; padding: 8px; border-radius: 4px; }
+    table { border-collapse: collapse; }
+    td, th { border: 1px solid #ddd; padding: 4px 10px; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>Ch06 · WASM AES-CTR 檔頭解密</h1>
+  <p>後端共用 Chapter 03 的 API（請跑 <code>npm run ch03</code>）。前端改用 WASM 而非 WebCrypto 解密。</p>
+
+  <section>
+    <h2>1. 上傳</h2>
+    <input type="file" id="upload" accept="image/*">
+    <div id="uploadResult" class="stat"></div>
+  </section>
+
+  <section>
+    <h2>2. 解密效能對比</h2>
+    <table id="benchTable">
+      <tr><th>方案</th><th>耗時</th></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>3. 解密結果</h2>
+    <img id="decImg" alt="dec">
+  </section>
+
+  <script type="module">
+    import init, { aes_ctr_decrypt_header } from '/pkg/img_crypto.js';
+    await init();
+
+    document.getElementById('upload').onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const fd = new FormData();
+      fd.append('image', file);
+      const { id } = await fetch('/api/upload', { method: 'POST', body: fd })
+        .then((r) => r.json());
+      uploadResult.textContent = `已上傳，id=${id}`;
+
+      const [meta, encBuf] = await Promise.all([
+        fetch(`/api/image/${id}/key`).then((r) => r.json()),
+        fetch(`/api/image/${id}.enc`).then((r) => r.arrayBuffer()),
+      ]);
+
+      const wasmBuf = new Uint8Array(encBuf.slice(0));
+      const webBuf  = new Uint8Array(encBuf.slice(0));
+
+      // WASM
+      let t0 = performance.now();
+      aes_ctr_decrypt_header(
+        wasmBuf,
+        hexToBytes(meta.keyHex),
+        hexToBytes(meta.ivHex),
+        meta.headerLen,
+      );
+      const wasmMs = performance.now() - t0;
+
+      // WebCrypto
+      const key = await crypto.subtle.importKey(
+        'raw', hexToBytes(meta.keyHex),
+        { name: 'AES-CTR', length: 256 }, false, ['decrypt']
+      );
+      t0 = performance.now();
+      const headerPlain = new Uint8Array(await crypto.subtle.decrypt(
+        { name: 'AES-CTR', counter: hexToBytes(meta.ivHex), length: 64 },
+        key,
+        webBuf.subarray(0, meta.headerLen),
+      ));
+      webBuf.set(headerPlain, 0);
+      const webMs = performance.now() - t0;
+
+      const t = document.getElementById('benchTable');
+      t.innerHTML = `
+        <tr><th>方案</th><th>耗時</th></tr>
+        <tr><td>WASM (AES-CTR)</td><td>${wasmMs.toFixed(3)} ms</td></tr>
+        <tr><td>WebCrypto (AES-CTR)</td><td>${webMs.toFixed(3)} ms</td></tr>
+      `;
+
+      const blob = new Blob([wasmBuf], { type: meta.mime });
+      const url = URL.createObjectURL(blob);
+      decImg.src = url;
+      decImg.onload = () => URL.revokeObjectURL(url);
+    };
+
+    function hexToBytes(hex) {
+      const out = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+      return out;
+    }
+  </script>
+</body>
+</html>

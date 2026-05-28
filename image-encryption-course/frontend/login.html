@@ -1,0 +1,47 @@
+<!-- 對應章節：Chapter 08 - 畢業專題登入頁 -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Image Vault · 登入</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 360px; margin: 4em auto; padding: 0 1em; }
+    h1 { margin-bottom: .5em; }
+    input { display: block; width: 100%; padding: .6em; margin: .5em 0; box-sizing: border-box; }
+    button { padding: .55em 1em; margin-right: .5em; cursor: pointer; }
+    #msg { color: #c00; margin-top: 1em; min-height: 1em; }
+  </style>
+</head>
+<body>
+  <h1>Image Vault</h1>
+  <p>輸入帳號密碼，登入或註冊。</p>
+  <input id="u" placeholder="username" autocomplete="username">
+  <input id="p" type="password" placeholder="password" autocomplete="current-password">
+  <button id="login">登入</button>
+  <button id="reg">註冊</button>
+  <p id="msg"></p>
+
+  <script>
+    async function call(path) {
+      const r = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: u.value, password: p.value }),
+      });
+      return r.json();
+    }
+    login.onclick = async () => {
+      const { token, error } = await call('/api/login');
+      if (error) return msg.textContent = error;
+      localStorage.setItem('jwt', token);
+      location.href = '/gallery.html';
+    };
+    reg.onclick = async () => {
+      const { token, error } = await call('/api/register');
+      if (error) return msg.textContent = error;
+      localStorage.setItem('jwt', token);
+      location.href = '/gallery.html';
+    };
+  </script>
+</body>
+</html>

@@ -4,6 +4,34 @@
 > **預計時數**：240 分鐘（含實作）
 > **先備知識**：學完 [[00-course-map-and-threat-model]] 到 [[07-canvas-rendering-and-hardening]] 的全部章節
 
+> **本章對應專案**：本章就是整個 `image-encryption-course/` 課程目錄本身。所有檔案都已建好，本章帶你**讀懂並跑起來**，最後給你延伸方向。
+>
+> | 路徑 | 角色 |
+> |------|------|
+> | [`backend/`](./backend/) | Express + SQLite 整合伺服器 |
+> | [`backend/server.js`](./backend/server.js) | capstone 主伺服器 |
+> | [`backend/db.js`](./backend/db.js) | SQLite schema |
+> | [`backend/lib/`](./backend/lib/) | `crypto-util.js`、`auth.js`、`aes-gcm.js`、`xor.js` |
+> | [`frontend/`](./frontend/) | 純 HTML + ES Module 前端 |
+> | [`frontend/login.html`](./frontend/login.html) / [`gallery.html`](./frontend/gallery.html) | 登入頁 / 圖庫頁 |
+> | [`frontend/secure-image.js`](./frontend/secure-image.js) | `<secure-image>` Web Component |
+> | [`frontend/wasm-crypto/`](./frontend/wasm-crypto/) | Rust + wasm-pack 來源 |
+>
+> 啟動：
+> ```bash
+> # 1) WASM
+> cd frontend/wasm-crypto
+> wasm-pack build --target web --release --out-dir ../pkg
+>
+> # 2) Backend
+> cd ../../backend
+> npm install
+> MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+> JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+>   npm run start
+> ```
+> 打開 `http://localhost:3000/login.html` 開始用。
+
 ---
 
 ## 1 專題目標
@@ -64,56 +92,73 @@
 
 ## 3 專案結構
 
+對應到本課程目錄的實際結構：
+
 ```text
-image-vault/
-├── server/
+image-encryption-course/
+├── backend/
 │   ├── package.json
-│   ├── server.js
-│   ├── db.js
+│   ├── server.js              ← capstone 整合伺服器
+│   ├── db.js                  ← SQLite schema
 │   ├── lib/
-│   │   ├── aes.js
-│   │   ├── auth.js
-│   │   └── crypto-util.js
-│   └── data/
+│   │   ├── auth.js            ← scrypt + JWT
+│   │   ├── crypto-util.js     ← AES-CTR header + key wrap + HMAC
+│   │   ├── aes-gcm.js         ← 全檔 AES-GCM
+│   │   └── xor.js             ← Ch02 XOR
+│   ├── examples/              ← Ch02/03/04 單章 demo server
+│   └── data/                  ← 啟動後自動建立
 │       ├── meta.db
 │       └── encrypted/
-├── wasm-crypto/             ← Rust 專案
-│   ├── Cargo.toml
-│   ├── src/lib.rs
-│   └── pkg/                  ← wasm-pack build 產物
-└── client/
-    ├── index.html
-    ├── login.html
-    ├── gallery.html
-    ├── secure-image.js
-    └── pkg/                  ← 同 wasm-crypto/pkg 的 symlink
+│
+├── frontend/
+│   ├── index.html             ← 入口頁
+│   ├── login.html             ← 登入 / 註冊
+│   ├── gallery.html           ← 圖庫主頁
+│   ├── secure-image.js        ← Web Component
+│   ├── examples/              ← Ch02–06 章節 demo 頁
+│   ├── pkg/                   ← wasm-pack 產物（gitignored）
+│   └── wasm-crypto/
+│       ├── Cargo.toml
+│       └── src/lib.rs
+│
+└── (各章節 .md)
 ```
+
+> 跟教材原本「server/ + wasm-crypto/ + client/」三層的設計不同，實際專案合併成 `backend/` 和 `frontend/`，並把 `wasm-crypto/` 放在 `frontend/` 底下方便編譯產物進 `frontend/pkg/`。後端用 `express.static` 直接服務 `frontend/`，所以前端不需要再起伺服器。
 
 ---
 
 ## 4 後端完整代碼
 
-### 4.1 `server/package.json`
+> 教學版本與專案版本基本一致。以下重點段落用來閱讀理解，完整可跑檔案請對應到 `backend/` 內對應路徑。
+
+### 4.1 [`backend/package.json`](./backend/package.json)
 
 ```json
 {
-  "name": "image-vault-server",
+  "name": "image-encryption-course-backend",
   "version": "1.0.0",
   "main": "server.js",
-  "scripts": { "dev": "node server.js" },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "ch02": "node examples/ch02-xor-server.js",
+    "ch03": "node examples/ch03-header-server.js",
+    "ch04": "node examples/ch04-aes-server.js"
+  },
   "dependencies": {
     "better-sqlite3": "^11.3.0",
     "cors": "^2.8.5",
-    "express": "^4.19.0",
-    "express-rate-limit": "^7.1.0",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
-    "uuid": "^9.0.0"
+    "uuid": "^9.0.1"
   }
 }
 ```
 
-### 4.2 `server/db.js`
+### 4.2 [`backend/db.js`](./backend/db.js)
 
 ```js
 'use strict';
@@ -153,7 +198,7 @@ db.exec(`
 module.exports = db;
 ```
 
-### 4.3 `server/lib/crypto-util.js`
+### 4.3 [`backend/lib/crypto-util.js`](./backend/lib/crypto-util.js)
 
 ```js
 'use strict';
@@ -210,7 +255,7 @@ module.exports = {
 };
 ```
 
-### 4.4 `server/lib/auth.js`
+### 4.4 [`backend/lib/auth.js`](./backend/lib/auth.js)
 
 ```js
 'use strict';
@@ -248,7 +293,7 @@ function authMiddleware(req, res, next) {
 module.exports = { hashPassword, verifyPassword, signJwt, authMiddleware, JWT_SECRET };
 ```
 
-### 4.5 `server/server.js`
+### 4.5 [`backend/server.js`](./backend/server.js)
 
 ```js
 'use strict';
@@ -413,18 +458,18 @@ app.listen(PORT, () => console.log(`Image Vault running on :${PORT}`));
 ### 4.6 啟動
 
 ```bash
-cd server
+cd backend
 npm install
 MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
 JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
-  npm run dev
+  npm run start
 ```
 
 ---
 
 ## 5 Rust WASM 模組
 
-### 5.1 `wasm-crypto/Cargo.toml`
+### 5.1 [`frontend/wasm-crypto/Cargo.toml`](./frontend/wasm-crypto/Cargo.toml)
 
 ```toml
 [package]
@@ -448,7 +493,9 @@ strip = true
 panic = "abort"
 ```
 
-### 5.2 `wasm-crypto/src/lib.rs`
+### 5.2 [`frontend/wasm-crypto/src/lib.rs`](./frontend/wasm-crypto/src/lib.rs)
+
+完整檔還包含 Ch05 / Ch06 的 `add`、`greet`、`xor_inplace`、`xor_decrypt`、`aes_ctr_decrypt`。下面只列 capstone 用到的關鍵函式：
 
 ```rust
 use wasm_bindgen::prelude::*;
@@ -478,19 +525,17 @@ pub fn aes_ctr_decrypt_header(
 ### 5.3 編譯
 
 ```bash
-cd wasm-crypto
-wasm-pack build --target web --release
-# 將產物連結到 client
-ln -sf ../wasm-crypto/pkg ../client/pkg
+cd frontend/wasm-crypto
+wasm-pack build --target web --release --out-dir ../pkg
 ```
 
-> Windows 沒 symlink 的話直接 copy。
+`--out-dir ../pkg` 會把產物直接寫到 [`frontend/pkg/`](./frontend/pkg/)，前端用 `import init from '/pkg/img_crypto.js'` 載入，不用 symlink。
 
 ---
 
 ## 6 前端完整代碼
 
-### 6.1 `client/login.html`
+### 6.1 [`frontend/login.html`](./frontend/login.html)
 
 ```html
 <!DOCTYPE html>
@@ -530,7 +575,7 @@ ln -sf ../wasm-crypto/pkg ../client/pkg
 </html>
 ```
 
-### 6.2 `client/secure-image.js`
+### 6.2 [`frontend/secure-image.js`](./frontend/secure-image.js)
 
 ```js
 'use strict';
@@ -618,7 +663,7 @@ function hexToBytes(hex) {
 customElements.define('secure-image', SecureImage);
 ```
 
-### 6.3 `client/gallery.html`
+### 6.3 [`frontend/gallery.html`](./frontend/gallery.html)
 
 ```html
 <!DOCTYPE html>
@@ -694,17 +739,16 @@ customElements.define('secure-image', SecureImage);
 ## 7 跑起來測試
 
 ```bash
-# 1. 啟動後端
-cd server
+# 1. 編譯 wasm（一次就好）
+cd frontend/wasm-crypto
+wasm-pack build --target web --release --out-dir ../pkg
+
+# 2. 啟動後端（會同時 serve frontend/）
+cd ../../backend
 npm install
 MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
 JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
-  node server.js
-
-# 2. 編譯 wasm
-cd ../wasm-crypto
-wasm-pack build --target web --release
-ln -sf ../wasm-crypto/pkg ../client/pkg
+  npm run start
 
 # 3. 打開瀏覽器
 open http://localhost:3000/login.html

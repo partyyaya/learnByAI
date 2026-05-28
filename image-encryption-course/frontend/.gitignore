@@ -1,0 +1,5 @@
+pkg/*.wasm
+pkg/*.js
+pkg/*.d.ts
+pkg/package.json
+node_modules/

@@ -4,6 +4,20 @@
 > **預計時數**：150 分鐘
 > **先備知識**：[[03-header-scramble]]、[[05-rust-wasm-toolchain]]
 
+> **本章對應專案**
+>
+> | 檔案 | 用途 |
+> |------|------|
+> | [`frontend/wasm-crypto/Cargo.toml`](./frontend/wasm-crypto/Cargo.toml) | 依賴 `aes` + `ctr` |
+> | [`frontend/wasm-crypto/src/lib.rs`](./frontend/wasm-crypto/src/lib.rs) | `xor_inplace`、`aes_ctr_decrypt`、`aes_ctr_decrypt_header` |
+> | [`frontend/examples/ch06-wasm-decrypt.html`](./frontend/examples/ch06-wasm-decrypt.html) | WASM vs WebCrypto 解密效能對比頁 |
+>
+> 後端共用 Chapter 03 的 API：
+> ```bash
+> cd backend && npm run ch03
+> ```
+> 打開 `http://localhost:3000/examples/ch06-wasm-decrypt.html`。記得先 `wasm-pack build`（見 [[05-rust-wasm-toolchain]]）。
+
 ---
 
 ## 1 為什麼要用 WASM 做解密？
@@ -43,8 +57,10 @@ WASM 的價值是：**把「逆向解密邏輯」從 30 分鐘變成 1–3 天**
 
 ### 3.1 Rust 代碼
 
+對應 [`frontend/wasm-crypto/src/lib.rs`](./frontend/wasm-crypto/src/lib.rs) 內的 `xor_inplace` / `xor_decrypt`：
+
 ```rust
-// src/lib.rs
+// frontend/wasm-crypto/src/lib.rs
 use wasm_bindgen::prelude::*;
 
 /// 對輸入 buffer 做循環 XOR，回傳新 Vec
@@ -71,13 +87,14 @@ pub fn xor_inplace(data: &mut [u8], key: &[u8]) {
 ### 3.2 編譯
 
 ```bash
-wasm-pack build --target web --release
+cd frontend/wasm-crypto
+wasm-pack build --target web --release --out-dir ../pkg
 ```
 
 ### 3.3 前端使用
 
 ```js
-import init, { xor_decrypt, xor_inplace } from './pkg/hello_wasm.js';
+import init, { xor_decrypt, xor_inplace } from '/pkg/img_crypto.js';
 await init();
 
 const enc = new Uint8Array(await fetch('/api/image/abc.enc').then(r => r.arrayBuffer()));
@@ -172,8 +189,10 @@ xor_header(buf, key, 1024);
 
 ### 5.2 加 dependencies
 
+對應 [`frontend/wasm-crypto/Cargo.toml`](./frontend/wasm-crypto/Cargo.toml)（已預先加好）：
+
 ```toml
-# Cargo.toml
+# frontend/wasm-crypto/Cargo.toml
 [dependencies]
 wasm-bindgen = "0.2"
 aes = "0.8"
@@ -184,8 +203,10 @@ ctr = "0.9"
 
 ### 5.3 Rust 代碼
 
+完整版在 [`frontend/wasm-crypto/src/lib.rs`](./frontend/wasm-crypto/src/lib.rs)：
+
 ```rust
-// src/lib.rs
+// frontend/wasm-crypto/src/lib.rs
 use wasm_bindgen::prelude::*;
 use aes::Aes256;
 use aes::cipher::{KeyIvInit, StreamCipher};
@@ -228,24 +249,27 @@ pub fn aes_ctr_decrypt_header(
 ### 5.4 編譯產物觀察
 
 ```bash
-wasm-pack build --target web --release
-ls -lh pkg/*.wasm
+cd frontend/wasm-crypto
+wasm-pack build --target web --release --out-dir ../pkg
+ls -lh ../pkg/*.wasm
 # 約 35-50 KB（包含 AES tables）
 ```
 
 加 `wasm-opt`：
 
 ```bash
-wasm-opt -O3 -o pkg/hello_wasm_bg.opt.wasm pkg/hello_wasm_bg.wasm
-ls -lh pkg/*.wasm
+wasm-opt -O3 --strip-debug -o ../pkg/img_crypto_bg.wasm ../pkg/img_crypto_bg.wasm
+ls -lh ../pkg/*.wasm
 ```
 
 通常能再小 10–20%。
 
 ### 5.5 前端使用
 
+完整可跑頁面在 [`frontend/examples/ch06-wasm-decrypt.html`](./frontend/examples/ch06-wasm-decrypt.html)（同時跑 WASM 和 WebCrypto 對比）：
+
 ```js
-import init, { aes_ctr_decrypt_header } from './pkg/hello_wasm.js';
+import init, { aes_ctr_decrypt_header } from '/pkg/img_crypto.js';
 await init();
 
 async function decryptImage(id) {
@@ -327,7 +351,7 @@ pub fn xor_at_ptr(ptr: *mut u8, len: usize, key: &[u8]) {
 ### 6.2 JS：直接寫進 wasm memory
 
 ```js
-import init, { wasm_alloc, wasm_free, xor_at_ptr } from './pkg/hello_wasm.js';
+import init, { wasm_alloc, wasm_free, xor_at_ptr } from '/pkg/img_crypto.js';
 const wasm = await init();
 
 const memory = wasm.memory;

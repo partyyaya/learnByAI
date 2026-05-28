@@ -4,6 +4,23 @@
 > **預計時數**：150 分鐘
 > **先備知識**：[[03-header-scramble]]、密碼學基本概念（block cipher、symmetric key）
 
+> **本章對應專案**
+>
+> | 檔案 | 用途 |
+> |------|------|
+> | [`backend/lib/aes-gcm.js`](./backend/lib/aes-gcm.js) | 全檔 AES-256-GCM 加解密 |
+> | [`backend/lib/crypto-util.js`](./backend/lib/crypto-util.js) | `wrapKey / unwrapKey / hmacSign / hmacVerify` |
+> | [`backend/examples/ch04-aes-server.js`](./backend/examples/ch04-aes-server.js) | 本章 demo server（簽名 URL + key wrap） |
+> | [`frontend/examples/ch04-aes.html`](./frontend/examples/ch04-aes.html) | 前端 AES-GCM 解密頁 |
+>
+> 啟動：
+> ```bash
+> cd backend
+> MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+>   npm run ch04
+> ```
+> 打開 `http://localhost:3000/examples/ch04-aes.html`。
+
 ---
 
 ## 1 為什麼一定要會 AES？
@@ -84,8 +101,10 @@ crypto.getRandomValues(...)       // 取得密碼學等級隨機數
 
 ### 4.1 後端加密（Node.js）
 
+對應 [`backend/lib/aes-gcm.js`](./backend/lib/aes-gcm.js)：
+
 ```js
-// lib/aes-gcm.js
+// backend/lib/aes-gcm.js
 'use strict';
 const crypto = require('crypto');
 
@@ -124,8 +143,9 @@ module.exports = { encrypt, decrypt };
 
 ### 4.2 對應的前端解密
 
+對應 [`frontend/examples/ch04-aes.html`](./frontend/examples/ch04-aes.html) 內的 `decryptGcm`：
+
 ```js
-// public/aes-gcm.js
 async function decryptGcm(combinedBuf, keyHex) {
   const u8 = new Uint8Array(combinedBuf);
   const iv = u8.subarray(0, 12);
@@ -242,10 +262,10 @@ GET /api/image/abc123/key?sig=HMAC(imageId+userId+expiry)&exp=1717023600
 
 ## 7 完整伺服器：AES-GCM + Key API
 
-整合前面的東西，做一個生產級雛形：
+整合前面的東西，做一個生產級雛形。對應 [`backend/examples/ch04-aes-server.js`](./backend/examples/ch04-aes-server.js)（教學版略簡化，例如把 master key encrypt 流程合進路由方便閱讀）：
 
 ```js
-// server-aes.js
+// 等同 backend/examples/ch04-aes-server.js 的核心邏輯
 const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
@@ -341,8 +361,9 @@ app.listen(3000);
 啟動時帶上 MASTER_KEY：
 
 ```bash
+cd backend
 MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
-  node server-aes.js
+  npm run ch04
 ```
 
 ### 對應前端流程

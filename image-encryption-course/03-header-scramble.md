@@ -4,6 +4,16 @@
 > **預計時數**：90 分鐘
 > **先備知識**：[[01-image-format-and-magic-number]]、[[02-xor-encryption]]
 
+> **本章對應專案**
+>
+> | 檔案 | 用途 |
+> |------|------|
+> | [`backend/lib/crypto-util.js`](./backend/lib/crypto-util.js) | `encryptHeader / decryptHeader`（AES-CTR） |
+> | [`backend/examples/ch03-header-server.js`](./backend/examples/ch03-header-server.js) | 本章 demo server |
+> | [`frontend/examples/ch03-header.html`](./frontend/examples/ch03-header.html) | 前端 WebCrypto 解密頁 |
+>
+> 啟動：`cd backend && npm run ch03`，打開 `http://localhost:3000/examples/ch03-header.html`。
+
 ---
 
 ## 1 為什麼不全加密就好？
@@ -78,86 +88,71 @@
 
 ## 4 後端實作
 
-### 4.1 加密函式 `lib/header-aes.js`
+### 4.1 加密函式 [`backend/lib/crypto-util.js`](./backend/lib/crypto-util.js)
+
+實際專案版本把 key/iv 由外部傳入（方便 capstone 重用），教學版本則是內部直接生成。觀念一樣：
 
 ```js
-// lib/header-aes.js
-'use strict';
+// 對應 backend/lib/crypto-util.js 的 encryptHeader
 const crypto = require('crypto');
-
 const HEADER_LEN = 1024;   // 加密前 1024 byte
-const ALGO = 'aes-256-ctr';
 
-/**
- * 加密：只動前 HEADER_LEN byte，其餘原封不動
- * @returns {{ encrypted: Buffer, keyHex: string, ivHex: string }}
- */
-function encryptHeader(buf) {
-  const key = crypto.randomBytes(32);
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(ALGO, key, iv);
-
+function encryptHeader(buf, key, iv) {
+  const cipher = crypto.createCipheriv('aes-256-ctr', key, iv);
   const headerLen = Math.min(HEADER_LEN, buf.length);
   const head = buf.subarray(0, headerLen);
   const tail = buf.subarray(headerLen);
 
   const encHead = Buffer.concat([cipher.update(head), cipher.final()]);
-
   // 注意：CTR mode 不會改變長度
-  return {
-    encrypted: Buffer.concat([encHead, tail]),
-    keyHex: key.toString('hex'),
-    ivHex: iv.toString('hex'),
-    headerLen,
-  };
+  return Buffer.concat([encHead, tail]);
 }
 
 module.exports = { encryptHeader, HEADER_LEN };
 ```
 
-### 4.2 路由更新
+### 4.2 路由更新 [`backend/examples/ch03-header-server.js`](./backend/examples/ch03-header-server.js)
 
-接上一章的 server 架構，把上傳路由改成這樣：
+完整代碼請看實際檔案，這裡只列關鍵差異——上傳路由改用 `encryptHeader`：
 
 ```js
-// 在 server.js 裡
-const { encryptHeader } = require('./lib/header-aes');
+// 在 backend/examples/ch03-header-server.js 裡
+const { HEADER_LEN, encryptHeader } = require('../lib/crypto-util');
 
 app.post('/api/upload', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'no file' });
 
-  const id = uuidv4();
-  const { encrypted, keyHex, ivHex, headerLen } = encryptHeader(req.file.buffer);
+  const id = uuid();
+  const key = crypto.randomBytes(32);
+  const iv = crypto.randomBytes(16);
+  const encrypted = encryptHeader(req.file.buffer, key, iv);
 
   fs.writeFileSync(path.join(ENC_DIR, `${id}.enc`), encrypted);
 
-  const meta = loadMeta();
+  const meta = load();
   meta[id] = {
     id,
     mime: req.file.mimetype,
-    size: req.file.size,
-    keyHex,
-    ivHex,
-    headerLen,
+    headerLen: HEADER_LEN,
+    keyHex: key.toString('hex'),
+    ivHex: iv.toString('hex'),
     algorithm: 'aes-256-ctr-header',
     createdAt: Date.now(),
   };
-  saveMeta(meta);
+  save(meta);
 
   res.json({ id });
 });
 
 // key 介面也跟著回傳 ivHex / headerLen
 app.get('/api/image/:id/key', (req, res) => {
-  // ...驗證 token (同前章)
-  const meta = loadMeta()[req.params.id];
-  if (!meta) return res.status(404).end();
+  const m = load()[req.params.id];
+  if (!m) return res.status(404).end();
   res.json({
-    keyHex: meta.keyHex,
-    ivHex: meta.ivHex,
-    headerLen: meta.headerLen,
-    mime: meta.mime,
-    size: meta.size,
+    keyHex: m.keyHex,
+    ivHex: m.ivHex,
+    headerLen: m.headerLen,
+    mime: m.mime,
   });
 });
 ```
@@ -178,9 +173,11 @@ CTR 把 cipher 變成 stream cipher：
 
 ## 5 前端實作：用 WebCrypto 解密前 N byte
 
+對應檔案：[`frontend/examples/ch03-header.html`](./frontend/examples/ch03-header.html)。
+打開 `http://localhost:3000/examples/ch03-header.html` 直接測試。
+
 ```js
-// public/decrypt-header.js
-'use strict';
+// 等同於 ch03-header.html 的 <script> 區塊
 
 const TOKEN = 'dummy-token';
 

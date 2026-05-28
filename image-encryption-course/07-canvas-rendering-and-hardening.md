@@ -4,6 +4,22 @@
 > **預計時數**：120 分鐘
 > **先備知識**：[[04-aes-with-webcrypto]]、[[06-wasm-decryption-in-browser]]
 
+> **本章對應專案**
+>
+> | 檔案 | 用途 |
+> |------|------|
+> | [`frontend/secure-image.js`](./frontend/secure-image.js) | `<secure-image>` Web Component：sign URL → WASM 解密 → Canvas + 浮水印 |
+> | [`backend/server.js`](./backend/server.js) | 已實作簽名 URL、Rate Limit、permission check |
+>
+> 本章邏輯整合到 Chapter 08 capstone 一起跑：
+> ```bash
+> cd backend
+> MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+> JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+>   npm run start
+> ```
+> 打開 `http://localhost:3000/login.html`，註冊後上傳圖片即可看到 `<secure-image>` 渲染效果。
+
 ---
 
 ## 1 為什麼要用 Canvas 而不是 `<img>`?
@@ -391,11 +407,11 @@ ctx.putImageData(imgData, 0, 0);
 
 ## 8 整合：完整加密渲染元件
 
-寫個可重複用的 web component：
+實際代碼在 [`frontend/secure-image.js`](./frontend/secure-image.js)，下面是教學精簡版：
 
 ```js
-// secure-image.js
-import init, { aes_ctr_decrypt_header } from './pkg/img_crypto.js';
+// 對應 frontend/secure-image.js
+import init, { aes_ctr_decrypt_header } from '/pkg/img_crypto.js';
 const wasmReady = init();
 
 class SecureImage extends HTMLElement {
@@ -458,13 +474,13 @@ class SecureImage extends HTMLElement {
 customElements.define('secure-image', SecureImage);
 ```
 
-使用：
+使用（jwt 從 `localStorage` 取得，不必傳屬性）：
 
 ```html
-<secure-image image-id="abc-123" jwt="eyJhbGc..."></secure-image>
+<secure-image image-id="abc-123"></secure-image>
 ```
 
-一行 HTML 完成「登入驗證 → 簽名 URL → 加密下載 → WASM 解密 → Canvas 渲染 → 浮水印」全流程。
+一行 HTML 完成「登入驗證 → 簽名 URL → 加密下載 → WASM 解密 → Canvas 渲染 → 浮水印」全流程。實際在 [`frontend/gallery.html`](./frontend/gallery.html) 用迴圈塞滿整個圖庫。
 
 ---
 

@@ -1,0 +1,67 @@
+<!-- 對應章節：Chapter 05 - Rust + wasm-pack 第一個 wasm -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Ch05 · Hello WASM</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 1em auto; padding: 0 1em; }
+    section { margin-bottom: 2em; }
+    .stat { font-family: monospace; font-size: 0.9em; color: #555; background: #f5f5f7; padding: 8px; border-radius: 4px; }
+    button { padding: .5em 1em; cursor: pointer; }
+    img { max-width: 100%; display: block; border: 1px solid #ccc; margin-top: .5em; }
+  </style>
+</head>
+<body>
+  <h1>Ch05 · Hello WASM</h1>
+  <p>第一次跑 wasm-pack 編出的 Rust 模組。先確認你已在 <code>frontend/wasm-crypto/</code> 跑過：</p>
+  <pre class="stat">wasm-pack build --target web --release --out-dir ../pkg</pre>
+
+  <section>
+    <h2>1. add(a, b)</h2>
+    <button id="btnAdd">呼叫 add(3, 4)</button>
+    <div id="addResult" class="stat"></div>
+  </section>
+
+  <section>
+    <h2>2. XOR 自己加密自己（兩次 XOR 還原）</h2>
+    <input type="file" id="file" accept="image/*">
+    <div id="xorStat" class="stat"></div>
+    <img id="out" alt="">
+  </section>
+
+  <script type="module">
+    import init, { add, xor_inplace } from '/pkg/img_crypto.js';
+    await init();
+
+    document.getElementById('btnAdd').onclick = () => {
+      const r = add(3, 4);
+      document.getElementById('addResult').textContent = `add(3, 4) = ${r}`;
+    };
+
+    const KEY = new Uint8Array([0x5A, 0x11, 0xAB, 0xCD]);
+
+    document.getElementById('file').onchange = async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      const buf = new Uint8Array(await f.arrayBuffer());
+      const stat = document.getElementById('xorStat');
+
+      const t0 = performance.now();
+      xor_inplace(buf, KEY);
+      const t1 = performance.now();
+      const snippet = Array.from(buf.slice(0, 8))
+        .map((b) => b.toString(16).padStart(2, '0')).join(' ');
+      stat.innerHTML = `加密後前 8 byte: ${snippet}<br>耗時 ${(t1 - t0).toFixed(2)} ms`;
+
+      // 再 XOR 一次還原
+      xor_inplace(buf, KEY);
+
+      const blob = new Blob([buf], { type: f.type });
+      const url = URL.createObjectURL(blob);
+      const out = document.getElementById('out');
+      out.src = url;
+      out.onload = () => URL.revokeObjectURL(url);
+    };
+  </script>
+</body>
+</html>

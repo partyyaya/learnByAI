@@ -43,6 +43,49 @@
 
 ---
 
+## 實作專案
+
+教材對應的可跑專案放在：
+
+| 路徑 | 內容 | 對應章節 |
+|------|------|---------|
+| [`backend/`](./backend/) | Node.js + Express 後端 | Ch02–Ch08（每章一個 example 腳本 + capstone server） |
+| [`frontend/`](./frontend/) | 純 HTML + ES Module 前端 | Ch02–Ch08（每章一個 demo 頁 + capstone 圖庫） |
+| [`frontend/wasm-crypto/`](./frontend/wasm-crypto/) | Rust 原始碼，編譯成 wasm | Ch05–Ch08 |
+
+### 5 分鐘快速啟動
+
+```bash
+# 1. 後端
+cd backend
+npm install
+
+# 2. 編 wasm（Ch05 後才需要；Ch02–04 可跳過）
+cd ../frontend/wasm-crypto
+wasm-pack build --target web --release --out-dir ../pkg
+
+# 3. 啟動整合版（Chapter 08）
+cd ../../backend
+MASTER_KEY=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+JWT_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))") \
+  npm run start
+
+# 打開 http://localhost:3000/
+```
+
+### 跑單章 demo
+
+```bash
+cd backend
+npm run ch02   # Chapter 02 - XOR
+npm run ch03   # Chapter 03 - 檔頭 AES-CTR
+npm run ch04   # Chapter 04 - AES-GCM + 簽名 URL
+```
+
+每個 demo 啟動後到 `http://localhost:3000/` 入口頁，從那邊點對應章節即可。
+
+---
+
 ## 預設工具
 
 | 用途 | 主推 | 備選 |

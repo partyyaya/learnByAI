@@ -1,0 +1,100 @@
+<!-- 對應章節：Chapter 04 - 全檔 AES-GCM + 簽名 URL -->
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>Ch04 · AES-GCM + 簽名 URL Demo</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; max-width: 760px; margin: 1em auto; padding: 0 1em; }
+    img { max-width: 100%; border: 1px solid #ccc; margin: .5em 0; display: block; }
+    section { margin-bottom: 2em; }
+    .stat { font-family: monospace; font-size: 0.9em; color: #666; }
+    .url { word-break: break-all; font-size: 0.85em; color: #444; background: #f5f5f7; padding: 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>Ch04 · AES-GCM + 簽名 URL Demo</h1>
+  <p>後端用 AES-256-GCM 全檔加密，imgKey 用 masterKey wrap 存 DB。前端透過短效簽名 URL 取 key，再用 WebCrypto 解密。</p>
+
+  <section>
+    <h2>1. 上傳</h2>
+    <input type="file" id="upload" accept="image/*">
+    <div id="uploadResult" class="stat"></div>
+  </section>
+
+  <section>
+    <h2>2. 取簽名 URL（60 秒有效）</h2>
+    <div id="signedInfo" class="url"></div>
+  </section>
+
+  <section>
+    <h2>3. 解密後</h2>
+    <img id="decImg" alt="dec">
+    <div id="benchResult" class="stat"></div>
+  </section>
+
+  <script>
+    let lastId = null;
+
+    document.getElementById('upload').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const fd = new FormData();
+      fd.append('image', file);
+      const { id } = await fetch('/api/upload', { method: 'POST', body: fd })
+        .then((r) => r.json());
+      lastId = id;
+      uploadResult.textContent = `已上傳，id=${id}`;
+
+      const { keyUrl, encUrl } = await fetch(`/api/image/${id}/sign`).then((r) => r.json());
+      signedInfo.innerHTML = `<div><strong>keyUrl:</strong> ${keyUrl}</div><div><strong>encUrl:</strong> ${encUrl}</div>`;
+
+      const [meta, encBuf] = await Promise.all([
+        fetch(keyUrl).then((r) => r.json()),
+        fetch(encUrl).then((r) => r.arrayBuffer()),
+      ]);
+
+      const t0 = performance.now();
+      const decBuf = await decryptGcm(encBuf, meta.keyHex);
+      const t1 = performance.now();
+      benchResult.textContent =
+        `${(decBuf.length / 1024 / 1024).toFixed(2)} MB 解密耗時 ${(t1 - t0).toFixed(1)} ms`;
+
+      const blob = new Blob([decBuf], { type: meta.mime });
+      const url = URL.createObjectURL(blob);
+      decImg.src = url;
+      decImg.onload = () => URL.revokeObjectURL(url);
+    });
+
+    // Combined format: [iv(12) | tag(16) | ciphertext]
+    async function decryptGcm(combinedBuf, keyHex) {
+      const u8 = new Uint8Array(combinedBuf);
+      const iv = u8.subarray(0, 12);
+      const tag = u8.subarray(12, 28);
+      const ct = u8.subarray(28);
+
+      // WebCrypto 期望 tag 接在密文尾
+      const ctWithTag = new Uint8Array(ct.length + 16);
+      ctWithTag.set(ct, 0);
+      ctWithTag.set(tag, ct.length);
+
+      const key = await crypto.subtle.importKey(
+        'raw', hexToBytes(keyHex), { name: 'AES-GCM' }, false, ['decrypt']
+      );
+      const plain = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv, tagLength: 128 },
+        key,
+        ctWithTag,
+      );
+      return new Uint8Array(plain);
+    }
+
+    function hexToBytes(hex) {
+      const out = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+      return out;
+    }
+  </script>
+</body>
+</html>
