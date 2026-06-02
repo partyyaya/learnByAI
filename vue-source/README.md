@@ -20,6 +20,7 @@
 | 08 | [08-advanced-builtins-teleport-keepalive-suspense.md](./08-advanced-builtins-teleport-keepalive-suspense.md) | 進階內建機制 | Teleport、KeepAlive、Suspense | 做一份三者適用場景對照表 | ✅ 已完成 |
 | 09 | [09-sfc-and-vite-integration.md](./09-sfc-and-vite-integration.md) | SFC 與 Vite 整合鏈路 | `<script setup>` 編譯、plugin pipeline | 追一次 `.vue` 到瀏覽器執行的路徑 | ✅ 已完成 |
 | 10 | [10-practical-source-reading-workflow.md](./10-practical-source-reading-workflow.md) | 真實專案的源碼閱讀工作流 | issue 重現、定位、修補、驗證 | 完成一份源碼分析與修正提案 | ✅ 已完成 |
+| 11 | [11-real-world-performance-optimization.md](./11-real-world-performance-optimization.md) | 真實專案的效能優化實戰 | 反應式/渲染/載入三層成本、使用方式改寫對照、Review checklist | 用 checklist 找出 5 個優化點並做 before/after 量測 | ✅ 已完成 |
 
 ---
 
@@ -35,8 +36,8 @@
 第三階段（06-07）：編譯器與優化
   理解 template 如何變成 render function，及其最佳化策略
 
-第四階段（08-10）：高階能力與實務落地
-  深入內建能力、SFC 編譯整合，最後做真實問題分析
+第四階段（08-11）：高階能力與實務落地
+  深入內建能力、SFC 編譯整合，做真實問題分析，最後落地效能優化實戰
 ```
 
 ## 先備知識
