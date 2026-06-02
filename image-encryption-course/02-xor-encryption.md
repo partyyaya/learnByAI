@@ -169,15 +169,23 @@ app.post('/api/upload', upload.single('image'), (req, res) => {
 
   fs.writeFileSync(path.join(ENC_DIR, `${id}.enc`), encrypted);
 
+  // 把這張圖的「描述資訊」記到 meta 裡，給後續的解密 API 用
   const meta = loadMeta();
   meta[id] = {
-    id,
-    mime: req.file.mimetype,        // 解密後的 MIME
-    size: req.file.size,
-    keyHex: key.toString('hex'),    // 真實系統不該明文存 key！
-    createdAt: Date.now(),
+    id,                             // 跟 .enc 檔名一致，前端用它對應到密文檔
+    mime: req.file.mimetype,        // 原圖的 MIME（image/jpeg、image/png…）
+                                    // 前端解密後要靠它建 Blob，不存的話 <img> 不會顯示
+    size: req.file.size,            // 原圖大小（byte），只是給 debug / 前端顯示用
+    keyHex: key.toString('hex'),    // ⚠️ 這張圖的 XOR key（hex 字串）
+                                    // demo 用「明文存進 JSON」很方便，但正式環境千萬不能這樣：
+                                    //   1) DB 被脫庫 = 所有圖一次解密
+                                    //   2) 應該用 master key 加密後再存（[[04-aes-with-webcrypto]] 的 wrapKey）
+                                    //   3) 或丟 KMS / Vault，code 只拿 reference
+    createdAt: Date.now(),          // 建立時間戳（毫秒），用來做過期、排序、稽核
   };
   saveMeta(meta);
+  // saveMeta 把整個 meta 物件寫回 meta.json
+  // demo 簡化成「整檔重寫」，圖很多時應換成 SQLite（見 backend/db.js）
 
   res.json({ id, size: req.file.size });
 });

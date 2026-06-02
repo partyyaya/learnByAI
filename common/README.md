@@ -10,6 +10,7 @@
 |------|------|------|
 | 01 | [01-http-https.md](./01-http-https.md) | HTTP 與 HTTPS — 網路通訊基礎與差異 |
 | 02 | [02-ssl-certificates.md](./02-ssl-certificates.md) | SSL 憑證的取得與必備知識 |
+| — | [jwt-auth-frontend-backend.md](./jwt-auth-frontend-backend.md) | 前後端 JWT 登入與加密實戰 — 簽章、密碼雜湊、Token 流程與安全 |
 
 ---
 
@@ -35,6 +36,7 @@
 
 安全篇
   02 SSL 憑證 → 學會取得、安裝與管理 SSL 憑證
+  JWT 登入   → 在 HTTPS 之上，建立前後端的身分認證機制
 
 ```
 
