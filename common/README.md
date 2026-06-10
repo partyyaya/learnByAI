@@ -11,6 +11,8 @@
 | 01 | [01-http-https.md](./01-http-https.md) | HTTP 與 HTTPS — 網路通訊基礎與差異 |
 | 02 | [02-ssl-certificates.md](./02-ssl-certificates.md) | SSL 憑證的取得與必備知識 |
 | — | [jwt-auth-frontend-backend.md](./jwt-auth-frontend-backend.md) | 前後端 JWT 登入與加密實戰 — 簽章、密碼雜湊、Token 流程與安全 |
+| — | [websocket.md](./websocket.md) | WebSocket 即時通訊實戰 — 握手升級、心跳重連、身分驗證與部署 |
+| — | [sse.md](./sse.md) | SSE 伺服器推送實戰 — text/event-stream、自動重連、斷點續傳與部署 |
 
 ---
 

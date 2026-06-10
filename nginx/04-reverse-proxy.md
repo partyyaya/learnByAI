@@ -61,10 +61,10 @@ server {
     server_name myapp.com;
 
     location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
+        proxy_pass http://localhost:3000;  # 轉發目的地：本機 3000 port 的後端服務
+        proxy_http_version 1.1;            # 與後端改用 HTTP/1.1（預設是 1.0）
 
-        # 傳遞重要的標頭資訊
+        # 傳遞重要的標頭資訊（各標頭的詳細說明見 4.5）
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -72,6 +72,12 @@ server {
     }
 }
 ```
+
+> **`proxy_http_version 1.1;` 為什麼幾乎都要加？**
+>
+> - Nginx 與後端溝通時，預設使用 HTTP/1.0。
+> - HTTP/1.0 不支援連線重用（keep-alive），每個請求都要重新建立 TCP 連線；也不支援 `Upgrade` 機制。
+> - 因此只要用到 upstream keepalive（第五章）或 WebSocket（本章場景三），就必須是 1.1；一般反向代理也建議統一加上。
 
 ### proxy_pass 的斜線問題（非常重要！）
 
@@ -108,32 +114,32 @@ server {
     listen 80;
     server_name myapp.com;
 
-    # 客戶端請求體大小限制
+    # 客戶端請求體大小限制（預設只有 1m；超過直接回 413）
     client_max_body_size 50M;
 
     # 代理逾時設定
-    proxy_connect_timeout 60s;
-    proxy_send_timeout 60s;
-    proxy_read_timeout 60s;
+    proxy_connect_timeout 60s;  # 與後端「建立連線」的逾時
+    proxy_send_timeout 60s;     # 向後端「送出請求」時，兩次寫入之間的逾時
+    proxy_read_timeout 60s;     # 等待後端「回應」時，兩次讀取之間的逾時
 
     # 代理緩衝區
-    proxy_buffering on;
-    proxy_buffer_size 4k;
-    proxy_buffers 8 4k;
+    proxy_buffering on;    # 啟用回應緩衝（預設即為 on）
+    proxy_buffer_size 4k;  # 存放「回應開頭（標頭）」的緩衝區大小
+    proxy_buffers 8 4k;    # 存放「回應主體」的緩衝區：8 個 × 4k = 每條連線最多 32k
 
     location / {
         proxy_pass http://localhost:3000;
         proxy_http_version 1.1;
 
-        # 標頭設定
+        # 標頭設定（前四個的詳細說明見 4.5）
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host $host;
-        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header X-Forwarded-Host $host;          # 原始請求的域名（部分框架讀這個而非 Host）
+        proxy_set_header X-Forwarded-Port $server_port;   # 原始請求的 port（讓後端能組出正確的對外 URL）
 
-        # WebSocket 支援
+        # WebSocket 支援（寫死 "upgrade" 的取捨見下方說明）
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
 
@@ -142,6 +148,39 @@ server {
     }
 }
 ```
+
+### 這段指令在做什麼？（逐條）
+
+- `client_max_body_size 50M;`
+  - 限制客戶端請求主體（上傳檔案、POST body）的最大大小。
+  - **預設值只有 `1m`**，有檔案上傳功能幾乎一定要調大；超過限制時 Nginx 直接回 `413 Request Entity Too Large`，請求根本不會送到後端（排查見 4.6 情境三）。
+  - 設 `0` 代表不限制，但會失去對惡意大請求的保護，不建議。
+- `proxy_connect_timeout 60s;`
+  - Nginx 與後端「建立 TCP 連線」的逾時，超過回 502。
+  - 預設 60s，且官方規定**不能超過 75s**。同機房的後端通常 3~10 秒內連得上，實務常設更短（如 `5s`）讓故障盡早暴露。
+- `proxy_send_timeout 60s;` / `proxy_read_timeout 60s;`
+  - 注意計時對象：是「**兩次成功寫入／讀取之間**」的間隔，不是整個請求或回應的總時間。
+  - 只要後端持續有資料往來，連線就不會被切斷；後端「完全沒回應」超過 `proxy_read_timeout` 才會逾時（回 504）。
+  - 預設皆為 60s；慢查詢 API、檔案上傳、長輪詢等場景需要調大（見 4.6 情境三的 `300s`）。
+- `proxy_buffering on;`
+  - 開啟時：Nginx 盡快把後端的回應「整個收進緩衝區」，讓後端早點釋放連線，再由 Nginx 慢慢回給（可能網速很慢的）客戶端——這能避免慢客戶端長時間拖住後端。
+  - 預設就是 `on`；設 `off` 時改為逐段即時轉發，適合 SSE、串流回應等需要「邊產生邊送」的場景，代價是後端連線會被慢客戶端佔住。
+- `proxy_buffer_size 4k;`
+  - 回應「第一段」的緩衝區，實務上就是放**回應標頭**的空間。預設為一個記憶體分頁（依平台為 4k 或 8k）。
+  - 若後端回應標頭很大（例如塞了大量 `Set-Cookie` 或 JWT），會出現 `upstream sent too big header` 錯誤（502），此時需調大（如 `16k`）。
+- `proxy_buffers 8 4k;`
+  - 格式是「**數量 × 單個大小**」：8 個 × 4k = 這條連線最多用 32k 記憶體緩衝回應主體。預設值是 `8 4k`（或 `8 8k`，依平台）。
+  - 怎麼估：讓「數量 × 大小」≥ 你的常見回應大小。例如 API 回應多在 100KB 以內，可設 `16 8k`（= 128k）。
+  - 回應超過緩衝區總量也不會出錯：多出來的部分會寫到磁碟暫存檔（由 `proxy_max_temp_file_size` 控制，預設 1024m），只是多了磁碟 I/O、變慢。
+  - 注意這是「每條連線」的用量：高併發時記憶體消耗 ≈ 併發連線數 × 32k，不要無腦調太大。
+- `proxy_set_header Upgrade` / `Connection "upgrade"`
+  - 讓 WebSocket 升級請求能透傳到後端（原理見場景三）。
+  - 注意：這裡把 `Connection` **寫死成 `"upgrade"`**，代表「所有」經過的請求都聲稱要升級，部分後端框架可能誤判。更精確的做法是用 `map` 動態決定（場景三），純 HTTP API 則可直接拿掉這兩行。
+- `proxy_redirect off;`
+  - 控制 Nginx 是否改寫後端回應中的 `Location` / `Refresh` 轉址標頭。
+  - 預設值是 `proxy_redirect default`：自動把標頭裡的 `proxy_pass` 位址（如 `http://localhost:3000/`）改寫回對外位址。
+  - `off` = 完全不改寫。適用於後端已經能產生正確對外 URL 的情況（例如有正確讀取 `X-Forwarded-*` 標頭）。
+  - 若後端會回 `Location: http://localhost:3000/...` 這種內部位址，請不要用 `off`，改用明確改寫（見 4.6 情境四的 `proxy_redirect http://localhost:3000/ /;`）。
 
 ---
 

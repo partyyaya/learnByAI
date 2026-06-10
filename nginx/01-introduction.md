@@ -70,18 +70,29 @@ sudo systemctl start nginx
 sudo systemctl enable nginx
 ```
 
+> **備註：EPEL 是什麼？為什麼要先裝它？**
+>
+> - EPEL（Extra Packages for Enterprise Linux）是 Fedora 社群維護的「額外套件庫」。
+> - CentOS 7 / RHEL 7 的官方預設套件庫沒有收錄 Nginx，所以要先安裝 `epel-release` 把這個套件庫加進系統，後面的 `yum install nginx` 才找得到套件。
+> - 較新的 CentOS Stream / RHEL 8+ 已內建 nginx 模組，可直接 `sudo dnf install nginx`，不一定需要 EPEL。
+
 ### macOS（使用 Homebrew）
 
 ```bash
 # 安裝
 brew install nginx
 
-# 啟動
+# 啟動（註冊為背景服務，登入時自動啟動，類似 Linux 的 systemctl enable + start）
 brew services start nginx
 
-# 或者手動啟動
+# 或者手動啟動（直接執行一次，不註冊背景服務）
 nginx
 ```
+
+> **備註：macOS（Homebrew）版本的兩個差異**
+>
+> - Homebrew 安裝的 Nginx 預設監聽 **8080** port（不是 80），因為非 root 使用者無法綁定 1024 以下的特權 port；驗證時請改用 `http://localhost:8080`。
+> - 設定檔位置也不同：`/opt/homebrew/etc/nginx/nginx.conf`（Apple Silicon）或 `/usr/local/etc/nginx/nginx.conf`（Intel）。
 
 ### Docker
 
@@ -225,6 +236,7 @@ curl -I http://localhost:8080
 也可以使用 curl 測試：
 
 ```bash
+# -I: 只取得 HTTP 回應標頭（不下載網頁內容），適合快速確認服務是否正常
 curl -I http://localhost
 ```
 
@@ -280,6 +292,18 @@ nginx -s quit
 # 重新開啟日誌檔案（用於日誌輪替）
 nginx -s reopen
 ```
+
+> **`nginx -s` 的運作原理**
+>
+> - `-s` 是 signal（信號）的縮寫：這個指令本身不處理任何請求，而是讀取 PID 檔案（見第二章補充說明【4】），向「正在運行的 master process」發送對應的信號。
+> - 對應關係：`reload` → `HUP`、`stop` → `TERM`（立即停止）、`quit` → `QUIT`（處理完現有請求才停止）、`reopen` → `USR1`（重新開啟日誌檔）。
+> - `reload` 的內部流程：master 重新讀取設定 → 用新設定啟動一批新的 worker → 舊 worker 處理完手上的連線後優雅退出，因此服務不會中斷。
+> - 也因此：若 Nginx 根本沒在運行，`nginx -s reload` 會直接報錯（找不到 PID 檔案），此時要用 `nginx` 或 `systemctl start nginx` 先啟動。
+>
+> **`nginx -v` 與 `nginx -V` 的差別**
+>
+> - `-v`（小寫）：只顯示版本號。
+> - `-V`（大寫）：顯示版本號 + 編譯參數 + 內建模組清單；排查「某個模組有沒有被編進去」（例如 `http_ssl_module`、`http_sub_module`）時非常實用。
 
 ---
 
@@ -340,17 +364,18 @@ ls -la /etc/nginx
 sudo systemctl status nginx
 
 # 2. 確認是否監聽 80 port
+# ss 參數：-t 只看 TCP、-l 只看監聽中（listening）、-n 以數字顯示 port、-p 顯示佔用的程式
 sudo ss -tlnp | grep :80
 
 # 3. 檢查防火牆設定
 # Ubuntu (ufw)
-sudo ufw status
-sudo ufw allow 'Nginx Full'
+sudo ufw status              # 查看防火牆狀態與現有規則
+sudo ufw allow 'Nginx Full'  # 放行「Nginx Full」規則組（= 同時開放 80 + 443 port）
 
 # CentOS (firewalld)
-sudo firewall-cmd --permanent --add-service=http
-sudo firewall-cmd --permanent --add-service=https
-sudo firewall-cmd --reload
+sudo firewall-cmd --permanent --add-service=http   # 永久放行 HTTP（80）；--permanent 表示寫入設定檔、重開機仍有效
+sudo firewall-cmd --permanent --add-service=https  # 永久放行 HTTPS（443）
+sudo firewall-cmd --reload                         # 重新載入防火牆規則，讓上面 --permanent 的變更立即生效
 
 # 4. 如果是雲端主機，檢查安全群組（Security Group）是否開放 80/443 port
 ```
@@ -361,13 +386,14 @@ sudo firewall-cmd --reload
 
 ```bash
 # 找出佔用 port 80 的程式
+# lsof -i :80：列出所有正在使用 80 port 的行程（含 PID 與程式名稱）
 sudo lsof -i :80
 # 或
 sudo ss -tlnp | grep :80
 
 # 常見佔用者：Apache
-sudo systemctl stop apache2
-sudo systemctl disable apache2
+sudo systemctl stop apache2     # 先停止 Apache，釋放 80 port
+sudo systemctl disable apache2  # 取消開機自啟，避免重開機後又搶回 port
 
 # 然後重新啟動 Nginx
 sudo systemctl start nginx
@@ -385,8 +411,16 @@ sudo nginx
 # listen 8080;
 
 # 方法三：設定 capability（進階）
+# setcap：賦予「執行檔」特定的核心權限（capability），不必整個程式用 root 跑
+# cap_net_bind_service：允許綁定 1024 以下的特權 port（如 80/443）
+# +ep：e（effective，立即生效）+ p（permitted，允許持有），兩者都要才有作用
 sudo setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx
 ```
+
+> **備註：方法三的取捨**
+>
+> - 好處：Nginx 不必以 root 啟動也能綁定 80/443，整體權限更低、更安全。
+> - 注意：capability 是綁在「執行檔」上的，升級 Nginx 後新的執行檔需要重新執行一次 `setcap`。
 
 ---
 

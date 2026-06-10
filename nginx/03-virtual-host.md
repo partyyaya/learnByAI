@@ -35,6 +35,12 @@ sudo chown -R www-data:www-data /var/www/api.mysite.com
 sudo chmod -R 755 /var/www
 ```
 
+> **備註：這段指令在做什麼？（逐條）**
+> - `mkdir -p`：建立多層目錄；`-p` 代表父層目錄不存在時一併建立、目錄已存在也不報錯。
+> - `chown -R www-data:www-data ...`：把目錄擁有者改為 `www-data`（格式為 `使用者:群組`）；`-R` 遞迴套用到所有子目錄與檔案。Nginx 的 worker 以 `www-data` 身分運行（見第二章補充說明【5】），若對網站目錄沒有讀取權限會回 403 Forbidden。
+> - `chmod -R 755 /var/www`：權限三位數依序是「擁有者 / 群組 / 其他人」——`7` = 讀+寫+執行、`5` = 讀+執行。目錄必須有「執行（x）」權限才能被進入與列出，所以網站目錄常用 755。
+> - CentOS / RHEL 請把 `www-data` 換成 `nginx`（各發行版的預設使用者見第二章對照表）。
+
 ### 步驟二：建立測試頁面
 
 ```bash
@@ -93,13 +99,13 @@ sudo nginx -t && sudo nginx -s reload
 ```nginx
 # /etc/nginx/sites-available/mysite.com
 server {
-    listen 80;
-    listen [::]:80;
+    listen 80;       # 監聽 IPv4 的 80 port
+    listen [::]:80;  # 監聽 IPv6 的 80 port（兩行並列以同時支援 IPv4/IPv6，詳見第二章）
 
-    server_name mysite.com www.mysite.com;
+    server_name mysite.com www.mysite.com;  # 此站台負責的域名（同時涵蓋 www 與非 www）
 
-    root /var/www/mysite.com/html;
-    index index.html index.htm;
+    root /var/www/mysite.com/html;  # 網站根目錄（靜態檔案讀取位置）
+    index index.html index.htm;     # 請求目錄時依序嘗試的預設首頁
 
     # 存取日誌分開記錄
     access_log /var/log/nginx/mysite.com.access.log;
@@ -214,6 +220,13 @@ server_name example.com www.example.com blog.example.com;
 server_name _;
 ```
 
+> **備註：正規表示式那行怎麼讀？（`~^(?<subdomain>.+)\.example\.com$`）**
+> - `~`：開頭的 `~` 告訴 Nginx「接下來是正規表示式」，不是一般域名。
+> - `^` 與 `$`：分別錨定字串的開頭與結尾，要求整個 Host 完整符合這個模式。
+> - `(?<subdomain>.+)`：具名擷取群組——把「`.example.com` 前面的一個以上任意字元」擷取出來，並自動建立變數 `$subdomain` 供 server 區塊內使用（3.8 情境三就是靠它對應目錄）。
+> - `\.`：點（`.`）在 regex 中代表「任意字元」，要比對「真正的點」必須用 `\` 跳脫。
+> - 範例：請求 `Host: blog.example.com` → 匹配成功，`$subdomain` 的值為 `blog`。
+
 > **備註：`server_name _;` 代表什麼？**
 > - `_` 只是常見的佔位字串，用來表達「這不是要服務的正式網域」。
 > - 真正負責接住未匹配請求的是 `listen ... default_server;`，不是 `_` 本身。
@@ -264,8 +277,8 @@ server_name _;
 # www → 非 www
 server {
     listen 80;
-    server_name www.mysite.com;
-    return 301 http://mysite.com$request_uri;
+    server_name www.mysite.com;                # 這個 block 只負責接住 www 的請求
+    return 301 http://mysite.com$request_uri;  # 301 永久轉址到非 www，並保留原路徑與查詢字串
 }
 
 server {
@@ -275,6 +288,11 @@ server {
     # ... 其他設定
 }
 ```
+
+> **備註：`return 301 ...` 的 301 是什麼？**
+> - `301 Moved Permanently`：永久重導向。瀏覽器會快取這個結果，搜尋引擎也會把舊網址的權重轉移到新網址——所以 www / 非 www 的「正式統一」要用 301。
+> - 若只是暫時切換（例如活動頁、維護期間），請改用 `302`（暫時重導向），瀏覽器不會長期記住。
+> - `$request_uri` 會保留原本的路徑與查詢字串（見 3.4 備註），確保 `www.mysite.com/docs?id=1` 轉到 `mysite.com/docs?id=1`，而不是被丟回首頁。
 
 ### 將非 www 重導向到 www
 
@@ -414,6 +432,11 @@ server {
 127.0.0.1   admin.mysite.local
 ```
 
+> **備註：改 `/etc/hosts` 的作用**
+> - `hosts` 檔是本機的「域名 → IP 對照表」，查詢優先權高於 DNS。
+> - 把 `mysite.local` 等域名指向 `127.0.0.1` 後，瀏覽器存取這些域名都會連到本機的 Nginx；Nginx 再依請求的 `Host` 標頭（即 `server_name`）分流到不同站台，就能在一台開發機上模擬多站台。
+> - 只影響「這一台機器」；其他人無法透過這些域名連到你的環境，也不需要真的擁有這些網域。
+
 ```nginx
 # 開發環境設定
 server {
@@ -461,9 +484,9 @@ sudo nginx -t && sudo nginx -s reload
 ```nginx
 server {
     listen 80;
-    server_name ~^(?<subdomain>.+)\.mysite\.com$;
+    server_name ~^(?<subdomain>.+)\.mysite\.com$;  # regex 匹配子網域，擷取到 $subdomain 變數
 
-    root /var/www/$subdomain/html;
+    root /var/www/$subdomain/html;  # root 可使用變數：demo.mysite.com → /var/www/demo/html
     index index.html;
 
     # 如果目錄不存在，回傳 404
@@ -472,6 +495,14 @@ server {
     }
 }
 ```
+
+> **備註：這段設定怎麼運作？（逐條）**
+> - `server_name ~^(?<subdomain>.+)\.mysite\.com$;`：用具名擷取群組把子網域抓進 `$subdomain` 變數（regex 語法詳見 3.5 備註）。
+> - `root /var/www/$subdomain/html;`：`root` 路徑中可以使用變數——請求 `demo.mysite.com` 時，實際根目錄就是 `/var/www/demo/html`，新增站台只要建目錄、不必改設定。
+> - `if (!-d /var/www/$subdomain)`：
+>   - `-d`：測試「目錄是否存在」；類似的還有 `-f`（檔案存在）、`-e`（檔案/目錄/符號連結存在），前面加 `!` 都是取反。
+>   - 整句意思是「如果對應目錄不存在，直接回 404」，避免 Nginx 對不存在的站台回傳奇怪的錯誤。
+> - 補充：Nginx 的 `if` 在 `location` 內搭配某些指令有不少行為陷阱（社群俗稱「if is evil」），但像這裡「`if` + `return`」的單純用法是公認安全的模式。
 
 ### 情境四：同一個站台需要處理帶 port 和不帶 port 的請求
 

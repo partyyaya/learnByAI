@@ -417,10 +417,10 @@ rg 'http://' --glob '*.html' --glob '*.css' --glob '*.js' /var/www/yourdomain/
 # 3. 憑證不被信任（自簽憑證）→ 改用 Let's Encrypt
 
 # 檢查方式
-curl -v https://api.yourdomain.com/health
+curl -v https://api.yourdomain.com/healthaaa
 
 # 如果是自簽憑證問題（開發環境），可暫時略過驗證
-curl -k https://api.yourdomain.com/health
+curl -k https://api.yourdomain.com/healthaaa
 ```
 
 ### 情境四：不確定網站的 HTTP 版本
