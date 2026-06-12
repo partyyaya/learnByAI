@@ -116,19 +116,28 @@ docker compose version
 ### Ubuntu / Debian
 
 ```bash
-# 移除舊版本
+# 移除舊版本（避免與官方套件衝突；首次安裝可能顯示「找不到套件」屬正常）
 sudo apt remove docker docker-engine docker.io containerd runc
 
 # 安裝必要套件
 sudo apt update
+# ca-certificates：HTTPS 憑證；curl：下載 GPG key；gnupg：處理金鑰；lsb-release：取得系統版本資訊
 sudo apt install ca-certificates curl gnupg lsb-release -y
 
-# 新增 Docker 官方 GPG key
+# 新增 Docker 官方 GPG key（用來驗證之後下載的套件「確實來自 Docker 官方、未被竄改」）
+# install -m 0755 -d：建立存放金鑰的目錄並設定權限（-d 建目錄、-m 0755 設權限）
 sudo install -m 0755 -d /etc/apt/keyrings
+# curl 下載官方金鑰 → gpg --dearmor 轉成 apt 能讀的二進位格式 → 存到 keyrings 目錄
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+# 讓所有使用者可讀此金鑰（a+r），否則 apt update 可能因權限讀不到而報錯
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
-# 新增 Docker 套件庫
+# 新增 Docker 套件庫（告訴 apt「去哪裡、用哪把金鑰、抓哪個版本」的套件）
+# 這段是把一行 deb 來源寫進 /etc/apt/sources.list.d/docker.list：
+#   arch=$(dpkg --print-architecture)：自動帶入本機 CPU 架構（如 amd64/arm64）
+#   signed-by=...docker.gpg：指定用上面那把金鑰驗證此來源
+#   $(. /etc/os-release && echo "$VERSION_CODENAME")：自動帶入 Ubuntu 版本代號（如 jammy/noble）
+#   tee ... > /dev/null：把內容寫進檔案（需 sudo 權限），> /dev/null 是不要在畫面重複印出
 echo \
   "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
   https://download.docker.com/linux/ubuntu \
@@ -136,12 +145,14 @@ echo \
   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
 
 # 安裝 Docker Engine
-sudo apt update
+sudo apt update    # 重新讀取套件清單（含剛加入的 Docker 來源）
+# docker-ce：Docker 引擎；docker-ce-cli：docker 指令；containerd.io：底層容器執行階段
+# docker-buildx-plugin：進階建構；docker-compose-plugin：提供 docker compose 指令
 sudo apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
 
-# 讓當前使用者不需要 sudo 即可執行 docker
+# 讓當前使用者不需要 sudo 即可執行 docker（把使用者加進 docker 群組）
 sudo usermod -aG docker $USER
-newgrp docker
+newgrp docker      # 讓群組變更立即在目前 shell 生效（否則需重新登入）
 
 # 驗證安裝
 docker --version

@@ -103,58 +103,58 @@ kubectl get namespace k8s-practice
 `02-deployment.yaml`：
 
 ```yaml
-apiVersion: apps/v1
+apiVersion: apps/v1          # Deployment 屬於 apps/v1
 kind: Deployment
 metadata:
   name: web
   namespace: k8s-practice
 spec:
-  replicas: 2
+  replicas: 2                # 期望的 Pod 副本數（之後交給 HPA 自動調整）
   selector:
     matchLabels:
-      app: web
-  template:
+      app: web               # 這個 Deployment 管理帶 app=web 標籤的 Pod
+  template:                  # 要建立的 Pod 範本
     metadata:
       labels:
-        app: web
+        app: web             # Pod 標籤，需對上上面的 selector
     spec:
       containers:
         - name: web
-          image: registry.k8s.io/hpa-example
+          image: registry.k8s.io/hpa-example  # K8s 官方提供、會吃 CPU 的示範映像（方便測 HPA）
           ports:
             - containerPort: 80
-              name: http
+              name: http     # 幫這個埠取名 http，後面 Service/Probe 可用名稱引用（埠號改了也不用改多處）
           resources:
-            # requests：排程時「至少要有」的資源
+            # requests：排程時「至少要有」的資源（K8s 用它決定 Pod 放哪個節點；也是 HPA 計算使用率的分母）
             requests:
-              cpu: 100m
+              cpu: 100m       # 100m = 0.1 顆 CPU（m 是 millicore，1000m = 1 核）
               memory: 128Mi
-            # limits：容器「最多可用」的資源上限
+            # limits：容器「最多可用」的資源上限（CPU 超過會被限速；記憶體超過會被 OOMKilled）
             limits:
               cpu: 500m
               memory: 256Mi
           startupProbe:
-            # 啟動探針：給冷啟動時間，避免剛啟動就被判定失敗
+            # 啟動探針：給冷啟動時間，通過前不會跑 readiness/liveness，避免啟動慢的程式被誤殺
             httpGet:
-              path: /
-              port: http
-            periodSeconds: 5
-            failureThreshold: 30
+              path: /         # 對容器發 HTTP GET /
+              port: http      # 用上面命名的 http 埠
+            periodSeconds: 5        # 每 5 秒探一次
+            failureThreshold: 30    # 最多容忍 30 次失敗（≈ 5×30=150 秒的啟動緩衝）
           readinessProbe:
-            # 就緒探針：通過才會加入 Service 流量池
+            # 就緒探針：通過才會被加入 Service 的流量池；失敗會「暫停送流量」但不重啟
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 3
+            initialDelaySeconds: 3  # 容器起來後等 3 秒才開始探
             periodSeconds: 5
-            timeoutSeconds: 1
-            failureThreshold: 3
+            timeoutSeconds: 1       # 單次探測逾時 1 秒
+            failureThreshold: 3     # 連續 3 次失敗才判定為「未就緒」
           livenessProbe:
-            # 存活探針：失敗太多次會觸發容器重啟
+            # 存活探針：判斷「程式是否還活著」，連續失敗會「重啟容器」
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 10
+            initialDelaySeconds: 10 # 給比 readiness 更長的緩衝，避免啟動期就重啟
             periodSeconds: 10
             timeoutSeconds: 1
             failureThreshold: 3
@@ -171,13 +171,13 @@ metadata:
   name: web
   namespace: k8s-practice
 spec:
-  type: ClusterIP
+  type: ClusterIP            # 叢集內部入口（之後由 Ingress 從外部接進來）
   selector:
-    app: web
+    app: web                 # 把流量導向帶 app=web 標籤的 Pod
   ports:
     - name: http
-      port: 80
-      targetPort: http
+      port: 80               # Service 對外提供的埠
+      targetPort: http       # 轉發到 Pod 容器名為 http 的埠（即 Deployment 裡的 containerPort 80）
 ```
 
 ### 12.4.4 套用與驗證
@@ -210,24 +210,24 @@ kubectl -n k8s-practice describe pod -l app=web
 `04-ingress.yaml`：
 
 ```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+apiVersion: networking.k8s.io/v1   # Ingress 屬於 networking.k8s.io/v1
+kind: Ingress                      # Ingress：HTTP(S) 的 L7 入口，依 Host/Path 把外部流量導到不同 Service
 metadata:
   name: web
   namespace: k8s-practice
 spec:
-  ingressClassName: nginx
+  ingressClassName: nginx          # 由哪個 Ingress Controller 處理（這裡是 ingress-nginx）
   rules:
-    - host: web.k8s.local
+    - host: web.k8s.local          # 比對請求的 Host 標頭；只有這個網域的請求才套用以下規則
       http:
         paths:
-          - path: /
-            pathType: Prefix
+          - path: /                # 比對路徑（這裡是所有路徑）
+            pathType: Prefix       # 比對方式：前綴比對（/ 會匹配所有路徑）
             backend:
               service:
-                name: web
+                name: web          # 轉發到名為 web 的 Service
                 port:
-                  number: 80
+                  number: 80       # 轉發到 Service 的 80 埠
 ```
 
 ### 12.5.2 套用與驗證 Ingress
@@ -258,25 +258,25 @@ curl -i -H "Host: web.k8s.local" "http://${MINIKUBE_IP}/"
 `05-hpa.yaml`：
 
 ```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2         # HPA v2 才支援多種指標來源
+kind: HorizontalPodAutoscaler      # HPA：依指標自動增減 Pod 副本數（水平擴縮）
 metadata:
   name: web
   namespace: k8s-practice
 spec:
-  scaleTargetRef:
+  scaleTargetRef:                  # 要自動擴縮「哪個」工作負載
     apiVersion: apps/v1
     kind: Deployment
-    name: web
-  minReplicas: 2
-  maxReplicas: 10
+    name: web                      # 對應前面建立的 web Deployment
+  minReplicas: 2                   # 副本數下限（再閒也至少留 2 份）
+  maxReplicas: 10                  # 副本數上限（再忙也不超過 10 份）
   metrics:
-    - type: Resource
+    - type: Resource               # 以資源用量當擴縮依據
       resource:
-        name: cpu
+        name: cpu                  # 看 CPU
         target:
-          type: Utilization
-          averageUtilization: 50
+          type: Utilization        # 以「使用率」判斷（相對於 requests.cpu 的百分比）
+          averageUtilization: 50   # 目標：所有 Pod 平均 CPU 維持在 50%，超過就擴容、低於就縮容
 ```
 
 ### 12.6.2 套用並觀察 HPA
@@ -440,18 +440,20 @@ helm lint ./web
 把 `web/values.yaml` 重要區段改成以下內容：
 
 ```yaml
-replicaCount: 2
+# values.yaml：Helm chart 的「預設參數」；不同環境可用 -f 或 --set 覆寫這些值
+# 模板（templates/*.yaml）會用 .Values.xxx 讀到這裡的設定
+replicaCount: 2              # 對應 Deployment 的 replicas
 
 image:
-  repository: registry.k8s.io/hpa-example
-  pullPolicy: IfNotPresent
-  tag: ""
+  repository: registry.k8s.io/hpa-example  # 映像名稱（不含 tag）
+  pullPolicy: IfNotPresent   # 拉取策略：本機已有就不重抓（latest 常設 Always）
+  tag: ""                    # 空字串時，chart 通常會 fallback 用 Chart.appVersion 當 tag
 
 service:
-  type: ClusterIP
-  port: 80
+  type: ClusterIP            # Service 型態
+  port: 80                   # Service 對外埠
 
-resources:
+resources:                   # 帶進容器的 requests/limits（語意同前面 Deployment 的說明）
   requests:
     cpu: 100m
     memory: 128Mi
@@ -459,6 +461,7 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# 三種探針的設定（會被下方模板用 toYaml 整段套進容器設定）
 startupProbe:
   httpGet:
     path: /
@@ -483,21 +486,21 @@ readinessProbe:
   failureThreshold: 3
 
 ingress:
-  enabled: true
-  className: nginx
-  annotations: {}
+  enabled: true              # 是否建立 Ingress（chart 模板會依此決定要不要產生）
+  className: nginx           # 對應 ingressClassName
+  annotations: {}            # 額外註解（如 cert-manager、流量設定），這裡留空
   hosts:
-    - host: web.k8s.local
+    - host: web.k8s.local    # 對外網域
       paths:
         - path: /
           pathType: Prefix
-  tls: []
+  tls: []                    # TLS 設定（空陣列＝先不啟用 HTTPS）
 
 autoscaling:
-  enabled: true
+  enabled: true              # 是否建立 HPA
   minReplicas: 2
   maxReplicas: 10
-  targetCPUUtilizationPercentage: 50
+  targetCPUUtilizationPercentage: 50  # 目標平均 CPU 使用率（同 HPA 的 averageUtilization）
 ```
 
 ### 12.9.4 補上 startupProbe 模板（若你的 chart 預設沒有）
@@ -518,6 +521,15 @@ autoscaling:
             {{- toYaml . | nindent 12 }}
           {{- end }}
 ```
+
+這段是 Helm 的 Go 模板語法，逐項拆解：
+
+- `{{ ... }}`：模板指令；前綴的 `-`（如 `{{-`）會「吃掉左邊的空白與換行」，避免渲染出多餘空行。
+- `{{- with .Values.startupProbe }} ... {{- end }}`：**條件式 + 切換作用域**。只有當 `values.yaml` 有設定 `startupProbe` 時才產生這段；在 `with` 區塊內，`.` 就代表 `.Values.startupProbe` 本身。
+- `toYaml .`：把 `.`（這裡是 probe 的整個物件）轉回 YAML 字串，省得逐欄位手寫。
+- `| nindent 12`：用管線把上一步的 YAML 結果，每行縮排 12 個空白（n＝先換行再縮排），讓它正好對齊 `startupProbe:` 底下的層級。
+
+> 一句話：「如果 values 有設這個 probe，就把它整段轉成 YAML、縮排對齊後填進來」。這也是為什麼只要改 `values.yaml` 就能調整探針，不必動模板。
 
 ### 12.9.5 安裝、升級、回滾
 

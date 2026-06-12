@@ -147,12 +147,12 @@ docker run -d \
 services:
   api:
     image: my-api
-    read_only: true
-    tmpfs:
-      - /tmp:size=100m
-      - /var/run
+    read_only: true            # 整個容器檔案系統設為唯讀，被入侵也無法竄改檔案（強化防禦）
+    tmpfs:                      # 唯讀後，仍需暫時寫入的目錄改掛到記憶體（容器停止即清空）
+      - /tmp:size=100m         # /tmp 限制 100MB
+      - /var/run               # 例如 pid 檔、socket 等執行期暫存
     volumes:
-      - api-logs:/app/logs    # 只有需要持久化的目錄可寫
+      - api-logs:/app/logs    # 只有需要持久化的目錄可寫（用 Volume 明確開放）
 ```
 
 ### 限制 Capabilities
@@ -266,10 +266,10 @@ services:
   nginx:
     image: nginx:1.25-alpine
     ports:
-      - "443:443"
+      - "443:443"                          # 對外只開 HTTPS
     volumes:
-      - ./certs:/etc/nginx/certs:ro
-      - ./nginx-ssl.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro        # 掛入 TLS 憑證與私鑰（唯讀，容器不應改它）
+      - ./nginx-ssl.conf:/etc/nginx/conf.d/default.conf:ro  # 掛入啟用 SSL 的站台設定（唯讀）
 ```
 
 ---
@@ -284,19 +284,22 @@ services:
   db:
     image: postgres:16-alpine
     environment:
+      # 注意是 POSTGRES_PASSWORD_FILE（結尾 _FILE），值是「檔案路徑」而非密碼本身
+      # 很多官方映像支援這種 *_FILE 慣例：從檔案讀祕密，避免密碼出現在環境變數（docker inspect 看得到環境變數）
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
     secrets:
-      - db_password
+      - db_password            # 宣告這個服務要用 db_password，Docker 會把它掛到 /run/secrets/db_password
 
   api:
     build: .
     secrets:
-      - db_password
+      - db_password            # 同一個 secret 可被多個服務共用
       - api_key
 
+# 頂層 secrets：定義祕密的「來源」
 secrets:
   db_password:
-    file: ./secrets/db_password.txt
+    file: ./secrets/db_password.txt  # 來源是本機檔案；內容會以唯讀方式掛到容器的 /run/secrets/db_password
   api_key:
     file: ./secrets/api_key.txt
 ```

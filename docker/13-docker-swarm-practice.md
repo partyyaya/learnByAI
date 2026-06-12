@@ -155,56 +155,56 @@ CLI 建 service 很快，但實務上更建議把配置寫進檔案做版本管�
 ### 13.5.1 建立 stack-demo.yml
 
 ```yaml
-version: "3.9"
+version: "3.9"                       # stack 檔的格式版本（stack deploy 仍需指定 version）
 
 services:
   web:
     image: nginx:1.25-alpine
     ports:
-      - target: 80
-        published: 8080
+      - target: 80                   # 容器內的埠
+        published: 8080              # 對外發布的埠
         protocol: tcp
-        mode: ingress
+        mode: ingress                # ingress 模式：啟用 routing mesh，打任一節點的 8080 都會被導到服務
     networks:
       - app-net
-    deploy:
-      replicas: 3
-      update_config:
-        parallelism: 1
-        delay: 10s
-        order: start-first
-        failure_action: rollback
-      rollback_config:
+    deploy:                          # deploy：Swarm 專屬設定（docker stack deploy 才會完整生效）
+      replicas: 3                    # 這個服務要跑 3 個副本（task）
+      update_config:                 # 滾動更新策略（docker service update 時的行為）
+        parallelism: 1               # 一次更新 1 個副本（降低同時失敗的風險）
+        delay: 10s                   # 每批更新之間等 10 秒
+        order: start-first           # 先啟動新副本、確認可用後再停舊副本（降低中斷；預設是 stop-first）
+        failure_action: rollback     # 更新若失敗，自動回滾到舊版
+      rollback_config:               # 回滾時的策略
         parallelism: 1
         delay: 5s
-        order: stop-first
+        order: stop-first            # 回滾時先停舊的再起，較保守
       restart_policy:
-        condition: on-failure
-        max_attempts: 3
+        condition: on-failure        # 只在非正常退出時重啟
+        max_attempts: 3              # 最多重試 3 次
       resources:
-        limits:
+        limits:                      # 上限：單副本最多用這麼多
           cpus: "0.50"
           memory: 256M
-        reservations:
+        reservations:                # 預留：排程時保證至少有這麼多資源才放上去
           cpus: "0.10"
           memory: 64M
       placement:
         constraints:
-          - node.role == manager
+          - node.role == manager     # 限制只能排到 manager 節點（依需求也可改成 worker 或自訂 label）
 
-  whoami:
+  whoami:                            # 簡單的測試服務，會回傳自己的容器/請求資訊
     image: traefik/whoami:v1.10.1
     networks:
       - app-net
     deploy:
       replicas: 2
       restart_policy:
-        condition: any
+        condition: any               # 任何結束（含正常 exit 0）都重啟，維持常駐
 
 networks:
   app-net:
-    driver: overlay
-    attachable: true
+    driver: overlay                  # overlay：跨節點的 Swarm 網路，讓不同主機上的容器能互通
+    attachable: true                 # 允許非 stack 的獨立容器也能 docker network connect 進來（排錯方便）
 ```
 
 ### 13.5.2 部署 Stack

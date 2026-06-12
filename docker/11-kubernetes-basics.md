@@ -106,44 +106,44 @@ curl -I http://127.0.0.1:8080
 ### deployment.yaml（範例）
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: apps/v1          # 此資源使用的 API 群組/版本（Deployment 屬於 apps/v1）
+kind: Deployment             # 資源類型：Deployment（管理一組 Pod 副本與滾動更新）
 metadata:
-  name: web
-  namespace: demo
-spec:
-  replicas: 2
+  name: web                  # 這個 Deployment 的名稱
+  namespace: demo            # 放在哪個 namespace（邏輯隔離）
+spec:                        # spec：描述「期望狀態」，K8s 會持續讓現況趨近於此
+  replicas: 2                # 期望跑 2 份 Pod 副本
   selector:
     matchLabels:
-      app: web
-  template:
+      app: web               # 這個 Deployment 管理「帶有 app=web 標籤」的 Pod
+  template:                  # template：要建立的 Pod 長什麼樣子（Pod 範本）
     metadata:
       labels:
-        app: web
-    spec:
-      containers:
-        - name: web
-          image: nginx:1.25-alpine
+        app: web             # Pod 會被貼上這個標籤；必須對得上上面的 selector.matchLabels
+    spec:                    # Pod 的規格
+      containers:            # 一個 Pod 可含多個容器，這裡只有一個
+        - name: web          # 容器名稱
+          image: nginx:1.25-alpine  # 使用的映像
           ports:
-            - containerPort: 80
+            - containerPort: 80      # 宣告容器監聽 80（資訊用途，方便閱讀與工具識別）
 ```
 
 ### service.yaml（範例）
 
 ```yaml
-apiVersion: v1
-kind: Service
+apiVersion: v1               # Service 屬於核心群組，版本是 v1
+kind: Service                # 資源類型：Service（提供一個穩定的存取入口給會變動的 Pod）
 metadata:
-  name: web
+  name: web                  # Service 名稱；同 namespace 內可用這個名稱當 DNS 連線
   namespace: demo
 spec:
   selector:
-    app: web
+    app: web                 # 用標籤選出要導流的 Pod（對上 Deployment 的 app=web）
   ports:
-    - port: 80
-      targetPort: 80
+    - port: 80               # Service 對外提供的埠（其他服務連 web:80 時的這個 80）
+      targetPort: 80         # 實際轉發到 Pod 容器的埠（可與 port 不同）
       protocol: TCP
-  type: ClusterIP
+  type: ClusterIP            # 服務型態：僅叢集內可達（最常見的內部服務型態）
 ```
 
 套用與檢查：

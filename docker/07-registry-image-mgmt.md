@@ -93,17 +93,18 @@ docker pull ghcr.io/username/my-app:v1.0
 # docker-compose.yml
 services:
   registry:
-    image: registry:2
+    image: registry:2                # 官方 Registry 映像（v2 API）
     ports:
-      - "5000:5000"
+      - "5000:5000"                  # Registry 預設監聽 5000
     volumes:
-      - registry-data:/var/lib/registry
+      - registry-data:/var/lib/registry  # 持久化映像資料（預設儲存路徑），否則容器刪掉映像就沒了
     environment:
+      # 允許透過 API 刪除映像（預設關閉）；之後才能配合 garbage-collect 真正回收空間
       REGISTRY_STORAGE_DELETE_ENABLED: "true"
     restart: unless-stopped
 
 volumes:
-  registry-data:
+  registry-data:                     # 存放所有推送上來的映像
 ```
 
 ```bash
@@ -130,33 +131,35 @@ curl http://localhost:5000/v2/my-app/tags/list
 
 ```yaml
 # docker-compose.yml（生產級 Registry）
+# 說明：Registry 的設定可全部用環境變數覆蓋，命名規則是把設定階層用底線串起來並全大寫，
+#       例如設定檔的 http.tls.certificate → 環境變數 REGISTRY_HTTP_TLS_CERTIFICATE
 services:
   registry:
     image: registry:2
     ports:
-      - "443:443"
+      - "443:443"                    # 對外用 HTTPS 標準埠
     volumes:
-      - registry-data:/var/lib/registry
-      - ./certs:/certs:ro
-      - ./auth:/auth:ro
+      - registry-data:/var/lib/registry # 持久化映像資料
+      - ./certs:/certs:ro            # 掛入 TLS 憑證（唯讀）
+      - ./auth:/auth:ro              # 掛入帳密檔（唯讀）
     environment:
-      REGISTRY_HTTP_ADDR: 0.0.0.0:443
-      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/domain.crt
-      REGISTRY_HTTP_TLS_KEY: /certs/domain.key
-      REGISTRY_AUTH: htpasswd
-      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd
-      REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm"
-      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+      REGISTRY_HTTP_ADDR: 0.0.0.0:443            # Registry 監聽位址與埠（綁 0.0.0.0 才能對外）
+      REGISTRY_HTTP_TLS_CERTIFICATE: /certs/domain.crt # TLS 憑證檔路徑（容器內）
+      REGISTRY_HTTP_TLS_KEY: /certs/domain.key   # TLS 私鑰檔路徑（容器內）
+      REGISTRY_AUTH: htpasswd                    # 啟用 htpasswd 帳密認證
+      REGISTRY_AUTH_HTPASSWD_PATH: /auth/htpasswd # 帳密檔路徑（下一段用 htpasswd 產生）
+      REGISTRY_AUTH_HTPASSWD_REALM: "Registry Realm" # 認證 realm 名稱（會顯示在登入提示）
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"    # 允許刪除映像（配合 garbage-collect 回收空間）
     restart: unless-stopped
 
-  registry-ui:
+  registry-ui:                       # 選用：給 Registry 加上網頁瀏覽介面
     image: joxit/docker-registry-ui:latest
     ports:
-      - "8080:80"
+      - "8080:80"                    # 瀏覽器開 http://localhost:8080 瀏覽映像
     environment:
-      REGISTRY_TITLE: "My Docker Registry"
-      REGISTRY_URL: https://registry:443
-      SINGLE_REGISTRY: "true"
+      REGISTRY_TITLE: "My Docker Registry" # UI 標題
+      REGISTRY_URL: https://registry:443   # UI 後端要連的 Registry 位址（用服務名稱 registry）
+      SINGLE_REGISTRY: "true"              # 固定只連這一個 Registry（不讓使用者在 UI 切換）
     depends_on:
       - registry
 
@@ -166,11 +169,18 @@ volumes:
 
 ```bash
 # 建立認證檔案
+# 借用 httpd 映像內建的 htpasswd 工具來產生帳密檔（本機不必另外安裝 apache-utils）
 mkdir -p auth
+# --rm：跑完即刪容器；--entrypoint htpasswd：把容器進入點改成 htpasswd 指令
+# httpd:2：提供 htpasswd 的映像；後面是傳給 htpasswd 的參數
+#   -B：用 bcrypt 加密（Registry 要求）
+#   -b：從命令列直接帶入密碼（batch，不互動詢問）
+#   -n：把結果輸出到 stdout（不寫檔），再由 shell 的 > 導向到 auth/htpasswd
+# admin / mysecretpassword：帳號與密碼（請自行替換）
 docker run --rm --entrypoint htpasswd \
   httpd:2 -Bbn admin mysecretpassword > auth/htpasswd
 
-# 登入自建 Registry
+# 登入自建 Registry（輸入剛建立的帳密；之後才能 push/pull）
 docker login myregistry.example.com
 ```
 

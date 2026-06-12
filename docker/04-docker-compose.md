@@ -504,58 +504,58 @@ services:
 ```yaml
 # docker-compose.yml
 services:
-  api:
+  api:                                 # 後端 API 服務
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: ./backend               # 建構上下文：用 ./backend 目錄的內容來 build
+      dockerfile: Dockerfile           # 指定使用的 Dockerfile（檔名就是預設值，可省略）
     ports:
-      - "3000:3000"
+      - "3000:3000"                    # 主機 3000 對映到容器 3000（格式為 主機埠:容器埠）
     environment:
-      NODE_ENV: production
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_NAME: myapp
-      DB_USER: postgres
-      DB_PASSWORD: ${DB_PASSWORD}
-      REDIS_URL: redis://redis:6379
+      NODE_ENV: production             # 讓 Node 應用以正式模式啟動
+      DB_HOST: db                      # 用「服務名稱 db」連線，由 Compose 內建 DNS 解析（不要寫 localhost）
+      DB_PORT: 5432                    # PostgreSQL 預設埠
+      DB_NAME: myapp                   # 要連線的資料庫名稱
+      DB_USER: postgres                # 資料庫帳號
+      DB_PASSWORD: ${DB_PASSWORD}      # 從 .env 的 DB_PASSWORD 帶入，避免把密碼明文寫死在此檔
+      REDIS_URL: redis://redis:6379    # Redis 連線字串，同樣用服務名稱 redis
     depends_on:
       db:
-        condition: service_healthy
+        condition: service_healthy     # 等 db 健康檢查通過才啟動 api（不只是容器有起來）
       redis:
-        condition: service_healthy
-    restart: unless-stopped
+        condition: service_healthy     # 等 redis 健康檢查通過才啟動 api
+    restart: unless-stopped            # 異常退出會自動重啟；但你手動 stop 後不會被自動拉起
     networks:
-      - app-network
+      - app-network                    # 加入下方定義的 app-network
 
-  db:
-    image: postgres:16-alpine
+  db:                                  # PostgreSQL 資料庫服務
+    image: postgres:16-alpine          # 官方 PostgreSQL 16 的 alpine 精簡映像
     environment:
-      POSTGRES_DB: myapp
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: myapp               # 容器第一次啟動時自動建立的資料庫
+      POSTGRES_USER: postgres          # 初始化的超級使用者帳號
+      POSTGRES_PASSWORD: ${DB_PASSWORD} # 初始化密碼（從 .env 帶入）
     volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata:/var/lib/postgresql/data # 具名 Volume 持久化資料，容器刪除重建後資料仍在
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql # 首次初始化時自動執行的 SQL（此目錄下的 .sql 會被自動跑）
     ports:
-      - "5432:5432"
+      - "5432:5432"                    # 對外開放 5432，方便本機用工具連線（正式環境通常不對外開）
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "pg_isready -U postgres"] # 用 pg_isready 確認 DB 是否可接受連線
+      interval: 5s                     # 每 5 秒檢查一次
+      timeout: 5s                      # 單次檢查最多等 5 秒
+      retries: 5                       # 連續失敗 5 次才標記為 unhealthy
     restart: unless-stopped
     networks:
       - app-network
 
-  redis:
+  redis:                               # Redis 快取服務
     image: redis:7-alpine
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes # 啟用 AOF 持久化（append-only file），重啟後資料可回復
     volumes:
-      - redis-data:/data
+      - redis-data:/data               # 持久化 Redis 資料（AOF/RDB 檔放這）
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "ping"] # 用 redis-cli ping，回 PONG 代表健康
       interval: 5s
       timeout: 3s
       retries: 5
@@ -563,32 +563,41 @@ services:
     networks:
       - app-network
 
-volumes:
-  pgdata:
-  redis-data:
+volumes:                               # 頂層宣告具名 Volume（資源本體）
+  pgdata:                              # 對應 db 服務使用的 pgdata
+  redis-data:                          # 對應 redis 服務使用的 redis-data
 
-networks:
+networks:                              # 頂層宣告自訂網路
   app-network:
-    driver: bridge
+    driver: bridge                     # 單機常用的 bridge 驅動；同網路的服務可用服務名互連
 ```
 
 對應的 Dockerfile：
 
 ```dockerfile
 # backend/Dockerfile
+
+# 以 Node.js 20 的 alpine 精簡映像為基底
 FROM node:20-alpine
 
+# 設定容器內工作目錄，後續相對路徑都以 /app 為基準
 WORKDIR /app
 
+# 先只複製依賴描述檔，善用 layer 快取（程式碼變動時不會重裝套件）
 COPY package.json package-lock.json ./
+# 依 lock file 安裝正式環境依賴，可重現且映像較小
 RUN npm ci --only=production
 
+# 再複製其餘原始碼（這層之後才會因程式碼變動而失效）
 COPY . .
 
+# 建立非 root 系統使用者/群組（安全性），並切換過去
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 USER appuser
 
+# 宣告容器內監聽 3000（僅 metadata，實際對外仍由 Compose 的 ports 決定）
 EXPOSE 3000
+# 容器啟動時在容器內執行的預設命令
 CMD ["node", "server.js"]
 ```
 
@@ -597,89 +606,101 @@ CMD ["node", "server.js"]
 ```yaml
 # docker-compose.yml
 services:
-  nginx:
+  nginx:                             # 對外的 Web 伺服器，負責處理 HTTP 並把 PHP 請求轉給 php-fpm
     image: nginx:1.25-alpine
     ports:
-      - "80:80"
+      - "80:80"                      # 對外開放 80 埠
     volumes:
-      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
-      - ./src:/var/www/html:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro # 掛入自訂站台設定（:ro 唯讀，容器不應改它）
+      - ./src:/var/www/html:ro       # 掛入 Laravel 程式碼（唯讀；Nginx 只需讀取靜態檔與 public/）
     depends_on:
-      - php
+      - php                          # 先啟動 php 再啟動 nginx（僅保證順序，不等就緒）
     networks:
       - app-network
 
-  php:
+  php:                               # PHP-FPM 應用容器（實際執行 Laravel 程式）
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: .                     # 用專案根目錄當建構上下文
+      dockerfile: Dockerfile         # 使用根目錄的 Dockerfile 建構 PHP 映像
     volumes:
-      - ./src:/var/www/html
+      - ./src:/var/www/html          # 掛入程式碼（可寫，開發時改碼即生效）
     environment:
-      DB_HOST: mysql
-      DB_DATABASE: laravel
-      DB_USERNAME: laravel
-      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: mysql                 # 用服務名稱 mysql 連資料庫
+      DB_DATABASE: laravel           # 資料庫名稱（需與 mysql 服務一致）
+      DB_USERNAME: laravel           # 資料庫帳號
+      DB_PASSWORD: ${DB_PASSWORD}    # 密碼從 .env 帶入
     depends_on:
       mysql:
-        condition: service_healthy
+        condition: service_healthy   # 等 MySQL 健康檢查通過才啟動 php，避免一啟動就連不上 DB
     networks:
       - app-network
 
-  mysql:
+  mysql:                             # MySQL 資料庫服務
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: laravel
-      MYSQL_USER: laravel
-      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD} # root 密碼（從 .env 帶入）
+      MYSQL_DATABASE: laravel        # 首次啟動自動建立的資料庫
+      MYSQL_USER: laravel            # 首次啟動自動建立的一般使用者
+      MYSQL_PASSWORD: ${DB_PASSWORD} # 上述使用者的密碼
     volumes:
-      - mysql-data:/var/lib/mysql
+      - mysql-data:/var/lib/mysql    # 具名 Volume 持久化 MySQL 資料目錄
     ports:
-      - "3306:3306"
+      - "3306:3306"                  # 對外開放 3306，方便本機資料庫工具連線
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"] # 用 mysqladmin ping 確認 DB 已就緒
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
       - app-network
 
-  redis:
+  redis:                             # Redis（Laravel 可用於 cache / session / queue）
     image: redis:7-alpine
     networks:
       - app-network
 
 volumes:
-  mysql-data:
+  mysql-data:                        # 宣告 mysql 使用的具名 Volume
 
 networks:
-  app-network:
+  app-network:                       # 自訂 bridge 網路；四個服務都在此網路內可用服務名互連
 ```
 
 對應的 Dockerfile：
 
 ```dockerfile
 # Dockerfile（PHP-FPM）
+
+# PHP 8.3 的 FPM 版本（給 Nginx 透過 fastcgi 呼叫）
 FROM php:8.3-fpm-alpine
 
 # 安裝 PHP 擴展
+# docker-php-ext-install 是官方 PHP 映像內建的腳本，用來編譯/啟用擴展
+# pdo + pdo_mysql：連 MySQL 必備；opcache：快取編譯後的 bytecode，提升效能
 RUN docker-php-ext-install pdo pdo_mysql opcache
 
 # 安裝 Composer
+# 直接從官方 composer 映像複製執行檔過來，省去自行安裝的步驟（multi-stage 的小技巧）
 COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
+# Laravel 程式放在此目錄
 WORKDIR /var/www/html
 
+# 把主機 src/ 內的 Laravel 專案複製進來
 COPY src/ .
 
+# 安裝相依套件（--no-dev 不裝開發套件、--optimize-autoloader 產生最佳化 autoload）
 RUN composer install --no-dev --optimize-autoloader
 
+# Laravel 執行期需要寫入 storage 與 bootstrap/cache，這裡把擁有者改成 php-fpm 的執行帳號 www-data
 RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
 
+# 切換成非 root 的 www-data 執行（安全性）
 USER www-data
 
+# php-fpm 預設監聽 9000（給 Nginx 的 fastcgi_pass 連線）
 EXPOSE 9000
+# 啟動 php-fpm 常駐程序
 CMD ["php-fpm"]
 ```
 
@@ -688,24 +709,25 @@ CMD ["php-fpm"]
 ```yaml
 # docker-compose.yml
 services:
-  web:
-    build: .
+  web:                               # Django 應用（用 gunicorn 提供 WSGI 服務）
+    build: .                         # 用目前目錄的 Dockerfile 建構（web/worker/beat 共用同一個映像）
     command: gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 4
+                                     # 覆蓋映像預設 CMD：用 gunicorn 啟動，綁 0.0.0.0 才能被容器外連到，開 4 個 worker 行程
     ports:
-      - "8000:8000"
-    env_file: .env
+      - "8000:8000"                  # 對外開放 8000
+    env_file: .env                   # 從 .env 把所有變數注入容器（DB 連線、SECRET_KEY 等）
     depends_on:
       db:
-        condition: service_healthy
+        condition: service_healthy   # 等 PostgreSQL 就緒
       rabbitmq:
-        condition: service_healthy
+        condition: service_healthy   # 等 RabbitMQ 就緒（Celery 的訊息佇列）
     volumes:
-      - static-files:/app/staticfiles
+      - static-files:/app/staticfiles # 與 nginx 共用的靜態檔 Volume（collectstatic 的輸出）
     restart: unless-stopped
 
-  celery-worker:
+  celery-worker:                     # Celery worker：實際執行非同步任務
     build: .
-    command: celery -A config worker -l info
+    command: celery -A config worker -l info  # 啟動 worker；-A config 指定 Celery app，-l info 設定日誌等級
     env_file: .env
     depends_on:
       db:
@@ -714,54 +736,54 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  celery-beat:
+  celery-beat:                       # Celery beat：排程器，定時把週期任務送進佇列
     build: .
-    command: celery -A config beat -l info
+    command: celery -A config beat -l info    # 啟動 beat 排程器
     env_file: .env
     depends_on:
-      - celery-worker
+      - celery-worker                # 在 worker 之後啟動
     restart: unless-stopped
 
-  db:
+  db:                                # PostgreSQL 資料庫
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_DB: ${DB_NAME}        # 以下三項皆從 .env 帶入，與 Django settings 對齊
       POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data # 持久化資料
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"] # 用設定的使用者做就緒檢查
       interval: 5s
       timeout: 5s
       retries: 5
 
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
+  rabbitmq:                          # 訊息佇列（Celery 的 broker）
+    image: rabbitmq:3-management-alpine # -management 版本內建 Web 管理介面
     ports:
-      - "15672:15672"   # Management UI
+      - "15672:15672"                # Management UI（瀏覽器 http://localhost:15672 可進管理頁）
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: guest   # 預設帳號（正式環境請改掉並用 secret）
+      RABBITMQ_DEFAULT_PASS: guest   # 預設密碼
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"] # 用內建診斷工具確認 broker 健康
       interval: 10s
       timeout: 5s
       retries: 5
 
-  nginx:
+  nginx:                             # 反向代理 + 提供靜態檔
     image: nginx:1.25-alpine
     ports:
       - "80:80"
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
-      - static-files:/app/staticfiles:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro # 自訂站台設定（唯讀）
+      - static-files:/app/staticfiles:ro # 共用 web 產生的靜態檔，由 Nginx 直接送出（唯讀）
     depends_on:
       - web
 
 volumes:
-  pgdata:
-  static-files:
+  pgdata:                            # db 使用的持久化 Volume
+  static-files:                      # web 與 nginx 共用的靜態檔 Volume
 ```
 
 ---

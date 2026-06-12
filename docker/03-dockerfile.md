@@ -654,16 +654,20 @@ dive my-app:latest
 # ❌ 錯誤做法
 FROM node:20-alpine
 WORKDIR /app
-COPY . .               # 任何檔案變動都會使快取失效
-RUN npm install         # 每次都重新安裝
+# 任何檔案變動都會使這層及之後的快取失效
+COPY . .
+# 結果：每次都重新安裝所有套件
+RUN npm install
 CMD ["node", "server.js"]
 
 # ✅ 正確做法：分離相依套件安裝與程式碼複製
 FROM node:20-alpine
 WORKDIR /app
-COPY package.json package-lock.json ./    # 只有 package.json 變動才會重裝
+# 先只複製依賴描述檔：只有 package.json / lock 變動時才會重裝
+COPY package.json package-lock.json ./
 RUN npm ci
-COPY . .                                   # 程式碼變動只影響這層
+# 程式碼變動只影響這層（之前的 npm ci 仍命中快取）
+COPY . .
 CMD ["node", "server.js"]
 ```
 
