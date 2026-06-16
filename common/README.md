@@ -10,6 +10,7 @@
 |------|------|------|
 | 01 | [01-http-https.md](./01-http-https.md) | HTTP 與 HTTPS — 網路通訊基礎與差異 |
 | 02 | [02-ssl-certificates.md](./02-ssl-certificates.md) | SSL 憑證的取得與必備知識 |
+| 03 | [03-domain-dns-https-nginx.md](./03-domain-dns-https-nginx.md) | 從申請網域到 HTTPS 上線 — 網域、DNS、憑證與前端 Nginx 實戰 |
 | — | [jwt-auth-frontend-backend.md](./jwt-auth-frontend-backend.md) | 前後端 JWT 登入與加密實戰 — 簽章、密碼雜湊、Token 流程與安全 |
 | — | [websocket.md](./websocket.md) | WebSocket 即時通訊實戰 — 握手升級、心跳重連、身分驗證與部署 |
 | — | [sse.md](./sse.md) | SSE 伺服器推送實戰 — text/event-stream、自動重連、斷點續傳與部署 |
@@ -38,6 +39,7 @@
 
 安全篇
   02 SSL 憑證 → 學會取得、安裝與管理 SSL 憑證
+  03 網域→HTTPS 上線 → 申請網域、設定 DNS、申請憑證、設定前端 Nginx 一條龍
   JWT 登入   → 在 HTTPS 之上，建立前後端的身分認證機制
 
 ```
