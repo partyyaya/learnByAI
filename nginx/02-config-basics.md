@@ -96,6 +96,15 @@ http {
 ```nginx
 worker_processes auto;                     # Worker 行程數量；auto = 依 CPU 核心數自動決定
 error_log /var/log/nginx/error.log warn;  # 錯誤日誌路徑 + 最低記錄等級（warn 以上才寫入）
+                                           # 等級由低到高：debug < info < notice < warn < error < crit < alert < emerg
+                                           #   debug  最詳細，含除錯資訊（需編譯時加 --with-debug）
+                                           #   info   一般資訊訊息
+                                           #   notice 值得注意但非錯誤的事件
+                                           #   warn   警告，可能有問題
+                                           #   error  發生錯誤，請求處理失敗
+                                           #   crit   嚴重錯誤，需立即處理
+                                           #   alert  必須馬上採取行動
+                                           #   emerg  系統不可用（最高等級）
 pid /var/run/nginx.pid;                   # Nginx master process 的 PID 檔案位置
 user www-data;                             # Worker 以哪個系統使用者身分執行（降低權限風險）
 worker_rlimit_nofile 65535;                # 提高每個 worker 可開啟的檔案描述符上限（高併發必備）
@@ -488,7 +497,10 @@ sudo nginx -s reload
 # 問題：兩個 server block 都監聽 80，且沒有正確設定 server_name
 server {
     listen 80;
-    server_name _;  # 這會變成預設伺服器
+    server_name _;  # 誤解：以為 _ 會自動變成預設伺服器（其實不會！）
+                    # _ 只是個「不會匹配任何網域」的無效佔位名稱，
+                    # 沒有 default_server，nginx 會用「設定檔中第一個 server」當預設，
+                    # 結果預設站台到底是誰變得不明確、容易踩雷
     root /var/www/default;
 }
 
@@ -500,9 +512,13 @@ server {
 
 # 解決方案：明確指定 default_server
 server {
-    listen 80 default_server;     # 明確標示為預設
-    server_name _;
-    return 444;                    # 拒絕未匹配的請求
+    listen 80 default_server;     # 關鍵：明確宣告「這個 block 是 80 埠的預設站台」
+                                  # 當請求的 Host 沒有匹配到任何 server_name 時，一律由它接手
+    server_name _;                # _ 是「保證不會撞到真實網域」的無效佔位名稱
+                                  # 真正決定預設的是 default_server，不是 _
+                                  # （這裡刻意不取真實網域，避免誤匹配到正常流量）
+    return 444;                   # nginx 特有：直接關閉連線、不回任何回應
+                                  # 用途：丟棄掃描器、亂填 Host、或無對應網域的請求
 }
 
 server {
@@ -511,6 +527,30 @@ server {
     root /var/www/api;
 }
 ```
+
+**什麼樣的請求才會進入 `default_server`？**
+
+nginx 選站台的依據是 **HTTP 請求的 `Host` 標頭**比對 `server_name`，**與網址路徑（`/`、`/login`…）無關**。只有當 `Host` 對不上任何 `server_name` 時，才會落到 `default_server`。
+
+| 請求情況 | Host 標頭 | 結果 |
+|---|---|---|
+| 直接用 IP 連線 | `1.2.3.4` | ❌ 不匹配 → 進 default_server（被 444 斷線） |
+| 連到沒設定的網域 | `www.example.com` | ❌ 不匹配 → 進 default_server |
+| 掃描器亂填 / 不給 Host | 空值或亂值 | ❌ 不匹配 → 進 default_server |
+| 連到 api 站台 | `api.example.com` | ✅ 匹配 → 由 api 的 server block 處理 |
+
+```bash
+# 驗證方法：用 curl -H 偽造 Host 標頭，不必真的改 DNS
+
+# Host 對不上 → 落到 default_server，被 return 444 斷線
+# curl 會顯示 "Empty reply from server"
+curl -v -H "Host: random.com" http://你的伺服器IP/
+
+# Host 匹配 → 正常由 api 站台處理
+curl -v -H "Host: api.example.com" http://你的伺服器IP/
+```
+
+> 重點：進不進 `default_server`，看的是 **Host 標頭有沒有匹配到 server_name**，而不是 URL 路徑。
 
 ### 情境三：修改設定後忘記重載
 
@@ -549,7 +589,8 @@ sudo nginx -t && sudo nginx -s reload
 <a id="note-1"></a>
 ### 【1】MIME 類型（`include /etc/nginx/mime.types;`）
 
-MIME（Multipurpose Internet Mail Extensions）類型是一種標準，用來告訴瀏覽器「這個檔案是什麼格式，該怎麼處理」。例如瀏覽器收到一個檔案時，需要知道它是 HTML 要渲染、是圖片要顯示、還是 ZIP 要下載。Nginx 透過 `mime.types` 檔案，根據副檔名對應到正確的 MIME 類型，並設定在回應的 `Content-Type` 標頭中。
+MIME（Multipurpose Internet Mail Extensions）類型是一種標準，用來告訴瀏覽器「這個檔案是什麼格式，該怎麼處理」。例如瀏覽器收到一個檔案時，需要知道它是 HTML 要渲染、是圖片要顯示、還是 ZIP 要下載。
+Nginx 透過 `mime.types` 檔案，根據副檔名對應到正確的 MIME 類型，並設定在回應的 `Content-Type` 標頭中。
 
 常見的對應關係：
 
