@@ -161,6 +161,37 @@ vite.svg                      ...
 - 如果你的程式 import 了某個 npm 套件,Network 裡會看到一個 `/node_modules/.vite/deps/xxx.js?v=...` 的請求——這證明了「**裸匯入被改寫 + 依賴被預打包**」(障礙 2、3 的解法)。
 - 那個 **`@vite/client`** 是 Vite 自動注入的一小段程式,負責跟 dev server 建立連線、接收熱更新訊息。第 05 章 HMR 會詳細拆它。
 
+#### 等一下:URL 明明是 `.ts`,瀏覽器怎麼知道這是 JS?
+
+這是個關鍵疑問,而答案會破除一個常見誤解:**瀏覽器判斷「這是不是 JS」靠的不是副檔名,而是 HTTP 回應的 `Content-Type` 標頭。**
+
+當瀏覽器發出 `GET /main.ts` 時,Vite dev server 在背後做了兩件事:
+
+1. **即時把 TS 轉成 JS**(把型別語法剝掉)。
+2. **回應時帶上標頭** `Content-Type: text/javascript`。
+
+所以瀏覽器收到的回應「長這樣」(簡化示意):
+
+```
+HTTP/1.1 200 OK
+Content-Type: text/javascript      ← 重點在這行!
+
+export const count = 0;            ← body 已經是純 JS,沒有型別語法了
+```
+
+瀏覽器看到 `Content-Type: text/javascript`,就知道「**這份內容要當成 JS 模組來執行**」,**完全不管 URL 結尾是 `.ts` 還是 `.js`**。
+
+副檔名只是檔案系統 / URL 上的一個「名字」,對 HTTP 傳輸毫無意義;瀏覽器在網路上認的是 `Content-Type`(也叫 MIME type)這個「**內容的身分證**」:
+
+| 層面 | 誰在乎副檔名? |
+|------|----------------|
+| 你的硬碟 / 編輯器 | 在乎(靠 `.ts` 知道用 TS 高亮、用 tsc 檢查) |
+| HTTP 傳輸 / 瀏覽器執行 | **不在乎**,只認 `Content-Type` |
+
+> ⚠️ **常見誤區補充**:`<script type="module">` 的 ESM 規範**強制要求** import 進來的模組,回應必須是 JavaScript 的 MIME type(`text/javascript` 之類)。如果 Vite 回的是 `text/plain` 或 `text/typescript`,瀏覽器反而會直接報錯拒絕執行。所以 Vite 「轉成 JS + 標上正確 Content-Type」這一步,是讓瀏覽器肯吃的**必要條件**。
+
+**順手再驗證一次**:在剛剛的 Network 面板裡點開 `main.ts` 這筆請求 → 切到 **Headers** 分頁 → 找 **Response Headers**,你會親眼看到 `Content-Type: text/javascript`。URL 是 `main.ts`,但回應的身分是 JS——這就是瀏覽器認得它的真正原因。
+
 **再做一個關鍵實驗,體會「按需」**:
 
 如果你的專案有某個模組,目前的頁面**還沒用到**(例如一個還沒點進去的路由頁面),你會發現 **Network 裡根本沒有它的請求**。只有當你實際導航到那個頁面、觸發了它的 import,Vite 才會去轉它、瀏覽器才會去抓它。
