@@ -260,7 +260,9 @@ if (import.meta.hot) {
 - **`data`**:在「舊模組」和「新模組」之間傳遞資料的橋。例如想在熱更新後保留某個計數值,就舊模組存進 `hot.data`、新模組讀回來。
 - **`invalidate`**:「我本來說我能接,結果發現這次更新我搞不定」,主動把更新往上游冒泡,讓更上層去處理(或最終整頁重載)。React Refresh 在偵測到「這個變動沒辦法安全地局部更新」時就會用它。
 
-> **動手理解 `dispose` 的價值**:寫一個模組,在頂層 `setInterval(() => console.log('tick'), 1000)`,但**不寫** `dispose`。然後改幾次這個檔案,看 console——你會看到 `tick` 越印越快(每次熱更新都多一個沒被清掉的計時器在跑)。加上 `import.meta.hot.dispose(() => clearInterval(timer))` 後再試,就正常了。這個實驗會讓你永遠記得 `dispose`。
+> **動手理解 `dispose` 的價值**:寫一個模組,在頂層 `setInterval(() => console.log('tick'), 1000)`,但**不寫** `dispose`。
+> 然後改幾次這個檔案,看 console——你會看到 `tick` 越印越快(每次熱更新都多一個沒被清掉的計時器在跑)。
+> 加上 `import.meta.hot.dispose(() => clearInterval(timer))` 後再試,就正常了。這個實驗會讓你永遠記得 `dispose`。
 
 ---
 

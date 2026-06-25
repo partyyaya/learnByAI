@@ -14,6 +14,7 @@
 | — | [jwt-auth-frontend-backend.md](./jwt-auth-frontend-backend.md) | 前後端 JWT 登入與加密實戰 — 簽章、密碼雜湊、Token 流程與安全 |
 | — | [websocket.md](./websocket.md) | WebSocket 即時通訊實戰 — 握手升級、心跳重連、身分驗證與部署 |
 | — | [sse.md](./sse.md) | SSE 伺服器推送實戰 — text/event-stream、自動重連、斷點續傳與部署 |
+| — | [web-worker.md](./web-worker.md) | Web Worker 背景執行緒實戰 — 使用情境、原生／Vue+Vite／React 範例與通訊優化 |
 
 ---
 
