@@ -49,7 +49,9 @@
 
 於是 Vite 的 plugin 介面 = **Rollup hook(這一章)+ Vite 專屬 hook(第 07 章)**。
 
-> **一個重要的認知校正**:dev 階段其實是 **Vite 自己實作了一個「Rollup 相容的 plugin 容器(plugin container)」**,在按需轉譯每個模組時去跑這些 hook;build 階段才是真正的 Rollup 在跑這些 hook。所以**同一個 plugin,在 dev 和 build 跑的「執行者」不同**,但「介面」一樣。這也是某些 plugin「dev 正常、build 出錯」的根源(又回扣第 00 章雙引擎主題)。
+> **一個重要的認知校正**:dev 階段其實是 **Vite 自己實作了一個「Rollup 相容的 plugin 容器(plugin container)」** 在按需轉譯每個模組時去跑這些 hook;
+> build 階段才是真正的 Rollup 在跑這些 hook。所以**同一個 plugin,在 dev 和 build 跑的「執行者」不同**
+> 但「介面」一樣。這也是某些 plugin「dev 正常、build 出錯」的根源(又回扣第 00 章雙引擎主題)。
 
 ---
 
@@ -351,6 +353,11 @@ Rollup/Vite 的 hook 大致分兩類,理解這個分類有助於你讀懂各種 
 - **動手寫了 plugin**,學到「一定要用 id 過濾」的鐵則。
 - **hook 兩大類**:改內容的(resolveId/load/transform)vs 管生命週期的(buildStart 等)。
 
-**下一章(07)**,進入 Plugin 系統的另一半——**Vite 專屬能力**:`config`(改設定)、`configureServer`(掛 dev server 中介層,例如做 mock API)、`transformIndexHtml`(改 HTML)、`handleHotUpdate`(自訂 HMR 行為,接回第 05 章)。還會講 plugin 的**執行順序**(`enforce: 'pre' / 'post'`)和**只在某階段生效**(`apply: 'build' / 'serve'`)——這些是讓多個 plugin 正確協作的關鍵。
+**下一章(07)**,進入 Plugin 系統的另一半——**Vite 專屬能力**:
+- `config`(改設定)
+- `configureServer`(掛 dev server 中介層,例如做 mock API)
+- `transformIndexHtml`(改 HTML)
+- `handleHotUpdate`(自訂 HMR 行為,接回第 05 章)。
+還會講 plugin 的**執行順序**(`enforce: 'pre' / 'post'`)和**只在某階段生效**(`apply: 'build' / 'serve'`)——這些是讓多個 plugin 正確協作的關鍵。
 
 > 💡 **動手作業**:① 把 6.4 的虛擬模組 plugin 加進你的專案,`import` 它並印出來,確認真的拿得到「不存在的檔案」的內容。② 把 6.5 的 `replaceBuildDate` 寫進去跑跑看,然後故意拿掉 `id` 的守衛條件,觀察建構是否變慢、或有沒有東西被誤改。

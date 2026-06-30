@@ -28,3 +28,10 @@
 | Docker | [docker/README.md](./docker/README.md) | 容器化、Compose、Kubernetes、Swarm、CI/CD | 13 |
 | Nginx | [nginx/README.md](./nginx/README.md) | 反向代理、負載均衡、效能、安全與高可用 | 12 |
 | Git 與協作 | [git/git.md](./git/git.md) | Git 指令實戰、GitHub 協作、CI/CD 自動化 | 3 文件 |
+| Canvas 互動圖形 | [canvas-course/README.md](./canvas-course/README.md) | 渲染模型(immediate/retained)、變換與相機、像素處理、命中測定、場景圖、效能、WebGL/WebGPU、手寫白板 | 12 |
+| React | [react/README.md](./react/README.md) | React 與 JS 基礎、TanStack Query、Zustand、可上線專題 | 13 |
+| 前端影音播放器 | [video-player-course/README.md](./video-player-course/README.md) | 編解碼與容器、HLS/DASH/MSE、WebRTC、直播推流、WebCodecs、效能監控 | 14 |
+| 圖片加密 | [image-encryption-course/README.md](./image-encryption-course/README.md) | 影像格式、XOR/標頭置亂、WebCrypto AES、Rust WASM、Canvas 渲染加固 | 9 |
+| 前端測試 | [frontend-testing-course/README.md](./frontend-testing-course/README.md) | 框架無關測試心法、單元/整合/E2E、可維護可重構可上線 | 14 |
+| Cloudflare Pages/Workers | [cloudflare-pages-workers-course/README.md](./cloudflare-pages-workers-course/README.md) | Pages + Workers 部署、串接、儲存選型、CI/CD 自動化 | 11 |
+| Python | [python-course/00-what-python-can-do.md](./python-course/00-what-python-can-do.md) | 從零到一的 Python:執行模型、語法、實戰落地 | 38 |

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mini-figma 白板 — Canvas 課 Capstone</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; font-family: system-ui, sans-serif; }
+    #toolbar {
+      position: fixed; top: 12px; left: 12px; z-index: 10;
+      display: flex; gap: 6px; background: rgba(255,255,255,.9);
+      padding: 6px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.12);
+    }
+    #toolbar button {
+      padding: 8px 14px; border: 1px solid #d0d0d0; border-radius: 6px;
+      background: #fff; cursor: pointer; font-size: 14px;
+    }
+    #toolbar button.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+    #toolbar .sep { width: 1px; background: #e0e0e0; margin: 0 4px; }
+    #hint { position: fixed; bottom: 12px; left: 12px; z-index: 10; color: #888; font-size: 12px; }
+    #stage { position: relative; width: 100vw; height: 100vh; background:
+      linear-gradient(#f3f4f6 1px, transparent 1px) 0 0 / 24px 24px,
+      linear-gradient(90deg, #f3f4f6 1px, transparent 1px) 0 0 / 24px 24px, #fafafa; }
+    .layer { position: absolute; top: 0; left: 0; }
+    #overlay { touch-action: none; }   /* 防止觸控手勢搶走拖曳 */
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <button data-tool="select" class="active">選取</button>
+    <button data-tool="rect">矩形</button>
+    <button data-tool="circle">圓形</button>
+    <button data-tool="text">文字</button>
+    <span class="sep"></span>
+    <button id="saveBtn">存檔</button>
+    <button id="loadBtn">載入</button>
+  </div>
+
+  <div id="stage">
+    <canvas id="content" class="layer"></canvas>
+    <canvas id="overlay" class="layer"></canvas>
+  </div>
+
+  <div id="hint">選工具後拖曳新增 · 點擊選取 · 拖動移動 · 邊角縮放 · 空白處拖曳平移 · 滾輪縮放 · Ctrl/⌘+Z 復原 · Delete 刪除</div>
+
+  <script src="whiteboard.js"></script>
+</body>
+</html>
