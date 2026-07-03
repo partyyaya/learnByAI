@@ -22,7 +22,7 @@
 
 ## 課程目錄
 
-課程分為 7 篇、24 章（00–23）。目前已發布前 10 章（第 0～2 篇的核心）。
+課程分為 7 篇、24 章（00–23），目前已全數發布。
 
 ### 第 0 篇 —— 入門與地基
 
@@ -48,25 +48,40 @@
 | 07 | [07-sql-injection.md](./07-sql-injection.md) | 注入攻擊:SQL Injection |
 | 08 | [08-other-injections.md](./08-other-injections.md) | 其他注入:命令注入・XXE・SSTI・NoSQL |
 | 09 | [09-xss.md](./09-xss.md) | 跨站腳本 XSS 與 CSP 防禦 |
+| 10 | [10-csrf-ssrf.md](./10-csrf-ssrf.md) | CSRF・SSRF:兩種「請求偽造」 |
+| 11 | [11-authentication-session.md](./11-authentication-session.md) | 認證與 Session 攻防（含 JWT） |
+| 12 | [12-access-control-idor.md](./12-access-control-idor.md) | 存取控制與業務邏輯漏洞（IDOR、越權） |
+| 13 | [13-file-upload-path-traversal-deserialization.md](./13-file-upload-path-traversal-deserialization.md) | 檔案上傳・路徑穿越・反序列化 |
 
-### 第 2 篇（續）～ 第 6 篇 —— 規劃中（尚未發布）
+### 第 3 篇 —— 系統攻防
 
-| 章節 | 主題 |
-|------|------|
-| 10 | CSRF・SSRF・請求偽造 |
-| 11 | 認證與 Session 攻防（含 JWT） |
-| 12 | 存取控制與業務邏輯漏洞（IDOR、越權） |
-| 13 | 檔案上傳・路徑穿越・反序列化 |
-| 14 | 漏洞利用基礎（記憶體安全概念、Metasploit） |
-| 15 | 密碼攻擊與雜湊破解 |
-| 16 | 提權與後滲透 |
-| 17 | 應用密碼學攻防 |
-| 18 | 社會工程與釣魚（防禦向） |
-| 19 | 防禦體系與系統加固 |
-| 20 | 偵測與監控（Log / SIEM / IDS） |
-| 21 | 事件回應與數位鑑識 |
-| 22 | CTF 實戰入門 |
-| 23 | Capstone:一次完整的授權滲透測試 |
+| 章節 | 檔案 | 主題 |
+|------|------|------|
+| 14 | [14-exploitation-basics-metasploit.md](./14-exploitation-basics-metasploit.md) | 漏洞利用基礎（記憶體安全概念、Metasploit） |
+| 15 | [15-password-attacks-hash-cracking.md](./15-password-attacks-hash-cracking.md) | 密碼攻擊與雜湊破解 |
+| 16 | [16-privilege-escalation-post-exploitation.md](./16-privilege-escalation-post-exploitation.md) | 提權與後滲透 |
+
+### 第 4 篇 —— 密碼與人性
+
+| 章節 | 檔案 | 主題 |
+|------|------|------|
+| 17 | [17-applied-cryptography.md](./17-applied-cryptography.md) | 應用密碼學攻防 |
+| 18 | [18-social-engineering-phishing.md](./18-social-engineering-phishing.md) | 社會工程與釣魚（防禦向） |
+
+### 第 5 篇 —— 藍隊防禦
+
+| 章節 | 檔案 | 主題 |
+|------|------|------|
+| 19 | [19-defense-hardening.md](./19-defense-hardening.md) | 防禦體系與系統加固 |
+| 20 | [20-detection-monitoring-siem.md](./20-detection-monitoring-siem.md) | 偵測與監控（Log / SIEM / IDS） |
+| 21 | [21-incident-response-forensics.md](./21-incident-response-forensics.md) | 事件回應與數位鑑識 |
+
+### 第 6 篇 —— 實戰
+
+| 章節 | 檔案 | 主題 |
+|------|------|------|
+| 22 | [22-ctf.md](./22-ctf.md) | CTF 實戰入門 |
+| 23 | [23-capstone-pentest.md](./23-capstone-pentest.md) | Capstone:一次完整的授權滲透測試 |
 
 ---
 
