@@ -87,7 +87,8 @@ Tree shaking 後,`notUsed1` 和 `notUsed2` **完全不會進入最終 bundle**�
 - **ESM 是靜態結構**:`import { used }` 寫死在頂層,Rollup 光「讀」就能 100% 確定「只有 `used` 被用到」。於是它能放心砍掉其他匯出。
 - **CommonJS 是動態的**:`const x = require('./utils')` 然後 `x[someVariable]()`——到底用了哪個?要執行才知道。Rollup 不敢亂砍(砍錯就壞了),所以 CJS 的 tree shaking 效果差很多。
 
-> **這就是為什麼套件作者都推薦提供 ESM 版本**(像 `lodash-es` 而非 `lodash`):ESM 的靜態特性讓 tree shaking 生效,使用者只會打包到真正用到的部分。**「用 `lodash-es` 而非 `lodash`」這個老生常談的建議,根源就在這裡。**
+> **這就是為什麼套件作者都推薦提供 ESM 版本**(像 `lodash-es` 而非 `lodash`):ESM 的靜態特性讓 tree shaking 生效,使用者只會打包到真正用到的部分。
+> **「用 `lodash-es` 而非 `lodash`」這個老生常談的建議,根源就在這裡。**
 
 ### 你會踩的坑:副作用(side effects)
 
@@ -238,6 +239,45 @@ dist/assets/
 
 > 那個 `index.html` 本身通常**不加 hash、不強快取**(因為它是入口,要能拿到最新的)。瀏覽器每次拿最新的 index.html,裡面寫著最新的 `index-XXXX.js` 檔名,順藤摸瓜就拿到對的版本。這是一條設計精巧的快取鏈。
 
+### 「不強快取」是誰決定的?(不是瀏覽器預設)
+
+這裡有個常見誤解要澄清:**要不要快取、快取多久,不是瀏覽器自己決定的,是「伺服器/CDN 回應時帶的 HTTP header」決定的**,由你(或部署平台)設定,瀏覽器只是照 header 行事。控制它的主要是 `Cache-Control`:
+
+```
+# 有 hash 的 JS/CSS(內容一變檔名就變)→ 放心永久強快取
+Cache-Control: public, max-age=31536000, immutable
+
+# index.html(入口)→ 不強快取,每次回來跟伺服器確認一下
+Cache-Control: no-cache
+```
+
+這兩行都是**伺服器發的**。Vite `build` 只負責產出檔案,管不到「上線後 header 怎麼設」——那是 Nginx / Vercel / Netlify / Cloudflare 這一層的事。
+
+**反直覺的重點**:如果你**什麼 header 都不設**,瀏覽器不會乖乖「每次拿最新」,它會用**啟發式快取(heuristic caching)**——依 `Last-Modified` 自己猜一個時間偷偷快取起來,結果反而可能讓使用者看到舊的 index.html。所以「index.html 不強快取」不是放著不管就會發生,而是要**明確設定**。
+
+| header | 行為 |
+|--------|------|
+| `no-cache` | 還是會存,但每次用之前都要跟伺服器**驗證**(帶 ETag,沒變回 304,超小)。又新鮮又有效率,**通常首選** |
+| `no-store` | 完全不存,每次重抓整份(較少用) |
+
+> **`no-cache` 不是「不快取」**:它會快取,只是「每次用之前先問伺服器新不新」。真正「完全不存」的是 `no-store`——名字很容易搞反。
+
+自架 Nginx 的話,這條快取鏈大概長這樣:
+
+```nginx
+# 有 hash 的資源:永久強快取
+location /assets/ {
+  add_header Cache-Control "public, max-age=31536000, immutable";
+}
+
+# 入口 HTML:不強快取,每次驗證
+location = /index.html {
+  add_header Cache-Control "no-cache";
+}
+```
+
+> 像 Vercel、Netlify 這類平台**確實預設**幫你設好這條鏈(hashed 資源 `immutable`、index.html 不強快取),所以你可能沒設也正常——但那是**平台/伺服器的預設,不是瀏覽器的預設**。換成自架就得自己寫。
+
 ---
 
 ## 8.6 壓縮(Minify)與其他最佳化
@@ -355,6 +395,27 @@ export default defineConfig({
 **為什麼需要?** 因為 build 時產生的資源引用預設是 `/assets/index-xxx.js`(根路徑)。如果你部署在 `/my-app/` 子目錄下,瀏覽器會去 `https://example.com/assets/...` 找(找不到,白屏)。設了 `base: '/my-app/'`,引用就變成 `/my-app/assets/...`,才找得到。
 
 > **這是「dev 正常 build 白屏」的高頻原因之一**(8.8 那張表),部署到子目錄卻忘了設 `base`。記住這個設定能省你很多除錯時間。
+
+### 不確定會部署到哪?用相對路徑 `./`
+
+上面的 `base: '/my-app/'` 有個前提:**你得事先知道部署路徑**。但有時你根本不知道——同一份產物可能被丟到根目錄、也可能丟到 `/a/`、`/b/c/` 任意子目錄。這時可以把 `base` 設成相對路徑:
+
+```ts
+export default defineConfig({
+  base: './',   // 資源引用改用「相對路徑」,不寫死前綴
+})
+```
+
+差別在產出的引用長相:
+
+```
+base: '/my-app/'  →  <script src="/my-app/assets/index-xxx.js">   (絕對,綁死路徑)
+base: './'        →  <script src="./assets/index-xxx.js">          (相對,相對於 index.html)
+```
+
+因為 `./assets/...` 是**相對於 index.html 所在位置**去解析的,所以整個 `dist/` 資料夾你**丟到哪個子目錄都能跑**,不用改設定。適合:不確定部署路徑、純靜態 demo、打包成 Electron / 用 `file://` 開的場景。
+
+> **但相對路徑有個坑,用 SPA 前端路由(history 模式)要小心**:假設使用者停在 `https://example.com/my-app/users/123` 按重新整理,伺服器回 index.html,但瀏覽器此時認定的「目前位置」是 `/my-app/users/`,於是 `./assets/...` 會被解析成 `/my-app/users/assets/...`(錯的,白屏)。**巢狀路由 + history 模式的 SPA,還是用絕對的 `base: '/my-app/'` 最穩**;`./` 比較適合沒有巢狀路由、或用 hash 路由(`/#/users/123`)的情況。
 
 ---
 

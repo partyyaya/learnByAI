@@ -35,3 +35,5 @@
 | 前端測試 | [frontend-testing-course/README.md](./frontend-testing-course/README.md) | 框架無關測試心法、單元/整合/E2E、可維護可重構可上線 | 14 |
 | Cloudflare Pages/Workers | [cloudflare-pages-workers-course/README.md](./cloudflare-pages-workers-course/README.md) | Pages + Workers 部署、串接、儲存選型、CI/CD 自動化 | 11 |
 | Python | [python-course/00-what-python-can-do.md](./python-course/00-what-python-can-do.md) | 從零到一的 Python:執行模型、語法、實戰落地 | 38 |
+| 資安攻防 | [security-course/README.md](./security-course/README.md) | 駭客思維與法律倫理、隔離實驗室、攻防網路/Linux、OSINT 偵察、主動掃描、Web 攻防(OWASP/Burp/SQLi/注入/XSS)、藍隊防禦、CTF 與授權滲透測試 | 24(已發布 10) |
+| 資料庫設計與實戰 | [database-course/README.md](./database-course/README.md) | 資料庫選型、關聯式建模、SQL/交易、索引效能優化、高併發搶票、Redis 快取、NoSQL、搜尋分析、擴展、備份安全與搶票專題 | 11 |

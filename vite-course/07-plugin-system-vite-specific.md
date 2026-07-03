@@ -83,7 +83,9 @@ function envAwarePlugin() {
 }
 ```
 
-**為什麼要分「修改階段」和「讀取階段」兩個 hook?** 因為設定的形成是有順序的:所有 plugin 先輪流「提議修改」(`config`),Vite 合併出最終版,再「公告定案」(`configResolved`)。如果你在還沒定案時就讀,可能讀到不完整或之後被別人改掉的值。**所以:要改設定用 `config`,要讀最終設定用 `configResolved`。**
+**為什麼要分「修改階段」和「讀取階段」兩個 hook?** 
+因為設定的形成是有順序的:所有 plugin 先輪流「提議修改」(`config`)Vite 合併出最終版,再「公告定案」(`configResolved`)。
+如果你在還沒定案時就讀,可能讀到不完整或之後被別人改掉的值。**所以:要改設定用 `config`,要讀最終設定用 `configResolved`。**
 
 ---
 
@@ -132,6 +134,48 @@ configureServer(server) {
 ```
 
 > **什麼時候用前 / 後?** 如果你的中介層要「攔截掉某些請求、不讓 Vite 處理」(像 mock API),放前面(直接寫);如果你要「處理 Vite 沒接住的請求」(像自訂 fallback),放後面(回傳函式內)。
+
+中介層是一條排隊的水管,**誰先掛上去誰先看到請求**。而 Vite 自己也有一堆內建中介層(處理模組轉換、serve 檔案、SPA fallback 等)。你排在 Vite 前面還後面,結果差很多。看兩個對照的例子:
+
+**放前面 → 攔截**:我先看到,處理掉就不給 Vite。
+
+```js
+configureServer(server) {
+  // 直接寫 → 排在 Vite 內建中介層「之前」
+  server.middlewares.use('/api/user', (req, res, next) => {
+    res.setHeader('Content-Type', 'application/json')
+    res.end(JSON.stringify({ id: 1, name: '測試用戶' }))
+    // 沒呼叫 next() → 請求到我這裡就結束,Vite 根本沒機會處理
+  })
+}
+```
+
+為什麼放前面?因為 `/api/user` 這種路徑若讓 Vite 先看到,它會當成「找不到的檔案」。你要在 Vite 出手前就攔下來自己回假資料——這就是 **mock API**:搶在 Vite 前面把請求吃掉。
+
+**放後面 → 兜底**:Vite 處理不了的,才輪到我。
+
+```js
+configureServer(server) {
+  return () => {
+    // 寫在回傳的函式內 → 排在 Vite 內建中介層「之後」
+    server.middlewares.use((req, res, next) => {
+      // 能跑到這裡,代表 Vite 前面的中介層都 next() 放行了
+      // 也就是「Vite 沒接住這個請求」
+      res.statusCode = 404
+      res.end('這個頁面不存在(自訂 fallback)')
+    })
+  }
+}
+```
+
+為什麼放後面?因為你想做的是「兜底」——只處理那些 **Vite 已經看過、但決定不管** 的請求。如果放前面,它會攔截到**每一個**請求(包含 `/src/main.js`、`.vue` 檔等),把 Vite 該做的事全搶走,dev server 就壞了。所以自訂 fallback 一定要放最後,等 Vite 挑剩的才輪到你。
+
+| 目的 | 位置 | 心態 |
+|------|------|------|
+| 攔截、搶請求(mock API) | 前(直接寫) | 「這個我要,Vite 別碰」 |
+| 兜底、撿漏(自訂 fallback) | 後(回傳函式內) | 「Vite 挑剩的才給我」 |
+
+判斷法則:**「我要跟 Vite 搶」→ 放前面;「我等 Vite 挑剩的」→ 放後面。**
 
 > **實務價值**:`configureServer` 是「前端先行開發」的利器。後端 API 還沒做好?用它 mock。要在 dev 加個健康檢查端點、加個特殊的 header、記錄請求 log?都在這裡。很多知名 plugin(mock、SSR 中介層)都靠它。
 
@@ -249,7 +293,8 @@ function myPlugin() {
 - **不寫(預設)**:大多數情況,你的 plugin 跟一般轉換一起跑就好。
 - **`enforce: 'post'`**:你想**等所有轉換都做完、拿到最終結果**再處理。例如:你要分析/檢查最終產出的 JS,就用 `post`。
 
-> **常見錯誤**:plugin 順序錯導致「我想處理的語法,在輪到我之前已經被別的 plugin 轉掉了」。例如你想處理 JSX,但 React plugin 已經先把 JSX 轉成 JS 了,你拿到的根本沒有 JSX。解法就是 `enforce: 'pre'` 搶在它前面。**遇到「我的 transform 拿到的內容不是我預期的原始樣子」,先想 enforce 順序。**
+> **常見錯誤**:plugin 順序錯導致「我想處理的語法,在輪到我之前已經被別的 plugin 轉掉了」。例如你想處理 JSX,但 React plugin 已經先把 JSX 轉成 JS 了,你拿到的根本沒有 JSX。解法就是 `enforce: 'pre'` 搶在它前面。
+> **遇到「我的 transform 拿到的內容不是我預期的原始樣子」,先想 enforce 順序。**
 
 ---
 
@@ -336,6 +381,158 @@ function fullPlugin(options) {
 ```
 
 > **學習建議**:把這張骨架截圖存著。以後讀任何 plugin 原始碼,先對照「它用了哪些 hook」,你就能快速判斷它在做什麼:有 `configureServer` → 它動了 dev server;有 `transform` → 它改模組內容;有 `handleHotUpdate` → 它客製了 HMR。
+
+上面是「空殼」。接下來三個範例,是把這張骨架**填成真的能跑的 plugin**——每個都刻意組合好幾個 hook,讓你看到它們怎麼協作。建議照著抄進自己的專案跑一次。
+
+### 範例一:建置資訊虛擬模組(`configResolved` + `resolveId` + `load` + `transformIndexHtml`)
+
+**要解決的問題**:我想在程式裡 `import` 一份「這次是哪個模式、什麼時候建的」資訊,拿來顯示版本號、方便線上排查。這份資訊沒有對應的實體檔案——正是第 06 章「**虛擬模組**」的場景,再配上第 07 章的 `configResolved` 拿最終設定。
+
+```js
+function buildInfoPlugin() {
+  const virtualId = 'virtual:build-info'
+  const resolvedId = '\0' + virtualId   // \0 前綴是慣例:標記「這是虛擬模組」,別的 plugin 就不會來搶
+  let info                              // 跨 hook 共用的狀態(呼應 7.2 的 resolvedConfig 手法)
+
+  return {
+    name: 'build-info',
+
+    configResolved(config) {
+      // 設定定案後,把要用的資訊「一次算好、存起來」,後面幾個 hook 都會用到
+      info = {
+        mode: config.mode,              // 'development' / 'production' / 自訂
+        command: config.command,        // 'serve' / 'build'
+        buildTime: new Date().toISOString(),
+      }
+    },
+
+    resolveId(id) {
+      // 有人 import 'virtual:build-info' 時,我認領它,回傳帶 \0 的 id
+      if (id === virtualId) return resolvedId
+    },
+
+    load(id) {
+      // 認領的 id 被載入時,現場「生」一段 JS 原始碼當作這個模組的內容
+      if (id === resolvedId) {
+        return `export default ${JSON.stringify(info)}`
+      }
+    },
+
+    transformIndexHtml(html) {
+      // 順手把建置時間寫進 HTML 的 meta,線上用「檢視原始碼」就能看出是哪次建的
+      return {
+        html,
+        tags: [
+          { tag: 'meta', attrs: { name: 'build-time', content: info.buildTime }, injectTo: 'head' },
+        ],
+      }
+    },
+  }
+}
+```
+
+用起來就像一個真的模組:
+
+```js
+// 你的前端程式碼裡
+import info from 'virtual:build-info'
+console.log(`模式:${info.mode},建置時間:${info.buildTime}`)
+```
+
+> **這個範例串起了什麼**:`resolveId` + `load` 是第 06 章的「虛擬模組」(內容用生的,不是讀檔);`configResolved` 是第 07 章的「讀最終設定」;`transformIndexHtml` 是第 07 章的「改 HTML」。一個 plugin 同時碰了模組、設定、HTML 三個面向——這就是骨架被填滿的樣子。
+> (小提醒:TypeScript 專案 import 虛擬模組會報型別錯,需另外 `declare module 'virtual:build-info'`,這屬於型別宣告範疇,先略過。)
+
+### 範例二:物件式 Mock Server(`apply` + `configureServer`)
+
+**要解決的問題**:7.3 教的 mock 是「一個路徑寫一段」,實務上我希望**傳一個物件進來就自動生出多條 mock 路由**,而且這東西**只在 dev 需要**、build 完全用不到。
+
+```js
+function mockPlugin(mocks = {}) {
+  return {
+    name: 'simple-mock',
+    apply: 'serve',        // 關鍵:mock 只在 dev 有意義,build 時這個 plugin 直接不啟用(7.7)
+
+    configureServer(server) {
+      // mocks 例如:{ '/api/user': {...}, '/api/todos': [...] }
+      for (const [path, data] of Object.entries(mocks)) {
+        // 每條路徑掛一個中介層。直接寫在這裡 → 排在 Vite 內建中介層「之前」(7.3),
+        // 這樣才能搶在 Vite 把 /api/... 當成「找不到的檔案」之前先回假資料。
+        server.middlewares.use(path, (req, res) => {
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(data))
+          // 沒呼叫 next() → 請求到我這裡就結束
+        })
+      }
+    },
+  }
+}
+```
+
+在 `vite.config` 裡用,一次配好多條:
+
+```js
+export default {
+  plugins: [
+    mockPlugin({
+      '/api/user': { id: 1, name: '小明' },
+      '/api/todos': [{ id: 1, text: '學 Vite plugin' }],
+    }),
+  ],
+}
+```
+
+> **這個範例串起了什麼**:`configureServer` 是第 07 章 dev server 的核心用法(掛中介層、放前面攔截);`apply: 'serve'` 把它限制在 dev,避免 build 時做無意義的事(7.7 的正確性理由)。真實的 mock plugin(如 `vite-plugin-mock`)差別只在於:它會去掃一個 `mock/` 資料夾、支援不同 HTTP 方法、還能配合 `handleHotUpdate` 讓你改 mock 檔不用重啟——但骨幹就是這兩個 hook。
+
+### 範例三:極簡 Markdown loader(`enforce` + `transform` + `handleHotUpdate`)
+
+**要解決的問題**:我想 `import` 一個 `.md` 檔,直接拿到渲染好的 HTML 字串。這需要把非 JS 的內容「轉成 JS 模組」——第 06 章的 `transform`;再配第 07 章的 `handleHotUpdate` 決定改檔時怎麼熱更新。
+
+```js
+function miniMarkdownPlugin() {
+  return {
+    name: 'mini-markdown',
+    enforce: 'pre',        // 搶在別人之前認領 .md,否則可能先被當成未知檔案處理掉(7.6)
+
+    transform(code, id) {
+      if (!id.endsWith('.md')) return    // 只處理 .md,其它一律放行(回傳 undefined = 不動它)
+
+      // 極簡「渲染」:# 開頭當標題,其餘當段落(真實會用 markdown-it 之類的函式庫)
+      const html = code
+        .split('\n')
+        .map(line => line.startsWith('# ')
+          ? `<h1>${line.slice(2)}</h1>`
+          : `<p>${line}</p>`)
+        .join('\n')
+
+      // 回傳一個 JS 模組:預設匯出這段 HTML 字串
+      return {
+        code: `export default ${JSON.stringify(html)}`,
+        map: null,          // 沒做 source map,誠實回 null
+      }
+    },
+
+    handleHotUpdate(ctx) {
+      if (ctx.file.endsWith('.md')) {
+        // 我們產出的 .md 模組不好做「精準」HMR,乾脆整頁重載最單純可靠(7.5)
+        ctx.server.ws.send({ type: 'full-reload' })
+        return []           // 回空陣列 = 「我處理掉了,Vite 別再走預設 HMR」
+      }
+      // 不是 .md 就不回傳 → 交還給 Vite 走預設流程
+    },
+  }
+}
+```
+
+用起來:
+
+```js
+import readme from './README.md'
+document.querySelector('#app').innerHTML = readme
+```
+
+> **這個範例串起了什麼**:`transform` 是第 06 章「改/生模組內容」的核心;`enforce: 'pre'` 確保我先看到原始 `.md`(7.6 順序);`handleHotUpdate` 是第 07 章的 HMR 客製——這裡示範了「我知道自己做不到精準熱更新,就主動選整頁重載」的實務判斷(回扣第 05 章「找不到邊界就整頁重載」)。
+
+> **看完三個範例,回頭再看 7.8 的骨架**:你會發現每個真實 plugin 都只是「從骨架挑幾個 hook 填上內容」。沒有哪個 plugin 會用滿全部——挑對 hook,才是寫 plugin 的關鍵。
 
 ---
 

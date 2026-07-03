@@ -48,7 +48,8 @@
 
 ### Hydration(水合):SSR 的關鍵概念
 
-但這裡有個關鍵問題:伺服器渲染出的 HTML 是「死的」——沒有事件監聽、按鈕點了沒反應。要讓它「活過來」能互動,需要**在瀏覽器端再跑一次框架,把事件、響應式狀態「接管」這份已存在的 HTML**。這個過程叫 **hydration(水合 / 注水)**。
+但這裡有個關鍵問題:伺服器渲染出的 HTML 是「死的」——沒有事件監聽、按鈕點了沒反應。要讓它「活過來」能互動
+需要**在瀏覽器端再跑一次框架,把事件、響應式狀態「接管」這份已存在的 HTML**。這個過程叫 **hydration(水合 / 注水)**。
 
 ```
 SSR 完整流程:
@@ -149,6 +150,61 @@ export default defineConfig({
 - **`formats: ['es', 'cjs']`**:為什麼要輸出多種格式?因為使用者的環境不一定——有人用現代 ESM、有人的舊工具鏈還在用 CommonJS。輸出多種格式才能讓最多人用得了(回扣第 00 章 CJS/ESM 共存的現實)。
 - **`external: ['vue']`**:把 Vue 排除在打包外,避免重複。
 - **`globals`**:給 UMD/IIFE 格式用的,告訴打包器「external 的 vue,在全域是叫 `Vue`」。
+
+### 輸出格式白話解:ESM / CJS / UMD / IIFE
+
+上面一直提到「格式」和 `UMD/IIFE`,這裡一次講清楚。所謂「格式」講的是——**打包好的 JS 要怎麼被載入、你的模組要暴露到哪裡**。
+
+先看兩個容易混淆的:
+
+**IIFE(Immediately Invoked Function Expression,立即執行函式)**
+
+就是這個經典寫法:
+
+```js
+(function () {
+  // 你的套件程式碼
+  window.MyLib = { /* ... */ }   // 主動掛到全域
+})()
+```
+
+- **「立即執行」**:函式定義完馬上加 `()` 執行,不用別人來呼叫。
+- **用途**:用一個函式把程式碼包起來,製造獨立作用域,避免內部變數污染全域;只有你「主動掛到 `window`」的那個變數(這裡的 `MyLib`)才會露出去。
+- **場景**:最原始的用法——直接 `<script src="my-lib.js"></script>` 引入,然後在全域用 `MyLib` 取用。它**不認識**任何模組系統(沒有 `import`、也沒有 `require`)。
+
+**UMD(Universal Module Definition,通用模組定義)**
+
+可以想成「IIFE 的萬用加強版」。它在開頭做一段環境判斷:
+
+```js
+(function (global, factory) {
+  if (typeof exports === 'object' && typeof module !== 'undefined')
+    module.exports = factory(require('vue'))   // ← CommonJS 環境(Node)
+  else if (typeof define === 'function' && define.amd)
+    define(['vue'], factory)                    // ← AMD 環境(舊的 RequireJS)
+  else
+    global.MyLib = factory(global.Vue)          // ← 都不是?退化成 IIFE 掛全域
+})(this, function (Vue) { /* 你的套件 */ })
+```
+
+- **「通用」**:同一個檔案,丟到 CommonJS(Node)、AMD、或純瀏覽器 `<script>` 都能跑——它自己偵測環境。
+- 最後那個 `else` 分支其實就是退化成 IIFE 掛全域。所以 **UMD ⊇ IIFE**。
+
+四種格式對照:
+
+| 格式 | 怎麼用 | 認識模組系統嗎 |
+|------|--------|----------------|
+| `es`(ESM) | `import x from '...'` | ✅ 現代標準 |
+| `cjs`(CommonJS) | `require('...')` | ✅ Node 老朋友 |
+| `umd` | 上面三種環境都能 | ✅ 萬用 |
+| `iife` | `<script>` 直接引 | ❌ 只掛全域 |
+
+**那為什麼 `globals` 只給 UMD/IIFE 用?** 關鍵在「external 的依賴,執行時要去哪裡拿」:
+
+- **ESM / CJS**:有模組系統,打包器會保留 `import ... from 'vue'` / `require('vue')`,讓使用者的工具鏈自己去解析。**不需要** `globals`。
+- **UMD / IIFE**:純瀏覽器 `<script>` 沒有模組系統,只能去**全域變數**找。所以必須告訴它「external 的 `vue`,在全域叫做 `Vue`」——這就是 `globals: { vue: 'Vue' }` 的意義。使用者要先自己 `<script src="vue.js">`(它會掛出全域 `Vue`),你的套件才抓得到它;`globals` 就是這座橋。同理,`lib.name`(前面的 `'MyLib'`)也只有在 UMD/IIFE 下才用得到——它是你的套件掛在全域的變數名。
+
+> **注意本例的設定**:上面 `formats: ['es', 'cjs']` 其實**沒有**輸出 umd/iife,所以這份設定裡的 `name` 和 `globals` 暫時不會生效——它們是為了示範「將來若加上 `'umd'` 或 `'iife'` 時該怎麼配」而先寫好的。要真正用到,`formats` 就得包含 `umd` 或 `iife`。
 
 ### 別忘了型別宣告(.d.ts)
 
@@ -257,16 +313,25 @@ my-monorepo/
 Vite dev server 預設基於安全考量,**限制只能存取專案根目錄內的檔案**。monorepo 裡 `apps/web` 要 import `packages/ui`(在根目錄的另一個分支),可能超出範圍而被擋。需要時放寬:
 
 ```ts
+// apps/web/vite.config.ts
 export default defineConfig({
   server: {
     fs: {
       // 允許存取 monorepo 根目錄(讓 apps 能讀到 packages)
-      allow: ['..'],
+      // 相對路徑是相對於「這個 app 的根目錄」(apps/web/)來算,
+      // 往上兩層才是 monorepo 根:apps/web → apps → 根
+      allow: ['../..'],
     },
   },
 })
 ```
 
+> **放在哪?** 這是某個 Vite「應用」的 `vite.config.ts`,所以跟著跑 dev server 的 app 走(例如 `apps/web/vite.config.ts`);`packages/` 底下的共用庫是被 import 的一方,不用這個設定。
+>
+> **`'../..'` 是怎麼算的?** `allow` 的相對路徑相對於該 app 的專案根目錄(`apps/web/`)。`'..'` 只到 `apps/`,還碰不到 `packages/`;要涵蓋整個 monorepo 根(同時包含 `apps/` 與 `packages/`)得往上兩層 `'../..'`。只有當 app 就放在根目錄下一層時,`'..'` 才剛好等於根目錄。
+>
+> **多數時候不用手寫。** 如果照第 1 點用了 pnpm workspace(有 `pnpm-workspace.yaml`),Vite 會自動偵測 workspace 根目錄並加進 `fs.allow`,通常不會被擋。這個設定屬於「被擋到時才手動放寬」的備案。
+>
 > **為什麼預設要限制?** 安全。dev server 會把「能存取的檔案」透過 HTTP 暴露出去。如果不限制,惡意網頁可能透過 dev server 讀到你電腦上的任意檔案(`/etc/passwd` 之類)。所以 Vite 預設只開放專案目錄,monorepo 要跨目錄時才手動放寬到「確實需要的範圍」。
 
 ### 4. 依賴預打包的 monorepo 細節
