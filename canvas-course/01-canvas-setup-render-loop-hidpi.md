@@ -33,7 +33,10 @@ if (!ctx) {
 }
 ```
 
-> **進階選項**(用得到再開,一般用預設即可):`getContext('2d', { alpha: false })` 宣告畫布不透明,省一層合成、背景純色時更快;`{ desynchronized: true }` 降低繪圖延遲,適合畫筆/遊戲;`{ willReadFrequently: true }` 用於頻繁 `getImageData`(第 05 章)。
+> **進階選項**(用得到再開,一般用預設即可):
+`getContext('2d', { alpha: false })` 宣告畫布不透明,省一層合成、背景純色時更快;
+`{ desynchronized: true }` 降低繪圖延遲,適合畫筆/遊戲;
+`{ willReadFrequently: true }` 用於頻繁 `getImageData`(第 05 章)。
 
 ---
 
@@ -71,7 +74,7 @@ if (!ctx) {
 ```js
 const canvas = document.querySelector('#stage');
 const ctx = canvas.getContext('2d');
-ctx.fillRect(0, 0, 800, 400);   // 想填滿整個畫布
+ctx.fillRect(0, 0, 800, 400);   // fillRect(x, y, 寬, 高) → 想從 (0,0) 填一塊 800×400(結果見下,並沒填滿)
 // 結果:只填了左上一小塊,而且圖形被「拉伸變形」了
 ```
 
@@ -180,7 +183,7 @@ function setupHiDPICanvas(canvas, cssWidth, cssHeight) {
 // 使用:之後你只管用邏輯座標(800×400)畫圖,不用再想 DPR
 const ctx = setupHiDPICanvas(canvas, 800, 400);
 ctx.fillStyle = '#333';
-ctx.fillRect(0, 0, 800, 400);   // 填滿,而且在 Retina 上清晰銳利
+ctx.fillRect(0, 0, 800, 400);   // fillRect(x, y, 寬, 高):填滿整塊,而且在 Retina 上清晰銳利
 ```
 
 > **心智模型**:DPR 處理就像「**幕後放大,台前不變**」。緩衝區偷偷變成 2 倍細(1600 格),`scale(2,2)` 讓你的程式碼活在原本的 800 座標世界裡,完全無感。**你寫程式照舊,清晰度免費翻倍。**
@@ -243,7 +246,7 @@ requestAnimationFrame(frame);     // 啟動:預約第一幀
 ```js
 function frame() {
   // 1. 清空:把上一幀的畫面擦掉(不然會殘留疊加)
-  ctx.clearRect(0, 0, 800, 400);
+  ctx.clearRect(0, 0, 800, 400);   // clearRect(x, y, 寬, 高) → 清掉整塊畫布
 
   // 2. 更新:更新「你自己維護的物件資料」(位置、速度…)
   update();
@@ -296,9 +299,9 @@ function frame() {
 
   function render() {
     ctx.fillStyle = '#e63946';
-    ctx.beginPath();
+    ctx.beginPath();   // beginPath():開一條新路徑(和上一幀畫的切開,避免相連)
     ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.fill();        // fill():把 arc 規劃好的路徑填色畫出來
   }
 
   function frame() {

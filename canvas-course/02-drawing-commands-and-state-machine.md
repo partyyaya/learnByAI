@@ -1,6 +1,7 @@
 # 第 02 章:繪圖基本指令與「狀態機」
 
-> **學習目標**:理解 `ctx` 是一台**狀態機**——你設定的不是「物件的屬性」,而是「畫筆當前的狀態」。掌握路徑(path)的構築、填色描邊的狀態、以及 `save()`/`restore()` 這對「狀態存檔/讀檔」如何防止你的程式碼互相污染。
+> **學習目標**:理解 `ctx` 是一台**狀態機**——你設定的不是「物件的屬性」,而是「畫筆當前的狀態」。
+  > 掌握路徑(path)的構築、填色描邊的狀態、以及 `save()`/`restore()` 這對「狀態存檔/讀檔」如何防止你的程式碼互相污染。
 > **預計時數**:120 分鐘
 > 第 01 章我們讓畫布動了起來。這一章我們深入「畫筆」本身。如果你曾經「明明顏色設對了,畫出來卻是別的顏色」「畫第二個圖形時莫名其妙連出一條線」——那都是因為你還沒搞懂 Canvas 最反直覺的本質:**它是一台狀態機**。
 
@@ -22,8 +23,8 @@ blueBox.style.background = 'blue';   // 那個 box 永遠是藍的
 ```js
 // Canvas:你設的是「畫筆現在的顏色」,不是「某個圖形的顏色」
 ctx.fillStyle = 'red';
-ctx.fillRect(0, 0, 50, 50);     // 紅色方塊
-ctx.fillRect(60, 0, 50, 50);    // 還是紅色!因為畫筆狀態沒變
+ctx.fillRect(0, 0, 50, 50);     // fillRect(x, y, 寬, 高) → 在 (0,0) 畫 50×50 的紅色方塊
+ctx.fillRect(60, 0, 50, 50);    // 一樣 fillRect(x, y, 寬, 高),還是紅色!因為畫筆狀態沒變
 
 ctx.fillStyle = 'blue';         // 現在把畫筆狀態改成藍
 ctx.fillRect(120, 0, 50, 50);   // 藍色方塊
@@ -74,8 +75,8 @@ Canvas 2D 畫東西其實只有三條路:
 
 ```js
 // ❌ 沒有 beginPath 的災難
-ctx.arc(50, 50, 20, 0, Math.PI * 2);
-ctx.stroke();                          // 畫圓 A
+ctx.arc(50, 50, 20, 0, Math.PI * 2);   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角),下一節詳解
+ctx.stroke();                          // stroke():把目前路徑「描出輪廓」——這裡描出圓 A
 
 ctx.arc(150, 50, 20, 0, Math.PI * 2);  // 這個 arc 累加到舊路徑!
 ctx.stroke();                          // 把圓 A + 圓 B「一起」再描一次
@@ -132,7 +133,7 @@ ctx.arc(x, y, radius, startAngle, endAngle, counterClockwise);
 // 整圓
 ctx.beginPath();
 ctx.arc(100, 100, 40, 0, Math.PI * 2);
-ctx.fill();
+ctx.fill();   // fill():把目前路徑的內部「填滿」——這裡填滿整圓
 
 // 半圓(下半)
 ctx.beginPath();
@@ -397,7 +398,7 @@ ctx.beginPath();
 ctx.arc(100, 100, 60, 0, Math.PI * 2);
 ctx.clip();                       // 設定圓形裁切區
 // 之後畫的東西只會顯示在這個圓內(例如把方形圖片裁成圓形頭像)
-ctx.drawImage(avatar, 40, 40, 120, 120);
+ctx.drawImage(avatar, 40, 40, 120, 120);   // drawImage(圖, x, y, 寬, 高),詳見第 04 章
 ctx.restore();                    // 還原裁切區(否則後面全被裁在那個圓裡!)
 ```
 

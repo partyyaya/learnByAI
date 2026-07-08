@@ -26,7 +26,7 @@
 
 ```js
 ctx.fillStyle = 'red';
-ctx.fillRect(10, 10, 50, 50);   // 「畫一個紅方塊在這」——你下令,瀏覽器照做
+ctx.fillRect(10, 10, 50, 50);   // fillRect(x, y, 寬, 高):在 (10,10) 畫一個 50×50 的紅方塊——你下令,瀏覽器照做
 ```
 
 你像個導演,一句一句指揮。CPU 收到命令,(通常)轉成 GPU 操作。
@@ -130,7 +130,7 @@ Canvas 2D 你不太需要想「呼叫幾次繪圖」。但在 GPU 世界,**每�
 
 ```js
 // 把 WebGL 畫的高效能內容,當成圖層貼到 2D canvas 上,再用 2D 畫 UI/文字
-ctx2d.drawImage(webglCanvas, 0, 0);    // WebGL 畫粒子,2D 畫介面與文字
+ctx2d.drawImage(webglCanvas, 0, 0);    // drawImage(來源, dx, dy) → 把整張 WebGL 畫布貼到 (0,0);WebGL 畫粒子,2D 畫介面與文字
 ```
 
 常見混搭策略:**用 GPU(WebGL/PixiJS)畫「海量、會動」的主內容,用 Canvas 2D 畫「文字、UI、座標軸」**(因為 2D 的文字排版方便太多)。Canvas 2D 的文字能力 + WebGL 的渲染量,各取所長。

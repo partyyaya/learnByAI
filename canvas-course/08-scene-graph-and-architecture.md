@@ -13,8 +13,8 @@
 ```js
 function render() {
   ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'red';   ctx.fillRect(10, 10, 50, 50);
-  ctx.fillStyle = 'blue';  ctx.beginPath(); ctx.arc(200, 100, 30, 0, 7); ctx.fill();
+  ctx.fillStyle = 'red';   ctx.fillRect(10, 10, 50, 50);   // fillRect(x, y, 寬, 高) → 在 (10,10) 畫 50×50 方塊
+  ctx.fillStyle = 'blue';  ctx.beginPath(); ctx.arc(200, 100, 30, 0, 7); ctx.fill();   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角);7≈2π 表整圓
   // ... 物件一多,這裡變成幾百行無法維護的繪圖指令
 }
 ```
@@ -62,7 +62,7 @@ class CircleShape extends Shape {
   draw(ctx) {
     ctx.save();
     ctx.fillStyle = this.fill;
-    ctx.beginPath();
+    ctx.beginPath();                  // 開一條新路徑(清掉上一條),再用 arc 描出圓、fill() 填滿
     ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();

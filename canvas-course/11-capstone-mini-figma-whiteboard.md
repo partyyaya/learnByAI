@@ -81,9 +81,9 @@ class CircleShape extends Shape {
   static type = 'circle';
   draw(ctx) {
     ctx.fillStyle = this.fill;
-    ctx.beginPath();
+    ctx.beginPath();   // 路徑三部曲:beginPath() 開新路徑 → ellipse() 描述形狀 → fill() 填滿
     // 以包圍盒為基準畫橢圓,讓圓也能用統一的 bounds/handles 邏輯
-    ctx.ellipse(this.x + this.w/2, this.y + this.h/2, this.w/2, this.h/2, 0, 0, Math.PI*2);
+    ctx.ellipse(this.x + this.w/2, this.y + this.h/2, this.w/2, this.h/2, 0, 0, Math.PI*2);   // ellipse(中心x, 中心y, 半徑x, 半徑y, 旋轉, 起始角, 結束角) → 0~2π 畫整個橢圓
     ctx.fill();
   }
   containsPoint(p) {
@@ -156,9 +156,9 @@ const invalidateOverlay = () => { overlayDirty = true; };
 
 function render() {
   if (contentDirty) {
-    contentCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    contentCtx.setTransform(dpr, 0, 0, dpr, 0, 0);   // setTransform(a,b,c,d,e,f):a/d=縮放, b/c=傾斜, e/f=平移;這裡=重設並只放大 dpr 倍對齊 HiDPI
     contentCtx.clearRect(0, 0, W, H);
-    contentCtx.save(); applyCamera(contentCtx);
+    contentCtx.save(); applyCamera(contentCtx);     // save():先存一份目前繪圖狀態,套相機變換,畫完由下面 restore() 還原(免得污染下一層)
     for (const s of scene) s.draw(contentCtx);     // 第 08 章:遍歷畫
     contentCtx.restore();
     contentDirty = false;

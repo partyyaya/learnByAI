@@ -11,7 +11,7 @@
 ```js
 ctx.font = '24px sans-serif';   // 先設字型(像 CSS 的 font 簡寫)
 ctx.fillStyle = '#333';
-ctx.fillText('Hello Canvas', 100, 100);   // 填色文字(最常用)
+ctx.fillText('Hello Canvas', 100, 100);   // fillText(文字, x, y) → 在座標 (100,100) 填色畫出文字(最常用)
 ctx.strokeText('Outline', 100, 150);      // 只描邊框的空心字
 ```
 
@@ -246,7 +246,7 @@ ctx.drawImage(bitmap, 0, 0);
 
 ```js
 ctx.imageSmoothingEnabled = false;   // 關掉平滑 → 放大時是清晰的方塊像素
-ctx.drawImage(pixelArt, 0, 0, 16, 16, 0, 0, 256, 256);   // 16px 放大 16 倍
+ctx.drawImage(pixelArt, 0, 0, 16, 16, 0, 0, 256, 256);   // drawImage(圖, 來源sx,sy,sw,sh, 目標dx,dy,dw,dh):取來源 16×16、放大貼成 256×256(放大 16 倍)
 // imageSmoothingQuality = 'high' 則可在需要平滑時提高品質
 ```
 
@@ -268,7 +268,7 @@ async function drawCard(ctx, x, y, avatarSrc, name, bio) {
   ctx.fillStyle = '#fff';
   ctx.strokeStyle = '#e0e0e0';
   ctx.beginPath();
-  ctx.roundRect(0, 0, 300, 120, 12);            // 圓角矩形
+  ctx.roundRect(0, 0, 300, 120, 12);            // roundRect(x, y, 寬, 高, 圓角半徑) → 300×120、圓角 12px
   ctx.fill();
   ctx.stroke();
 

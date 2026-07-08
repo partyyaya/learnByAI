@@ -167,7 +167,7 @@ self.onmessage = (e) => {
 };
 function loop() {
   // requestAnimationFrame 在 Worker 裡也能用
-  ctx.clearRect(0, 0, 800, 600);
+  ctx.clearRect(0, 0, 800, 600);   // clearRect(x, y, 寬, 高) → 清掉 (0,0) 起、800×600 的區域(這裡等於整張畫布)
   // ...繁重的繪圖,完全不影響主執行緒...
   requestAnimationFrame(loop);
 }

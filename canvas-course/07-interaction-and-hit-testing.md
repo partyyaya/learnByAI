@@ -119,7 +119,7 @@ function pointNearSegment(p, a, b, tolerance = 5) {
 
 ```js
 ctx.beginPath();
-ctx.arc(100, 100, 40, 0, Math.PI * 2);
+ctx.arc(100, 100, 40, 0, Math.PI * 2);   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角) → 在 (100,100) 畫半徑 40 的整圓
 if (ctx.isPointInPath(mouseX, mouseY)) {  // 注意:用「畫布座標」,且受當前變換影響
   console.log('命中圓');
 }
@@ -131,7 +131,7 @@ ctx.isPointInStroke(mouseX, mouseY);      // 是否在「描邊線」上(命中�
 ```js
 // 建立時就把每個物件的路徑存成 Path2D
 const circlePath = new Path2D();
-circlePath.arc(100, 100, 40, 0, Math.PI * 2);
+circlePath.arc(100, 100, 40, 0, Math.PI * 2);   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角) → 圓心 (100,100)、半徑 40 的整圓
 
 // 畫的時候直接用
 ctx.fill(circlePath);
@@ -188,7 +188,7 @@ function colorToId(r, g, b) {
 // hit canvas 用「1:1 邏輯尺寸」(不做 dpr 縮放——命中不需要高解析度,還更省),
 // 但要套用「跟主畫布相同的相機」,讓每個形狀落在相同的螢幕位置。
 function renderHitCanvas(hitCtx, scene) {
-  hitCtx.setTransform(1, 0, 0, 1, 0, 0);
+  hitCtx.setTransform(1, 0, 0, 1, 0, 0);      // setTransform(a,b,c,d,e,f) → 重設為單位矩陣(1:1、無縮放/旋轉/平移)
   hitCtx.clearRect(0, 0, W, H);               // 清成透明 → RGB 讀回 0 = 空白(見下方注)
   hitCtx.imageSmoothingEnabled = false;       // 關平滑!否則邊緣混色,ID 算錯
   hitCtx.save();
