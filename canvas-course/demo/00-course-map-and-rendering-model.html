@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '00',
+  title: "渲染模型心法",
+  md: '../00-course-map-and-rendering-model.md',
+  W: 360, H: 240,
+  presets: [
+{
+  id: 'immediate-red-circle',
+  label: '0.1 立即模式:下命令,像素立刻被塗',
+  code:`// 立即模式(immediate):下命令 → 像素當場被塗,然後系統就忘了
+ctx.fillStyle = 'red';
+ctx.beginPath();                        // beginPath():開一條新路徑
+ctx.arc(180, 120, 60, 0, Math.PI * 2);  // arc(圓心x, 圓心y, 半徑, 起始角, 結束角)
+ctx.fill();                             // fill():把路徑真正塗到像素上
+
+// 命令下完,Canvas 不記得「這是一個圓」,畫布上只剩一片紅色像素`
+},
+{
+  id: 'no-object-clear-redraw',
+  label: '0.2 沒有物件:紅圓變藍只能清掉重畫',
+  code:`// 動畫示範:紅圓想變藍——沒有「那個圓」可改,只能清掉整塊再重畫一次
+ctx.fillStyle = 'red';
+ctx.beginPath();
+ctx.arc(180, 120, 60, 0, Math.PI * 2);
+ctx.fill();
+
+var frame = 0;
+function tick() {
+  frame++;
+  if (frame === 60) {                 // 約 1 秒後才動手
+    // 沒有 circle.fill = 'blue' 這種寫法,因為圓根本不是物件
+    ctx.clearRect(0, 0, W, H);        // 唯一辦法:整塊擦乾淨
+    ctx.fillStyle = 'blue';           // 換色
+    ctx.beginPath();
+    ctx.arc(180, 120, 60, 0, Math.PI * 2);
+    ctx.fill();                       // 重新下一次繪圖命令
+  }
+  if (frame <= 60) requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);`
+},
+{
+  id: 'no-clear-trail',
+  label: '0.2 證明畫完即忘:不清畫布就拖尾',
+  code:`// 動畫示範:故意不清畫布直接「重畫」→ 舊像素不會消失,拖出一條痕跡
+// 這就證明了:畫面上沒有物件在移動,只是每一幀在新位置多塗了一坨像素
+var x = 40;
+function tick() {
+  ctx.fillStyle = 'rgba(220,40,40,0.9)';
+  ctx.beginPath();
+  ctx.arc(x, 120, 20, 0, Math.PI * 2);  // 每幀在新位置畫,舊的留在原地
+  ctx.fill();
+  x += 1.5;
+  if (x < W + 20) requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);`
+},
+{
+  id: 'clear-redraw-loop',
+  label: '0.3 推論1:清掉+重畫 每秒60次=動畫',
+  code:`// 動畫示範:正確作法 = 每一幀「清掉整塊 → 更新資料 → 在新位置重畫」
+var x = 60, dx = 3;                     // 位置與速度是你自己存的資料
+function tick() {
+  ctx.clearRect(0, 0, W, H);           // 1. 清空整張畫布
+  x += dx;                             // 2. 更新位置
+  if (x > W - 30 || x < 30) dx = -dx;  //    碰邊界反彈
+  ctx.fillStyle = 'teal';              // 3. 照新位置重畫
+  ctx.beginPath();
+  ctx.arc(x, 120, 30, 0, Math.PI * 2);
+  ctx.fill();
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);`
+},
+{
+  id: 'manual-hit-testing',
+  label: '0.3 推論2:沒事件,自己算命中測定',
+  code:`// 互動示範:Canvas 沒有 click 事件落到圓上,要知道「點到圓沒」得自己用距離公式算
+var cx = 180, cy = 120, r = 55;
+function draw(hit) {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = hit ? '#22aa77' : '#888888';
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '16px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(hit ? '點到圓了!' : '點畫布看看', cx, cy + 6);
+}
+draw(false);
+canvas.addEventListener('click', function (e) {
+  var rect = canvas.getBoundingClientRect();
+  // 把螢幕座標換算成畫布邏輯座標
+  var mx = (e.clientX - rect.left) * (W / rect.width);
+  var my = (e.clientY - rect.top) * (H / rect.height);
+  // 自己算:滑鼠到圓心的距離平方 有沒有小於半徑平方
+  var hit = (mx - cx) * (mx - cx) + (my - cy) * (my - cy) <= r * r;
+  draw(hit);
+});`
+},
+{
+  id: 'diy-scene-graph',
+  label: '0.3 推論3:自己維護物件陣列(場景圖)',
+  code:`// 互動示範:想要「多個可管理的物件」,得自己在 JS 存一個陣列,每次重畫都遍歷它
+var shapes = [];   // 這就是你手工維護的「場景圖」——Canvas 一個都不幫你記
+var colors = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6'];
+function render() {
+  ctx.clearRect(0, 0, W, H);                  // 清掉整塊
+  for (var i = 0; i < shapes.length; i++) {   // 遍歷你存的資料,一個個重畫
+    var s = shapes[i];
+    ctx.fillStyle = s.color;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.fillStyle = '#333333';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('點畫布加圓,目前 ' + shapes.length + ' 個', 10, 20);
+}
+render();
+canvas.addEventListener('click', function (e) {
+  var rect = canvas.getBoundingClientRect();
+  var mx = (e.clientX - rect.left) * (W / rect.width);
+  var my = (e.clientY - rect.top) * (H / rect.height);
+  // 把新圓「記」進自己的陣列(Canvas 不會幫你記)
+  shapes.push({ x: mx, y: my, r: 18, color: colors[shapes.length % colors.length] });
+  render();
+});`
+},
+{
+  id: 'raster-scaling',
+  label: '0.4 點陣本質:放大會糊(vs 向量)',
+  code:`// 點陣示範:Canvas 是像素圖,放大就是把像素格放大(對應 0.4「縮放會糊」)
+// 左:關閉平滑 → 銳利的方塊像素;右:開啟平滑 → 放大變糊
+ctx.imageSmoothingEnabled = false;
+ctx.drawImage(pixelArt, 20, 40, 140, 140);   // 16x16 的像素圖放大成 140x140
+
+ctx.imageSmoothingEnabled = true;
+ctx.drawImage(pixelArt, 200, 40, 140, 140);
+
+ctx.fillStyle = '#000000';
+ctx.font = '13px sans-serif';
+ctx.fillText('平滑關(銳利像素)', 20, 30);
+ctx.fillText('平滑開(放大變糊)', 200, 30);`
+},
+{
+  id: 'pixels-only-readback',
+  label: '0.5 只認像素:getImageData 讀出 RGBA',
+  code:`// 只認像素示範:畫一張圖進去,再用 getImageData 證明畫布上只有像素、沒有「圖片物件」
+ctx.drawImage(sampleImage, 0, 0);   // 220x150 風景圖貼到左上角
+
+// 讀出座標 (100,75) 那一格像素的顏色
+var p = ctx.getImageData(100, 75, 1, 1).data;   // 回傳 [R, G, B, A]
+var color = 'rgb(' + p[0] + ',' + p[1] + ',' + p[2] + ')';
+
+// 用讀到的數字在右邊畫一塊色票——畫布只認得這串 RGBA,不認得「那是一張風景」
+ctx.fillStyle = color;
+ctx.fillRect(250, 45, 80, 80);
+ctx.fillStyle = '#000000';
+ctx.font = '13px sans-serif';
+ctx.fillText('(100,75) 的像素:', 235, 35);
+ctx.fillText(color, 250, 145);`
+}
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

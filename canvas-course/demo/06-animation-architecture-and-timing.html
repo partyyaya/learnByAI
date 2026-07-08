@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '06',
+  title: "動畫架構與時間",
+  md: '../06-animation-architecture-and-timing.md',
+  W: 400, H: 260,
+  presets: [
+{ id:'basic-loop', label:'6.1 基本 rAF 迴圈:球碰邊反彈', code:`// 最基本的動畫:每幀移動固定像素,碰到邊界就反彈
+let x = 60, y = 80, vx = 3, vy = 2.4, r = 18;
+function loop() {
+  ctx.clearRect(0, 0, W, H);            // 清掉上一幀
+  x += vx; y += vy;                     // 每幀移動固定量(先這樣寫,6.2 會修正)
+  if (x < r || x > W - r) vx = -vx;     // 碰左右邊反彈
+  if (y < r || y > H - r) vy = -vy;     // 碰上下邊反彈
+  ctx.fillStyle = '#457b9d';
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+  requestAnimationFrame(loop);          // 排下一幀(託管:重跑會自動停掉舊迴圈)
+}
+requestAnimationFrame(loop);` },
+{ id:'delta-time', label:'6.2 Delta-time:速度與幀率無關(對比)', code:`// 上排:每幀固定 +2px(綁幀,快慢會隨螢幕刷新率漂移)
+// 下排:用 dt,速度 = 120 像素/秒(綁時間,任何裝置都一致)
+let ax = 30, bx = 30, last = 0;
+const SPEED = 120;                          // 像素/秒
+function loop(t) {
+  const dt = last ? (t - last) / 1000 : 0;  // 距上一幀幾秒(第一幀當 0,避免暴衝)
+  last = t;
+  ctx.clearRect(0, 0, W, H);
+  ax += 2;               if (ax > W - 20) ax = 20;   // 綁幀
+  bx += SPEED * dt;      if (bx > W - 20) bx = 20;   // 綁時間:位移 = 速度 × dt
+  ctx.fillStyle = '#e63946'; ctx.fillRect(ax, 80, 20, 20);
+  ctx.fillStyle = '#2a9d8f'; ctx.fillRect(bx, 170, 20, 20);
+  ctx.fillStyle = '#555'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('每幀 +2(綁幀)', 20, 65);
+  ctx.fillText('dt × 120/秒(綁時間)', 20, 155);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'update-render-split', label:'6.3 update / render 分離', code:`// update 只改資料、render 只讀資料作畫;兩者分開,才能暫停/回放/測試/換後端
+const ball = { x: 200, y: 130, vx: 90, vy: 70, r: 16 };
+let last = 0;
+function update(dt) {                    // ① 只碰資料,完全不碰畫布
+  ball.x += ball.vx * dt;
+  ball.y += ball.vy * dt;
+  if (ball.x < ball.r || ball.x > W - ball.r) ball.vx *= -1;
+  if (ball.y < ball.r || ball.y > H - ball.r) ball.vy *= -1;
+}
+function render() {                      // ② 只讀資料、只作畫,不改資料
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#f1a208';
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+  ctx.fill();
+}
+function loop(t) {
+  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;   // dt + clamp(防暴衝)
+  last = t;
+  update(dt);                            // 先推進世界
+  render();                              // 再把世界拍成像素
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'fixed-timestep', label:'6.4 固定時間步長:彈跳球(accumulator)', code:`// 固定步長物理:用累加器把真實時間切成固定 1/60 秒的積木,穩定又不穿牆
+const STEP = 1 / 60;
+const G = 900;                           // 重力(像素/秒²)
+const ball = { x: 80, y: 40, vx: 90, vy: 0, r: 14 };
+function physics() {                     // 永遠用固定 STEP,計算超穩定
+  ball.vy += G * STEP;
+  ball.x += ball.vx * STEP;
+  ball.y += ball.vy * STEP;
+  if (ball.y > H - ball.r) { ball.y = H - ball.r; ball.vy *= -0.82; }  // 落地反彈耗能
+  if (ball.x < ball.r || ball.x > W - ball.r) ball.vx *= -1;
+}
+let last = 0, acc = 0;
+function loop(t) {
+  let dt = last ? (t - last) / 1000 : 0;
+  last = t;
+  dt = Math.min(dt, 0.25);               // 6.7 防背景分頁回來 dt 暴衝
+  acc += dt;
+  while (acc >= STEP) { physics(); acc -= STEP; }   // 累積夠一步就走一步
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#e76f51';
+  ctx.beginPath();
+  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+  ctx.fill();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'easing-tween', label:'6.5 緩動 Tween:方塊平滑滑到目標', code:`// Tween:在固定時間內把值從 from ease 到 to(easeOutCubic:先快後慢,UI 感)
+const easeOutCubic = k => 1 - Math.pow(1 - k, 3);
+function makeTween(from, to, dur) {
+  return {
+    from, to, dur, elapsed: 0, done: false,
+    value(dt) {
+      this.elapsed += dt;
+      let k = Math.min(this.elapsed / this.dur, 1);   // 線性進度 0→1
+      if (k >= 1) this.done = true;
+      return this.from + (this.to - this.from) * easeOutCubic(k);   // 套 easing 後內插
+    }
+  };
+}
+let a = 40, b = W - 80;
+let tween = makeTween(a, b, 1.2), last = 0;
+function loop(t) {
+  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;
+  last = t;
+  const x = tween.value(dt);
+  if (tween.done) { const tmp = a; a = b; b = tmp; tween = makeTween(a, b, 1.2); }  // 折返
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#457b9d';
+  ctx.fillRect(x, 110, 40, 40);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'easing-compare', label:'6.5 四種 easing 節奏對比', code:`// 同起點、同時間、同距離,同時跑四種 easing,直觀感受節奏差異
+const E = {
+  linear:       k => k,
+  easeInCubic:  k => k * k * k,
+  easeOutCubic: k => 1 - Math.pow(1 - k, 3),
+  easeInOut:    k => k < 0.5 ? 4*k*k*k : 1 - Math.pow(-2*k + 2, 3) / 2,
+};
+const names = Object.keys(E);
+const colors = ['#e63946', '#f1a208', '#2a9d8f', '#457b9d'];
+const DUR = 1.4, X0 = 40, X1 = W - 60;
+let elapsed = 0, dir = 1, last = 0;
+function loop(t) {
+  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;
+  last = t;
+  elapsed += dt * dir;
+  if (elapsed > DUR) { elapsed = DUR; dir = -1; }   // 到終點折返
+  if (elapsed < 0)   { elapsed = 0;   dir = 1; }
+  const k = elapsed / DUR;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = '12px system-ui, sans-serif';
+  names.forEach((n, i) => {
+    const y = 30 + i * 55;
+    const x = X0 + (X1 - X0) * E[n](k);   // 線性進度 k 經各自 easing 映射
+    ctx.fillStyle = '#888'; ctx.fillText(n, X0, y - 8);
+    ctx.fillStyle = colors[i]; ctx.fillRect(x, y, 22, 22);
+  });
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'particles', label:'6.x 多物件:粒子噴發(重力 + dt)', code:`// 多物件 + 物理:每顆粒子受重力(vy += g*dt)、透明度隨時間衰減後移除
+const G = 520;                           // 重力(像素/秒²)
+const parts = [];
+function spawn() {
+  for (let i = 0; i < 6; i++) {
+    const ang = -Math.PI / 2 + (Math.random() - 0.5) * 1.4;   // 大致朝上、帶散射
+    const sp = 120 + Math.random() * 130;
+    parts.push({ x: W / 2, y: H - 20, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 1 });
+  }
+}
+let last = 0, acc = 0;
+function loop(t) {
+  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;   // dt + clamp
+  last = t;
+  acc += dt;
+  if (acc > 0.08) { spawn(); acc = 0; }  // 定時噴發一批
+  ctx.clearRect(0, 0, W, H);
+  for (let i = parts.length - 1; i >= 0; i--) {   // 反向走訪,方便邊刪邊跑
+    const p = parts[i];
+    p.vy += G * dt;                      // 重力(全用 dt)
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.life -= dt * 0.6;                  // 生命衰減
+    if (p.life <= 0) { parts.splice(i, 1); continue; }   // 死了就移除
+    ctx.globalAlpha = Math.max(p.life, 0);
+    ctx.fillStyle = '#ffd166';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;                   // 用完務必還原
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

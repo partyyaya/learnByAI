@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '07',
+  title: "互動與命中測定",
+  md: '../07-interaction-and-hit-testing.md',
+  W: 400, H: 280,
+  presets: [
+{ id:'pointer-coords', label:'7.1 沒有落點 click:只能拿畫布座標', code:
+`// 互動:滑鼠移到畫布上。Canvas 不會告訴你「點到圓」,只給你畫布座標,其餘自己算
+let mx = -99, my = -99;
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#457b9d';
+  ctx.beginPath(); ctx.arc(200, 140, 70, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = '14px system-ui, sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('畫布座標 (' + mx.toFixed(0) + ', ' + my.toFixed(0) + ')', 200, 145);
+  ctx.textAlign = 'left';
+}
+canvas.addEventListener('pointermove', function (e) {
+  const r = canvas.getBoundingClientRect();
+  mx = e.clientX - r.left;   // 螢幕座標 → 畫布座標
+  my = e.clientY - r.top;
+  draw();
+});
+draw();` },
+{ id:'math-hit', label:'7.2 數學命中:圓用距離、矩形用 AABB', code:
+`// 互動:滑鼠移上去會變色。圓內 = 距離平方 <= 半徑平方;矩形內 = 座標落在範圍
+const circle = { x: 110, y: 150, r: 55 };
+const rect = { x: 220, y: 100, w: 140, h: 110 };
+let m = { x: -99, y: -99 };
+function inCircle() { const dx = m.x - circle.x, dy = m.y - circle.y; return dx*dx + dy*dy <= circle.r*circle.r; }
+function inRect() { return m.x >= rect.x && m.x <= rect.x + rect.w && m.y >= rect.y && m.y <= rect.y + rect.h; }
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = inCircle() ? '#e63946' : '#adb5bd';
+  ctx.beginPath(); ctx.arc(circle.x, circle.y, circle.r, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = inRect() ? '#2a9d8f' : '#adb5bd';
+  ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('滑鼠移到圖形上會變色', 12, 22);
+}
+canvas.addEventListener('pointermove', function (e) {
+  const r = canvas.getBoundingClientRect(); m.x = e.clientX - r.left; m.y = e.clientY - r.top; draw();
+});
+draw();` },
+{ id:'is-point-in-path', label:'7.4 isPointInPath + Path2D(懶得算數學)', code:
+`// 互動:複雜形狀懶得算數學?用 Path2D + isPointInPath,讓瀏覽器判斷命中
+const star = new Path2D();
+const cx = 200, cy = 140, spikes = 5, outer = 70, inner = 30;
+for (let i = 0; i < spikes * 2; i++) {
+  const rad = i % 2 === 0 ? outer : inner;
+  const a = -Math.PI / 2 + i * Math.PI / spikes;
+  const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad;
+  if (i === 0) star.moveTo(px, py); else star.lineTo(px, py);
+}
+star.closePath();
+let hover = false;
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = hover ? '#ffd166' : '#457b9d';
+  ctx.fill(star);            // 直接畫 Path2D 物件
+  ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('滑鼠移到星星內(isPointInPath 判斷)', 12, 22);
+}
+canvas.addEventListener('pointermove', function (e) {
+  const r = canvas.getBoundingClientRect();
+  hover = ctx.isPointInPath(star, e.clientX - r.left, e.clientY - r.top);  // 問瀏覽器:點在路徑內?
+  draw();
+});
+draw();` },
+{ id:'reverse-hit', label:'7.5 反序命中:重疊時只選最上層', code:
+`// 互動:繪製正向(後畫的在上),命中反向(從最後畫的開始測),重疊處只選一個
+const boxes = [
+  { x: 60,  y: 70,  w: 150, h: 110, c: '#e63946' },
+  { x: 130, y: 110, w: 150, h: 110, c: '#457b9d' },
+  { x: 200, y: 150, w: 150, h: 110, c: '#2a9d8f' },
+];
+let hi = -1;
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  boxes.forEach(function (b, i) {
+    ctx.fillStyle = b.c; ctx.fillRect(b.x, b.y, b.w, b.h);
+    if (i === hi) { ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 4; ctx.strokeRect(b.x - 2, b.y - 2, b.w + 4, b.h + 4); }
+  });
+  ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('滑鼠移到重疊區:只選最上面那個', 12, 22);
+}
+canvas.addEventListener('pointermove', function (e) {
+  const r = canvas.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
+  hi = -1;
+  for (let i = boxes.length - 1; i >= 0; i--) {   // 反向:先測最上層
+    const b = boxes[i];
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) { hi = i; break; }
+  }
+  draw();
+});
+draw();` },
+{ id:'drag', label:'7.5 拖曳:記住偏移才不會跳', code:
+`// 互動:按住方塊拖曳。記住「游標與方塊原點的偏移」,拖起來才不會瞬移
+const box = { x: 175, y: 120, w: 90, h: 70 };
+let dragging = false, ox = 0, oy = 0;
+function pos(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = dragging ? '#e63946' : '#457b9d';
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+  ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('按住方塊拖曳', 12, 22);
+}
+canvas.addEventListener('pointerdown', function (e) {
+  const p = pos(e);
+  if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
+    dragging = true; ox = p.x - box.x; oy = p.y - box.y;   // 記住偏移
+  }
+  draw();
+});
+canvas.addEventListener('pointermove', function (e) {
+  if (!dragging) return; const p = pos(e); box.x = p.x - ox; box.y = p.y - oy; draw();
+});
+canvas.addEventListener('pointerup', function () { dragging = false; draw(); });
+draw();` },
+{ id:'color-picking', label:'7.6 隱藏色彩緩衝 color picking', code:
+`// 互動:離屏畫布把每個圓塗成「ID 顏色」,讀滑鼠那 1 像素反推是哪個 → 免寫幾何命中
+const shapes = [
+  { x: 80,  y: 90,  r: 45, c: '#e63946', id: 1 },
+  { x: 200, y: 160, r: 55, c: '#457b9d', id: 2 },
+  { x: 320, y: 100, r: 40, c: '#2a9d8f', id: 3 },
+];
+const hit = document.createElement('canvas'); hit.width = W; hit.height = H;
+const hctx = hit.getContext('2d');
+function paint(c, useId) {
+  c.clearRect(0, 0, W, H);
+  shapes.forEach(function (s) {
+    c.fillStyle = useId ? ('rgb(' + s.id + ',0,0)') : s.c;   // ID 存在 R 通道
+    c.beginPath(); c.arc(s.x, s.y, s.r, 0, Math.PI * 2); c.fill();
+  });
+}
+let picked = 0;
+function draw() {
+  paint(ctx, false);   // 主畫布:真正顏色
+  paint(hctx, true);   // 離屏:ID 顏色
+  ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('滑鼠移到圓上:讀離屏像素反推 id = ' + picked, 12, 22);
+}
+canvas.addEventListener('pointermove', function (e) {
+  const r = canvas.getBoundingClientRect();
+  const px = Math.floor(e.clientX - r.left), py = Math.floor(e.clientY - r.top);
+  const p = hctx.getImageData(px, py, 1, 1).data;   // 讀那一點的 ID 顏色
+  picked = p[0];       // R 通道就是 id(0 = 空白)
+  draw();
+});
+draw();` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

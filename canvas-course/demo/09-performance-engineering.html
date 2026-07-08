@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '09',
+  title: "效能工程",
+  md: '../09-performance-engineering.md',
+  W: 400, H: 280,
+  presets: [
+{ id:'fps-meter', label:'9.1 FPS 計量器', code:
+`// 動畫:數每秒幾幀並顯示。想看掉幀,把 40 改成 4000
+let frames = 0, fps = 0, acc = 0, last = 0;
+const dots = [];
+for (let i = 0; i < 40; i++) dots.push({ x: Math.random()*W, y: Math.random()*H, vx: (Math.random()-.5)*3, vy: (Math.random()-.5)*3 });
+function loop(t) {
+  const dt = last ? (t - last) / 1000 : 0; last = t;
+  acc += dt; frames++;
+  if (acc >= 0.5) { fps = Math.round(frames / acc); frames = 0; acc = 0; }
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#457b9d';
+  dots.forEach(function (d) {
+    d.x += d.vx; d.y += d.vy;
+    if (d.x < 0 || d.x > W) d.vx *= -1;
+    if (d.y < 0 || d.y > H) d.vy *= -1;
+    ctx.beginPath(); ctx.arc(d.x, d.y, 6, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.fillStyle = '#000'; ctx.font = 'bold 16px system-ui, sans-serif';
+  ctx.fillText('FPS: ' + fps + '  (物件 ' + dots.length + ')', 12, 24);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'sprite-cache', label:'9.2 sprite 快取:貴的圖形只畫一次', code:
+`// 把「畫一次很貴」的圖示預先烤進離屏 canvas,主迴圈只 drawImage(便宜),畫 300 個
+const S = 48;
+const sprite = document.createElement('canvas'); sprite.width = S; sprite.height = S;
+(function bake() {
+  const g = sprite.getContext('2d');
+  g.translate(S / 2, S / 2);
+  g.shadowColor = 'rgba(0,0,0,.4)'; g.shadowBlur = 6;   // 陰影很貴
+  g.fillStyle = '#e63946';
+  for (let i = 0; i < 8; i++) { g.rotate(Math.PI / 4); g.fillRect(8, -3, 12, 6); }  // 多次旋轉也貴
+  g.fillStyle = '#ffd166'; g.beginPath(); g.arc(0, 0, 9, 0, Math.PI * 2); g.fill();
+})();
+const items = [];
+for (let i = 0; i < 300; i++) items.push({ x: Math.random()*W, y: Math.random()*H, vx: (Math.random()-.5)*2, vy: (Math.random()-.5)*2 });
+let frames = 0, fps = 0, acc = 0, last = 0;
+function loop(t) {
+  const dt = last ? (t - last) / 1000 : 0; last = t; acc += dt; frames++;
+  if (acc >= 0.5) { fps = Math.round(frames / acc); frames = 0; acc = 0; }
+  ctx.clearRect(0, 0, W, H);
+  items.forEach(function (o) {
+    o.x += o.vx; o.y += o.vy;
+    if (o.x < 0 || o.x > W) o.vx *= -1;
+    if (o.y < 0 || o.y > H) o.vy *= -1;
+    ctx.drawImage(sprite, o.x - S / 2, o.y - S / 2);   // 只貼快取好的圖
+  });
+  ctx.fillStyle = '#000'; ctx.font = 'bold 15px system-ui, sans-serif';
+  ctx.fillText('300 個快取 sprite · FPS ' + fps, 12, 22);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'culling', label:'9.3 視口裁剪 culling:畫面外不畫', code:
+`// 世界有 2000 個物件,相機只看得到一小塊;畫面外的直接跳過(culling)
+const WORLD = 2000, N = 2000;
+const world = [];
+for (let i = 0; i < N; i++) world.push({ x: Math.random()*WORLD, y: Math.random()*WORLD, r: 6 + Math.random()*8, c: 'hsl(' + Math.floor(Math.random()*360) + ',70%,55%)' });
+const cam = { x: 0, y: 0 };
+let t = 0;
+function loop() {
+  t += 0.01;
+  cam.x = (WORLD - W) / 2 + Math.cos(t) * ((WORLD - W) / 2);   // 相機在世界裡繞
+  cam.y = (WORLD - H) / 2 + Math.sin(t * 0.7) * ((WORLD - H) / 2);
+  ctx.clearRect(0, 0, W, H);
+  let drawn = 0;
+  for (const o of world) {
+    const sx = o.x - cam.x, sy = o.y - cam.y;
+    if (sx + o.r < 0 || sx - o.r > W || sy + o.r < 0 || sy - o.r > H) continue;  // 視口外 → 跳過
+    ctx.fillStyle = o.c; ctx.beginPath(); ctx.arc(sx, sy, o.r, 0, Math.PI * 2); ctx.fill();
+    drawn++;
+  }
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 22);
+  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('實際畫 ' + drawn + ' / 共 ' + N + ' 個(畫面外都被 culling 跳過)', 8, 16);
+  requestAnimationFrame(loop);
+}
+loop();` },
+{ id:'layering', label:'9.5 分層:靜態背景只畫一次', code:
+`// 分層:靜態背景畫「一次」到離屏層,每幀只貼背景 + 重畫動態物件
+// (真實情境用兩個疊放的 <canvas>;這裡用一張離屏層示意)
+const bg = document.createElement('canvas'); bg.width = W; bg.height = H;
+(function paintBg() {
+  const g = bg.getContext('2d');
+  g.fillStyle = '#1d3557'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(255,255,255,.08)';
+  for (let x = 0; x < W; x += 24) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  for (let y = 0; y < H; y += 24) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+  g.fillStyle = '#a8dadc'; g.font = '13px system-ui, sans-serif';
+  g.fillText('靜態背景層:只畫一次(格線不每幀重算)', 10, 20);
+})();
+let a = 0;
+function loop() {
+  a += 0.03;
+  ctx.drawImage(bg, 0, 0);   // 每幀只「貼」背景層
+  const x = W / 2 + Math.cos(a) * 150, y = H / 2 + Math.sin(a) * 90;
+  ctx.fillStyle = '#e63946'; ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.fill();
+  requestAnimationFrame(loop);
+}
+loop();` },
+{ id:'batch-style', label:'9.6 減少狀態切換:依樣式分組畫', code:
+`// 600 個方塊,依顏色分組畫:同色只設一次 fillStyle,少切狀態 = 更快
+const cols = ['#e63946', '#457b9d', '#2a9d8f', '#ffd166'];
+const items = [];
+for (let i = 0; i < 600; i++) items.push({ x: Math.random()*W, y: Math.random()*H, c: i % 4 });
+let frames = 0, fps = 0, acc = 0, last = 0;
+function loop(t) {
+  const dt = last ? (t - last) / 1000 : 0; last = t; acc += dt; frames++;
+  if (acc >= 0.5) { fps = Math.round(frames / acc); frames = 0; acc = 0; }
+  ctx.clearRect(0, 0, W, H);
+  for (let c = 0; c < cols.length; c++) {
+    ctx.fillStyle = cols[c];               // 一組只切一次狀態
+    for (const o of items) { if (o.c !== c) continue; ctx.fillRect(o.x, o.y, 7, 7); }
+  }
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 22);
+  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('600 方塊依顏色分組畫(少切 fillStyle) · FPS ' + fps, 8, 16);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

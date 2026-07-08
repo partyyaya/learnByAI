@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '02',
+  title: '繪圖基本指令與狀態機',
+  md: '../02-drawing-commands-and-state-machine.md',
+  W: 360, H: 240,
+  note: '<b>提示:</b>測「1px 線為什麼糊」的範例時,打開「像素格線」最明顯——整數座標的線騎在格線上會糊,<code>+0.5</code> 的線落在格子中央才銳利。',
+  presets: [
+    { id: 'state', label: '2.1 狀態機:fillStyle 會殘留', code:
+`// 狀態機:設一次 fillStyle,之後每個 fillRect 都沿用它
+ctx.fillStyle = 'red';
+ctx.fillRect(0, 0, 50, 50);     // 紅
+ctx.fillRect(60, 0, 50, 50);    // 還是紅(狀態沒變)
+
+ctx.fillStyle = 'blue';         // 把畫筆狀態改成藍
+ctx.fillRect(120, 0, 50, 50);   // 藍
+ctx.fillRect(180, 0, 50, 50);   // 還是藍` },
+    { id: 'beginpath-bug', label: '2.3 ❌ 沒有 beginPath 的災難', code:
+`// 沒有 beginPath:第二個 arc 累加到舊路徑,圓 A 被重描、還連出線
+ctx.strokeStyle = '#333';
+ctx.lineWidth = 2;
+
+ctx.arc(70, 80, 30, 0, Math.PI * 2);
+ctx.stroke();                   // 畫圓 A
+
+ctx.arc(200, 80, 30, 0, Math.PI * 2);  // 累加到舊路徑!
+ctx.stroke();                   // 把 A + B「一起」再描一次` },
+    { id: 'beginpath-fix', label: '2.3 ✅ 每個形狀前都 beginPath', code:
+`// 正確:每個獨立形狀前先 beginPath(),清空上一條路徑
+ctx.strokeStyle = '#333';
+ctx.lineWidth = 2;
+
+ctx.beginPath();
+ctx.arc(70, 80, 30, 0, Math.PI * 2);
+ctx.stroke();
+
+ctx.beginPath();                // 清空,重新開始
+ctx.arc(200, 80, 30, 0, Math.PI * 2);
+ctx.stroke();` },
+    { id: 'lines', label: '2.3 moveTo / lineTo 折線', code:
+`ctx.strokeStyle = '#333';
+ctx.lineWidth = 3;
+ctx.beginPath();
+ctx.moveTo(30, 30);    // 起點(懸空移過去,不畫線)
+ctx.lineTo(180, 30);   // 畫到右邊
+ctx.lineTo(100, 150);  // 再畫到下方 → 開口折線
+ctx.stroke();` },
+    { id: 'arc', label: '2.3 arc:整圓 + 半圓(角度)', code:
+`ctx.fillStyle = '#457b9d';
+
+// 整圓:0 → 2π
+ctx.beginPath();
+ctx.arc(90, 110, 50, 0, Math.PI * 2);
+ctx.fill();
+
+// 半圓(下半):0 → π,順時針掃過下半(因為 y 向下)
+ctx.beginPath();
+ctx.arc(250, 110, 50, 0, Math.PI);
+ctx.fill();` },
+    { id: 'closepath', label: '2.3 closePath 封口', code:
+`ctx.strokeStyle = '#e63946';
+ctx.lineWidth = 4;
+ctx.lineJoin = 'round';
+ctx.beginPath();
+ctx.moveTo(60, 40);
+ctx.lineTo(200, 40);
+ctx.lineTo(130, 160);
+ctx.closePath();   // 從終點自動連回起點,封成三角形(拿掉這行看看差別)
+ctx.stroke();` },
+    { id: 'fill-stroke', label: '2.4 fill vs stroke(先填後描)', code:
+`ctx.beginPath();
+ctx.arc(180, 120, 70, 0, Math.PI * 2);
+ctx.fillStyle = '#ffd166';   // 填色狀態
+ctx.fill();                  // 填內部
+ctx.strokeStyle = '#333';    // 描邊狀態
+ctx.lineWidth = 6;
+ctx.stroke();                // 描輪廓(蓋在填色上)` },
+    { id: 'dash', label: '2.4 虛線 setLineDash(記得清)', code:
+`ctx.lineCap = 'round';
+ctx.lineWidth = 6;
+ctx.strokeStyle = '#2a9d8f';
+
+ctx.setLineDash([14, 8]);   // 畫14、空8
+ctx.beginPath();
+ctx.moveTo(30, 70); ctx.lineTo(330, 70);
+ctx.stroke();
+
+ctx.setLineDash([]);        // 清掉!否則下面這條也會變虛線
+ctx.beginPath();
+ctx.moveTo(30, 140); ctx.lineTo(330, 140);
+ctx.stroke();               // 這條是實線` },
+    { id: 'crisp', label: '2.4 1px 線為什麼糊(開格線看)', code:
+`// 打開右上角「像素格線」,對比兩條線
+ctx.strokeStyle = '#000';
+ctx.lineWidth = 1;
+
+// ❌ 糊:整數座標,線騎在格線上 → 平分到兩格
+ctx.beginPath(); ctx.moveTo(100, 30); ctx.lineTo(100, 210); ctx.stroke();
+
+// ✅ 銳利:+0.5,線落在格子正中央
+ctx.beginPath(); ctx.moveTo(180.5, 30); ctx.lineTo(180.5, 210); ctx.stroke();` },
+    { id: 'shadow', label: '2.4 陰影 shadow*', code:
+`ctx.shadowColor = 'rgba(0,0,0,.35)';
+ctx.shadowBlur = 14;
+ctx.shadowOffsetX = 5;
+ctx.shadowOffsetY = 5;
+ctx.fillStyle = '#e63946';
+ctx.fillRect(90, 60, 150, 110);` },
+    { id: 'gradient', label: '2.5 線性漸層 gradient', code:
+`// fillStyle 可以是漸層物件,不只顏色字串
+const grad = ctx.createLinearGradient(0, 0, 0, H);  // 從上到下
+grad.addColorStop(0, '#0077ff');   // 位置 0 的顏色
+grad.addColorStop(1, '#00d2ff');   // 位置 1 的顏色
+ctx.fillStyle = grad;
+ctx.fillRect(0, 0, W, H);` },
+    { id: 'save-restore', label: '2.6 save / restore 隔離狀態', code:
+`ctx.fillStyle = 'black';
+
+ctx.save();                    // 存檔:記住「黑色、不透明」
+  ctx.fillStyle = 'red';
+  ctx.globalAlpha = 0.5;
+  ctx.fillRect(40, 40, 110, 110);   // 紅色半透明(只在這段有效)
+ctx.restore();                 // 讀檔:還原成黑色、不透明
+
+ctx.fillRect(200, 40, 110, 110);    // 又變回黑色不透明,完全不受影響` },
+    { id: 'eraser', label: '2.7 destination-out 橡皮擦', code:
+`// 先畫一塊底
+ctx.fillStyle = '#457b9d';
+ctx.fillRect(50, 50, 260, 140);
+
+// 用 destination-out:後畫的形狀變成「橡皮擦」,擦出透明洞
+ctx.globalCompositeOperation = 'destination-out';
+ctx.beginPath();
+ctx.arc(180, 120, 55, 0, Math.PI * 2);
+ctx.fill();
+
+ctx.globalCompositeOperation = 'source-over';  // 用完務必還原!` },
+    { id: 'clip', label: '2.8 clip 裁切', code:
+`ctx.save();
+ctx.beginPath();
+ctx.arc(180, 120, 90, 0, Math.PI * 2);
+ctx.clip();                    // 之後所有繪圖只出現在這個圓內
+
+// 畫滿版條紋,會被裁成圓形
+for (let y = 0; y < H; y += 18) {
+  ctx.fillStyle = (y / 18) % 2 ? '#e63946' : '#f4a261';
+  ctx.fillRect(0, y, W, 9);
+}
+ctx.restore();                 // 還原裁切區(否則後面全被裁在圓裡)` },
+    { id: 'showcase', label: '2.9 綜合:save/restore 讓三個圖示互不污染', code:
+`const items = [
+  { color: '#e63946', alpha: 1,   dash: [] },
+  { color: '#457b9d', alpha: 0.6, dash: [8, 4] },
+  { color: '#2a9d8f', alpha: 1,   dash: [2, 3] },
+];
+items.forEach((item, i) => {
+  ctx.save();                        // ① 每個圖示前存檔
+  ctx.translate(80 + i * 100, 120);  // 移到各自位置(第 03 章詳述)
+  ctx.globalAlpha = item.alpha;
+  ctx.strokeStyle = item.color;
+  ctx.lineWidth = 4;
+  ctx.setLineDash(item.dash);
+  ctx.beginPath();                   // ② 形狀前 beginPath
+  ctx.arc(0, 0, 40, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();                     // ③ 讀檔:alpha/dash/顏色全還原
+});` },
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

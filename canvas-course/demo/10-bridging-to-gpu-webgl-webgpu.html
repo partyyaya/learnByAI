@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '10',
+  title: "跨越到 GPU",
+  md: '../10-bridging-to-gpu-webgl-webgpu.md',
+  W: 400, H: 260,
+  presets: [
+{ id:'command-style', label:'10.2 Canvas 2D:命令式,你說「畫什麼」', code:
+`// Canvas 2D 是命令式:你一句一句下令,瀏覽器照做(通常轉成 GPU 操作)
+ctx.fillStyle = '#0f172a'; ctx.fillRect(0, 0, W, H);
+ctx.fillStyle = 'red';
+ctx.fillRect(40, 60, 90, 90);                       // 「畫一個紅方塊在這」
+ctx.fillStyle = '#38bdf8';
+ctx.beginPath(); ctx.arc(250, 110, 55, 0, Math.PI * 2); ctx.fill();  // 「畫一個藍圓」
+ctx.fillStyle = '#e2e8f0'; ctx.font = '13px system-ui, sans-serif';
+ctx.fillText('你像導演,一句句指揮;', 40, 200);
+ctx.fillText('WebGL/WebGPU 則是交「程式 + 資料」給 GPU 自己平行算', 40, 222);` },
+{ id:'blend-glow', label:'10.4 混合模式 lighter:相加發光', code:
+`// 動畫:globalCompositeOperation = 'lighter' 讓顏色相加 → 疊處變亮(發光感)
+ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+const blobs = [{ hue: 0, a: 0 }, { hue: 120, a: 2 }, { hue: 240, a: 4 }];
+let t = 0;
+function loop() {
+  t += 0.02;
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(0,0,0,.22)'; ctx.fillRect(0, 0, W, H);   // 淡出上一幀(拖尾感)
+  ctx.globalCompositeOperation = 'lighter';                     // 關鍵:相加混合
+  blobs.forEach(function (b) {
+    const x = W / 2 + Math.cos(t + b.a) * 95, y = H / 2 + Math.sin(t * 1.3 + b.a) * 60;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 75);
+    g.addColorStop(0, 'hsla(' + b.hue + ',100%,60%,.9)');
+    g.addColorStop(1, 'hsla(' + b.hue + ',100%,60%,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, 75, 0, Math.PI * 2); ctx.fill();
+  });
+  ctx.globalCompositeOperation = 'source-over';                 // 用完還原
+  requestAnimationFrame(loop);
+}
+loop();` },
+{ id:'interop', label:'10.7 2D 與 GPU 互通:圖層貼回 + 2D 疊 UI', code:
+`// 用「另一張 canvas」當高效能圖層(想像成 WebGL 畫的海量內容),drawImage 貼到主畫布,2D 疊 UI
+const layer = document.createElement('canvas'); layer.width = W; layer.height = H;
+const lg = layer.getContext('2d');
+let t = 0;
+function loop() {
+  t += 0.016;
+  lg.fillStyle = '#0b132b'; lg.fillRect(0, 0, W, H);
+  for (let i = 0; i < 120; i++) {
+    const x = (Math.sin(t * 0.7 + i) * 0.5 + 0.5) * W;
+    const y = (Math.cos(t * 0.9 + i * 1.3) * 0.5 + 0.5) * H;
+    lg.fillStyle = 'hsl(' + (i * 3 % 360) + ',80%,60%)';
+    lg.fillRect(x, y, 3, 3);
+  }
+  ctx.drawImage(layer, 0, 0);           // 把整張圖層貼到主畫布
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0, 0, W, 30);
+  ctx.fillStyle = '#fff'; ctx.font = '14px system-ui, sans-serif';
+  ctx.fillText('GPU 圖層畫海量內容 · 2D 疊 UI/文字(各取所長)', 10, 20);
+  requestAnimationFrame(loop);
+}
+loop();` },
+{ id:'min-webgl', label:'10.5 最小 WebGL:gl.clearColor + gl.clear', code:
+`// 最小 WebGL:同一張 canvas 不能又 2D 又 WebGL,所以另開一張離屏 canvas 取得 webgl
+const glCanvas = document.createElement('canvas'); glCanvas.width = W; glCanvas.height = H;
+const gl = glCanvas.getContext('webgl') || glCanvas.getContext('experimental-webgl');
+if (!gl) {
+  ctx.fillStyle = '#333'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff'; ctx.font = '15px system-ui, sans-serif';
+  ctx.fillText('此環境不支援 WebGL', 20, H / 2);
+} else {
+  let t = 0;
+  function loop() {
+    t += 0.01;
+    gl.viewport(0, 0, W, H);                 // viewport(x, y, 寬, 高):裁到整張緩衝區
+    const r = 0.5 + 0.5 * Math.sin(t);
+    const g = 0.5 + 0.5 * Math.sin(t + 2);
+    const b = 0.5 + 0.5 * Math.sin(t + 4);
+    gl.clearColor(r, g, b, 1);               // clearColor(紅, 綠, 藍, alpha):範圍 0~1
+    gl.clear(gl.COLOR_BUFFER_BIT);           // 用上面的顏色清整個顏色緩衝
+    ctx.drawImage(glCanvas, 0, 0);           // 把 WebGL 畫布貼回主 2D 畫布顯示
+    ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(0, 0, W, 28);
+    ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
+    ctx.fillText('WebGL:gl.clearColor + gl.clear(顏色隨時間變化)', 10, 19);
+    requestAnimationFrame(loop);
+  }
+  loop();
+}` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '11',
+  title: "Capstone 白板積木",
+  md: '../11-capstone-mini-figma-whiteboard.md',
+  W: 440, H: 300,
+  presets: [
+{ id:'data-model', label:'11.3 資料模型:每種 shape 各有 draw()', code:
+`// 資料模型:不同 shape 各有 draw();場景 = shapes 陣列,render 遍歷
+// 完整可玩的白板在 ../capstone-demo/index.html
+class Shape { constructor(o) { Object.assign(this, o); } }
+class Rect extends Shape { draw(c) { c.fillStyle = this.fill; c.fillRect(this.x, this.y, this.w, this.h); } }
+class Ellipse extends Shape { draw(c) {
+  c.fillStyle = this.fill; c.beginPath();
+  c.ellipse(this.x + this.w/2, this.y + this.h/2, this.w/2, this.h/2, 0, 0, Math.PI*2);
+  c.fill();
+} }
+class TextShape extends Shape { draw(c) { c.fillStyle = this.fill; c.font = 'bold 24px system-ui, sans-serif'; c.fillText(this.text, this.x, this.y); } }
+const scene = [
+  new Rect({ x: 40, y: 50, w: 140, h: 90, fill: '#e63946' }),
+  new Ellipse({ x: 230, y: 60, w: 130, h: 130, fill: '#457b9d' }),
+  new TextShape({ x: 50, y: 240, fill: '#1d3557', text: 'mini-Figma' }),
+];
+ctx.clearRect(0, 0, W, H);
+for (const s of scene) s.draw(ctx);   // 遍歷畫` },
+{ id:'camera', label:'11.4 相機:拖曳平移 + 滾輪縮放', code:
+`// 互動:拖曳平移、滾輪縮放。物件的世界座標不變,變的只是相機
+const cam = { x: 0, y: 0, zoom: 1 };
+const scene = [
+  { x: 60, y: 60, w: 120, h: 80, fill: '#e63946' },
+  { x: 250, y: 120, w: 120, h: 120, fill: '#2a9d8f' },
+  { x: 120, y: 210, w: 190, h: 70, fill: '#ffd166' },
+];
+let drag = false, lx = 0, ly = 0;
+function pos(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function s2w(p) { return { x: p.x / cam.zoom + cam.x, y: p.y / cam.zoom + cam.y }; }
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#f1f3f5'; ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.scale(cam.zoom, cam.zoom); ctx.translate(-cam.x, -cam.y);
+  scene.forEach(function (s) { ctx.fillStyle = s.fill; ctx.fillRect(s.x, s.y, s.w, s.h); });
+  ctx.restore();
+  ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(0, 0, W, 22);
+  ctx.fillStyle = '#fff'; ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText('拖曳平移 · 滾輪縮放 · zoom=' + cam.zoom.toFixed(2), 8, 15);
+}
+canvas.addEventListener('mousedown', function (e) { drag = true; const p = pos(e); lx = p.x; ly = p.y; });
+canvas.addEventListener('mousemove', function (e) {
+  if (!drag) return; const p = pos(e);
+  cam.x -= (p.x - lx) / cam.zoom; cam.y -= (p.y - ly) / cam.zoom; lx = p.x; ly = p.y; render();
+});
+canvas.addEventListener('mouseup', function () { drag = false; });
+canvas.addEventListener('mouseleave', function () { drag = false; });
+canvas.addEventListener('wheel', function (e) {
+  e.preventDefault(); const p = pos(e); const before = s2w(p);
+  cam.zoom = Math.max(0.3, Math.min(cam.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1), 5));
+  const after = s2w(p); cam.x += before.x - after.x; cam.y += before.y - after.y; render();
+}, { passive: false });
+render();` },
+{ id:'selection', label:'11.6 選取 + 四角把手(handles)', code:
+`// 互動:點圖形選取,四角畫縮放把手(selection handles)
+const shapes = [
+  { x: 70, y: 70, w: 150, h: 90, fill: '#457b9d' },
+  { x: 260, y: 160, w: 130, h: 100, fill: '#e63946' },
+];
+let sel = null;
+function drawHandles(s) {
+  ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 1.5;
+  ctx.strokeRect(s.x - 1, s.y - 1, s.w + 2, s.h + 2);         // 選取外框
+  const pts = [[s.x, s.y], [s.x + s.w, s.y], [s.x, s.y + s.h], [s.x + s.w, s.y + s.h]];
+  ctx.fillStyle = '#fff';
+  pts.forEach(function (p) { ctx.fillRect(p[0] - 4, p[1] - 4, 8, 8); ctx.strokeRect(p[0] - 4, p[1] - 4, 8, 8); });
+}
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#f8f9fa'; ctx.fillRect(0, 0, W, H);
+  shapes.forEach(function (s) { ctx.fillStyle = s.fill; ctx.fillRect(s.x, s.y, s.w, s.h); });
+  if (sel) drawHandles(sel);
+  ctx.fillStyle = '#666'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('點圖形選取,看四角把手', 12, 20);
+}
+canvas.addEventListener('mousedown', function (e) {
+  const r = canvas.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
+  sel = null;
+  for (let i = shapes.length - 1; i >= 0; i--) { const s = shapes[i];
+    if (mx >= s.x && mx <= s.x + s.w && my >= s.y && my <= s.y + s.h) { sel = s; break; } }
+  render();
+});
+render();` },
+{ id:'drag-create', label:'11.7 拖曳新增圖形(overlay 預覽)', code:
+`// 互動:在空白處按下拖曳,即時畫出矩形預覽,放開就存進場景
+const shapes = [];
+let start = null, cur = null;
+function pos(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function rectOf(a, b) { return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) }; }
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  shapes.forEach(function (s) { ctx.fillStyle = s.fill; ctx.fillRect(s.x, s.y, s.w, s.h); });
+  if (start && cur) {                          // 拖曳中的預覽(overlay 概念)
+    const r = rectOf(start, cur);
+    ctx.fillStyle = 'rgba(79,140,255,.25)'; ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = '#4f8cff'; ctx.strokeRect(r.x, r.y, r.w, r.h);
+  }
+  ctx.fillStyle = '#666'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('在空白處拖曳新增矩形 · 目前 ' + shapes.length + ' 個', 12, 20);
+}
+canvas.addEventListener('mousedown', function (e) { start = pos(e); cur = start; render(); });
+canvas.addEventListener('mousemove', function (e) { if (!start) return; cur = pos(e); render(); });
+canvas.addEventListener('mouseup', function () {
+  if (start && cur) { const r = rectOf(start, cur); if (r.w > 4 && r.h > 4) { r.fill = 'hsl(' + Math.floor(Math.random()*360) + ',65%,55%)'; shapes.push(r); } }
+  start = null; cur = null; render();
+});
+render();` },
+{ id:'layering', label:'11.5 分層渲染:內容層 + overlay 層', code:
+`// 互動:內容層(圖形)+ overlay 層(hover 高亮/標題);滑鼠移到圖形看高亮
+// 完整白板用兩個真正的 <canvas> 疊放;這裡用一張畫布依序畫兩層示意
+const shapes = [
+  { x: 60, y: 90, w: 150, h: 90, fill: '#e63946' },
+  { x: 260, y: 130, w: 140, h: 120, fill: '#2a9d8f' },
+];
+let hover = null;
+function drawContent() { shapes.forEach(function (s) { ctx.fillStyle = s.fill; ctx.fillRect(s.x, s.y, s.w, s.h); }); }
+function drawOverlay() {
+  if (hover) { ctx.strokeStyle = '#4f8cff'; ctx.lineWidth = 3; ctx.strokeRect(hover.x - 2, hover.y - 2, hover.w + 4, hover.h + 4); }
+  ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, W, 24);
+  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('內容層 + overlay 層(滑鼠移到圖形看高亮)', 8, 16);
+}
+function render() { ctx.clearRect(0, 0, W, H); ctx.fillStyle = '#f8f9fa'; ctx.fillRect(0, 0, W, H); drawContent(); drawOverlay(); }
+canvas.addEventListener('mousemove', function (e) {
+  const r = canvas.getBoundingClientRect(); const mx = e.clientX - r.left, my = e.clientY - r.top;
+  hover = null;
+  for (let i = shapes.length - 1; i >= 0; i--) { const s = shapes[i]; if (mx >= s.x && mx <= s.x + s.w && my >= s.y && my <= s.y + s.h) { hover = s; break; } }
+  render();
+});
+render();` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

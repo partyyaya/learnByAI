@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '01',
+  title: "環境、渲染迴圈與 HiDPI",
+  md: '../01-canvas-setup-render-loop-hidpi.md',
+  W: 400, H: 260,
+  presets: [
+{ id:'hello-context', label:'1.1 取得畫布與繪圖環境(context)', code:`// 拿到 ctx 就能下命令:canvas 是畫框,ctx 才是畫圖的畫筆
+ctx.fillStyle = '#0f172a';
+ctx.fillRect(0, 0, W, H);              // 填滿整塊當底色
+
+ctx.fillStyle = '#38bdf8';
+ctx.fillRect(30, 40, 120, 80);         // fillRect(x, y, 寬, 高)
+
+ctx.fillStyle = '#f8fafc';
+ctx.textBaseline = 'top';
+ctx.font = '16px sans-serif';
+ctx.fillText('context 已就緒', 30, 150);
+ctx.font = '12px sans-serif';
+ctx.fillStyle = '#94a3b8';
+ctx.fillText('canvas 元素本身不畫圖,真正畫圖的是 ctx', 30, 178);
+ctx.fillText('這塊畫布邏輯尺寸 W=' + W + ' H=' + H, 30, 198);` },
+
+{ id:'coordinate-system', label:'1.2 座標系:原點左上、y 往下', code:`// 原點在左上,x 往右變大、y 往下變大(跟數學課相反)
+ctx.fillStyle = '#ffffff';
+ctx.fillRect(0, 0, W, H);
+
+ctx.strokeStyle = '#334155';           // 從原點畫出 x 軸與 y 軸
+ctx.lineWidth = 2;
+ctx.beginPath();
+ctx.moveTo(0, 0); ctx.lineTo(W - 10, 0);
+ctx.moveTo(0, 0); ctx.lineTo(0, H - 10);
+ctx.stroke();
+
+ctx.fillStyle = '#334155';
+ctx.textBaseline = 'top';
+ctx.font = '13px sans-serif';
+ctx.fillText('x 往右變大', W - 110, 8);
+ctx.fillText('y 往下變大', 8, H - 22);
+ctx.fillText('(0,0) 原點在左上', 14, 8);
+
+ctx.fillStyle = '#0f172a';             // 原點
+ctx.beginPath();
+ctx.arc(0, 0, 5, 0, Math.PI * 2);
+ctx.fill();
+
+const px = 120, py = 80;               // 標一個點 (120, 80)
+ctx.strokeStyle = '#e11d48';
+ctx.lineWidth = 1;
+ctx.beginPath();
+ctx.moveTo(px - 10, py); ctx.lineTo(px + 10, py);
+ctx.moveTo(px, py - 10); ctx.lineTo(px, py + 10);
+ctx.stroke();
+ctx.fillStyle = '#e11d48';
+ctx.beginPath();
+ctx.arc(px, py, 3, 0, Math.PI * 2);
+ctx.fill();
+ctx.fillText('(120, 80)', px + 12, py - 4);` },
+
+{ id:'buffer-vs-css', label:'1.3 緩衝區尺寸 ≠ CSS 顯示尺寸', code:`// 小緩衝區的圖被拉大顯示 → 糊(小照片硬撐進大相框)
+ctx.fillStyle = '#0f172a';
+ctx.fillRect(0, 0, W, H);
+
+const boxW = 170, boxH = 116;
+
+// 左:先把圖縮進很小的緩衝區(60x40),再撐大顯示 → 糊
+const small = document.createElement('canvas');
+small.width = 60; small.height = 40;
+small.getContext('2d').drawImage(sampleImage, 0, 0, 60, 40);
+ctx.drawImage(small, 20, 60, boxW, boxH);
+
+// 右:緩衝區尺寸 = 顯示尺寸 → 清晰
+const ok = document.createElement('canvas');
+ok.width = boxW; ok.height = boxH;
+ok.getContext('2d').drawImage(sampleImage, 0, 0, boxW, boxH);
+ctx.drawImage(ok, W - boxW - 20, 60, boxW, boxH);
+
+ctx.textBaseline = 'top';
+ctx.font = '13px sans-serif';
+ctx.fillStyle = '#f87171';
+ctx.fillText('60x40 緩衝區被拉大 → 糊', 20, 30);
+ctx.fillStyle = '#4ade80';
+ctx.fillText('尺寸匹配 → 清晰', W - boxW - 20, 30);` },
+
+{ id:'hidpi-sharp-vs-blurry', label:'1.4 HiDPI:清晰 vs 模糊對比', code:`// 主畫布設成 HiDPI,再比較 1:1 緩衝區 vs 放大 DPR 倍的緩衝區
+const dpr = window.devicePixelRatio || 1;
+canvas.width = Math.round(W * dpr);        // 緩衝區 = 邏輯尺寸 x DPR
+canvas.height = Math.round(H * dpr);
+canvas.style.width = W + 'px';             // CSS 顯示維持邏輯尺寸
+canvas.style.height = H + 'px';
+ctx.scale(dpr, dpr);                       // 之後照邏輯座標畫,自動對應物理像素
+
+ctx.fillStyle = '#0f172a';
+ctx.fillRect(0, 0, W, H);
+
+// 同一份內容:細字 + 細線最能看出銳利差別
+function paint(c, w, h) {
+  c.fillStyle = '#111827';
+  c.fillRect(0, 0, w, h);
+  c.fillStyle = '#f8fafc';
+  c.textBaseline = 'top';
+  c.font = '15px sans-serif';
+  c.fillText('Retina 銳利度', 10, 12);
+  c.fillText('abcdefg 12345', 10, 36);
+  c.strokeStyle = '#38bdf8';
+  c.lineWidth = 1;
+  c.beginPath();
+  for (let i = 0; i < 5; i++) { c.moveTo(10, 66 + i * 7); c.lineTo(w - 10, 66 + i * 7); }
+  c.stroke();
+}
+
+const bw = 170, bh = 110;
+
+// 糊:離屏緩衝區 = 邏輯尺寸(1:1),drawImage 時被 DPR 放大 → 糊
+const blur = document.createElement('canvas');
+blur.width = bw; blur.height = bh;
+paint(blur.getContext('2d'), bw, bh);
+ctx.drawImage(blur, 20, 50, bw, bh);
+
+// 清晰:離屏緩衝區 = 邏輯尺寸 x DPR,先 scale 再畫,drawImage 縮回顯示 → 銳利
+const sharp = document.createElement('canvas');
+sharp.width = Math.round(bw * dpr);
+sharp.height = Math.round(bh * dpr);
+const sc = sharp.getContext('2d');
+sc.scale(dpr, dpr);
+paint(sc, bw, bh);
+ctx.drawImage(sharp, W - bw - 20, 50, bw, bh);
+
+ctx.textBaseline = 'top';
+ctx.font = '13px sans-serif';
+ctx.fillStyle = '#f87171';
+ctx.fillText('1:1 緩衝區 → 糊', 20, 22);
+ctx.fillStyle = '#4ade80';
+ctx.fillText('x' + dpr + ' 緩衝區 → 清晰', W - bw - 20, 22);` },
+
+{ id:'raf-bouncing-ball', label:'1.5 requestAnimationFrame:反彈的球', code:`// 動畫:一顆球四面反彈,每幀先 clearRect 清掉再重畫
+const ball = { x: 80, y: 90, r: 18, vx: 3.2, vy: 2.4 };
+
+function frame() {
+  ctx.clearRect(0, 0, W, H);           // 1. 清:擦掉上一幀(不然殘留疊加)
+  ball.x += ball.vx;                   // 2. 算:更新自己維護的位置資料
+  ball.y += ball.vy;
+  if (ball.x - ball.r < 0 || ball.x + ball.r > W) ball.vx *= -1;   // 撞左右牆
+  if (ball.y - ball.r < 0 || ball.y + ball.r > H) ball.vy *= -1;   // 撞上下牆
+  ctx.fillStyle = '#e63946';           // 3. 畫:照新位置重畫
+  ctx.beginPath();                     // 開新路徑,避免和上一幀相連
+  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+  ctx.fill();
+  requestAnimationFrame(frame);        // 4. 預約下一幀(重跑自動停舊迴圈)
+}
+
+requestAnimationFrame(frame);` },
+
+{ id:'loop-skeleton', label:'1.5 渲染迴圈骨架:清 → 算 → 畫', code:`// 動畫:把渲染迴圈拆成三拍子——clear、update、render 三個函式
+const stateData = { t: 0, x: 40 };
+
+function clear() {                       // 第 1 拍:清空(用底色蓋掉上一幀)
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(0, 0, W, H);
+}
+
+function update() {                      // 第 2 拍:更新你自己維護的資料
+  stateData.t += 1;
+  stateData.x = 40 + (W - 80) * (0.5 + 0.5 * Math.sin(stateData.t * 0.03));
+}
+
+function render() {                      // 第 3 拍:照新狀態重畫
+  ctx.fillStyle = '#e2e8f0';
+  ctx.fillRect(40, 130, W - 80, 6);      // 軌道
+  ctx.fillStyle = '#2563eb';
+  ctx.beginPath();
+  ctx.arc(stateData.x, 133, 14, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#0f172a';
+  ctx.textBaseline = 'top';
+  ctx.font = '15px sans-serif';
+  ctx.fillText('迴圈骨架:clear -> update -> render', 40, 30);
+  ctx.font = '12px sans-serif';
+  ctx.fillStyle = '#64748b';
+  ctx.fillText('已跑 ' + stateData.t + ' 幀', 40, 56);
+}
+
+function frame() {
+  clear();                               // 清
+  update();                              // 算
+  render();                              // 畫
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);` },
+
+{ id:'clear-and-trail', label:'1.6 清空畫布:殘留與拖尾陷阱', code:`// 動畫:示範 1.6——沒把畫布清乾淨會殘留疊加成拖尾
+const dot = { a: 0 };
+
+function frame() {
+  // 只用半透明色蓋一層(而非徹底 clearRect)→ 上一幀沒清乾淨 → 拖尾
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.08)';
+  ctx.fillRect(0, 0, W, H);
+
+  dot.a += 0.04;
+  const x = W / 2 + Math.cos(dot.a) * 90;        // 落在 110..290
+  const y = H / 2 + Math.sin(dot.a * 1.3) * 70;  // 落在 60..200
+
+  ctx.fillStyle = '#f59e0b';
+  ctx.beginPath();
+  ctx.arc(x, y, 10, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#e2e8f0';
+  ctx.textBaseline = 'top';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('半透明覆蓋(非徹底清)→ 殘留成拖尾', 12, 12);
+  ctx.fillText('要乾淨畫面:改用 clearRect(0,0,W,H) 每幀清空', 12, 32);
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '04',
+  title: "文字、圖片與資源",
+  md: '../04-text-images-and-assets.md',
+  W: 420, H: 260,
+  presets: [
+{ id:'filltext', label:'4.1 fillText / strokeText', code:
+`// fillText(文字, x, y):實心字;strokeText:只描邊框的空心字
+ctx.fillStyle = '#f8f9fa'; ctx.fillRect(0, 0, W, H);
+
+ctx.fillStyle = '#1d3557';
+ctx.font = 'bold 30px system-ui, sans-serif';   // 先設字型(像 CSS 的 font 簡寫)
+ctx.fillText('Hello Canvas', 30, 70);           // 在 (30,70) 填色畫字
+
+ctx.lineWidth = 1;
+ctx.strokeStyle = '#e63946';
+ctx.font = 'bold 42px system-ui, sans-serif';
+ctx.strokeText('Outline', 30, 140);             // 空心字
+
+ctx.fillStyle = '#457b9d';
+ctx.font = '15px system-ui, sans-serif';
+ctx.fillText('font / fillStyle 都是狀態,設了會一直生效', 30, 190);` },
+{ id:'align-baseline', label:'4.2 textAlign / textBaseline 對齊', code:
+`// textAlign 決定 x 對到文字左/中/右;textBaseline 決定 y 對到文字哪條線
+ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+const cx = W / 2;
+
+ctx.strokeStyle = '#e63946';                     // 垂直參考線 x = 中線
+ctx.beginPath(); ctx.moveTo(cx, 20); ctx.lineTo(cx, 150); ctx.stroke();
+ctx.fillStyle = '#1d3557'; ctx.font = '20px system-ui, sans-serif';
+ctx.textAlign = 'left';   ctx.fillText('left',   cx, 50);
+ctx.textAlign = 'center'; ctx.fillText('center', cx, 85);
+ctx.textAlign = 'right';  ctx.fillText('right',  cx, 120);
+
+ctx.textAlign = 'left';
+ctx.strokeStyle = '#2a9d8f';                     // 水平參考線 y = 210
+ctx.beginPath(); ctx.moveTo(20, 215); ctx.lineTo(W - 20, 215); ctx.stroke();
+const bases = ['top', 'middle', 'alphabetic', 'bottom'];
+bases.forEach(function (b, i) {
+  ctx.textBaseline = b; ctx.fillStyle = '#457b9d';
+  ctx.fillText(b, 25 + i * 100, 215);
+});` },
+{ id:'measure', label:'4.3 measureText 量文字寬度', code:
+`// measureText 先量出寬度,才能畫「剛好包住文字」的底色框
+ctx.fillStyle = '#1d3557'; ctx.fillRect(0, 0, W, H);
+ctx.font = 'bold 28px system-ui, sans-serif';
+ctx.textBaseline = 'alphabetic';
+const text = 'Canvas 排版';
+const m = ctx.measureText(text);                 // m.width = 文字像素寬
+const x = 40, y = 120, padX = 14, padY = 12;
+const asc = m.actualBoundingBoxAscent || 22;
+const desc = m.actualBoundingBoxDescent || 6;
+
+ctx.fillStyle = '#ffd166';                        // 用量到的尺寸畫背景膠囊
+ctx.fillRect(x - padX, y - asc - padY, m.width + padX * 2, asc + desc + padY * 2);
+ctx.fillStyle = '#1d3557';
+ctx.fillText(text, x, y);
+
+ctx.font = '15px system-ui, sans-serif'; ctx.fillStyle = '#a8dadc';
+ctx.fillText('文字寬度 = ' + m.width.toFixed(1) + ' px', 40, 185);` },
+{ id:'drawimage-3', label:'4.4 drawImage 三種簽名', code:
+`// drawImage 三種簽名,來源都用 sampleImage(220x150 的離屏圖)
+ctx.fillStyle = '#f1faee'; ctx.fillRect(0, 0, W, H);
+
+ctx.drawImage(sampleImage, 10, 30);                          // ① (圖, dx, dy):原尺寸
+ctx.drawImage(sampleImage, 250, 30, 90, 60);                 // ② (圖, dx, dy, dw, dh):縮放
+ctx.drawImage(sampleImage, 150, 20, 70, 70, 250, 110, 120, 120); // ③ 九參數:裁切一塊再放大
+
+ctx.fillStyle = '#1d3557'; ctx.font = '12px system-ui, sans-serif';
+ctx.fillText('① 原尺寸', 10, 24);
+ctx.fillText('② 縮放', 250, 24);
+ctx.fillText('③ 裁切放大', 250, 104);` },
+{ id:'smoothing', label:'4.7 imageSmoothingEnabled:放大要不要平滑', code:
+`// 放大點陣圖:關平滑 = 銳利大像素(像素藝術);開平滑(預設)= 插值變糊
+ctx.fillStyle = '#22223b'; ctx.fillRect(0, 0, W, H);
+
+ctx.imageSmoothingEnabled = false;
+ctx.drawImage(pixelArt, 30, 55, 150, 150);   // 16x16 放大成 150x150
+
+ctx.imageSmoothingEnabled = true;
+ctx.drawImage(pixelArt, 240, 55, 150, 150);
+
+ctx.fillStyle = '#f2e9e4'; ctx.font = '14px system-ui, sans-serif';
+ctx.fillText('smoothing 關 → 銳利', 30, 42);
+ctx.fillText('smoothing 開 → 糊', 240, 42);` },
+{ id:'pattern', label:'4.5 createPattern 重複貼磚', code:
+`// createPattern:用一張小圖當「重複貼磚」填滿(repeat/repeat-x/repeat-y/no-repeat)
+const pat = ctx.createPattern(pixelArt, 'repeat');
+ctx.fillStyle = pat;                          // pattern 也是一種 fillStyle
+ctx.fillRect(0, 0, W, H);
+
+ctx.fillStyle = 'rgba(0,0,0,.55)';
+ctx.fillRect(0, H - 42, W, 42);
+ctx.fillStyle = '#fff'; ctx.font = '14px system-ui, sans-serif';
+ctx.fillText('createPattern(圖, repeat) → 背景紋理', 12, H - 16);` },
+{ id:'card', label:'4.8 綜合:使用者卡片(圓角 + 頭像 clip + 文字)', code:
+`// 綜合:圓角底 + 圓形頭像(clip)+ 文字
+ctx.fillStyle = '#e9ecef'; ctx.fillRect(0, 0, W, H);
+ctx.save();
+ctx.translate(60, 70);
+
+ctx.fillStyle = '#fff';                        // 卡片底:roundRect(x, y, 寬, 高, 圓角半徑)
+ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 1;
+ctx.beginPath();
+ctx.roundRect(0, 0, 300, 130, 14);
+ctx.fill(); ctx.stroke();
+
+ctx.save();                                     // 圓形頭像:先 clip 成圓再貼圖
+ ctx.beginPath();
+ctx.arc(65, 65, 40, 0, Math.PI * 2);
+ctx.clip();
+ctx.drawImage(sampleImage, 25, 25, 80, 80);
+ctx.restore();
+
+ctx.fillStyle = '#1d3557'; ctx.font = 'bold 20px system-ui, sans-serif';
+ctx.fillText('Gary Cai', 125, 55);
+ctx.fillStyle = '#6c757d'; ctx.font = '14px system-ui, sans-serif';
+ctx.fillText('Canvas 課學員', 125, 82);
+ctx.restore();` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>

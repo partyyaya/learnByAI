@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="./playground.css">
+</head>
+<body>
+<script>
+window.CH = {
+  chapter: '08',
+  title: "場景圖與架構",
+  md: '../08-scene-graph-and-architecture.md',
+  W: 400, H: 280,
+  presets: [
+{ id:'scene-array', label:'8.2 場景=物件陣列,render 遍歷畫', code:
+`// 場景圖:用陣列存所有圖形,render 遍歷叫每個物件畫自己
+class Shape {
+  constructor(p){ Object.assign(this, { x:0, y:0, rotation:0 }, p); }
+  draw(ctx){}                       // 子類實作:怎麼畫自己
+}
+class RectShape extends Shape {
+  constructor(p){ super(Object.assign({ w:100, h:64, fill:'#888' }, p)); }
+  draw(ctx){
+    ctx.save();
+    ctx.translate(this.x, this.y);  // 以自己為原點畫(第 03 章)
+    ctx.rotate(this.rotation);
+    ctx.fillStyle = this.fill;
+    ctx.fillRect(-this.w/2, -this.h/2, this.w, this.h);
+    ctx.restore();                  // 自掃門前雪,狀態不外洩
+  }
+}
+class CircleShape extends Shape {
+  constructor(p){ super(Object.assign({ r:44, fill:'#888' }, p)); }
+  draw(ctx){
+    ctx.save();
+    ctx.fillStyle = this.fill;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+// 場景 = 一個純資料陣列(唯一真相來源)
+const scene = [
+  new RectShape({ x:110, y:90, fill:'#e63946' }),
+  new CircleShape({ x:300, y:150, r:50, fill:'#457b9d' }),
+  new RectShape({ x:210, y:205, w:150, h:52, rotation:0.3, fill:'#2a9d8f' }),
+];
+// render:遍歷,叫每個物件畫自己
+ctx.clearRect(0, 0, W, H);
+for (const s of scene) s.draw(ctx);` },
+{ id:'draw-isolation', label:'8.2 每個圖形自己畫 + save/restore 隔離', code:
+`// 每個圖形的 draw 都用 save/restore 包住,狀態不會污染下一個
+class Blob {
+  constructor(p){ Object.assign(this, { r:42, fill:'#888', alpha:1, shadow:0 }, p); }
+  draw(ctx){
+    ctx.save();                       // 進場存檔
+    ctx.globalAlpha = this.alpha;     // 只影響這一個
+    ctx.shadowColor = 'rgba(0,0,0,.4)';
+    ctx.shadowBlur = this.shadow;     // 只影響這一個
+    ctx.fillStyle = this.fill;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();                    // 離場還原:alpha/shadow 全清掉
+  }
+}
+const scene = [
+  new Blob({ x:90,  y:140, fill:'#e63946', alpha:0.35 }),  // 半透明,只有它
+  new Blob({ x:200, y:140, fill:'#457b9d', shadow:22 }),   // 有陰影,只有它
+  new Blob({ x:315, y:140, fill:'#2a9d8f' }),              // 乾淨:沒被前兩個污染
+];
+ctx.clearRect(0, 0, W, H);
+for (const s of scene) s.draw(ctx);   // 就算前一個開了陰影,也不會漏給後面` },
+{ id:'data-render-split', label:'8.3 資料/渲染分離:改資料就重投影', code:
+`// 互動:點空白處新增圓、點圓刪除它。畫面只是「資料陣列」的投影
+class CircleShape {
+  constructor(p){ Object.assign(this, p); }
+  draw(ctx){
+    ctx.save();
+    ctx.fillStyle = this.fill;
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.r, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+  }
+  containsPoint(px, py){ const dx = px-this.x, dy = py-this.y; return dx*dx + dy*dy <= this.r*this.r; }
+}
+const palette = ['#e63946', '#457b9d', '#2a9d8f', '#ffd166', '#a06cd5'];
+const scene = [];                       // 唯一真相來源,一開始是空的
+function render(){                       // 畫面 = 把資料畫出來的函式
+  ctx.clearRect(0, 0, W, H);
+  for (const s of scene) s.draw(ctx);
+  ctx.fillStyle = '#888';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('點空白新增 · 點圓刪除 · 目前 ' + scene.length + ' 個', 12, 22);
+}
+canvas.addEventListener('mousedown', function(e){
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  let hit = -1;
+  for (let i = scene.length - 1; i >= 0; i--) if (scene[i].containsPoint(mx, my)) { hit = i; break; }
+  if (hit >= 0) scene.splice(hit, 1);   // 改資料:刪除
+  else scene.push(new CircleShape({ x:mx, y:my, r:18 + Math.random()*22, fill:palette[scene.length % palette.length] }));  // 改資料:新增
+  render();                             // 重新投影(你只改資料,不直接戳畫布)
+});
+render();` },
+{ id:'group-drag', label:'8.4 父子群組:拖父節點,子節點跟著動', code:
+`// 互動:拖曳畫面 → 只移動父節點,子節點座標相對父層,自動跟著動
+class Node {
+  constructor(p){ Object.assign(this, { x:0, y:0, rotation:0, w:0, h:0, fill:'#888' }, p); this.children = []; }
+  add(c){ this.children.push(c); return this; }
+  draw(ctx){
+    ctx.save();
+    ctx.translate(this.x, this.y);      // 套用「自己相對父層」的變換
+    ctx.rotate(this.rotation);
+    if (this.w) { ctx.fillStyle = this.fill; ctx.fillRect(-this.w/2, -this.h/2, this.w, this.h); }
+    for (const c of this.children) c.draw(ctx);   // 遞迴畫子節點
+    ctx.restore();                      // 還原,不洩漏給兄弟節點
+  }
+}
+// 群組:父節點(中心小標記)+ 三個相對座標的子節點
+const group = new Node({ x:200, y:140, w:14, h:14, fill:'#264653' });
+group.add(new Node({ x:-72, y:-42, w:64, h:64, fill:'#e63946' }));
+group.add(new Node({ x:64,  y:-24, w:74, h:52, fill:'#457b9d' }));
+group.add(new Node({ x:0,   y:62,  w:92, h:42, fill:'#2a9d8f' }));
+function render(){ ctx.clearRect(0, 0, W, H); group.draw(ctx); }
+let drag = false, ox = 0, oy = 0;
+canvas.addEventListener('mousedown', function(e){
+  const r = canvas.getBoundingClientRect();
+  drag = true; ox = e.clientX - r.left - group.x; oy = e.clientY - r.top - group.y;
+});
+canvas.addEventListener('mousemove', function(e){
+  if (!drag) return;
+  const r = canvas.getBoundingClientRect();
+  group.x = e.clientX - r.left - ox;    // 只改父節點座標
+  group.y = e.clientY - r.top - oy;     // 子節點座標原地不動,整組卻跟著移動
+  render();
+});
+canvas.addEventListener('mouseup', function(){ drag = false; });
+render();` },
+{ id:'group-rotate', label:'8.4 群組旋轉:父轉,子相對座標繞著轉', code:
+`// 父節點持續旋轉,子節點座標「相對父層」不變,整組自動跟著轉
+class Node {
+  constructor(p){ Object.assign(this, { x:0, y:0, rotation:0, w:0, h:0, fill:'#888' }, p); this.children = []; }
+  add(c){ this.children.push(c); return this; }
+  draw(ctx){
+    ctx.save();
+    ctx.translate(this.x, this.y);      // 累積變換:父先 translate/rotate
+    ctx.rotate(this.rotation);
+    if (this.w) { ctx.fillStyle = this.fill; ctx.fillRect(-this.w/2, -this.h/2, this.w, this.h); }
+    for (const c of this.children) c.draw(ctx);   // 子節點在父的基礎上再畫
+    ctx.restore();
+  }
+}
+const group = new Node({ x:200, y:140, w:14, h:14, fill:'#264653' });
+group.add(new Node({ x:-80, y:0,   w:52, h:52, fill:'#e63946' }));
+group.add(new Node({ x:80,  y:0,   w:52, h:52, fill:'#457b9d' }));
+group.add(new Node({ x:0,   y:-72, w:60, h:40, fill:'#2a9d8f' }));
+function frame(){
+  group.rotation += 0.02;               // 只轉父節點,三個子節點的座標從沒改過
+  ctx.clearRect(0, 0, W, H);
+  group.draw(ctx);                       // 子節點自動繞著父節點原點旋轉
+  requestAnimationFrame(frame);
+}
+frame();` },
+{ id:'z-order-front', label:'8.5 z-order:點擊置頂(後畫蓋上面)', code:
+`// 互動:點任一方塊 → 移到陣列尾端 = 最後畫 = 蓋在最上層
+class RectShape {
+  constructor(p){ Object.assign(this, p); }
+  draw(ctx){
+    ctx.save();
+    ctx.fillStyle = this.fill;
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+    ctx.strokeStyle = 'rgba(0,0,0,.3)'; ctx.lineWidth = 2;
+    ctx.strokeRect(this.x, this.y, this.w, this.h);
+    ctx.restore();
+  }
+  containsPoint(px, py){ return px >= this.x && px <= this.x+this.w && py >= this.y && py <= this.y+this.h; }
+}
+const scene = [
+  new RectShape({ x:70,  y:70,  w:150, h:100, fill:'#e63946' }),
+  new RectShape({ x:135, y:105, w:150, h:100, fill:'#457b9d' }),
+  new RectShape({ x:200, y:140, w:150, h:100, fill:'#2a9d8f' }),
+];
+function render(){
+  ctx.clearRect(0, 0, W, H);
+  for (const s of scene) s.draw(ctx);   // 正向遍歷:陣列尾端最後畫 = 最上層
+}
+function bringToFront(s){
+  const i = scene.indexOf(s);
+  scene.splice(i, 1); scene.push(s);    // 移到尾端 → 最後畫 → 置頂
+}
+canvas.addEventListener('mousedown', function(e){
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  for (let i = scene.length - 1; i >= 0; i--) {   // 反向:先測最上層
+    if (scene[i].containsPoint(mx, my)) { bringToFront(scene[i]); break; }
+  }
+  render();
+});
+render();` },
+{ id:'hit-topmost', label:'8.5 反序命中:只選最上層(畫外框)', code:
+`// 互動:點擊選取「最上層」的圖形 → 畫黃色外框。重疊處只選一個
+class Shape { constructor(p){ Object.assign(this, p); } }
+class RectShape extends Shape {
+  draw(ctx, sel){
+    ctx.save();
+    ctx.fillStyle = this.fill;
+    ctx.fillRect(this.x, this.y, this.w, this.h);
+    if (sel) { ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 4; ctx.strokeRect(this.x-3, this.y-3, this.w+6, this.h+6); }
+    ctx.restore();
+  }
+  containsPoint(px, py){ return px >= this.x && px <= this.x+this.w && py >= this.y && py <= this.y+this.h; }
+}
+class CircleShape extends Shape {
+  draw(ctx, sel){
+    ctx.save();
+    ctx.fillStyle = this.fill;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI*2); ctx.fill();
+    if (sel) { ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(this.x, this.y, this.r+4, 0, Math.PI*2); ctx.stroke(); }
+    ctx.restore();
+  }
+  containsPoint(px, py){ const dx = px-this.x, dy = py-this.y; return dx*dx + dy*dy <= this.r*this.r; }
+}
+const scene = [
+  new RectShape({ x:60,  y:70, w:150, h:100, fill:'#e63946' }),
+  new CircleShape({ x:210, y:150, r:62, fill:'#457b9d' }),
+  new RectShape({ x:250, y:160, w:120, h:90, fill:'#2a9d8f' }),
+];
+let selected = null;
+function render(){
+  ctx.clearRect(0, 0, W, H);
+  for (const s of scene) s.draw(ctx, s === selected);   // 繪製正向(由下往上)
+}
+canvas.addEventListener('mousedown', function(e){
+  const r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left, my = e.clientY - r.top;
+  selected = null;
+  for (let i = scene.length - 1; i >= 0; i--) {   // 命中反向(由上往下),中就停
+    if (scene[i].containsPoint(mx, my)) { selected = scene[i]; break; }
+  }
+  render();
+});
+render();` },
+{ id:'dirty-rect', label:'8.6 髒矩形:只重畫變動的區域', code:
+`// 髒矩形:每幀只清除並重畫「有變動的那塊」,黃框標出髒區域
+function drawBg(x, y, w, h){               // 只重繪指定區域的背景
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();   // 裁切:繪圖只落在這塊
+  ctx.fillStyle = '#1d3557'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(255,255,255,.07)';
+  for (let gx = 0; gx < W; gx += 26) for (let gy = 0; gy < H; gy += 26) ctx.fillRect(gx, gy, 13, 13);
+  ctx.restore();
+}
+drawBg(0, 0, W, H);                        // 開場:整片背景只畫這一次
+const ball = { x:80, y:140, r:26, vx:2.6, vy:1.9 };
+function bounds(){ return { x:ball.x-ball.r-3, y:ball.y-ball.r-3, w:ball.r*2+6, h:ball.r*2+6 }; }
+let prev = bounds();                       // 記住上一幀的包圍盒
+function frame(){
+  ball.x += ball.vx; ball.y += ball.vy;
+  if (ball.x < ball.r || ball.x > W-ball.r) ball.vx *= -1;
+  if (ball.y < ball.r || ball.y > H-ball.r) ball.vy *= -1;
+  const nb = bounds();
+  // 髒區域 = 上一幀 ∪ 這一幀(擦掉舊位置、畫上新位置)
+  const dx = Math.min(prev.x, nb.x), dy = Math.min(prev.y, nb.y);
+  const dw = Math.max(prev.x+prev.w, nb.x+nb.w) - dx;
+  const dh = Math.max(prev.y+prev.h, nb.y+nb.h) - dy;
+  drawBg(dx, dy, dw, dh);                  // 只重畫這一小塊,不是整片畫面
+  ctx.save();
+  ctx.beginPath(); ctx.rect(dx, dy, dw, dh); ctx.clip();
+  ctx.fillStyle = '#e63946';
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1;
+  ctx.strokeRect(nb.x+0.5, nb.y+0.5, nb.w-1, nb.h-1);   // 標出這一幀的髒區
+  ctx.restore();
+  prev = nb;                               // 下一幀要負責擦掉這一幀的框
+  requestAnimationFrame(frame);
+}
+frame();` }
+  ]
+};
+</script>
+<script src="./playground.js"></script>
+</body>
+</html>
