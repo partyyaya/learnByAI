@@ -94,6 +94,9 @@ DOM 裡文字超出寬度會自動換行,**Canvas 完全不會**。你得自己:
 function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
   // 切成「可斷點單位」:CJK 逐字、英文單字保持整塊、其餘標點/空白各自成 token。
   // (中文沒有空格,不能像英文那樣用 split(' ');這裡用正則同時處理中英混排)
+  // 一-鿿:是一個字元範圍集合(character class):比對範圍 Unicode 碼位:一 = U+4E00,鿿 = U+9FFF 之間的任一個字
+  // 中文:每個字都能當斷點 → 逐字切([一-鿿])
+  // 英文:單字不該被拆開(hel 換行 lo 很醜)→ 整個單字當一個 token([A-Za-z0-9]+)
   const tokens = text.match(/[一-鿿]|[A-Za-z0-9]+|\s|\S/g) || [];
   let line = '';
 
@@ -179,6 +182,7 @@ img.src = 'cat.png';
 實務上用 Promise 包起來,把所有素材**預載完再開始渲染**:
 
 ```js
+// 基本版:用 onload,包成回傳 Promise 的函式
 function loadImage(src) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -187,7 +191,27 @@ function loadImage(src) {
     img.src = src;
   });
 }
+```
 
+不過 `onload` 只保證「**下載完**」,解碼(把壓縮的 JPEG/PNG bytes 轉成記憶體點陣圖)常被延遲到第一次 `drawImage` 才做,可能造成首幀卡頓。**更好的做法是改用 `img.decode()`**——它保證下載 + 解碼都完成才 resolve,`drawImage` 不會卡頓。同樣包成回傳 Promise 的函式,並記得處理載入失敗時的 reject:
+
+```js
+// 進階版:用 decode(),首次繪製不卡頓
+async function loadImage(src) {   // async 函式本身就回傳 Promise
+  const img = new Image();
+  img.src = src;
+  try {
+    await img.decode();           // 下載 + 解碼都完成才往下走
+    return img;
+  } catch (e) {
+    throw new Error(`圖片載入失敗:${src}`);   // decode() 失敗會 reject
+  }
+}
+```
+
+兩個版本的介面一致(都回傳 `Promise<img>`),所以預載的寫法完全不用改:
+
+```js
 // 預載所有素材,全部就緒才開始畫
 const [bg, player] = await Promise.all([
   loadImage('bg.png'),
@@ -195,8 +219,6 @@ const [bg, player] = await Promise.all([
 ]);
 startRenderLoop();
 ```
-
-> **更好的選擇**:`await img.decode()` 比 `onload` 更可靠——它保證圖片不只下載完、還**解碼完**,`drawImage` 不會卡頓。`const img = new Image(); img.src = src; await img.decode();`
 
 ---
 
@@ -275,9 +297,14 @@ async function drawCard(ctx, x, y, avatarSrc, name, bio) {
   // 圓形頭像(clip,記得 save/restore 隔離裁切區——第 02 章紀律)
   ctx.save();
   ctx.beginPath();
+  // arc(圓心x, 圓心y, 半徑, 起始角, 結束角[, 逆時針?]):角度單位是「弧度」
+  //   0 = 3 點鐘方向;Math.PI*2 = 轉一整圈(360°)→ 畫出完整的圓
+  //   (只畫半圓就 0 → Math.PI;90° = Math.PI/2,以此類推)
   ctx.arc(50, 60, 32, 0, Math.PI * 2);
-  ctx.clip();
-  ctx.drawImage(avatar, 18, 28, 64, 64);        // 方圖被裁成圓
+  ctx.fillStyle = '#f0f0f0';                    // 先填底色當背景:頭像還沒載入或有透明區時不會「開天窗」
+  ctx.fill();
+  ctx.clip();                                   // 裁切區 = 上面那個圓;之後畫的東西只會出現在圓內
+  ctx.drawImage(avatar, 18, 28, 64, 64);        // 方圖被裁成圓;透明處會露出上面的底色
   ctx.restore();
 
   // 標題
