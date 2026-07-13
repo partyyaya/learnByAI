@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>鼠標擦除露圖效果（1:1 還原 mimo.xiaomi.com）</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --color-bg: #fcfaf8; /* 與 mimo 原站相同的頁面背景色，遮罩層就是這個顏色 */
+  }
+
+  body {
+    font-family: "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
+    background: var(--color-bg);
+    color: #2b2622;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 24px 16px 48px;
+  }
+
+  h1 { font-size: 22px; margin-bottom: 4px; font-weight: 600; }
+  p.subtitle { font-size: 13px; color: #8a8378; margin-bottom: 16px; }
+
+  /*
+   * 與 mimo 原站相同的三層結構：
+   *   .hero      relative 容器，接收滑鼠事件
+   *   .hero__bg  底層：要被露出的「畫」（z-index: 0）
+   *   .hero__mask 頂層 canvas：整片填滿「頁面背景色」，
+   *               墨點在它上面用 destination-out 打洞（z-index: 1）
+   *   DOM 文字   z-index: 2，浮在遮罩之上，不會被擦掉
+   */
+  .hero {
+    position: relative;
+    width: min(1100px, 100%);
+    height: 480px;
+    overflow: hidden;
+    isolation: isolate;
+    border: 1px solid #e8e2d8;
+    border-radius: 4px;
+  }
+
+  .hero__bg,
+  .hero__mask {
+    position: absolute;
+    inset: 0;
+  }
+  .hero__bg   { z-index: 0; }
+  .hero__mask { z-index: 1; pointer-events: none; display: block; }
+
+  /* 原站在觸控裝置直接隱藏遮罩，讓畫直接顯示 */
+  @media (hover: none) {
+    .hero__mask { display: none; }
+  }
+
+  .hero__title {
+    position: absolute;
+    z-index: 2;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    pointer-events: none;
+    text-align: center;
+  }
+  .hero__title h2 {
+    font-size: 44px;
+    font-weight: 500;
+    letter-spacing: .04em;
+    color: #262019;
+  }
+  .hero__title p { font-size: 15px; color: #8a8378; }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: center;
+    margin-top: 16px;
+    font-size: 13px;
+    color: #6b6459;
+  }
+  .controls label { display: flex; align-items: center; gap: 8px; }
+  .controls input[type="range"] { accent-color: #c96f2e; }
+
+  details.notes {
+    width: min(1100px, 100%);
+    margin-top: 24px;
+    background: #f5f1ea;
+    border: 1px solid #e8e2d8;
+    border-radius: 8px;
+    padding: 14px 18px;
+    font-size: 14px;
+    line-height: 1.9;
+    color: #4a443c;
+  }
+  details.notes summary { cursor: pointer; font-weight: 600; color: #2b2622; }
+  details.notes code {
+    background: #e9e2d6;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12.5px;
+    color: #9c5518;
+  }
+</style>
+</head>
+<body>
+
+<h1>鼠標擦除露圖效果</h1>
+<p class="subtitle">1:1 還原 mimo.xiaomi.com/zh/mimocode — 墨點隨鼠標暈開露出底圖，再自行閉合</p>
+
+<section class="hero" id="hero">
+  <canvas class="hero__bg" id="heroBg" aria-hidden="true"></canvas>
+  <canvas class="hero__mask" id="heroMask" aria-hidden="true"></canvas>
+  <div class="hero__title">
+    <h2>MiMo Code</h2>
+    <p>移動鼠標，墨跡暈開，畫卷自現</p>
+  </div>
+</section>
+
+<div class="controls">
+  <label>墨點大小
+    <input type="range" id="ctlSize" min="60" max="240" value="128">
+  </label>
+  <label>生命週期 (ms)
+    <input type="range" id="ctlLife" min="200" max="2000" value="520">
+  </label>
+  <label>墨點間距 (px)
+    <input type="range" id="ctlStep" min="4" max="40" value="12">
+  </label>
+</div>
+
+<details class="notes" open>
+  <summary>實現原理（取自 mimo 原站程式碼）</summary>
+  <p>
+    1. <strong>三層結構</strong>：底層是「畫」；頂層 canvas 整片填滿<strong>與頁面背景相同的純色</strong>
+    （所以看起來像一片空白）；標題文字是 DOM，z-index 更高，不會被擦掉。<br>
+    2. <strong>墨點粒子（stamps）</strong>：鼠標軌跡每隔 <code>STAMP_STEP = 12px</code> 插值生成一個墨點，
+    每個墨點記錄出生時間、隨機種子、隨機最大半徑（<code>128 × (0.55 ~ 1.0)</code>），上限 160 個。<br>
+    3. <strong>每幀全量重繪</strong>：先把遮罩整片重新填滿純色，再用
+    <code>globalCompositeOperation = 'destination-out'</code> 把每個「活著的」墨點挖掉。
+    沒有持久擦痕 —— 洞的存在完全由粒子陣列決定。<br>
+    4. <strong>暈開與閉合</strong>（和「統一淡出」手感差異的來源）：每個墨點在
+    <code>LIFETIME = 520ms</code> 內，半徑從 8px 以 <code>easeOutCubic</code> 膨脹到自己的最大值
+    （快進慢停，像墨在宣紙上暈開）；同時透明度以 <code>1 − t²</code> 衰減
+    （前期幾乎不透明、後期加速消失，洞像是「收口」閉合）。<br>
+    5. <strong>墨漬形狀</strong>：不是正圓 —— 用三組不同頻率的正弦諧波擾動半徑
+    （<code>sin(3a)、sin(7a)、sin(13a)</code>，相位由各墨點的隨機種子決定），
+    畫成不規則多邊形，再以徑向漸層填充做出柔軟毛邊，模擬墨漬。<br>
+    6. <strong>按需動畫</strong>：粒子陣列為空時停掉 <code>requestAnimationFrame</code>，滑鼠不動就零開銷。<br>
+    7. <strong>觸控裝置</strong>：<code>@media (hover: none)</code> 直接隱藏遮罩，讓畫直接顯示。
+  </p>
+</details>
+
+<script>
+(function () {
+  "use strict";
+
+  const hero   = document.getElementById("hero");
+  const canvas = document.getElementById("heroMask");
+  const bgCvs  = document.getElementById("heroBg");
+
+  // 原站行為：無法 hover 的觸控裝置不啟用效果（CSS 已把遮罩藏起來）
+  const canHover = window.matchMedia("(hover: hover)").matches;
+
+  const ctx = canvas.getContext("2d");
+
+  /* ====== 以下參數與 mimo 原站一致 ====== */
+  const MASK = "252, 250, 248"; // 遮罩顏色 = 頁面背景色 --color-bg
+  const R_START = 8;            // 墨點初始半徑
+  let   R_END = 128;            // 墨點最大半徑（每個墨點再乘上隨機係數）
+  const R_VARY = 0.45;          // 半徑隨機幅度 → 筆觸更生動
+  let   LIFETIME = 520;         // ms — 一個墨點「暈開 + 閉合」的總時長
+  let   STAMP_STEP = 12;        // 軌跡上每隔多少 px 蓋一個墨點
+  const MAX_STAMPS = 160;       // 同時存活的墨點上限
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  let w = 0, h = 0;
+
+  function resize() {
+    const rect = hero.getBoundingClientRect();
+    w = rect.width;
+    h = rect.height;
+    for (const c of [canvas, bgCvs]) {
+      c.width  = Math.round(w * DPR);
+      c.height = Math.round(h * DPR);
+      // canvas 是 replaced element，inset:0 不會自動撐開，
+      // 不鎖定 CSS 尺寸的話，鼠標座標和墨點位置會差一個 DPR 倍率
+      c.style.width  = w + "px";
+      c.style.height = h + "px";
+    }
+    // 之後全部用 CSS 像素座標作畫，由 transform 負責高清縮放
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgb(" + MASK + ")";
+    ctx.fillRect(0, 0, w, h);
+
+    paintArtwork();
+  }
+
+  /* ---------- 底層的「畫」（程式生成，實際專案換成圖片即可） ---------- */
+  function paintArtwork() {
+    const c = bgCvs.getContext("2d");
+    c.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    // 宣紙底色
+    const bg = c.createLinearGradient(0, 0, 0, h);
+    bg.addColorStop(0, "#f3e7d3");
+    bg.addColorStop(1, "#e8d3b4");
+    c.fillStyle = bg;
+    c.fillRect(0, 0, w, h);
+
+    // 飄帶：幾條大幅度的貝茲曲線，敦煌飛天的意象
+    const ribbons = [
+      { y: 0.30, amp: 90, hue: "#c96f2e", width: 26 },
+      { y: 0.45, amp: -70, hue: "#a33e2a", width: 18 },
+      { y: 0.58, amp: 110, hue: "#3e6b58", width: 22 },
+      { y: 0.72, amp: -90, hue: "#8a6d2f", width: 14 },
+    ];
+    for (const r of ribbons) {
+      c.beginPath();
+      c.moveTo(-40, h * r.y);
+      c.bezierCurveTo(w * 0.25, h * r.y - r.amp,
+                      w * 0.55, h * r.y + r.amp,
+                      w + 40,   h * r.y - r.amp * 0.4);
+      c.strokeStyle = r.hue;
+      c.globalAlpha = 0.85;
+      c.lineWidth = r.width;
+      c.lineCap = "round";
+      c.stroke();
+    }
+    c.globalAlpha = 1;
+
+    // 硃砂圓日
+    const sun = c.createRadialGradient(w * 0.78, h * 0.26, 8, w * 0.78, h * 0.26, 64);
+    sun.addColorStop(0, "#d4452b");
+    sun.addColorStop(1, "#b93a24");
+    c.fillStyle = sun;
+    c.beginPath();
+    c.arc(w * 0.78, h * 0.26, 56, 0, Math.PI * 2);
+    c.fill();
+
+    // 落款文字
+    c.fillStyle = "rgba(60, 40, 25, .85)";
+    c.font = "500 30px 'Noto Serif TC', 'PingFang TC', serif";
+    c.textAlign = "left";
+    c.textBaseline = "top";
+    c.fillText("飛 天", 36, 32);
+  }
+
+  /* ---------- 墨點粒子 ---------- */
+
+  // 存活中的墨點；每個從 R_START 暈開到自己的 rmax，並在 LIFETIME 內閉合
+  const stamps = [];
+  let lastX = null;
+  let lastY = null;
+
+  function addStamp(x, y) {
+    if (stamps.length >= MAX_STAMPS) stamps.shift();
+    stamps.push({
+      x: x,
+      y: y,
+      born: performance.now(),
+      seed: Math.random() * Math.PI * 2,                 // 決定墨漬形狀的相位
+      rmax: R_END * (1 - R_VARY + Math.random() * R_VARY), // 每個墨點大小不同
+    });
+  }
+
+  // 兩次 mousemove 之間按 STAMP_STEP 間距插值，快速滑動也連續
+  function stampAlong(x, y) {
+    if (lastX === null) {
+      addStamp(x, y);
+    } else {
+      const dx = x - lastX;
+      const dy = y - lastY;
+      const dist = Math.hypot(dx, dy);
+      const steps = Math.max(1, Math.ceil(dist / STAMP_STEP));
+      for (let i = 1; i <= steps; i++) {
+        addStamp(lastX + (dx * i) / steps, lastY + (dy * i) / steps);
+      }
+    }
+    lastX = x;
+    lastY = y;
+  }
+
+  // 挖出一個墨點：不規則、柔邊的洞，露出底下的畫。
+  // 半徑用三組正弦諧波擾動，模擬墨漬的不規則邊緣
+  function carveInk(x, y, r, alpha, seed) {
+    const g = ctx.createRadialGradient(x, y, r * 0.25, x, y, r);
+    g.addColorStop(0,    "rgba(0, 0, 0, " + 0.95 * alpha + ")");
+    g.addColorStop(0.55, "rgba(0, 0, 0, " + 0.88 * alpha + ")");
+    g.addColorStop(1,    "rgba(0, 0, 0, 0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    const segs = 32;
+    for (let i = 0; i <= segs; i++) {
+      const a = (i / segs) * Math.PI * 2;
+      const wob =
+        0.78 +
+        0.14 * Math.sin(a * 3 + seed) +
+        0.08 * Math.sin(a * 7 + seed * 2.1) +
+        0.05 * Math.sin(a * 13 + seed * 0.7);
+      const rr = r * wob;
+      const px = x + Math.cos(a) * rr;
+      const py = y + Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /* ---------- 渲染迴圈：每幀重畫遮罩，再挖掉所有活著的墨點 ---------- */
+
+  let running = false;
+  function loop() {
+    const now = performance.now();
+
+    // 1. 整片重新填滿遮罩色（沒有持久擦痕，一切由粒子決定）
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgb(" + MASK + ")";
+    ctx.fillRect(0, 0, w, h);
+
+    // 2. destination-out 挖掉每個存活墨點
+    ctx.globalCompositeOperation = "destination-out";
+    for (let i = stamps.length - 1; i >= 0; i--) {
+      const t = (now - stamps[i].born) / LIFETIME;
+      if (t >= 1) {
+        stamps.splice(i, 1); // 壽命到了，洞徹底閉合
+        continue;
+      }
+      const ease = 1 - Math.pow(1 - t, 3);                   // easeOutCubic：快進慢停地暈開
+      const r = R_START + (stamps[i].rmax - R_START) * ease;
+      const alpha = 1 - t * t;                               // 1 − t²：後期加速閉合
+      carveInk(stamps[i].x, stamps[i].y, r, alpha, stamps[i].seed);
+    }
+
+    if (stamps.length) {
+      requestAnimationFrame(loop);
+    } else {
+      running = false; // 沒有墨點了 → 暫停動畫，零開銷
+    }
+  }
+
+  function start() {
+    if (!running) {
+      running = true;
+      requestAnimationFrame(loop);
+    }
+  }
+
+  /* ---------- 事件 ---------- */
+
+  hero.addEventListener("mouseenter", function (e) {
+    if (!canHover) return;
+    const rect = hero.getBoundingClientRect();
+    lastX = e.clientX - rect.left;
+    lastY = e.clientY - rect.top;
+    stampAlong(lastX, lastY);
+    start();
+  });
+
+  hero.addEventListener("mousemove", function (e) {
+    if (!canHover) return;
+    const rect = hero.getBoundingClientRect();
+    stampAlong(e.clientX - rect.left, e.clientY - rect.top);
+    start();
+  });
+
+  hero.addEventListener("mouseleave", function () {
+    lastX = null;
+    lastY = null;
+  });
+
+  window.addEventListener("resize", resize);
+  resize();
+
+  /* ---------- 教學用參數面板（原站沒有） ---------- */
+  document.getElementById("ctlSize").addEventListener("input", (e) => { R_END = +e.target.value; });
+  document.getElementById("ctlLife").addEventListener("input", (e) => { LIFETIME = +e.target.value; });
+  document.getElementById("ctlStep").addEventListener("input", (e) => { STAMP_STEP = +e.target.value; });
+})();
+</script>
+
+</body>
+</html>
