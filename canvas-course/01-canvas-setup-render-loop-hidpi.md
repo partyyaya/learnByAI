@@ -198,7 +198,7 @@ ctx.fillRect(0, 0, 800, 400);   // fillRect(x, y, 寬, 高):填滿整塊,而且�
 const ro = new ResizeObserver((entries) => {
   const { width, height } = entries[0].contentRect;
   setupHiDPICanvas(canvas, width, height);
-  render();   // 緩衝區被重設清空了,馬上重畫一次(呼應「畫完即忘」)
+  render();   // render = 你的重畫函式(1.5 會寫出完整例子);緩衝區被重設清空了,馬上重畫一次
 });
 ro.observe(canvas.parentElement);
 ```
@@ -326,6 +326,8 @@ function frame() {
 「清掉上一幀」看似簡單,其實有三種方式,各有用途與陷阱:
 
 ```js
+const W = 800, H = 400;   // 邏輯畫布尺寸(CSS 像素)
+
 // 方式 1:clearRect —— 最常用,擦成「透明」
 ctx.clearRect(0, 0, W, H);
 

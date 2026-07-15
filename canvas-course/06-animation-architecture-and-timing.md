@@ -162,16 +162,39 @@ function update(dt) {
 比 tween 更自然的是**彈簧(spring)動畫**——不用指定 duration,而是用物理(剛性、阻尼)讓值「彈」到目標,被打斷時也能平順接續(iOS、現代 UI 大量使用):
 
 ```js
-// 簡化的彈簧:每幀朝目標加速,並施加阻尼
+// state = { value: 目前的值, velocity: 目前的速度 }
+// 彈簧和 tween 最大的差別:它要記住「速度」,值才會有慣性、會過衝回彈
+// target    = 要彈到的目標值
+// stiffness = 剛性:彈簧多「硬」,越大拉力越強、彈得越快
+// damping   = 阻尼:越大速度衰減越快、越快停下來(太小會一直抖)
 function springStep(state, target, dt, stiffness = 120, damping = 14) {
+  // 1) 算拉力:離目標越遠,往目標拉的力越大(虎克定律 F = k × 距離)
+  //    (target - state.value) 是「還差多遠」,自帶方向(正 = 往前拉,負 = 往回拉)
   const force = (target - state.value) * stiffness;
+
+  // 2) 拉力改變速度:速度 += 加速度 × 時間(把質量當 1,加速度就是 force)
   state.velocity += force * dt;
-  state.velocity *= Math.pow(0.5, dt * damping);   // 阻尼
+
+  // 3) 施加阻尼:把速度打個折,不然它會像無摩擦的彈簧永遠彈不停
+  //    Math.pow(0.5, dt * damping) 算出 0~1 的折扣係數
+  //    (dt 或 damping 越大 → 係數越小 → 這一幀速度被砍越多)
+  state.velocity *= Math.pow(0.5, dt * damping);
+
+  // 4) 速度改變位置:位置 += 速度 × 時間(和第 04 章的 x += vx*dt 一模一樣)
   state.value += state.velocity * dt;
+}
+
+// 用法:讓方塊「彈」到 x=500(注意:不用指定 duration,它自己彈到停)
+const spring = { value: box.x, velocity: 0 };
+function update(dt) {
+  springStep(spring, 500, dt);
+  box.x = spring.value;
 }
 ```
 
-> tween 適合「明確的進場/退場」;spring 適合「跟手、可被打斷」的互動(拖曳放手後回彈)。先知道有這個選項,深入可參考 framer-motion / react-spring 的模型。
+> **心智模型**:整個函式就是兩條物理課公式串起來——**離目標越遠拉力越大 → 拉力改變速度 → 速度改變位置**,阻尼負責讓它收斂停住。每幀重算一次,值就會像被橡皮筋拉著一樣衝向目標、微微過頭、再彈回來穩定。
+
+> tween 適合「明確的進場/退場」;spring 適合「跟手、可被打斷」的互動(拖曳放手後回彈)——因為它記住了速度,中途改 `target` 也能平順接續,不會像 tween 一樣跳一下重來。先知道有這個選項,深入可參考 framer-motion / react-spring 的模型。
 
 ---
 
@@ -201,15 +224,27 @@ dt = Math.min(dt, 0.1);   // 任何超過 0.1 秒的間隔都當成 0.1 秒處�
 
 ```js
 let rafId = null;
+let lastTime = 0;
+
+// 主迴圈(同 6.2,完整列出):瀏覽器每次重繪前呼叫一次,now 是它自動傳入的時間戳
+function frame(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.1);   // 算 dt 並 clamp(6.7)
+  lastTime = now;
+
+  update(dt);
+  render();
+
+  rafId = requestAnimationFrame(frame);   // 預約下一幀;更新 rafId,stop() 才取消得到最新那次預約
+}
 
 function start() {
   if (rafId !== null) return;        // 防止重複啟動(常見 bug:多個迴圈疊在一起)
   lastTime = performance.now();      // 重設時間基準,避免第一幀 dt 暴衝
-  rafId = requestAnimationFrame(frame);
+  rafId = requestAnimationFrame(frame);   // 傳「函式本身」(沒括號):請瀏覽器下次重繪前呼叫它
 }
 
 function stop() {
-  cancelAnimationFrame(rafId);       // 用 rafId 取消
+  cancelAnimationFrame(rafId);       // 取消「還沒發生」的下一次預約,迴圈就此停住
   rafId = null;
 }
 ```

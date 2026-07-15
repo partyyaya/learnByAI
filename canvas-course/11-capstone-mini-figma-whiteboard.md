@@ -144,6 +144,8 @@ function eventToWorld(canvas, e) {
 兩層:`content`(圖形)、`overlay`(選取框/手把/拖曳預覽)。用 dirty flag 按需重畫。
 
 ```js
+// 先交代幾個「組裝時才宣告」的名字:W/H、contentCtx/overlayCtx、scene 都宣告在 11.8 的 HTML 骨架;
+// creating(新增中的圖形)、selected(選中的圖形)是 11.6 的互動狀態
 const dpr = window.devicePixelRatio || 1;
 function setup(canvas, w, h) {
   canvas.width = w * dpr; canvas.height = h * dpr;
@@ -265,8 +267,8 @@ canvas.addEventListener('pointerdown', (e) => {
   } else if (tool === 'text') {
     // 文字:點擊即放置(寬高由 measureText 在 draw 時決定,拖曳框對文字沒意義)
     const t = new TextShape({ x: wp.x, y: wp.y });
-    scene.push(t); selected = t; history.commit();
-    tool = 'select'; syncToolbar(); invalidate();
+    scene.push(t); selected = t; history.commit();   // history = 11.7 的 undo 歷史
+    tool = 'select'; syncToolbar(); invalidate();    // syncToolbar = 11.8 的工具列高亮同步
   } else {
     // 矩形 / 圓形:拖出一個新圖形
     mode = 'creating';
@@ -483,6 +485,7 @@ const load = () => {
 ```js
 // 場景變動時,同步更新無障礙鏡像(同一份 scene 資料,投影成語意 DOM)
 function syncA11yMirror() {
+  const mirror = document.getElementById('a11y-mirror');
   mirror.innerHTML = scene.map((s, i) =>
     `<li>${s.constructor.type} ${i + 1}${s.text ? ':' + s.text : ''},位於 ${Math.round(s.x)},${Math.round(s.y)}</li>`
   ).join('');

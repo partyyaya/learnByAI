@@ -204,7 +204,7 @@ function renderDirty(ctx, scene, dirtyRect) {
 class History {
   constructor() { this.past = []; this.future = []; }
   commit(scene) {
-    this.past.push(structuredClone(serialize(scene)));   // 存當前狀態的拷貝
+    this.past.push(structuredClone(serialize(scene)));   // 存當前狀態的拷貝(serialize 見 8.8:先把場景轉成純資料,深拷貝才有效)
     this.future = [];                                    // 新操作清空 redo
   }
   undo(applyState) {

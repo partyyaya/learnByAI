@@ -338,9 +338,10 @@ function worldToScreen(worldPoint, camera) {
 
 ```js
 function screenToWorldByMatrix(ctx, sx, sy) {
+  const dpr = window.devicePixelRatio || 1;
   const m = ctx.getTransform();          // 目前的變換矩陣(含 dpr、相機)
   const inv = m.inverse();               // 求逆矩陣(DOMMatrix 內建)
-  const p = inv.transformPoint(new DOMPoint(sx * dpr, sy * dpr));
+  const p = inv.transformPoint(new DOMPoint(sx * dpr, sy * dpr));   // 這個矩陣把 dpr 也包進去了,輸入要用「裝置像素」,所以補乘
   return { x: p.x, y: p.y };
 }
 ```
@@ -356,6 +357,8 @@ function screenToWorldByMatrix(ctx, sx, sy) {
 訣竅:**縮放前後,記錄游標對應的世界座標,讓它保持不變,反推出新的相機位置**:
 
 ```js
+// 本段組合前兩節的工具:getCanvasPoint、screenToWorld 見 3.6;
+// camera = { x, y, zoom } 與 render() 見 3.5
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   const screen = getCanvasPoint(canvas, e);
