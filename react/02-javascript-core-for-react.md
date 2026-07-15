@@ -8,6 +8,7 @@
 2. 用不可變資料思維更新陣列與物件。
 3. 使用 `map / filter / reduce` 處理清單資料。
 4. 讀懂並撰寫 `async/await` 的資料處理流程。
+5. 用 `import / export` 拆分與組合模組。
 
 ---
 
@@ -110,12 +111,46 @@ async function fetchData() {
 
 ---
 
-## 7. 本章小練習
+## 7. ES Modules：import 與 export
+
+React 專案的每個元件、hook、工具函式都是一個模組，你會在每一章看到這兩種匯出方式：
+
+### 預設匯出（default export）——一個檔案一個主角
+
+```js
+// LessonCard.jsx
+export default function LessonCard() { /* ... */ }
+
+// 匯入時名稱可以自取（但建議與檔名一致）
+import LessonCard from "./LessonCard";
+```
+
+### 具名匯出（named export）——一個檔案多個工具
+
+```js
+// utils/format.js
+export function formatMinutes(min) { /* ... */ }
+export const LEVELS = ["beginner", "intermediate", "advanced"];
+
+// 匯入時名稱必須相同，且要加大括號
+import { formatMinutes, LEVELS } from "./utils/format";
+```
+
+記憶重點：
+
+- **元件檔**通常用 `export default`（一個檔案一個元件）。
+- **工具 / API / hook 檔**通常用具名匯出（一個檔案多個函式）。
+- 匯入路徑是相對路徑（`./`、`../`）；忘記大括號或路徑打錯是初學最常見的錯誤。
+
+---
+
+## 8. 本章小練習
 
 1. 將一組課程資料轉成 `{ id, title, minutes }` 結構。
 2. 篩出 `published: true` 的課程。
 3. 用 `reduce` 算出總分鐘數。
 4. 模擬一個 `fetchLessons` 非同步函式並加入錯誤處理。
+5. 把 `normalizeLesson` 拆到獨立檔案，用具名匯出後再 `import` 回來使用。
 
 ---
 

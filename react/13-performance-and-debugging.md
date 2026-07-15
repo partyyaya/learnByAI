@@ -8,6 +8,8 @@
 2. 使用 `React.memo`、`useMemo`、`useCallback` 降低不必要重渲染。
 3. 透過開發期工具定位效能瓶頸與渲染熱點。
 4. 建立可重複的除錯與性能檢查流程。
+5. 用 `React.lazy` 做路由層級的 code splitting。
+6. 用 Error Boundary 防止單一元件錯誤癱瘓整頁。
 
 ---
 
@@ -49,12 +51,91 @@
 
 ---
 
-## 4. 本章小練習
+## 4. Code Splitting：`React.lazy` 與 `Suspense`
+
+預設情況下，Vite 會把所有頁面打包成一包 JS，首頁載入時「連沒去過的頁面」也一起下載。  
+搭配 React Router 時，用 `React.lazy` 把頁面改成「進入時才載入」：
+
+```jsx
+import { lazy, Suspense } from "react";
+import { Route, Routes } from "react-router-dom";
+
+// 靜態 import 改成動態 import，Vite 會自動拆包
+const CoursesPage = lazy(() => import("./pages/CoursesPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+
+function App() {
+  return (
+    <Suspense fallback={<p>頁面載入中...</p>}>
+      <Routes>
+        <Route path="/courses" element={<CoursesPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Routes>
+    </Suspense>
+  );
+}
+```
+
+- `lazy()` 讓該頁面變成獨立 chunk，首次進入該路由才下載。
+- `Suspense fallback` 是下載期間顯示的過渡畫面。
+- 建議以「路由頁面」為切分單位，不要細到每個小元件都 lazy。
+
+執行 `npm run build` 可以在輸出看到多個 chunk 檔案，驗證拆包是否生效。
+
+---
+
+## 5. Error Boundary：不讓一個元件炸掉整頁
+
+React 元件在渲染時拋出錯誤，預設會讓**整個畫面變成空白**。  
+Error Boundary 可以把錯誤攔在區塊內，顯示友善的錯誤畫面。
+
+目前官方 API 仍需要 class 元件（這是課程中唯一會看到 class 的地方），
+實務上通常直接抄這個樣板，或使用 `react-error-boundary` 套件：
+
+```jsx
+import { Component } from "react";
+
+class ErrorBoundary extends Component {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.error("ErrorBoundary 捕捉到錯誤：", error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <p className="error">這個區塊發生錯誤，請重新整理或稍後再試。</p>;
+    }
+    return this.props.children;
+  }
+}
+```
+
+使用方式——包在容易出錯的區塊外層：
+
+```jsx
+<ErrorBoundary>
+  <LessonList lessons={lessons} />
+</ErrorBoundary>
+```
+
+注意：Error Boundary 只攔「渲染期間」的錯誤；  
+事件處理器與 API 錯誤仍要用 `try/catch` 或 Query 的 `isError` 處理。
+
+---
+
+## 6. 本章小練習
 
 1. 建立一個 2000 筆列表篩選頁。
 2. 先做無優化版本，觀察輸入延遲。
 3. 套用 `useMemo` 與 `React.memo`，比較差異。
 4. 用 Profiler 記錄優化前後。
+5. 把任兩個頁面改成 `React.lazy` 載入，用 `npm run build` 的輸出驗證拆包。
+6. 寫一個會在渲染時故意丟錯的元件，用 Error Boundary 攔住它。
 
 ---
 
@@ -253,4 +334,4 @@ li {
 ## 本章結語
 
 你已完成 React 實戰最關鍵的性能與診斷能力。  
-下一章（第 14 章）即可銜接測試、部署與期末專題收斂。
+下一章會用測試與部署補上最後一塊拼圖，並以期末專題收斂整套課程。

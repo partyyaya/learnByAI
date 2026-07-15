@@ -8,6 +8,7 @@
 2. 用 `props` 做父元件到子元件的資料傳遞。
 3. 用 callback function 讓子元件通知父元件。
 4. 在中小型頁面中維持清楚、可預測的單向資料流。
+5. 知道何時該用 `Context` 解決 props drilling。
 
 ---
 
@@ -71,15 +72,59 @@ function Filter({ onChangeLevel }) {
 
 ---
 
-## 5. 常見誤區
+## 5. Props Drilling 與 Context
+
+當一份資料要跨越很多層元件（例如「目前登入者」要從 `App` 傳到第五層的按鈕），
+每一層都得幫忙轉傳 props，這叫 **props drilling**。
+
+React 內建的 `Context` 可以解決這個問題：
+
+```jsx
+import { createContext, useContext } from "react";
+
+// 1) 建立 Context
+const UserContext = createContext(null);
+
+// 2) 在上層提供資料
+function App() {
+  const user = { name: "Gary", role: "admin" };
+  return (
+    <UserContext.Provider value={user}>
+      <Dashboard />
+    </UserContext.Provider>
+  );
+}
+
+// 3) 在任意深度的子元件直接取用，中間層不需轉傳
+function UserBadge() {
+  const user = useContext(UserContext);
+  return <span>{user.name}（{user.role}）</span>;
+}
+```
+
+三種傳遞方式怎麼選：
+
+| 方式 | 適合情境 |
+|------|----------|
+| Props | 預設選擇；一兩層內的資料傳遞，資料流最清楚 |
+| Context | 很少變動、但很多元件都要讀的資料（主題、語系、登入者） |
+| Zustand（第 11 章） | 常變動、跨頁共用、還需要 actions 的全域狀態 |
+
+注意：Context 的 `value` 一變，所有讀取它的元件都會重新渲染，
+所以**頻繁變動的互動狀態不適合塞進 Context**——這也是第 11 章引入 Zustand 的原因。
+
+---
+
+## 6. 常見誤區
 
 1. 在子元件直接改 props（錯）。
 2. 過度巢狀傳 props（可考慮 Context 或 Zustand）。
 3. 元件責任混亂（同時負責資料、顯示、流程控制）。
+4. 什麼都塞進 Context（頻繁變動的狀態會造成大範圍重渲染）。
 
 ---
 
-## 6. 本章小練習
+## 7. 本章小練習
 
 1. 做一個等級篩選器（All / Beginner / Intermediate / Advanced）。
 2. 篩選器按鈕放在子元件，篩選狀態放在父元件。

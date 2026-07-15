@@ -7,7 +7,8 @@
 1. 理解 `useEffect` 的執行時機與依賴陣列。
 2. 用 `loading / error / data` 管理 API 狀態。
 3. 用 `AbortController` 避免快速切換造成的競態問題。
-4. 寫出穩定、可讀、可維護的資料抓取流程。
+4. 解釋 StrictMode 下 effect 執行兩次的原因與正確應對。
+5. 把重複的資料抓取邏輯抽成自訂 Hook。
 
 ---
 
@@ -61,12 +62,86 @@ return () => controller.abort();
 
 ---
 
-## 5. 本章小練習
+## 5. 為什麼開發時 effect 會跑兩次？（StrictMode）
+
+用本章範例打 API 時，你會在 Network 面板看到**同一個請求發了兩次**。  
+這不是 bug：`main.jsx` 裡的 `<React.StrictMode>` 在**開發模式**會刻意把
+「掛載 → 清理 → 再掛載」跑一遍，幫你提早發現忘了寫 cleanup 的 effect。
+
+要知道三件事：
+
+1. 只發生在開發模式，`npm run build` 後的正式版不會執行兩次。
+2. 不要為了「只跑一次」移除 StrictMode 或亂加旗標——正確解法是把 cleanup 寫好。
+3. 本章範例的 `AbortController` 就是正確示範：第一次的請求會在 cleanup 時被中止。
+
+> 判斷準則：**effect 被執行兩次卻造成問題，代表缺少 cleanup，而不是 React 有問題。**
+
+---
+
+## 6. 把邏輯抽成自訂 Hook
+
+當「抓資料 + 三種狀態」這組邏輯要在多個元件重複使用時，
+可以抽成**自訂 Hook**——一個以 `use` 開頭、內部呼叫其他 hook 的函式：
+
+```jsx
+// src/hooks/useTodos.js
+import { useEffect, useState } from "react";
+
+export function useTodos(userId) {
+  const [todos, setTodos] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    async function load() {
+      try {
+        setLoading(true);
+        setError("");
+        const response = await fetch(
+          `https://jsonplaceholder.typicode.com/todos?userId=${userId}`,
+          { signal: controller.signal }
+        );
+        if (!response.ok) throw new Error("API 請求失敗");
+        setTodos((await response.json()).slice(0, 8));
+      } catch (err) {
+        if (err.name !== "AbortError") setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    load();
+    return () => controller.abort();
+  }, [userId]);
+
+  return { todos, loading, error };
+}
+```
+
+元件端變得非常乾淨：
+
+```jsx
+const { todos, loading, error } = useTodos(userId);
+```
+
+同時記住 **Hook 的兩條規則**：
+
+1. 只能在元件或自訂 Hook 的「最上層」呼叫 hook——不能放在 `if`、迴圈、事件處理器內。
+2. 只能在 React 函式（元件、自訂 Hook）中呼叫，不能在一般 JS 函式裡用。
+
+第 9 章的 `useLessonsQuery` 就是同一個模式——用 TanStack Query 後，這整包樣板碼會再縮成幾行。
+
+---
+
+## 7. 本章小練習
 
 1. 提供使用者切換按鈕（User 1 / User 2 / User 3）。
 2. 切換時重新抓取該使用者的 todo。
 3. 顯示 loading、error、empty 狀態。
 4. 在切換時避免舊資料覆蓋新資料。
+5. 把抓資料邏輯抽成 `useTodos` 自訂 Hook 後再接回元件。
 
 ---
 

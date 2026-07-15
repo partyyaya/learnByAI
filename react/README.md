@@ -21,7 +21,27 @@
 | 11 | [11-zustand-global-state.md](./11-zustand-global-state.md) | Zustand 全域狀態管理 | 已完成 |
 | 12 | [12-zustand-query-integration.md](./12-zustand-query-integration.md) | Zustand 與 Query 整合模式 | 已完成 |
 | 13 | [13-performance-and-debugging.md](./13-performance-and-debugging.md) | 效能優化與除錯 | 已完成 |
-| 14 | [14-testing-deploy-capstone.md](./14-testing-deploy-capstone.md) | 測試、部署與期末專題 | 規劃中 |
+| 14 | [14-testing-deploy-capstone.md](./14-testing-deploy-capstone.md) | 測試、部署與期末專題 | 已完成 |
+
+---
+
+## 🚀 整合實戰範例：模擬後台管理系統
+
+課程 06～13 章的重點，已整合成一個可實際操作的專案：
+
+> **[admin-demo/](./admin-demo/)** — Vite + React Router + TanStack Query + Zustand + Axios Mock 打造的後台管理系統。
+
+- 登入 / 路由守衛、儀表板、課程 CRUD（樂觀更新）、無限捲動、使用者管理、效能實驗室、亮/暗主題。
+- 全程前端 Mock，`npm install && npm run dev` 即可跑起，不需後端。
+- 每個頁面都標註對應章節，邊操作邊對照學習。詳見 [admin-demo/README.md](./admin-demo/README.md)。
+
+```bash
+cd admin-demo
+npm install
+npm run dev
+```
+
+登入帳號：`admin` / `admin123`（或 `editor` / `editor123`）
 
 ---
 
@@ -29,10 +49,12 @@
 
 - 建立可維護的 React 元件與頁面結構
 - 用正確方式處理本地狀態、表單與副作用
+- 掌握 `Context`、`useRef`、自訂 Hook 等核心 API 的使用時機
 - 用 `TanStack Query` 管理伺服器資料快取、重抓與 mutation
 - 用 `Zustand` 管理全域 UI 狀態與跨元件共用資料
 - 能規劃「本地狀態 / 伺服器狀態」分工，避免狀態混亂
-- 具備上線前的效能、測試、部署基本能力
+- 用 `React.lazy`、`memo` 系列與 Error Boundary 顧好效能與穩定性
+- 用 Vitest + React Testing Library 寫測試，並部署 SPA 上線
 
 ## 適合對象
 
@@ -46,6 +68,7 @@
 2. 每章先看完觀念，再手打一次最後範例。
 3. 範例打完後，先自己改 1~2 個需求再進下一章。
 4. 到第 9~12 章時，將 Query 與 Zustand 套入你手邊專案做遷移練習。
+5. 學完第 14 章後，獨立完成期末專題並部署上線，再與 [admin-demo/](./admin-demo/) 比對架構。
 
 ## 開發環境
 

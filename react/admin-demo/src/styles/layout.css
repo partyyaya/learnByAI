@@ -1,0 +1,296 @@
+/* ============================================================
+   layout.css — 後台外殼、側欄、頂列、登入頁、fallback 頁
+   ============================================================ */
+
+.admin-shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.admin-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-content {
+  flex: 1;
+  padding: 22px clamp(16px, 3vw, 32px);
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+/* ---- 側欄 ---- */
+.sidebar {
+  width: 244px;
+  flex: none;
+  background: var(--sidebar-bg);
+  color: var(--sidebar-text);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+  gap: 8px;
+  transition: width 0.2s ease;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+}
+.sidebar--collapsed {
+  width: 68px;
+}
+
+.sidebar__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 14px;
+  font-weight: 800;
+  font-size: 17px;
+  color: #fff;
+}
+.sidebar__logo {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--primary);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+  flex: none;
+}
+
+.sidebar__section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+}
+.sidebar__section-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sidebar-muted);
+  padding: 8px 10px 4px;
+}
+
+.sidebar__link {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-text);
+  font-size: 14px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.sidebar__link:hover {
+  background: var(--sidebar-active-bg);
+  color: #fff;
+}
+.sidebar__link.is-active {
+  background: var(--primary);
+  color: #fff;
+}
+.sidebar--collapsed .sidebar__link {
+  justify-content: center;
+}
+
+/* ---- 頂列 ---- */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  height: 60px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 clamp(12px, 2vw, 22px);
+}
+.topbar__left,
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.topbar__title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.icon-btn--danger:hover {
+  background: var(--danger-weak);
+  color: var(--danger);
+}
+.icon-btn.is-bookmarked {
+  color: #f59e0b;
+}
+
+.topbar__user {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-left: 4px;
+}
+.topbar__user-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.topbar__user-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+.topbar__user-role {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  flex: none;
+}
+.avatar--sm {
+  width: 30px;
+  height: 30px;
+  font-size: 13px;
+}
+
+/* ---- 登入頁 ---- */
+.login-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background:
+    radial-gradient(1200px 600px at 20% -10%, rgba(37, 99, 235, 0.18), transparent),
+    var(--bg);
+}
+.login-card {
+  width: min(400px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-md);
+  padding: 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.login-card__brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 800;
+}
+.login-card__title {
+  font-size: 22px;
+  margin-top: 4px;
+}
+.login-card__hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin-top: -8px;
+}
+.login-card__error {
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--danger-weak);
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+}
+.login-card__demo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.login-card__demo button {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.login-card__demo button:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* ---- 404 / 403 ---- */
+.fallback-page {
+  min-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+}
+.fallback-page__code {
+  font-size: 72px;
+  font-weight: 800;
+  color: var(--primary);
+  line-height: 1;
+}
+.fallback-page__title {
+  font-size: 22px;
+}
+
+/* ---- 響應式：窄螢幕收合側欄文字 ---- */
+@media (max-width: 720px) {
+  .sidebar {
+    width: 64px;
+  }
+  .sidebar__brand-text,
+  .sidebar__section-title,
+  .sidebar__link span {
+    display: none;
+  }
+  .sidebar__link {
+    justify-content: center;
+  }
+  .topbar__user-meta {
+    display: none;
+  }
+}

@@ -8,6 +8,7 @@
 2. 撰寫表單、按鈕、清單常見事件處理器。
 3. 使用不可變更新方式操作陣列與物件 state。
 4. 做出可新增、切換、刪除的互動列表。
+5. 分辨 `useState` 與 `useRef` 的使用時機。
 
 ---
 
@@ -88,12 +89,54 @@ setItems((prev) => prev.filter((item) => item.id !== targetId));
 
 ---
 
-## 5. 本章小練習
+## 5. `useRef`：不觸發渲染的記憶
+
+不是所有「要記住的東西」都該放 state。`useRef` 有兩個常見用途：
+
+### 5.1 操作 DOM（最常見：聚焦輸入框）
+
+```jsx
+import { useRef } from "react";
+
+function SearchBox() {
+  const inputRef = useRef(null);
+
+  return (
+    <>
+      <input ref={inputRef} placeholder="搜尋課程" />
+      <button onClick={() => inputRef.current.focus()}>聚焦輸入框</button>
+    </>
+  );
+}
+```
+
+### 5.2 保存「改變時不需要重新渲染」的值
+
+例如計時器 id、上一次的滾動位置：
+
+```jsx
+const timerRef = useRef(null);
+timerRef.current = setInterval(/* ... */);
+```
+
+state 與 ref 的分工：
+
+| | `useState` | `useRef` |
+|---|---|---|
+| 改變時重新渲染 | 會 | 不會 |
+| 適合放 | 要顯示在畫面上的資料 | DOM 參照、計時器 id 等幕後資料 |
+
+> 判斷準則：**值改變時畫面要跟著變 → state；不用 → ref。**
+
+---
+
+## 6. 本章小練習
 
 1. 建一個學習任務列表（title + done）。
 2. 可以新增任務。
 3. 可以切換任務完成狀態。
 4. 可以刪除任務並顯示完成比例。
+5. 新增任務後，用 `useRef` 讓輸入框自動重新聚焦。
 
 ---
 
