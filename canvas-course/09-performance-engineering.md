@@ -260,3 +260,144 @@ function frame() {
 **下一章(10)**,我們走到 Canvas 2D 的邊界之外:**WebGL / WebGPU**。重點不是教你寫 shader,而是完成一次**心智轉換**——從「下繪圖命令」(你說畫什麼)到「定義管線 + 丟資料給 GPU 平行處理」(你給 GPU 程式和資料,它自己算)。你會理解 draw call 成本、為什麼大家用 PixiJS/three.js,以及 WebGPU 跟你 [Browser AI 課](../browserAI/README.md) 的關係。
 
 > 💡 **動手作業**:做一個「10000 個移動粒子」的壓力測試。先用「每幀全畫單層」實作,用 9.1 的 FPS 計數量出幀率;再依序加上優化(離屏快取粒子貼圖、批次、若靜止則按需渲染),記錄每一步的 FPS 變化。**親手量出「哪個優化最有效」,比讀十遍更有體感**——你會發現答案常常出乎意料,這正是「先測量」的意義。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><title>第 09 章作業:10000 粒子壓力測試</title>
+<style>
+  body { font-family: sans-serif; }
+  #panel { display: flex; gap: 14px; align-items: center; margin-bottom: 8px; }
+  canvas { border: 1px solid #ccc; }
+</style></head>
+<body>
+  <!-- 由基準開始,逐個打開優化、記下 FPS,親手量出哪個最有效 -->
+  <div id="panel">
+    <span>FPS:<strong id="fps">—</strong></span>
+    <label><input type="checkbox" id="optSprite"> ①離屏快取貼圖</label>
+    <label><input type="checkbox" id="optBatch"> ②同色批次</label>
+    <label><input type="checkbox" id="optOnDemand"> ③按需渲染</label>
+    <label><input type="checkbox" id="pause"> 暫停移動(配合③,靜止時 CPU 應趨近 0)</label>
+  </div>
+  <canvas id="stage" width="800" height="500"></canvas>
+  <script>
+    const canvas = document.querySelector('#stage');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const $ = id => document.querySelector('#' + id);
+
+    // ---- 建 10000 顆移動粒子(作業要求的壓力測試規模) ----
+    // 速度單位是「像素/秒」,配合第 06 章的 delta-time 寫法
+    const COLORS = ['#e63946', '#f4a261', '#2a9d8f', '#457b9d', '#9b5de5'];
+    const R = 3;                             // 半徑固定,離屏貼圖才能所有粒子共用
+    const particles = [];
+    for (let i = 0; i < 10000; i++) {        // 作業要求:10000 個粒子
+      particles.push({
+        x: R + Math.random() * (W - R * 2),
+        y: R + Math.random() * (H - R * 2),
+        vx: (Math.random() - 0.5) * 200,     // -100~+100 像素/秒
+        vy: (Math.random() - 0.5) * 200,
+        colorIndex: i % COLORS.length
+      });
+    }
+
+    // ---- 優化②的前置:依顏色分組(顏色不會變,啟動時分一次就好) ----
+    const byColor = COLORS.map(() => []);
+    for (const p of particles) byColor[p.colorIndex].push(p);
+
+    // ---- 優化①:離屏快取粒子貼圖(9.3 技巧二:算一次,用很多次) ----
+    // 每種顏色的圓只在這裡 arc+fill 一次,之後每幀用 drawImage 貼
+    function makeSprite(color) {
+      const off = document.createElement('canvas');   // 離屏 canvas 可當 drawImage 來源(第 04 章)
+      off.width = off.height = R * 2;
+      const octx = off.getContext('2d');
+      octx.fillStyle = color;
+      octx.beginPath();
+      octx.arc(R, R, R, 0, Math.PI * 2);
+      octx.fill();
+      return off;
+    }
+    const sprites = COLORS.map(makeSprite);
+
+    // ---- 優化③的 dirty flag(9.3 技巧五,源自第 06 章的按需渲染) ----
+    let dirty = true;
+    // 開關變動也要重畫一次,否則按需渲染下畫面不會反映新狀態
+    for (const id of ['optSprite', 'optBatch', 'optOnDemand', 'pause']) {
+      $(id).addEventListener('change', () => { dirty = true; });
+    }
+
+    function update(dt) {
+      if ($('pause').checked) return;        // 全部靜止:不移動,也就不會把 dirty 設起來
+      for (const p of particles) {
+        p.x += p.vx * dt;                    // 速度 × 時間 = 位移(第 06 章 delta-time)
+        p.y += p.vy * dt;
+        if (p.x < R || p.x > W - R) p.vx *= -1;   // 撞牆反彈
+        if (p.y < R || p.y > H - R) p.vy *= -1;
+      }
+      dirty = true;                          // 有東西動了,才需要重畫
+    }
+
+    // ---- render:三種畫法由開關決定,方便逐項比較 FPS ----
+    function render() {
+      ctx.clearRect(0, 0, W, H);
+      if ($('optSprite').checked) {
+        // 優化①:每幀只做 drawImage,比 10000 次 arc+fill 快很多(9.3 技巧二)
+        // 注意:①開啟時②沒有作用,因為 drawImage 不切 fillStyle 狀態
+        for (const p of particles) {
+          ctx.drawImage(sprites[p.colorIndex], p.x - R, p.y - R);
+        }
+      } else if ($('optBatch').checked) {
+        // 優化②:同色排在一起畫,一種顏色 fillStyle 只設一次(9.3 技巧三:批次減少狀態切換)
+        for (let c = 0; c < COLORS.length; c++) {
+          ctx.fillStyle = COLORS[c];
+          for (const p of byColor[c]) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, R, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      } else {
+        // 基準:每幀全畫單層,逐顆切狀態 + arc+fill(先量出這個當對照組)
+        for (const p of particles) {
+          ctx.fillStyle = COLORS[p.colorIndex];
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, R, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    // ---- FPS 計數(9.1 的量法):每滿一秒統計跑了幾幀 ----
+    // 顯示在 canvas 外的 DOM 上,才不會被按需渲染跳過而凍住
+    let frames = 0, lastFpsTime = performance.now();
+    const fpsEl = $('fps');
+
+    let lastTime = 0;
+    function frame(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.1);   // dt 並 clamp 防暴衝(第 06 章 6.7)
+      lastTime = now;
+
+      frames++;                              // 作業要求:畫面顯示即時 FPS(9.1)
+      if (now - lastFpsTime >= 1000) {
+        fpsEl.textContent = frames;
+        frames = 0; lastFpsTime = now;
+      }
+
+      update(dt);
+      // 優化③:按需渲染——開啟後只在 dirty 時畫;「暫停移動」讓全部靜止,
+      // 此時整個 render 被跳過,FPS 回到滿速、CPU 接近 0(9.3 技巧五)
+      if (!$('optOnDemand').checked || dirty) {
+        render();
+        dirty = false;
+      }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
+```

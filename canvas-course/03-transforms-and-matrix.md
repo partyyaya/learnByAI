@@ -357,8 +357,22 @@ function screenToWorldByMatrix(ctx, sx, sy) {
 訣竅:**縮放前後,記錄游標對應的世界座標,讓它保持不變,反推出新的相機位置**:
 
 ```js
-// 本段組合前兩節的工具:getCanvasPoint、screenToWorld 見 3.6;
-// camera = { x, y, zoom } 與 render() 見 3.5
+// ---- 材料(和 3.5、3.6 相同,原樣搬來讓這段可獨立執行) ----
+const camera = { x: 0, y: 0, zoom: 1 };
+
+function getCanvasPoint(canvas, e) {          // 事件座標 → 畫布內座標(3.6)
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function screenToWorld(screenPoint, camera) { // 畫布座標 → 世界座標(3.6)
+  return {
+    x: screenPoint.x / camera.zoom + camera.x,
+    y: screenPoint.y / camera.zoom + camera.y,
+  };
+}
+
+// ---- 主體:滾輪縮放,游標指著的點保持不動 ----
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   const screen = getCanvasPoint(canvas, e);
@@ -378,7 +392,7 @@ canvas.addEventListener('wheel', (e) => {
   camera.x += before.x - after.x;
   camera.y += before.y - after.y;
 
-  render();
+  render();   // 重畫(3.5 的 render:清空 → 套相機 → 畫世界)
 }, { passive: false });
 ```
 
@@ -400,3 +414,141 @@ canvas.addEventListener('wheel', (e) => {
 **下一章(04)**,我們處理 Canvas 上的「素材」:**文字與圖片**。你會發現 Canvas **沒有自動換行**(又一個 immediate mode 的洞,得自己用 `measureText` 實作)、文字的 `textBaseline` 有個經典對齊坑;而 `drawImage` 的九參數版本,是精靈圖(sprite sheet)、把影片逐幀畫到畫布(連結影音課)的關鍵。
 
 > 💡 **動手作業**:做一個「可平移縮放的無限網格」:用相機畫一片格線背景,支援滑鼠拖曳平移、滾輪以游標為中心縮放,並在畫面角落即時顯示「滑鼠當前的世界座標」。完成後你就擁有了白板的骨架——第 11 章 Capstone 會直接站在它上面。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>可平移縮放的無限網格</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    canvas { display: block; cursor: grab; }
+    /* 角落的座標顯示,疊在畫布左上角 */
+    #coords {
+      position: fixed; left: 10px; top: 10px;
+      padding: 4px 10px; border-radius: 4px;
+      background: rgba(255, 255, 255, 0.85);
+      font: 13px/1.6 monospace; color: #333;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="coords">world: (0.0, 0.0)</div>
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const coordsEl = document.getElementById('coords');
+
+    // 讓畫布佔滿視窗,並做 HiDPI 設定(第 01 章)
+    const dpr = window.devicePixelRatio || 1;
+    let W = 0, H = 0;   // 畫布的 CSS 像素尺寸
+    function resize() {
+      W = window.innerWidth;
+      H = window.innerHeight;
+      canvas.width = W * dpr;
+      canvas.height = H * dpr;
+      canvas.style.width = W + 'px';
+      canvas.style.height = H + 'px';
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // ---- 相機(3.5):物件住在世界座標裡不動,變的只是相機 ----
+    const camera = { x: 0, y: 0, zoom: 1 };
+
+    function applyCamera(ctx, camera) {
+      ctx.scale(camera.zoom, camera.zoom);    // 先縮放
+      ctx.translate(-camera.x, -camera.y);    // 再平移:相機往右看 = 世界往左移
+    }
+
+    // 事件座標 → 畫布內座標(3.6)
+    function getCanvasPoint(canvas, e) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    // 畫布座標 → 世界座標(3.6,相機的逆運算)
+    function screenToWorld(screenPoint, camera) {
+      return {
+        x: screenPoint.x / camera.zoom + camera.x,
+        y: screenPoint.y / camera.zoom + camera.y,
+      };
+    }
+
+    // ---- 作業要求 1:滑鼠拖曳平移 ----
+    let dragging = false;
+    canvas.addEventListener('pointerdown', () => { dragging = true; canvas.style.cursor = 'grabbing'; });
+    window.addEventListener('pointerup', () => { dragging = false; canvas.style.cursor = 'grab'; });
+    canvas.addEventListener('pointermove', (e) => {
+      if (dragging) {
+        camera.x -= e.movementX / camera.zoom;   // ★ 拖曳時反向移動相機,記得除以 zoom(3.5)
+        camera.y -= e.movementY / camera.zoom;
+      }
+      // ---- 作業要求 2:角落即時顯示滑鼠當前的世界座標 ----
+      const world = screenToWorld(getCanvasPoint(canvas, e), camera);
+      coordsEl.textContent = 'world: (' + world.x.toFixed(1) + ', ' + world.y.toFixed(1) + ')';
+    });
+
+    // ---- 作業要求 3:滾輪以游標為中心縮放(3.7 整段搬入)----
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const screen = getCanvasPoint(canvas, e);
+      const before = screenToWorld(screen, camera);   // 1. 縮放前,游標指著的世界座標
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;    // 2. 改變縮放(滾輪向上放大)
+      camera.zoom *= factor;
+      camera.zoom = Math.max(0.1, Math.min(camera.zoom, 20));   // 限制範圍
+      const after = screenToWorld(screen, camera);    // 3. 縮放後,同一個螢幕點指著的世界座標
+      camera.x += before.x - after.x;                 // 4. 平移差值,讓游標下的世界點回到原位
+      camera.y += before.y - after.y;
+    }, { passive: false });
+
+    // ---- 作業要求 4:「無限」網格——格線起訖依可視範圍計算,平移到哪都有格線 ----
+    const GRID = 50;   // 世界座標裡,每格 50 單位
+    function drawGrid() {
+      // ★ 無限的關鍵:把螢幕四角換算回世界座標,只畫「目前看得到」的格線
+      const topLeft = screenToWorld({ x: 0, y: 0 }, camera);
+      const bottomRight = screenToWorld({ x: W, y: H }, camera);
+      // 起點往前取整到格距的倍數,一路畫到可視範圍的右下角
+      const startX = Math.floor(topLeft.x / GRID) * GRID;
+      const startY = Math.floor(topLeft.y / GRID) * GRID;
+
+      ctx.strokeStyle = '#d0d7de';
+      ctx.lineWidth = 1 / camera.zoom;   // 抵銷縮放,讓格線在螢幕上永遠約 1px 粗
+      ctx.beginPath();
+      for (let x = startX; x <= bottomRight.x; x += GRID) {   // 直的格線
+        ctx.moveTo(x, topLeft.y); ctx.lineTo(x, bottomRight.y);
+      }
+      for (let y = startY; y <= bottomRight.y; y += GRID) {   // 橫的格線
+        ctx.moveTo(topLeft.x, y); ctx.lineTo(bottomRight.x, y);
+      }
+      ctx.stroke();
+
+      // 在世界原點畫個紅點,平移縮放時有個參考
+      ctx.fillStyle = '#e5534b';
+      ctx.beginPath();
+      ctx.arc(0, 0, 6 / camera.zoom, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ---- rAF 迴圈(第 00 章):每幀重設變換 → 清空 → 套相機 → 畫世界(3.5)----
+    function render() {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // 重設變換,但保留 HiDPI 縮放(3.4)
+      ctx.clearRect(0, 0, W, H);
+      ctx.save();
+      applyCamera(ctx, camera);   // ★ 套用相機,以下全部用世界座標畫
+      drawGrid();
+      ctx.restore();
+      requestAnimationFrame(render);
+    }
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
+```

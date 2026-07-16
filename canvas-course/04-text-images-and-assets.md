@@ -338,3 +338,124 @@ async function drawCard(ctx, x, y, avatarSrc, name, bio) {
 **下一章(05)**,我們進入第三種繪圖典範:**直接操作每一個像素**。你會學到 `getImageData` 拿到的 RGBA 陣列怎麼讀寫,做出灰階、反相、模糊、邊緣偵測這些濾鏡;也會理解一個第 00 章就埋下的真相——**`getImageData` 是 GPU→CPU 的回讀,很貴**,以及跨域圖片會「污染畫布」讓你讀不到像素(安全機制)。這章直接連到你的 [影像加密課](../image-encryption-course/07-canvas-rendering-and-hardening.md)。
 
 > 💡 **動手作業**:做一個「迷因產生器」:載入一張底圖,在頂部和底部畫置中、帶黑色描邊的白色粗體字(`strokeText` 畫黑邊 + `fillText` 畫白字),且文字過長時自動縮小字級或換行。完成後你會對 `textAlign`/`textBaseline`/`measureText` 的配合非常有感。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>迷因產生器</title>
+</head>
+<body>
+  <p>
+    <input id="top" size="24" value="當你學會了 CANVAS">
+    <input id="bottom" size="40" value="卻發現連文字換行都要自己寫,而且瀏覽器完全不會幫你">
+  </p>
+  <canvas id="stage" width="480" height="360"></canvas>
+  <script>
+    const canvas = document.querySelector('#stage');
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width;
+    const H = canvas.height;
+    const topInput = document.querySelector('#top');
+    const bottomInput = document.querySelector('#bottom');
+
+    // 底圖:為了讓這個範例開檔即跑、不依賴外部圖檔,
+    // 用離屏 canvas 畫一張「夕陽山景」(4.6:另一張 canvas 也是合法的 drawImage 來源)。
+    // 實務上把 makeBaseImage() 這整段換成 4.5 的預載即可:
+    //   const baseImage = await loadImage('你的圖.jpg');
+    function makeBaseImage(w, h) {
+      const off = document.createElement('canvas');
+      off.width = w;
+      off.height = h;
+      const c = off.getContext('2d');
+      const sky = c.createLinearGradient(0, 0, 0, h);   // 漸層天空(第 02 章)
+      sky.addColorStop(0, '#35558f');
+      sky.addColorStop(1, '#f2b06a');
+      c.fillStyle = sky;
+      c.fillRect(0, 0, w, h);
+      c.fillStyle = '#ffe9a8';                          // 太陽
+      c.beginPath();
+      c.arc(w * 0.7, h * 0.58, 42, 0, Math.PI * 2);
+      c.fill();
+      c.fillStyle = '#22344f';                          // 遠山(簡單路徑,第 02 章)
+      c.beginPath();
+      c.moveTo(0, h);
+      c.lineTo(w * 0.28, h * 0.55);
+      c.lineTo(w * 0.52, h);
+      c.lineTo(w * 0.62, h);
+      c.lineTo(w * 0.82, h * 0.68);
+      c.lineTo(w, h);
+      c.closePath();
+      c.fill();
+      return off;
+    }
+    const baseImage = makeBaseImage(W, H);
+
+    // 跟 4.3 的 wrapText 同一套量測邏輯,但「只切行、先不畫」:
+    // 因為底部文字要從最後一行往上排,得先知道總共幾行才能定位。
+    function layoutLines(text, maxWidth) {
+      const tokens = text.match(/[一-鿿]|[A-Za-z0-9]+|\s|\S/g) || [];
+      const lines = [];
+      let line = '';
+      for (const tk of tokens) {
+        const testLine = line + tk;
+        if (ctx.measureText(testLine).width > maxWidth && line.trim() !== '') {
+          lines.push(line);                    // 這一行滿了,收進結果
+          line = tk.trim() === '' ? '' : tk;   // 換行,行首不留空白
+        } else {
+          line = testLine;
+        }
+      }
+      if (line) lines.push(line);
+      return lines;
+    }
+
+    // 畫一段迷因字:過長先縮小字級,縮到下限仍塞不下才換行
+    function drawMemeText(text, anchorY, growDown) {
+      if (!text.trim()) return;
+      const maxWidth = W - 40;   // 左右各留 20px 邊距
+      let size = 44;
+      ctx.font = 'bold ' + size + 'px sans-serif';   // 粗體(4.1:font 簡寫,單位必寫)
+      // 文字過長 → 用 measureText 量寬(4.3),一路縮小字級,直到塞得下或碰到下限 24px
+      while (size > 24 && ctx.measureText(text).width > maxWidth) {
+        size -= 2;
+        ctx.font = 'bold ' + size + 'px sans-serif';   // font 是狀態,改完再量才是新字級的寬
+      }
+      // 縮到下限還是太寬 → 自動換行(單行塞得下時 lines 只會有一行)
+      const lines = layoutLines(text, maxWidth);
+      const lineHeight = size * 1.2;
+      for (let i = 0; i < lines.length; i++) {
+        // 頂部文字從錨點往下長;底部文字讓「最後一行」貼齊錨點,往上堆
+        const y = growDown
+          ? anchorY + i * lineHeight
+          : anchorY - (lines.length - 1 - i) * lineHeight;
+        ctx.strokeText(lines[i], W / 2, y);   // 先畫黑色描邊(墊在下層)
+        ctx.fillText(lines[i], W / 2, y);     // 再畫白色填色蓋上去 → 白字黑框
+      }
+    }
+
+    function render() {
+      ctx.drawImage(baseImage, 0, 0);   // 底圖鋪滿畫布(4.4),同時蓋掉上一次的文字
+      ctx.textAlign = 'center';         // 水平置中:x 一律給畫布中線 W/2(4.2)
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 6;                // 描邊要夠粗,白字黑框才有迷因味(第 02 章)
+      ctx.lineJoin = 'round';           // 轉角用圓角,避免描邊在筆畫尖角處爆出突刺(第 02 章)
+      ctx.textBaseline = 'top';         // 頂部文字:y 是文字「頂端」(避開 4.2 的 alphabetic 坑)
+      drawMemeText(topInput.value, 16, true);
+      ctx.textBaseline = 'bottom';      // 底部文字:y 是文字「底端」
+      drawMemeText(bottomInput.value, H - 16, false);
+    }
+
+    topInput.addEventListener('input', render);      // 邊打字邊即時重畫(immediate mode:有變動就整張重畫)
+    bottomInput.addEventListener('input', render);
+    render();
+  </script>
+</body>
+</html>
+```

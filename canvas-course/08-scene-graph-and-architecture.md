@@ -201,10 +201,20 @@ function renderDirty(ctx, scene, dirtyRect) {
 每次操作後,把整個場景**深拷貝**存進歷史堆疊。Undo 就是還原上一個快照。
 
 ```js
+// 先把場景轉成「純資料」,快照才能安全拷貝(這個函式 8.8 序列化會細講)
+function serialize(scene) {
+  return scene.map(s => ({
+    type: s.constructor.name,   // 'RectShape' / 'CircleShape'
+    x: s.x, y: s.y, rotation: s.rotation,
+    ...(s.w !== undefined ? { w: s.w, h: s.h } : { r: s.r }),
+    fill: s.fill,
+  }));
+}
+
 class History {
   constructor() { this.past = []; this.future = []; }
   commit(scene) {
-    this.past.push(structuredClone(serialize(scene)));   // 存當前狀態的拷貝(serialize 見 8.8:先把場景轉成純資料,深拷貝才有效)
+    this.past.push(structuredClone(serialize(scene)));   // 存當前狀態的拷貝(先轉純資料,深拷貝才有效)
     this.future = [];                                    // 新操作清空 redo
   }
   undo(applyState) {
@@ -304,3 +314,256 @@ const scene = deserialize(JSON.parse(localStorage.getItem('myCanvas')));
 **下一章(09)**,場景圖建好了,但「複雜場景每幀全畫」會卡。我們進入**效能工程**:先學會用 DevTools 測量(別瞎猜),再上最實用的優化——**分層 canvas**、離屏快取、減少狀態切換、按需渲染,以及把繪圖搬到背景執行緒的 **OffscreenCanvas + Web Worker**。最後談「什麼時候撞到 Canvas 2D 的天花板,該上 GPU」。
 
 > 💡 **動手作業**:把第 07 章的圖形編輯器升級成「**有場景圖的版本**」:定義 `Shape` 基類與 `RectShape`/`CircleShape`/`TextShape` 子類,實作新增、選取、拖曳、刪除(Delete 鍵),並加上**快照式 Undo/Redo**(Ctrl+Z / Ctrl+Shift+Z)與 **localStorage 存檔/載入**。完成後你已經擁有 mini-Figma 的骨架——第 11 章 Capstone 就是把它做完整。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看(這份就是第 11 章 Capstone 的迷你前身):
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><title>第 08 章作業:有場景圖的圖形編輯器</title>
+<style>
+  body { font-family: sans-serif; }
+  #toolbar { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  canvas { border: 1px solid #ccc; }
+</style></head>
+<body>
+  <!-- UI 用真 DOM button,不畫進 canvas(第 00 章:Canvas 不是用來取代 DOM) -->
+  <div id="toolbar">
+    <button id="add-rect">+ 矩形</button>
+    <button id="add-circle">+ 圓形</button>
+    <button id="add-text">+ 文字</button>
+    <button id="save">存檔</button>
+    <button id="load">載入</button>
+    <span>點擊選取 / 拖曳移動 / Delete 刪除 / Ctrl+Z 復原 / Ctrl+Shift+Z 重做</span>
+  </div>
+  <canvas id="stage"></canvas>
+  <script>
+    const canvas = document.querySelector('#stage');
+
+    // ---- HiDPI 設定(第 01 章):緩衝區 ×DPR,CSS 維持邏輯尺寸,再 scale ----
+    function setupHiDPICanvas(canvas, w, h) {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      return ctx;
+    }
+    const W = 800, H = 450;
+    const ctx = setupHiDPICanvas(canvas, W, H);
+
+    // ---- Shape 基類(8.2):每個圖形自己知道怎麼畫、怎麼判斷命中、怎麼變成純資料 ----
+    class Shape {
+      constructor(props) {
+        Object.assign(this, { x: 0, y: 0, fill: '#888', ...props });
+      }
+      draw(ctx) {}                        // 子類實作:怎麼畫自己
+      containsPoint(p) { return false; }  // 子類實作:命中測定(第 07 章)
+      getBounds() { return { x: this.x, y: this.y, w: 0, h: 0 }; }  // 子類實作:包圍盒(畫選取框用)
+      toJSON() {                          // 序列化白名單:只存純資料 + 型別標記,不存方法(8.8)
+        return { type: this.constructor.name, x: this.x, y: this.y, fill: this.fill };
+      }
+    }
+
+    class RectShape extends Shape {
+      constructor(props) { super({ w: 120, h: 70, ...props }); }
+      draw(ctx) {
+        ctx.fillStyle = this.fill;
+        ctx.fillRect(this.x - this.w / 2, this.y - this.h / 2, this.w, this.h);  // 以 (x,y) 為中心
+      }
+      containsPoint(p) {
+        return Math.abs(p.x - this.x) <= this.w / 2 && Math.abs(p.y - this.y) <= this.h / 2;
+      }
+      getBounds() { return { x: this.x - this.w / 2, y: this.y - this.h / 2, w: this.w, h: this.h }; }
+      toJSON() { return { ...super.toJSON(), w: this.w, h: this.h }; }
+    }
+
+    class CircleShape extends Shape {
+      constructor(props) { super({ r: 45, ...props }); }
+      draw(ctx) {
+        ctx.fillStyle = this.fill;
+        ctx.beginPath();                  // 開新路徑,免得和上一個圖形連在一起(第 02 章)
+        ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      containsPoint(p) {
+        const dx = p.x - this.x, dy = p.y - this.y;
+        return dx * dx + dy * dy <= this.r * this.r;   // 平方比較,免開根號(第 07 章)
+      }
+      getBounds() { return { x: this.x - this.r, y: this.y - this.r, w: this.r * 2, h: this.r * 2 }; }
+      toJSON() { return { ...super.toJSON(), r: this.r }; }
+    }
+
+    class TextShape extends Shape {
+      constructor(props) { super({ text: '你好 Canvas', size: 28, ...props }); }
+      draw(ctx) {
+        ctx.fillStyle = this.fill;
+        ctx.font = this.size + 'px sans-serif';
+        ctx.textAlign = 'center';         // (x,y) = 文字中心,最不會算錯(第 04 章)
+        ctx.textBaseline = 'middle';
+        ctx.fillText(this.text, this.x, this.y);
+      }
+      measureWidth() {
+        ctx.font = this.size + 'px sans-serif';   // 量測前先設同一個字型,量出來才準(第 04 章)
+        return ctx.measureText(this.text).width;
+      }
+      containsPoint(p) {                  // 文字的命中:用量出來的包圍盒近似
+        return Math.abs(p.x - this.x) <= this.measureWidth() / 2 && Math.abs(p.y - this.y) <= this.size / 2;
+      }
+      getBounds() {
+        const w = this.measureWidth();
+        return { x: this.x - w / 2, y: this.y - this.size / 2, w: w, h: this.size };
+      }
+      toJSON() { return { ...super.toJSON(), text: this.text, size: this.size }; }
+    }
+
+    // ---- 序列化(8.8):場景 → 純資料;載入時用型別註冊表重建實例 ----
+    const SHAPE_REGISTRY = { RectShape, CircleShape, TextShape };       // 型別名 → 類別
+    function serialize(scene) { return scene.map(s => s.toJSON()); }    // 每次都回傳全新純資料,天然就是深拷貝
+    function deserialize(data) { return data.map(d => new SHAPE_REGISTRY[d.type](d)); }
+
+    // ---- 快照式 Undo/Redo(8.7 做法 A):歷史堆疊存整份場景的純資料快照 ----
+    class History {
+      constructor() { this.past = []; this.future = []; }
+      commit(scene) {
+        this.past.push(serialize(scene));   // 每次操作後存一份快照
+        this.future = [];                   // 有新操作就清空 redo
+      }
+      undo(applyState) {
+        if (this.past.length < 2) return;             // past[0] 是初始狀態,守住不彈出
+        this.future.push(this.past.pop());            // 當前狀態移進 future
+        applyState(this.past[this.past.length - 1]);  // 還原到上一個快照
+      }
+      redo(applyState) {
+        if (!this.future.length) return;
+        const state = this.future.pop();
+        this.past.push(state);
+        applyState(state);
+      }
+    }
+
+    // ---- 編輯器狀態:場景陣列是唯一真相來源,畫面只是它的投影(8.3) ----
+    let scene = [];
+    let selected = null;
+    let dragging = null;
+    let dragOffset = { x: 0, y: 0 };   // 記住「抓在物件的哪裡」,物件才不會跳到滑鼠正中心(第 07 章)
+    let dragMoved = false;
+    const history = new History();
+    history.commit(scene);             // 先存一份初始空場景,第一次「新增」才撤銷得掉
+
+    function applyState(data) {
+      scene = deserialize(data);       // undo/redo = 把快照重建回實例,再重新投影
+      selected = null;                 // 實例全換新了,舊的選取一併清掉
+      invalidate();
+    }
+
+    // ---- 渲染:遍歷場景,叫每個物件畫自己(8.2);dirty flag 按需重畫(第 06 章) ----
+    let dirty = true;
+    function invalidate() { dirty = true; }
+
+    function render() {
+      ctx.clearRect(0, 0, W, H);
+      for (const shape of scene) shape.draw(ctx);   // 正向遍歷:後畫的蓋在上面(8.5)
+      if (selected) {
+        const b = selected.getBounds();             // 選中的物件外面畫一圈選取框
+        ctx.strokeStyle = '#1d7fe0';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8);
+      }
+    }
+    function frame() {
+      if (dirty) { render(); dirty = false; }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    // ---- 命中測定與拖曳(第 07 章) ----
+    function hitTest(p) {
+      for (let i = scene.length - 1; i >= 0; i--) {   // 反向遍歷:最上層(最後畫的)先命中
+        if (scene[i].containsPoint(p)) return scene[i];
+      }
+      return null;
+    }
+    function getPointerPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      const p = getPointerPos(e);
+      selected = hitTest(p);            // 點擊選取:點到空白處 = 取消選取
+      if (selected) {
+        dragging = selected;
+        dragMoved = false;
+        dragOffset = { x: p.x - selected.x, y: p.y - selected.y };
+        canvas.setPointerCapture(e.pointerId);   // 拖出畫布外也持續收事件
+      }
+      invalidate();
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const p = getPointerPos(e);
+      dragging.x = p.x - dragOffset.x;  // 拖曳 = 改資料,render 自然跟上
+      dragging.y = p.y - dragOffset.y;
+      dragMoved = true;
+      invalidate();
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if (dragging && dragMoved) history.commit(scene);   // 拖曳結束才存快照,不是每個 move 都存
+      dragging = null;
+      canvas.releasePointerCapture(e.pointerId);
+    });
+
+    // ---- 鍵盤:Delete 刪除 / Ctrl+Z 復原 / Ctrl+Shift+Z 重做 ----
+    window.addEventListener('keydown', (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selected) {   // Mac 的 delete 鍵送出的是 Backspace
+        scene.splice(scene.indexOf(selected), 1);   // 刪除 = 從場景陣列移除,再重新投影
+        selected = null;
+        history.commit(scene);
+        invalidate();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {     // metaKey:順便支援 Mac 的 Cmd
+        e.preventDefault();                         // 攔下瀏覽器自己的 undo
+        if (e.shiftKey) history.redo(applyState);   // Ctrl+Shift+Z:重做
+        else history.undo(applyState);              // Ctrl+Z:復原
+      }
+    });
+
+    // ---- 工具列:新增圖形(用真 DOM button,Canvas 內不用自己畫 UI) ----
+    const COLORS = ['#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#9b5de5'];
+    function addShape(ShapeClass) {
+      const shape = new ShapeClass({
+        x: 80 + Math.random() * (W - 160),   // 隨機落點,連按新增才不會全疊在同一處
+        y: 80 + Math.random() * (H - 160),
+        fill: COLORS[Math.floor(Math.random() * COLORS.length)],
+      });
+      scene.push(shape);      // 新增 = 推到陣列尾端 = 最後畫 = 最上層(8.5)
+      selected = shape;
+      history.commit(scene);  // 關鍵:「新增」也 commit,Ctrl+Z 才撤銷得掉新增
+      invalidate();
+    }
+    document.querySelector('#add-rect').addEventListener('click', () => addShape(RectShape));
+    document.querySelector('#add-circle').addEventListener('click', () => addShape(CircleShape));
+    document.querySelector('#add-text').addEventListener('click', () => addShape(TextShape));
+
+    // ---- localStorage 存檔/載入(8.8):存的是純資料 JSON,不是像素 ----
+    const STORAGE_KEY = 'ch08-scene';
+    document.querySelector('#save').addEventListener('click', () => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(serialize(scene)));
+    });
+    document.querySelector('#load').addEventListener('click', () => {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      scene = deserialize(JSON.parse(raw));   // JSON → 純資料 → 用 SHAPE_REGISTRY 重建實例
+      selected = null;
+      history.commit(scene);                  // 載入也算一次操作,同樣進歷史、可 undo
+      invalidate();
+    });
+  </script>
+</body>
+</html>
+```

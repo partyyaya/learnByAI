@@ -344,3 +344,114 @@ canvas.toBlob((blob) => {
 **下一章(06)**,我們回到第 01 章埋下的伏筆:**動畫不該綁在「幀」上,該綁在「時間」上**。你會學到 delta-time、固定時間步長、緩動(easing)與補間(tween),讓動畫在 60Hz 和 120Hz 螢幕上一樣快、一樣順,並優雅地處理「切到背景分頁」的時間暴衝問題。
 
 > 💡 **動手作業**:做一個「綠幕去背」效果:載入一張綠幕前景圖,遍歷像素,把「綠色成分明顯高於紅藍」的像素 alpha 設為 0(變透明),再用 `drawImage` 疊到另一張背景上。完成後你會親手體會:**透明度(alpha 通道)也是像素的一部分,而合成就是在玩 alpha**——這也呼應第 02 章的 `globalCompositeOperation`。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <title>第 05 章動手作業:綠幕去背</title>
+  <style>
+    body { font-family: sans-serif; padding: 16px; }
+    figure { display: inline-block; margin: 0 16px 16px 0; text-align: center; }
+    canvas { border: 1px solid #999; }
+  </style>
+</head>
+<body>
+  <figure>
+    <canvas id="before" width="320" height="240"></canvas>
+    <figcaption>原圖(綠幕前景)</figcaption>
+  </figure>
+  <figure>
+    <canvas id="after" width="320" height="240"></canvas>
+    <figcaption>去背後疊到背景的合成結果</figcaption>
+  </figure>
+
+  <script>
+    const W = 320, H = 240;
+
+    // ── 1. 用離屏 canvas 畫一張「綠幕前景圖」────────────────
+    // 實務上換成真的照片即可(new Image() 載入後 drawImage 到這裡),
+    // 注意:跨域圖片會污染畫布,讓 getImageData 直接拋 SecurityError,
+    // 解法見本章 5.8 的 CORS 段落(img.crossOrigin = 'anonymous')
+    const fgCanvas = document.createElement('canvas');
+    fgCanvas.width = W;
+    fgCanvas.height = H;
+    // 等一下要讀像素,依 5.6 加上 willReadFrequently 提示
+    const fgCtx = fgCanvas.getContext('2d', { willReadFrequently: true });
+
+    // 綠幕底色:用漸層模擬真實綠幕「打光不均」——每個像素的綠都不一樣,
+    // 所以待會不能用「等於某個綠」來判斷,只能用相對比較
+    const screen = fgCtx.createLinearGradient(0, 0, W, H);
+    screen.addColorStop(0, 'rgb(40, 190, 70)');
+    screen.addColorStop(1, 'rgb(20, 150, 50)');
+    fgCtx.fillStyle = screen;
+    fgCtx.fillRect(0, 0, W, H);
+
+    // 前景主角:一個簡單人形,顏色刻意避開綠色
+    fgCtx.fillStyle = '#f2c9a0';                        // 頭
+    fgCtx.beginPath();
+    fgCtx.arc(160, 80, 32, 0, Math.PI * 2);
+    fgCtx.fill();
+    fgCtx.fillStyle = '#3b5bdb';                        // 身體
+    fgCtx.fillRect(128, 116, 64, 92);
+    fgCtx.strokeStyle = '#3b5bdb';                      // 兩隻手臂
+    fgCtx.lineWidth = 16;
+    fgCtx.lineCap = 'round';
+    fgCtx.beginPath();
+    fgCtx.moveTo(130, 130);
+    fgCtx.lineTo(92, 176);
+    fgCtx.moveTo(190, 130);
+    fgCtx.lineTo(228, 176);
+    fgCtx.stroke();
+
+    // ── 2. 用另一張離屏 canvas 畫「背景圖」(實務上同樣換成照片即可)──
+    const bgCanvas = document.createElement('canvas');
+    bgCanvas.width = W;
+    bgCanvas.height = H;
+    const bgCtx = bgCanvas.getContext('2d');
+    const sky = bgCtx.createLinearGradient(0, 0, 0, H); // 天空:黃昏漸層
+    sky.addColorStop(0, '#1e3a8a');
+    sky.addColorStop(1, '#f97316');
+    bgCtx.fillStyle = sky;
+    bgCtx.fillRect(0, 0, W, H);
+    bgCtx.fillStyle = '#fde047';                        // 夕陽
+    bgCtx.beginPath();
+    bgCtx.arc(80, 150, 28, 0, Math.PI * 2);
+    bgCtx.fill();
+    bgCtx.fillStyle = '#292524';                        // 地面
+    bgCtx.fillRect(0, H - 36, W, 36);
+
+    // 左側:先把「還沒去背」的原圖畫出來,方便跟右側對照
+    document.getElementById('before').getContext('2d').drawImage(fgCanvas, 0, 0);
+
+    // ── 3. 去背核心:遍歷像素,把「偏綠」的像素 alpha 設為 0 ──
+    const imageData = fgCtx.getImageData(0, 0, W, H);   // GPU→CPU 回讀,很貴,整張只做這一次
+    const data = imageData.data;                        // Uint8ClampedArray,每像素 RGBA 佔 4 格
+    for (let i = 0; i < data.length; i += 4) {          // 每次跳 4:一個像素
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      // 關鍵判斷:「綠色成分明顯高於紅藍」的**相對**比較。
+      // 不能只判斷「g 很大」:白色(255,255,255)、亮膚色的 g 也很大,
+      // 用絕對門檻會把亮色前景一起挖掉;「g 比 r 和 b 都高出四成」才是真的偏綠
+      if (g > r * 1.4 && g > b * 1.4) {
+        data[i + 3] = 0;                                // alpha 設 0:這個像素變全透明
+      }
+    }
+    // putImageData 是「直接蓋記憶體」,不做 alpha 混合(5.4 的脾氣),
+    // 所以先寫回離屏 canvas,合成交給下面會尊重透明度的 drawImage
+    fgCtx.putImageData(imageData, 0, 0);
+
+    // ── 4. 合成:背景先畫,去背後的前景用 drawImage 疊上去 ──
+    const afterCtx = document.getElementById('after').getContext('2d');
+    afterCtx.drawImage(bgCanvas, 0, 0);                 // 底:背景
+    afterCtx.drawImage(fgCanvas, 0, 0);                 // 疊:透明像素透出背景——合成就是在玩 alpha
+  </script>
+</body>
+</html>
+```

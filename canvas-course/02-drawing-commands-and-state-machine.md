@@ -462,3 +462,57 @@ items.forEach((item, i) => {
 **下一章(03)**,我們進入 Canvas 最有「魔法感」也最該理解的部分:**座標變換與矩陣**。你會學到 `translate`/`rotate`/`scale` 其實都是在操作一個**變換矩陣**,理解它之後,你就能做出「**可以平移、縮放的相機**」(白板、地圖、設計工具的核心),並輕鬆處理「螢幕座標 ↔ 世界座標」的換算——這是第 07 章命中測定、第 11 章 Capstone 白板的數學地基。而且你會發現,`save`/`restore` 跟變換是天作之合。
 
 > 💡 **動手作業**:用本章學到的東西畫一個**簡單的笑臉**(臉=大圓、眼睛=兩個小圓、嘴巴=半圓弧)。要求:① 每個部位前都 `beginPath`;② 用 `save`/`restore` 把「畫嘴巴時改的 lineWidth/lineCap」隔離,確保不影響眼睛。做完後故意把某個 `restore` 註解掉,觀察狀態污染怎麼讓畫面出錯——**親手製造一次 bug,比讀十遍更記得住**。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>第 02 章動手作業:笑臉</title>
+</head>
+<body>
+  <canvas id="canvas" width="300" height="300" style="border: 1px solid #ccc;"></canvas>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    // ── 臉:大圓,先 fill 再 stroke,讓邊框蓋在填色上 ──
+    ctx.beginPath();                           // 要求①:每個部位前先 beginPath 清空路徑
+    ctx.arc(150, 150, 100, 0, Math.PI * 2);    // 整圓:0 到 2π,角度是弧度
+    ctx.fillStyle = '#ffd166';
+    ctx.fill();
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 2;                         // 這是「外面世界」的線寬,等下驗證它沒被嘴巴污染
+    ctx.stroke();
+
+    // ── 嘴巴:半圓弧,會改 lineWidth/lineCap,故意排在眼睛前面 ──
+    ctx.save();                                // 要求②:進門存檔,把「#333 / 2px / butt」推入堆疊
+    ctx.beginPath();                           // 要求①:沒有它,嘴巴會和臉黏成同一條路徑
+    ctx.arc(150, 160, 55, 0, Math.PI);         // 0 到 π:順時針掃過下半圓,正好是微笑
+    ctx.strokeStyle = '#c1121f';               // 以下三行都是只想給嘴巴用的狀態
+    ctx.lineWidth = 8;
+    ctx.lineCap = 'round';                     // 圓頭端點,嘴角比較柔和
+    ctx.stroke();
+    ctx.restore();                             // 要求②:出門讀檔——試著把這行註解掉,下面的眼睛會變成 8px 粗的紅圈,親眼看看狀態污染
+
+    // ── 眼睛:兩個小圓,依賴 restore 之後的乾淨狀態 ──
+    ctx.fillStyle = '#333';
+
+    ctx.beginPath();                           // 要求①:左眼是獨立形狀
+    ctx.arc(110, 115, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();                              // 用還原後的 2px #333 描邊,證明嘴巴的狀態沒漏出來
+
+    ctx.beginPath();                           // 要求①:右眼也是獨立形狀
+    ctx.arc(190, 115, 12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  </script>
+</body>
+</html>
+```

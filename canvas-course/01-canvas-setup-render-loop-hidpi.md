@@ -382,3 +382,82 @@ Canvas 沒畫出東西時不會報錯(因為對它來說「你只是下了不產
 **下一章(02)**,我們深入「畫筆」本身。你會發現 `ctx` 是一台**巨大的狀態機**:你先設定畫筆狀態(顏色、線寬、變換…),之後所有繪圖都沿用這個狀態,直到你改它。我們會搞懂 `beginPath` 為什麼非用不可、`save()`/`restore()` 這對「狀態存檔/讀檔」如何防止狀態互相污染——這是寫出乾淨 Canvas 程式碼的關鍵,也是後面所有章節的基本功。
 
 > 💡 **動手作業**:把 1.5 的彈球改成「**5 顆顏色、大小、速度都不同的球**」。提示:你需要一個 `balls` 陣列,在 `update`/`render` 裡用迴圈處理。做完你會親身感受到——**所有「物件」都是你自己在 JS 裡維護的,Canvas 只負責把它們畫成像素**。這個體感,是第 08 章「場景圖」的種子。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>第 01 章作業:五顆彈跳球</title>
+  <style>
+    canvas { border: 1px solid #ccc; }   /* 畫個框,看得出球是在畫布邊界反彈 */
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <script>
+    const canvas = document.querySelector('#stage');
+
+    // ---- HiDPI 設定(1.4 的函式):緩衝區 ×DPR,CSS 維持邏輯尺寸,再 scale ----
+    function setupHiDPICanvas(canvas, w, h) {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      return ctx;
+    }
+
+    const W = 800, H = 400;
+    const ctx = setupHiDPICanvas(canvas, W, H);
+
+    // ---- 作業核心:balls 陣列,5 顆球的顏色/大小/速度都不同 ----
+    // 這些「球」只是你自己維護的 JS 資料,Canvas 完全不認得它們
+    // 速度單位是「像素/幀」(綁時間的 delta-time 寫法,第 06 章才教)
+    const balls = [
+      { x: 100, y: 100, r: 20, vx: 4,  vy: 3,  color: '#e63946' },
+      { x: 300, y: 250, r: 12, vx: -3, vy: 5,  color: '#457b9d' },
+      { x: 500, y: 150, r: 28, vx: 2,  vy: -2, color: '#2a9d8f' },
+      { x: 650, y: 300, r: 16, vx: -5, vy: -4, color: '#f4a261' },
+      { x: 200, y: 320, r: 24, vx: 3,  vy: -6, color: '#9b5de5' }
+    ];
+
+    function update() {
+      // 作業要求:在 update 裡用迴圈,逐顆更新
+      for (const b of balls) {
+        b.x += b.vx;
+        b.y += b.vy;
+        // 撞牆反彈:碰到邊界就把那個方向的速度反向
+        if (b.x - b.r < 0 || b.x + b.r > W) b.vx *= -1;
+        if (b.y - b.r < 0 || b.y + b.r > H) b.vy *= -1;
+      }
+    }
+
+    function render() {
+      // 作業要求:在 render 裡也用迴圈,照每顆球自己的資料畫
+      for (const b of balls) {
+        ctx.fillStyle = b.color;   // 每顆球用自己的顏色
+        ctx.beginPath();           // 開新路徑,避免這顆球和上一顆的圓相連
+        ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function frame() {
+      ctx.clearRect(0, 0, W, H);      // 清:擦掉上一幀(5 顆球一次全擦)
+      update();                       // 算:更新每顆球的位置
+      render();                       // 畫:照新資料把 5 顆球重畫一次
+      requestAnimationFrame(frame);   // 預約下一幀,形成自我延續的迴圈
+    }
+
+    requestAnimationFrame(frame);     // 啟動:預約第一幀
+  </script>
+</body>
+</html>
+```

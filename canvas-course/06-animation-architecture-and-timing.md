@@ -280,11 +280,44 @@ function frame() {
 把 delta-time、tween、按需渲染串起來:
 
 ```js
+// ---- 工具(和 6.5、第 03 章相同,原樣搬來讓這段可獨立執行) ----
+const Easing = {
+  linear:    t => t,
+  easeInOut: t => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2) / 2,
+  easeOut:   t => 1 - Math.pow(1 - t, 3),   // 快進慢出,UI 最常用
+  easeIn:    t => t * t * t,
+};
+
+class Tween {
+  constructor(from, to, duration, easing = Easing.easeOut) {
+    this.from = from;
+    this.to = to;
+    this.duration = duration;   // 秒
+    this.easing = easing;
+    this.elapsed = 0;
+    this.done = false;
+  }
+  update(dt) {
+    this.elapsed += dt;
+    let t = Math.min(this.elapsed / this.duration, 1);   // 線性進度 0→1
+    if (t >= 1) this.done = true;
+    const eased = this.easing(t);                        // 套 easing
+    return this.from + (this.to - this.from) * eased;    // 內插出當前值
+  }
+}
+
+function getCanvasPoint(canvas, e) {   // 滑鼠事件座標 → 畫布內座標(第 03 章)
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+// ---- 主體:點一下,方塊平滑飛到滑鼠位置 ----
+const W = 800, H = 400;   // 邏輯畫布尺寸
 const box = { x: 100, y: 100, size: 40 };
 let tweenX = null, tweenY = null;
 
 canvas.addEventListener('click', (e) => {
-  const p = getCanvasPoint(canvas, e);          // 第 03 章
+  const p = getCanvasPoint(canvas, e);
   tweenX = new Tween(box.x, p.x, 0.5, Easing.easeOut);
   tweenY = new Tween(box.y, p.y, 0.5, Easing.easeOut);
 });
@@ -322,3 +355,120 @@ requestAnimationFrame(frame);
 **下一章(07)**,我們兌現第 00 章最重要的推論:**Canvas 沒有 click 事件,點到誰要自己算**。這就是**命中測定(hit testing)**——從滑鼠座標轉世界座標(第 03 章)、用數學判斷點在不在圖形內、`isPointInPath`、到「隱藏色彩緩衝」這種神技,最後做出可 hover、可選取、可拖曳的互動。這是把 Canvas 從「會動的圖」變成「可互動的應用」的關鍵一章。
 
 > 💡 **動手作業**:做一個「煙火/粒子效果」:點一下在該位置生成 50 個粒子,每個有隨機速度、受重力影響(`vy += gravity * dt`)、透明度隨時間 ease 到 0 後消失。要求全部用 delta-time,並 clamp dt。完成後你會同時練到:delta-time、物理(重力)、生命週期管理、以及大量物件的 update/render——這也是第 09 章效能的前哨。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>第 06 章作業:煙火粒子效果</title>
+  <style>
+    canvas { border: 1px solid #ccc; background: #1d1d2b; }   /* 深色底,煙火才看得清楚 */
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <script>
+    const canvas = document.querySelector('#stage');
+
+    // ---- HiDPI 設定(第 01 章的函式):緩衝區 ×DPR,CSS 維持邏輯尺寸,再 scale ----
+    function setupHiDPICanvas(canvas, w, h) {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      return ctx;
+    }
+
+    const W = 800, H = 400;
+    const ctx = setupHiDPICanvas(canvas, W, H);
+
+    function getCanvasPoint(canvas, e) {   // 滑鼠事件座標 → 畫布內座標(第 03 章)
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    const Easing = {
+      easeOut: t => 1 - Math.pow(1 - t, 3),   // 快進慢出(6.5)
+    };
+
+    // ---- 粒子資料:全由我們自己在 JS 維護,Canvas 不認得它們(第 00 章)----
+    const GRAVITY = 600;   // 重力加速度,單位是「像素/秒²」(所有速度都以秒為單位,6.2)
+    const COLORS = ['#e63946', '#f4a261', '#2a9d8f', '#457b9d', '#9b5de5'];
+    const particles = [];  // 場上所有還活著的粒子
+
+    // 作業要求:點一下,在該位置生成 50 個粒子
+    canvas.addEventListener('click', (e) => {
+      const p = getCanvasPoint(canvas, e);
+      for (let i = 0; i < 50; i++) {
+        // 作業要求:隨機速度。刻意拆成「隨機方向 + 隨機速率」,而不是直接隨機 vx/vy——
+        // 直接隨機 vx/vy 等於在「正方形」裡取點,斜向的粒子會特別快,爆開會偏方形;
+        // 先抽方向再抽速率,方向在整個圓上均勻分布,爆開才是漂亮的圓形煙火
+        const angle = Math.random() * Math.PI * 2;   // 隨機方向:0~1 乘 2π → 0~360° 的隨機弧度
+        const speed = 60 + Math.random() * 240;      // 隨機速率:60~300 像素/秒
+        particles.push({
+          x: p.x,
+          y: p.y,
+          // 把「方向 + 速率」拆回 x/y 分量:(cos角, sin角) 是朝該方向、長度 1 的單位向量,
+          // 各乘上 speed,就是「朝 angle 方向、每秒走 speed 像素」的速度
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          life: 0,                            // 已經活了幾秒
+          maxLife: 1 + Math.random() * 1.5,   // 壽命(秒),各自不同看起來更自然
+          color: COLORS[Math.floor(Math.random() * COLORS.length)],
+        });
+      }
+    });
+
+    // ---- update:只改資料,不碰畫布(6.3 的分離原則)----
+    function update(dt) {
+      // 生命週期管理:要「邊遍歷邊刪除」,所以倒著走——
+      // 正著走時 splice 會讓後面的元素往前補位,下一個元素就被跳過了
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const pt = particles[i];
+        pt.vy += GRAVITY * dt;    // 作業要求:重力,vy += gravity * dt
+        pt.x += pt.vx * dt;       // 移動量 = 速度 × 時間(6.2 的 delta-time)
+        pt.y += pt.vy * dt;
+        pt.life += dt;
+        if (pt.life >= pt.maxLife) particles.splice(i, 1);   // 壽命到了就從陣列移除
+        // (若不想倒著走,也可把 particles 改成 let,整批 filter 出還活著的粒子)
+      }
+    }
+
+    // ---- render:只讀資料、畫到畫布,不改資料(6.3)----
+    function render() {
+      ctx.clearRect(0, 0, W, H);
+      for (const pt of particles) {
+        const t = pt.life / pt.maxLife;            // 生命進度 0→1
+        ctx.globalAlpha = 1 - Easing.easeOut(t);   // 作業要求:透明度用 easing 隨進度衰減到 0
+        ctx.fillStyle = pt.color;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;   // globalAlpha 是持續生效的狀態,記得改回來(第 02 章)
+    }
+
+    // ---- 主迴圈:delta-time + clamp(6.2、6.7)----
+    let lastTime = performance.now();
+    function frame(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.1);   // 作業要求:clamp dt,防背景分頁回來暴衝
+      lastTime = now;
+
+      update(dt);   // 算:推進資料的世界
+      render();     // 畫:把世界拍一張照
+
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
+```

@@ -356,3 +356,171 @@ function frame() {
 **下一章(08)**,我們把目前散落的物件資料,正式組織成一個 **場景圖(scene graph)**——也就是在 immediate mode 之上,親手蓋出一層 retained mode。你會發現自己重建了 Konva / Fabric 這類庫的核心,並因此解鎖三個 immediate mode 一直缺的能力:**階層/群組、Undo/Redo(兌現第 02 章伏筆)、以及序列化存檔**。引擎即將成形。
 
 > 💡 **動手作業**:把第 06 章的粒子作業改成「**可點選的圖形編輯器雛形**」:畫面上散佈 20 個不同顏色的圓,實作 hover 變亮、點擊選取(選中畫外框)、拖曳移動。挑戰題:再用 7.6 的隱藏色彩緩衝重做一次命中測定,對比兩種做法的程式碼複雜度與手感。
+
+### 動手作業參考實作
+
+先自己動手做,卡住或想對答案時再看:
+
+```html
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><title>第 07 章作業:可點選的圖形編輯器雛形</title>
+<style>
+  body { font-family: sans-serif; }
+  canvas { border: 1px solid #ccc; margin-top: 8px; }
+</style></head>
+<body>
+  <!-- 挑戰題的開關:同一套互動,底下換兩種命中測定實作,手感應該一模一樣 -->
+  <label><input type="checkbox" id="colorHit"> 用 7.6 的隱藏色彩緩衝做命中(取代數學命中)</label>
+  <br>
+  <canvas id="stage"></canvas>
+  <script>
+    const canvas = document.querySelector('#stage');
+    const colorHitBox = document.querySelector('#colorHit');
+    const W = 800, H = 480;
+
+    // ---- 第 01 章 HiDPI:緩衝區 ×DPR,CSS 維持邏輯尺寸,再 scale ----
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = W * dpr;  canvas.height = H * dpr;
+    canvas.style.width = W + 'px';  canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    // ---- 7.6 挑戰題:隱藏色彩緩衝(離屏,不顯示,1:1 邏輯尺寸,不做 dpr 縮放)----
+    const hitCanvas = document.createElement('canvas');
+    hitCanvas.width = W;  hitCanvas.height = H;
+    const hitCtx = hitCanvas.getContext('2d', { willReadFrequently: true });   // 第 05 章:頻繁 getImageData 的提示
+
+    // ---- 作業要求:20 個不同顏色的圓,散佈在畫面上 ----
+    const circles = [];
+    for (let i = 0; i < 20; i++) {
+      circles.push({
+        x: 40 + Math.random() * (W - 80),
+        y: 40 + Math.random() * (H - 80),
+        r: 16 + Math.random() * 16,
+        hue: i * 18,   // 360 / 20 = 18,色相均分,保證 20 個顏色都不同
+      });
+    }
+
+    let hovered = null;                  // 滑鼠正懸停的圓
+    let selected = null;                 // 點擊選取的圓
+    let dragging = null;                 // 正在拖曳的圓
+    let dragOffset = { x: 0, y: 0 };     // 按下時「抓在圓的哪裡」
+    let dirty = true;                    // 第 06 章:按需渲染的 dirty flag
+    function invalidate() { dirty = true; }
+
+    // ---- 7.2:事件座標 → 畫布座標(本作業沒有相機,畫布座標即世界座標)----
+    function eventToWorld(e) {
+      const rect = canvas.getBoundingClientRect();
+      return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    }
+
+    // ---- 7.3:點在圓內,比距離平方,省一次開根號 ----
+    function pointInCircle(p, c) {
+      const dx = p.x - c.x, dy = p.y - c.y;
+      return dx * dx + dy * dy <= c.r * c.r;
+    }
+
+    // ---- 7.5:反向遍歷,從最上層(陣列尾端)找起,命中第一個就回傳 ----
+    function hitTestMath(p) {
+      for (let i = circles.length - 1; i >= 0; i--) {
+        if (pointInCircle(p, circles[i])) return circles[i];
+      }
+      return null;   // 點到空白
+    }
+
+    // ---- 7.6:把 index 編碼成顏色畫到隱藏畫布,命中 = 讀 1 個像素 ----
+    function idToColor(id) {
+      return 'rgb(' + ((id >> 16) & 255) + ',' + ((id >> 8) & 255) + ',' + (id & 255) + ')';
+    }
+    function renderHitCanvas() {
+      hitCtx.clearRect(0, 0, W, H);              // 清成透明,RGB 讀回 0 = 空白
+      hitCtx.imageSmoothingEnabled = false;      // 關平滑,否則邊緣混色讓 ID 算錯
+      for (let i = 0; i < circles.length; i++) {
+        hitCtx.fillStyle = idToColor(i + 1);     // i+1:留 0 當「空白」
+        hitCtx.beginPath();
+        hitCtx.arc(circles[i].x, circles[i].y, circles[i].r, 0, Math.PI * 2);
+        hitCtx.fill();                           // 由下往上疊,上層蓋掉下層,z-order 自動正確
+      }
+    }
+    function hitTestColor(p) {
+      // hit canvas 是 1:1 邏輯尺寸,直接用 CSS 座標讀(getImageData 吃緩衝區像素座標)
+      const d = hitCtx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
+      const id = (d[0] << 16) | (d[1] << 8) | d[2];
+      return id === 0 ? null : circles[id - 1];
+    }
+
+    // 兩種命中法用開關切換,行為應該一模一樣,程式碼複雜度自己對比
+    function hitTest(p) {
+      return colorHitBox.checked ? hitTestColor(p) : hitTestMath(p);
+    }
+
+    // ---- 7.8:hover 高亮 + 點擊選取 + 拖曳 ----
+    canvas.addEventListener('pointermove', (e) => {
+      const p = eventToWorld(e);
+      if (dragging) {
+        // 作業要求:拖曳移動——用按下時記的偏移,圓才不會跳到滑鼠正中心
+        dragging.x = p.x - dragOffset.x;
+        dragging.y = p.y - dragOffset.y;
+        invalidate();
+        return;
+      }
+      const hit = hitTest(p);
+      if (hit !== hovered) {
+        hovered = hit;                                     // 作業要求:hover 狀態
+        canvas.style.cursor = hit ? 'grab' : 'default';    // 作業要求:游標回饋
+        invalidate();
+      }
+    });
+
+    canvas.addEventListener('pointerdown', (e) => {
+      const p = eventToWorld(e);
+      const hit = hitTest(p);
+      selected = hit;                                      // 作業要求:點擊選取(點空白 = 取消選取)
+      if (hit) {
+        dragging = hit;
+        dragOffset = { x: p.x - hit.x, y: p.y - hit.y };   // 記住抓在圓的哪個相對位置
+        canvas.style.cursor = 'grabbing';
+        canvas.setPointerCapture(e.pointerId);             // 拖出畫布也持續收事件
+      }
+      invalidate();
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      if (!dragging) return;
+      dragging = null;
+      canvas.style.cursor = hovered ? 'grab' : 'default';
+      canvas.releasePointerCapture(e.pointerId);
+    });
+
+    function render() {
+      ctx.clearRect(0, 0, W, H);
+      for (const c of circles) {
+        // 作業要求:hover 變亮——把 HSL 亮度從 50% 提到 70%
+        ctx.fillStyle = 'hsl(' + c.hue + ', 75%, ' + (c === hovered ? 70 : 50) + '%)';
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (selected) {
+        // 作業要求:選中畫外框——比圓大 4px 的虛線圓框
+        ctx.strokeStyle = '#1d3557';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.arc(selected.x, selected.y, selected.r + 4, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);   // 第 02 章:清掉虛線狀態,避免污染下一幀
+      }
+      renderHitCanvas();       // 圓移動了,身分證畫布也要同步重畫,兩邊才對得上
+    }
+
+    function frame() {
+      if (dirty) { render(); dirty = false; }   // 第 06 章:狀態有變才重畫,靜止時零成本
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
+```

@@ -144,13 +144,25 @@ function eventToWorld(canvas, e) {
 兩層:`content`(圖形)、`overlay`(選取框/手把/拖曳預覽)。用 dirty flag 按需重畫。
 
 ```js
-// 先交代幾個「組裝時才宣告」的名字:W/H、contentCtx/overlayCtx、scene 都宣告在 11.8 的 HTML 骨架;
-// creating(新增中的圖形)、selected(選中的圖形)是 11.6 的互動狀態
+// 畫布與場景:兩個 <canvas> 疊在一起(HTML 見 11.8),資料只有一份 scene
+const W = innerWidth, H = innerHeight;
+const content = document.getElementById('content');   // 圖形層
+const canvas  = document.getElementById('overlay');   // 選取框層,疊最上面(事件也綁這層,見 11.6)
+const contentCtx = content.getContext('2d');
+const overlayCtx = canvas.getContext('2d');
+const scene = [];   // 所有圖形(第 08 章:資料是唯一真相)
+
+// 互動狀態:11.6 的事件處理會更新它們,render 只負責讀
+let selected = null;             // 目前選中的圖形
+let creating = null;             // 拖曳新增中、尚未提交進 scene 的圖形
+let drawSelection = () => {};    // 畫「選取框+手把」,先放空殼,11.6 填入實作
+
 const dpr = window.devicePixelRatio || 1;
 function setup(canvas, w, h) {
   canvas.width = w * dpr; canvas.height = h * dpr;
   canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
 }
+setup(content, W, H); setup(canvas, W, H);
 
 let contentDirty = true, overlayDirty = true;
 const invalidate = () => { contentDirty = overlayDirty = true; };
@@ -170,7 +182,7 @@ function render() {
     overlayCtx.clearRect(0, 0, W, H);
     overlayCtx.save(); applyCamera(overlayCtx);
     if (creating) creating.draw(overlayCtx);             // 新增中的預覽
-    if (selected) drawSelection(overlayCtx, selected);   // 11.6:選取框畫最上面
+    if (selected) drawSelection(overlayCtx, selected);   // 選取框畫最上面
     overlayCtx.restore();
     overlayDirty = false;
   }
@@ -197,7 +209,7 @@ function getHandles(shape) {
   };
 }
 
-function drawSelection(ctx, shape) {
+drawSelection = (ctx, shape) => {   // 填入 11.5 預留的空殼
   const b = shape.getBounds();
   ctx.strokeStyle = '#3b82f6';
   ctx.lineWidth = 1 / camera.zoom;            // 線寬抵消縮放,維持 1px 觀感
@@ -208,7 +220,7 @@ function drawSelection(ctx, shape) {
     ctx.fillRect(p.x - r, p.y - r, r*2, r*2);
     ctx.strokeRect(p.x - r, p.y - r, r*2, r*2);
   }
-}
+};
 
 // 命中:先測手把(優先),再測圖形本體
 function hitHandle(shape, wp) {
@@ -231,9 +243,13 @@ function hitShape(wp) {
 
 ```js
 let tool = 'select';      // 'select' | 'rect' | 'circle' | 'text'
-let selected = null;
 let mode = 'idle';        // 'idle' | 'creating' | 'dragging' | 'resizing' | 'panning'
-let dragOffset = null, resizeHandle = null, resizeAnchor = null, creating = null, createOrigin = null, panStart = null;
+let dragOffset = null, resizeHandle = null, resizeAnchor = null, createOrigin = null, panStart = null;
+// (selected、creating 在 11.5 已宣告)
+
+// 兩個後面小節才實作的依賴,先放可運作的空殼,這節的程式碼就能直接跑:
+let history = { commit() {} };   // 11.7 換成真正的快照式 undo 歷史
+let syncToolbar = () => {};      // 11.8 換成「同步工具列按鈕高亮」
 
 canvas.addEventListener('pointerdown', (e) => {
   const wp = eventToWorld(canvas, e);
@@ -267,8 +283,8 @@ canvas.addEventListener('pointerdown', (e) => {
   } else if (tool === 'text') {
     // 文字:點擊即放置(寬高由 measureText 在 draw 時決定,拖曳框對文字沒意義)
     const t = new TextShape({ x: wp.x, y: wp.y });
-    scene.push(t); selected = t; history.commit();   // history = 11.7 的 undo 歷史
-    tool = 'select'; syncToolbar(); invalidate();    // syncToolbar = 11.8 的工具列高亮同步
+    scene.push(t); selected = t; history.commit();
+    tool = 'select'; syncToolbar(); invalidate();
   } else {
     // 矩形 / 圓形:拖出一個新圖形
     mode = 'creating';
@@ -339,7 +355,7 @@ function applyResize(s, wp) {
 用快照式歷史(簡單、正確)。核心是維護一個 `present`(目前已提交的狀態快照);每個操作結束只要呼叫 `commit()`,它會跟 `present` 比對,有變化才推入歷史。**不需要 `begin()`——這樣連「新增圖形」都天然可被復原**(這是初版設計常踩的坑:若只在拖曳時記起點,新增就無法 undo)。它也是第 08 章 8.7「做法 A:快照」的改良版——用單一 `present` 取代「`past` 堆疊裡含現值」的約定,語意更清楚:
 
 ```js
-const history = {
+history = {   // 填入 11.6 預留的空殼,換成真正的快照歷史
   past: [], future: [], present: '[]',
   snapshot() { return JSON.stringify(scene.map(s => s.toJSON())); },
   init() { this.present = this.snapshot(); },     // 啟動時記下初始(空)狀態
@@ -434,20 +450,14 @@ const load = () => {
     <canvas id="overlay" class="layer"></canvas>   <!-- 互動事件綁在最上層 overlay -->
   </div>
   <script>
-    const W = innerWidth, H = innerHeight;
-    const content = document.getElementById('content');
-    const canvas  = document.getElementById('overlay');   // 事件層
-    const contentCtx = content.getContext('2d');
-    const overlayCtx = canvas.getContext('2d');
-    const scene = [];
-    /* … 11.3~11.7 的程式碼貼這裡：Shape 類、camera、render、事件、history … */
+    /* … 11.3~11.7 的程式碼貼這裡:Shape 類、相機、渲染(畫布/場景的宣告在 11.5 開頭)、事件、history … */
     // 工具列切換
     document.querySelectorAll('[data-tool]').forEach(btn =>
       btn.onclick = () => { tool = btn.dataset.tool; selected = null; invalidate(); syncToolbar(); });
-    function syncToolbar() {
+    syncToolbar = () => {   // 填入 11.6 預留的空殼:高亮目前選中的工具按鈕
       document.querySelectorAll('[data-tool]').forEach(b =>
         b.classList.toggle('active', b.dataset.tool === tool));
-    }
+    };
     document.getElementById('saveBtn').onclick = save;
     document.getElementById('loadBtn').onclick = load;
   </script>
