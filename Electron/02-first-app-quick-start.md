@@ -65,6 +65,13 @@ app.on("window-all-closed", () => {
 });
 ```
 
+這段程式碼裡有兩個 Electron 最經典的生命週期慣例，務必理解它們存在的原因：
+
+- `window-all-closed`：所有視窗關閉時觸發。在 Windows / Linux 上，關掉所有視窗通常就代表「結束程式」；但 macOS 的慣例是視窗全關後 App 仍留在 Dock 繼續運作（例如 Safari、備忘錄都是如此）。因此這裡判斷 `process.platform !== "darwin"`（`darwin` 即 macOS）才呼叫 `app.quit()`。
+- `activate`：macOS 專屬情境。當使用者點擊 Dock 圖示、而目前沒有任何開啟中的視窗時，慣例是重新建立主視窗，所以先檢查 `getAllWindows().length === 0` 再呼叫 `createWindow()`。
+
+少了這兩段，App 在 macOS 上會出現「關窗後點 Dock 圖示沒反應」、在 Windows 上會出現「視窗關了但程序還留在背景」的非預期行為。
+
 ---
 
 ## 2.4 建立前端畫面

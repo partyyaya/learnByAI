@@ -69,6 +69,14 @@ function createWindow() {
 app.whenReady().then(() => {
   registerSystemIpc();
   createWindow();
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
 });
 ```
 
@@ -76,11 +84,22 @@ app.whenReady().then(() => {
 
 ## 4.4 在 Preload 開放安全 API
 
-`src/preload/preload.js`：
+`src/preload/preload.js`（完整檔案，保留第三章的 `appInfo`，新增 `systemApi`）：
 
 ```javascript
 const { contextBridge, ipcRenderer } = require("electron");
 
+// 第三章建立的 appInfo API，保留不動
+contextBridge.exposeInMainWorld("appInfo", {
+  getVersion() {
+    return "1.0.0-course-demo";
+  },
+  getPlatform() {
+    return process.platform;
+  }
+});
+
+// 本章新增：透過 IPC 向 Main 要求系統資訊
 contextBridge.exposeInMainWorld("systemApi", {
   getInfo() {
     return ipcRenderer.invoke("system:get-info");
@@ -99,9 +118,21 @@ contextBridge.exposeInMainWorld("systemApi", {
 <pre id="systemInfoOutput"></pre>
 ```
 
-`src/renderer/app.js`：
+`src/renderer/app.js`（完整檔案，保留第三章的按鈕行為，新增系統資訊區塊）：
 
 ```javascript
+const message = document.getElementById("message");
+const helloBtn = document.getElementById("helloBtn");
+
+// 第三章的按鈕行為，保留不動
+helloBtn.addEventListener("click", () => {
+  const version = window.appInfo.getVersion();
+  const platform = window.appInfo.getPlatform();
+
+  message.textContent = `版本：${version}，平台：${platform}`;
+});
+
+// 本章新增：讀取系統資訊並顯示
 const systemInfoBtn = document.getElementById("systemInfoBtn");
 const systemInfoOutput = document.getElementById("systemInfoOutput");
 

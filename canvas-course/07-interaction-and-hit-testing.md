@@ -44,9 +44,34 @@ function eventToWorld(canvas, camera, e) {
 }
 ```
 
-> ⚠️ 三個常見錯誤:① 直接拿 `e.offsetX` 在有 CSS 縮放/邊框時會錯,用 `getBoundingClientRect` 最穩;② 忘了套相機逆變換,平移縮放後命中全亂;③ HiDPI 處理不一致(第 01 章我們在 context 上 `scale(dpr)`,所以這裡用 CSS 座標即可,不用乘 dpr——但要跟你的繪圖座標系**保持一致**)。
+> ⚠️ 三個常見錯誤:
+> ① 用 `e.offsetX` 當畫布座標(看起來方便,其實有三個地雷,下面專門展開);
+> ② 忘了套相機逆變換,平移縮放後命中全亂;
+> ③ HiDPI 處理不一致(第 01 章我們在 context 上 `scale(dpr)`,所以這裡用 CSS 座標即可,不用乘 dpr——但要跟你的繪圖座標系**保持一致**)。
 
 **之後所有命中判斷,都用這個 world point 跟物件的世界座標比。** 把它做對,後面才有意義。
+
+### 展開講:`e.offsetX` 看起來剛剛好,為什麼不用?
+
+`e.offsetX/Y` 的定義是「滑鼠相對**事件目標(`e.target`)**的座標」。乍看正是我們要的東西,在簡單頁面上也真的能用——但它有三個地雷,正式專案幾乎都會踩到其中一個:
+
+**地雷 1:它相對的是 `e.target`,不保證是你的 canvas。** 只要監聽器掛在父容器上(事件委派),或 canvas 上疊了別的元素(浮動工具列、tooltip、第 11 章的分層 canvas),`e.target` 就是「滑鼠底下實際壓到的那個元素」,`offsetX` 跟著變成相對那個元素的座標——滑鼠劃過工具列的瞬間,座標整組亂跳,而且時好時壞極難 debug。`e.clientX - rect.left` 則永遠是相對「你指定的那塊 canvas」在量,跟監聽器掛在哪、滑鼠底下壓到誰都無關。
+
+**地雷 2:CSS 把畫布縮放顯示時,你需要 `rect` 才換算得回繪圖座標。** 本課的範例都讓「CSS 顯示尺寸 = 邏輯尺寸」,所以座標直接相減就對。但 RWD 版面常寫 `canvas { width: 100% }`——假設邏輯寬 800 的畫布被版面擠成只顯示 600px(只設 `width` 時,瀏覽器會照畫布的長寬比自動縮 `height`,屬於**等比縮放**),滑鼠點在畫布正中央:`offsetX` 回報 300(顯示尺寸的一半),但在你的繪圖座標系裡那個點是 400,全部命中判斷都會歪。正確換算需要「此刻實際顯示的尺寸」:
+
+```js
+const rect = canvas.getBoundingClientRect();
+const x = (e.clientX - rect.left) * (W / rect.width);    // W、H = 你的邏輯尺寸(例如 800×400)
+const y = (e.clientY - rect.top)  * (H / rect.height);   // 先量顯示位置,再按「邏輯/顯示」比例放回繪圖座標
+```
+
+注意公式的 x、y **各用各的比例**:等比縮放時兩個比例相同,算出來自然對;若 CSS 同時指定了 `width` 和 `height`(例如 `width: 100%; height: 300px`),畫布會被**非等比拉伸**,兩個比例就不一樣了——這個寫法連這種情況也一併算對。
+
+`rect.width/height` 就是畫布此刻實際顯示的大小(連 `transform: scale` 的效果都反映在內),縮放比例自然就有了。`offsetX` 給不了這個資訊,而且它在 CSS transform 下的行為各瀏覽器不一致,想修正也無從修起。
+
+**地雷 3:border/padding 造成的偏移——兩種方法都會中,最穩是別放在 canvas 上。** canvas 的繪圖區是 content box:`offsetX` 從 padding edge 起算,canvas 有 `padding` 就偏;`rect.left` 是 border box 外緣,有 `border` 或 `padding` 就偏。與其背修正公式,**不如把框線和留白放到外層容器上**——要框線就包一層 `<div>` 讓它畫,canvas 本身保持乾淨,哪種算法都準。
+
+> **一句話結論**:`offsetX` 是「事件目標的相對座標」,你控制不了目標是誰;`clientX + getBoundingClientRect` 是「對你指定元素的主動量測」,掛哪裡、怎麼縮放都算得回來。所以本課一律用上面 `eventToWorld` 的寫法。
 
 ---
 
@@ -77,37 +102,136 @@ function pointInCircle(p, circle) {
 
 ### 點在多邊形內(射線法 ray casting)
 
-任意多邊形用「**從該點射一條水平射線,數它穿過多邊形邊幾次:奇數=在內,偶數=在外**」:
+任意多邊形用「**從該點往右射一條水平射線,數它穿過多邊形的邊幾次:奇數=在內,偶數=在外**」:
+
+```
+              ┌──────────┐
+   外部 a ●───╳──────────╳────────→   穿過 2 條邊(偶數)→ a 在外
+              │          │
+   內部 b ────┼──● b ────╳────────→   從 b 往右只穿過 1 條邊(奇數)→ b 在內
+              │          │
+              └──────────┘
+```
+
+為什麼「奇數在內」?想像你站在點上,往右一直走到無限遠。每穿過一條邊,就切換一次「從外進到內」或「從內出到外」。終點在無限遠一定是在多邊形外,所以反推回來:穿奇數次代表起點在「內」,偶數次代表起點在「外」。
 
 ```js
-function pointInPolygon(p, points) {   // points: [{x,y}, ...]
+function pointInPolygon(p, points) {   // points: 多邊形頂點 [{x,y}, ...],依序首尾相接
   let inside = false;
+  // i 是「這一個」頂點,j 是「前一個」頂點,(j → i) 就是一條邊。
+  // 初值 i=0, j=最後一個 → 第一條檢查的邊是「最後一點 → 第 0 點」,也就是收尾那條邊;
+  // j = i++ 每圈先把目前的 i 存給 j、再讓 i 前進,於是邊依序是 (n-1→0)、(0→1)、(1→2)…
+  // 這個寫法不用特別處理「最後一點連回第一點」的收尾邊,一個迴圈全包了。
   for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    const xi = points[i].x, yi = points[i].y;
-    const xj = points[j].x, yj = points[j].y;
-    const intersect = ((yi > p.y) !== (yj > p.y)) &&
+    const xi = points[i].x, yi = points[i].y;   // 邊的一端
+    const xj = points[j].x, yj = points[j].y;   // 邊的另一端
+    const intersect =
+      // 條件 1:這條邊有沒有「跨過」射線的高度 p.y?(一端在 p.y 上方、另一端在下方)
+      //         兩端同高同側就不可能被水平射線穿到,用 !== 確保剛好一端在上、一端在下
+      ((yi > p.y) !== (yj > p.y)) &&
+      // 條件 2:邊與「y = p.y」的交點 x,落在 p 的右邊嗎?(因為射線是往右射)
+      //         下面這串是用相似三角形算出交點的 x 座標,再看它是否 > p.x
       (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi);
-    if (intersect) inside = !inside;   // 每穿過一條邊就翻轉
+    if (intersect) inside = !inside;   // 每被穿過一次就翻轉一次內/外
   }
   return inside;
 }
 ```
 
+**拆解條件 2 的公式**。條件 1 已經確定「這條邊跨過了 `p.y` 這個高度」,所以邊一定會跟「`y = p.y` 這條水平線」相交於某一點。我們要算出那個交點的 x,再看它在不在 p 的右邊。
+
+分兩步想。一條邊從 `A=(xi,yi)` 走到 `B=(xj,yj)`,把「沿著邊從 A 走到 B」想成進度 0→1:
+
+1. **先算垂直方向要走多少比例**才會到達 `p.y` 的高度。整條邊垂直總長是 `yj - yi`,而我們只要從 `yi` 走到 `p.y`,走了 `p.y - yi`,所以比例是:
+
+   ```
+   比例 t = (p.y - yi) / (yj - yi)     // 例:邊從 y=0 到 y=4,想到 y=2 → t = 2/4 = 0.5(走一半)
+   ```
+
+2. **x 就照同一個比例跟著走**。x 從 `xi` 出發,整條邊水平總共移動 `xj - xi`,走了 `t` 比例就是移動 `(xj - xi) × t`,所以交點:
+
+   ```
+   交點 x = xi + (xj - xi) × t = (xj - xi) × (p.y - yi) / (yj - yi) + xi
+   ```
+
+   這正是程式碼裡 `p.x <` 右邊那一整串。
+
+**代個數字走一遍**:邊 `A=(2,0) → B=(6,4)`,查詢點 `p=(1, 2)`。
+- `t = (2 - 0) / (4 - 0) = 0.5`(p.y=2 剛好在這條邊的垂直中點)
+- `交點 x = 2 + (6 - 2) × 0.5 = 4`(邊在高度 2 的地方,x 落在 4)
+- 條件 2:`p.x(1) < 交點x(4)` → true。p 在交點左邊,往右的射線會穿過這條邊 ✓
+
+如果把 p 換成 `(5, 2)`:`5 < 4` → false,交點在 p 的左邊,射線往右射就碰不到這條邊了。
+
+> **條件 1 那兩個 `>`,為什麼是 `>` 而不是 `>=`?** 指的是 `(yi > p.y)` 和 `(yj > p.y)` 這兩個比較。它們在問「這個端點在射線上方嗎」,而**當端點的 y 剛好等於 `p.y`(頂點正好落在射線上)時,用 `>` 會把它判成「不在上方」**——等於規定「剛好同高」一律算下方。這個看似隨便的選擇,是為了處理「射線剛好穿過一個頂點」這種邊界情形。
+>
+> 為什麼會出問題?一個頂點是**兩條邊共用**的端點。射線剛好穿過它時,這兩條邊都碰到了射線——如果規則不一致,可能兩條邊各數一次(多算 2 次)、或兩條都不數,奇偶就亂了。而「同高一律算下方」這個統一約定,會讓結果永遠正確:
+>
+> - 邊界**真的穿過**那個頂點(頂點一邊高、一邊低):只有一條邊會被數到 → 剛好算 1 次 ✓
+> - 邊界**只是碰一下就回去**(頂點是往上的尖角或往下的凹谷,兩邊同高同側):兩條邊要嘛都不數、要嘛都數 → 算 0 或 2 次(偶數,等於沒穿過)✓
+>
+> 你不用背這些情形,只要記住:**`>`(而非 `>=`)是射線法的標準約定,用來讓「射線壓到頂點」時不會重複計數,照抄即可。**
+
 ### 點在「線段附近」(線/連接線的命中)
 
-線沒有面積,要判斷「點離線段夠不夠近」(算點到線段的最短距離 < 容差):
+線沒有面積,點正好落在數學上那條「無寬度的線」機率是 0,所以命中改問「**點離線段夠不夠近**」:算出點到線段的最短距離,小於容差(例如 5px)就算命中。
+
+最短距離怎麼算?想像從點 `p` 對線段拉一條垂直線,垂足(落在線段上的那個點)就是線段上離 `p` 最近的位置,`p` 到垂足的距離就是最短距離:
+
+```
+                p ●
+                  │
+                  │   ← 這段垂直距離就是最短距離,拿它跟容差比
+                  │
+   a ●────────────●────────────● b
+                  ▲
+              垂足 c(p 垂直投影到線段上的落點)
+```
+
+只是垂足有可能落在線段**外面**(延長線上),這時最近點其實是最靠近的那個端點,所以要把它「夾」回線段範圍內:
 
 ```js
 function pointNearSegment(p, a, b, tolerance = 5) {
+  // 線段方向向量(從 a 指向 b),與長度平方
   const dx = b.x - a.x, dy = b.y - a.y;
   const len2 = dx * dx + dy * dy;
+
+  // t = 垂足在線段上的位置比例:0 = 落在 a,1 = 落在 b,0.5 = 正中間。
+  // 分子是「向量 a→p」和「向量 a→b」的內積(投影長度),除以長度平方換算成比例;
+  // len2 為 0 代表 a、b 是同一點(退化線段),避免除以 0,直接令 t=0(就當 a)
   let t = len2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2 : 0;
-  t = Math.max(0, Math.min(1, t));              // 夾在線段範圍內
-  const cx = a.x + t * dx, cy = a.y + t * dy;   // 線段上最近的點
+
+  // 夾在 [0,1]:垂足若落在 a 之前(t<0)或 b 之後(t>1),最近點就是對應端點
+  t = Math.max(0, Math.min(1, t));
+
+  // 由比例 t 算出線段上的最近點 c = a + t × (b-a)
+  const cx = a.x + t * dx, cy = a.y + t * dy;
+
+  // 比較 p 到 c 的距離平方 vs 容差平方(平方比較,省一次開根號,同 7.3 的圓)
   const ddx = p.x - cx, ddy = p.y - cy;
   return ddx * ddx + ddy * ddy <= tolerance * tolerance;
 }
 ```
+
+**逐塊拆解求 `t` 這一行**。先把它讀成 `t = 分子 / len2`,外層 `len2 ? … : 0` 只是防呆:`len2` 是線段長度平方,等於 0 代表 a、b 疊在同一點(沒有方向可投影),就跳過計算直接令 `t=0`,避免除以 0。
+
+重點在分子 `(p.x - a.x) * dx + (p.y - a.y) * dy`。這是兩個向量的**內積**:
+- `(p.x - a.x, p.y - a.y)` 是向量 `a→p`(從線段起點指向查詢點)
+- `(dx, dy)` 是向量 `a→b`(線段本身的方向)
+
+內積的幾何意義是「**`a→p` 有多長的影子投在線段方向上**」——想像太陽垂直照在線段上,`a→p` 這根棍子在線段上的影子有多長。影子越長,垂足離 a 越遠。
+
+但內積算出來的影子還帶著線段長度的倍率,不是「比例」。所以**除以 `len2`(長度平方)**把它歸一化:除一次長度把影子換成實際距離、再除一次長度換成「佔整條線段的比例」,結果就是 0~1 的 `t`(0=垂足在 a、1=在 b)。
+
+**代數字走一遍**:線段 `a=(0,0) → b=(10,0)`(水平、長 10),查詢點 `p=(3,4)`。
+- `a→p = (3,4)`,`a→b = (dx,dy) = (10,0)`
+- 分子(內積)`= 3×10 + 4×0 = 30`
+- `len2 = 10² + 0² = 100`
+- `t = 30 / 100 = 0.3`
+
+再往下一行 `c = a + t×(b-a) = (0 + 0.3×10, 0) = (3, 0)`——正是 `p=(3,4)` 垂直落到線段上的點,恰好在整條線段 0.3 的位置。完全吻合。
+
+> **一句話**:內積負責「把 `a→p` 投影到線段方向、量出影子長度」,除以 `len2` 負責「把影子長度換算成 0~1 的比例」。這個「投影到某方向再化成比例」的向量手法,和 3.6 的座標換算、6.5 的 tween 進度 `t` 是同一套直覺。
 
 > **心智模型**:幾何命中是「**用座標和半徑/邊界算數學**」。快、精確、不佔記憶體,適合形狀規則(矩形、圓、多邊形)的場景。缺點是每種形狀要寫一套,且旋轉/縮放過的形狀要先把點轉回形狀的本地座標系(用第 03 章的逆變換)再判斷。
 
@@ -253,6 +377,76 @@ function hitTestByColor(hitCtx, cssX, cssY, scene) {
 把前面串成一個真正能用的互動。我們做：滑過高亮、點擊選取、按住拖曳。
 
 ```js
+// ── 材料:以下都是前面小節出現過的東西,這裡一起補齊,讓 7.8 能單獨貼上就跑 ──
+//     (頁面需有一個 <canvas id="stage">;重點在下半部的互動邏輯)
+const canvas = document.querySelector('#stage');
+const ctx = canvas.getContext('2d');
+const W = 800, H = 500;
+const dpr = window.devicePixelRatio || 1;                 // HiDPI(第 01 章)
+canvas.width = W * dpr; canvas.height = H * dpr;
+canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+ctx.scale(dpr, dpr);
+
+const camera = { x: 0, y: 0, zoom: 1 };                   // 相機(第 03 章),這裡用最單純的無平移縮放
+function applyCamera(ctx) { ctx.scale(camera.zoom, camera.zoom); ctx.translate(-camera.x, -camera.y); }
+
+function eventToWorld(canvas, camera, e) {                // 7.2:事件座標 → 世界座標
+  const rect = canvas.getBoundingClientRect();
+  const cssX = e.clientX - rect.left, cssY = e.clientY - rect.top;
+  return { x: cssX / camera.zoom + camera.x, y: cssY / camera.zoom + camera.y };
+}
+
+function hitTest(p, scene) {                              // 7.5:反向遍歷,取最上層
+  for (let i = scene.length - 1; i >= 0; i--)
+    if (scene[i].containsPoint(p)) return scene[i];
+  return null;
+}
+
+let dirty = true;                                         // 第 06 章:dirty flag,只在狀態變動時才重畫
+function invalidate() { dirty = true; }
+
+// 兩個示範物件:各自知道怎麼判斷命中(7.3)、怎麼畫、怎麼畫高亮與選取框
+const scene = [
+  {
+    x: 120, y: 130, w: 180, h: 110, fill: '#457b9d',
+    containsPoint(p) {                                    // 點在矩形內(7.3)
+      return p.x >= this.x && p.x <= this.x + this.w &&
+             p.y >= this.y && p.y <= this.y + this.h;
+    },
+    draw(ctx) { ctx.fillStyle = this.fill; ctx.fillRect(this.x, this.y, this.w, this.h); },
+    drawHighlight(ctx) {                                  // hover:蓋一層半透明白,提亮
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fillRect(this.x, this.y, this.w, this.h);
+    },
+    drawSelectionBox(ctx) {                               // selected:外圍畫虛線框
+      ctx.strokeStyle = '#1d3557'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+      ctx.strokeRect(this.x - 4, this.y - 4, this.w + 8, this.h + 8);
+      ctx.setLineDash([]);                                // 清掉虛線,免得污染後面(第 02 章)
+    },
+  },
+  {
+    x: 470, y: 300, r: 70, fill: '#e63946',
+    containsPoint(p) {                                    // 點在圓內:比距離平方(7.3)
+      const dx = p.x - this.x, dy = p.y - this.y;
+      return dx * dx + dy * dy <= this.r * this.r;
+    },
+    draw(ctx) {
+      ctx.fillStyle = this.fill;
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2); ctx.fill();
+    },
+    drawHighlight(ctx) {
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2); ctx.fill();
+    },
+    drawSelectionBox(ctx) {
+      ctx.strokeStyle = '#1d3557'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+      ctx.beginPath(); ctx.arc(this.x, this.y, this.r + 4, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    },
+  },
+];
+
+// ── 主體:hover 高亮 + 點擊選取 + 拖曳 ──
 let hovered = null;
 let selected = null;
 let dragging = null;
@@ -298,7 +492,7 @@ canvas.addEventListener('pointerup', (e) => {
 // render 時根據 hovered/selected 畫高亮、選取框
 function render() {
   ctx.clearRect(0, 0, W, H);
-  ctx.save(); applyCamera(ctx, camera);
+  ctx.save(); applyCamera(ctx);
   for (const shape of scene) {
     shape.draw(ctx);
     if (shape === hovered) shape.drawHighlight(ctx);
@@ -306,6 +500,13 @@ function render() {
   }
   ctx.restore();
 }
+
+// 迴圈:狀態有變才真的畫(配合 dirty flag,靜止時零成本)
+function frame() {
+  if (dirty) { render(); dirty = false; }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
 ```
 
 幾個讓互動「專業」的細節:

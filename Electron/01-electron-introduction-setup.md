@@ -44,6 +44,13 @@ node -v
 npm -v
 ```
 
+如果你是 Windows，可至 [Node.js 官網](https://nodejs.org/) 下載 LTS 安裝器，或使用內建的 winget：
+
+```powershell
+# 使用 winget 安裝 Node.js LTS（Windows 10/11 內建套件管理器）
+winget install OpenJS.NodeJS.LTS
+```
+
 ---
 
 ## 1.4 建立 Electron 專案
@@ -61,6 +68,13 @@ npm init -y
 # 安裝 Electron 為開發依賴，因為它只在開發/打包時需要
 npm install --save-dev electron
 ```
+
+> 提醒：安裝 Electron 時會額外下載約 100MB 的預編譯二進位檔。若網路環境下載緩慢或逾時，可改用鏡像來源：
+>
+> ```bash
+> # 透過環境變數指定 Electron 二進位檔的下載鏡像
+> ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/" npm install --save-dev electron
+> ```
 
 ---
 

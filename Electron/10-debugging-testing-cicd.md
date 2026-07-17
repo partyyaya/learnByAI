@@ -19,7 +19,7 @@ npm run dev
 # 啟用 Electron 詳細日誌，排查主程序啟動與事件問題
 ELECTRON_ENABLE_LOGGING=true npm run dev
 
-# 在 macOS/Linux 直接印出 node 與 electron 版本，確認環境一致
+# 印出 Electron 版本，確認團隊成員環境一致
 npx electron --version
 ```
 
@@ -61,18 +61,52 @@ npm run format
 ```bash
 # 安裝 Vitest，建立快速的單元測試流程
 npm install --save-dev vitest
+
+# 建立單元測試目錄（與 10.5 的 E2E 測試分開放）
+mkdir -p tests/unit
 ```
+
+單元測試聚焦在「不依賴 Electron 執行環境的純邏輯」。以第七章抽出的 `isSafeExternalUrl` 為例，建立第一個測試檔。
+
+`tests/unit/url-guard.test.js`：
+
+```javascript
+import { describe, it, expect } from "vitest";
+import { isSafeExternalUrl } from "../../src/main/utils/url-guard";
+
+describe("isSafeExternalUrl", () => {
+  it("允許白名單內的 https 網址", () => {
+    expect(isSafeExternalUrl("https://www.electronjs.org/docs")).toBe(true);
+  });
+
+  it("拒絕白名單外的網域", () => {
+    expect(isSafeExternalUrl("https://evil.example.com")).toBe(false);
+  });
+
+  it("拒絕非 https 協定", () => {
+    expect(isSafeExternalUrl("file:///etc/passwd")).toBe(false);
+  });
+
+  it("拒絕無法解析的字串", () => {
+    expect(isSafeExternalUrl("not-a-url")).toBe(false);
+  });
+});
+```
+
+> 測試檔用 ESM 的 `import` 語法即可——Vitest 內建轉譯，即使專案本身是 CommonJS、被測模組用 `module.exports` 匯出，named import 也能正常運作。
 
 `package.json`：
 
 ```json
 {
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run tests/unit",
+    "test:watch": "vitest tests/unit"
   }
 }
 ```
+
+> 腳本刻意把範圍限定在 `tests/unit`：10.5 的 Playwright 測試檔（`tests/e2e/*.spec.js`）也符合 Vitest 預設的掃描規則，不加範圍的話 Vitest 會誤把 E2E 測試當單元測試執行而報錯。
 
 ```bash
 # 執行一次性測試，適合 CI 使用
@@ -90,8 +124,45 @@ npm run test:watch
 # 安裝 Playwright 測試框架，建立端到端互動測試
 npm install --save-dev @playwright/test playwright
 
-# 安裝瀏覽器依賴（Playwright 所需執行環境）
-npx playwright install
+# 建立 E2E 測試目錄
+mkdir -p tests/e2e
+```
+
+> Playwright 對 Electron 的支援走 `_electron` 入口，直接啟動你專案裡的 Electron 執行檔，**不需要** `npx playwright install` 下載瀏覽器（那是測試一般網頁時才需要的）。
+
+`tests/e2e/app.spec.js`：
+
+```javascript
+const { test, expect } = require("@playwright/test");
+const { _electron: electron } = require("playwright");
+
+test("應用程式可啟動並顯示主畫面", async () => {
+  // 啟動 Electron App（"." 代表以專案根目錄為入口，等同 npm run dev）
+  const app = await electron.launch({ args: ["."] });
+
+  // 取得第一個開啟的視窗
+  const window = await app.firstWindow();
+
+  // 驗證畫面標題與初始文字
+  await expect(window.locator("h1")).toHaveText("我的第一個 Electron App");
+
+  await app.close();
+});
+```
+
+`package.json` 新增腳本：
+
+```json
+{
+  "scripts": {
+    "test:e2e": "playwright test tests/e2e"
+  }
+}
+```
+
+```bash
+# 執行 E2E 測試，會真的啟動 Electron 視窗跑完整個流程
+npm run test:e2e
 ```
 
 ---
@@ -107,6 +178,10 @@ on:
   push:
     tags:
       - "v*.*.*"
+
+# 允許 workflow 內建的 GITHUB_TOKEN 建立 Release（預設只有讀取權限）
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -130,9 +205,17 @@ jobs:
       - name: Run tests
         run: npm run test
 
-      - name: Build distribution
-        run: npm run dist
+      - name: Build and publish release
+        run: npm run dist -- --publish always
+        env:
+          # electron-builder 讀取 GH_TOKEN，把安裝檔與 latest*.yml 上傳到 GitHub Release
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+流程重點：
+
+- `--publish always`：electron-builder 打包完會直接把產物與 `latest*.yml` 上傳到 GitHub Release。第九章的自動更新讀取的正是這些檔案，這一步把「發版 → 使用者收到更新」整條鏈路接起來；少了它，建置產物會隨 CI 執行環境一起消失。
+- 此範例只在 macOS runner 上打包 mac 版。若要同時發佈 Windows / Linux 版，可用 `strategy.matrix` 在各自平台的 runner 上執行同一組步驟（electron-builder 的簽章與部分安裝檔格式無法跨平台產生）。
 
 ---
 

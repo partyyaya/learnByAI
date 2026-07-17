@@ -76,7 +76,19 @@ function createWindow() {
   win.loadFile(path.join(__dirname, "../renderer/index.html"));
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+
+  // 延續第二章的慣例：macOS 點擊 Dock 圖示且無視窗時重建主視窗
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+// 延續第二章的慣例：非 macOS 平台在視窗全關時結束程式
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
 ```
 
 ---

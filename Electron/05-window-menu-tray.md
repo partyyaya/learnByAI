@@ -11,15 +11,19 @@
 
 ---
 
-## 5.2 準備圖示檔（可選）
+## 5.2 準備圖示檔
 
 ```bash
 # 建立 assets 目錄，集中放應用圖示與靜態資源
 mkdir -p assets
-
-# 建立系統匣圖示檔（請自行替換成真實 png）
-touch assets/trayTemplate.png
 ```
+
+接著請放入一張**真實的 PNG 圖檔** `assets/trayTemplate.png`（建議 16×16 或 22×22 像素）。
+
+> 兩個常見陷阱：
+>
+> 1. 不要用 `touch` 建立空檔案充數——空圖檔不會報錯，但系統匣圖示會是「隱形」的，看起來就像功能壞掉。
+> 2. 檔名結尾的 `Template` 是 macOS 的特殊命名慣例：以 `Template` 結尾的圖示會被視為「模板圖片」（只使用黑色與透明兩色），macOS 會依選單列的深淺色模式自動反轉顏色。若不需要此行為，改用一般檔名即可；Windows / Linux 則不受此慣例影響。
 
 ---
 
@@ -149,23 +153,60 @@ function unregisterShortcuts() {
 module.exports = { registerShortcuts, unregisterShortcuts };
 ```
 
+> `globalShortcut` 是「**系統層級**」的快捷鍵：即使 App 不在前景、甚至視窗全部隱藏，按下組合鍵仍會被你的 App 攔截，並且會**蓋掉其他軟體對同一組合鍵的使用**。它適合「從背景喚出 App」這類場景。
+>
+> 如果只是想在 App 自己的視窗內提供快捷鍵，應改用選單項目的 `accelerator`（如 5.4 的 `CmdOrCtrl+R`），它只在 App 為前景視窗時生效，不會干擾其他程式。本例註冊 `CommandOrControl+Shift+I` 純粹為了示範 API；實務上「開關 DevTools」這種功能建議放在選單的 `accelerator`。
+
 ---
 
 ## 5.7 在 main.js 串接功能
 
+`src/main/main.js`（完整檔案，包含第四章的 IPC 註冊與本章的選單、系統匣、快捷鍵）：
+
 ```javascript
-// ...省略既有 import
+const path = require("node:path");
+const { app, BrowserWindow } = require("electron");
+const { registerSystemIpc } = require("./ipc/system.ipc");
 const { buildAppMenu } = require("./menu");
 const { createTray } = require("./tray");
 const { registerShortcuts, unregisterShortcuts } = require("./shortcut");
 
+let mainWindow;
+
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    minWidth: 900,
+    minHeight: 600,
+    title: "Learn Electron",
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+}
+
 app.whenReady().then(() => {
+  registerSystemIpc(); // 第四章
   createMainWindow();
-  buildAppMenu(mainWindow);
-  createTray(mainWindow);
-  registerShortcuts(mainWindow);
+  buildAppMenu(mainWindow); // 本章新增
+  createTray(mainWindow); // 本章新增
+  registerShortcuts(mainWindow); // 本章新增
+
+  app.on("activate", () => {
+    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+  });
 });
 
+app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") app.quit();
+});
+
+// 離開前解除全域快捷鍵，避免殘留註冊
 app.on("will-quit", () => {
   unregisterShortcuts();
 });

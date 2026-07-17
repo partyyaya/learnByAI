@@ -79,6 +79,7 @@ const win = new BrowserWindow({
 `src/main/updater.js`：
 
 ```javascript
+const { dialog } = require("electron");
 const { autoUpdater } = require("electron-updater");
 
 function setupAutoUpdate() {
@@ -88,21 +89,53 @@ function setupAutoUpdate() {
     autoUpdater.downloadUpdate();
   });
 
-  autoUpdater.on("update-downloaded", () => {
-    autoUpdater.quitAndInstall();
+  autoUpdater.on("update-downloaded", async () => {
+    // 不要無預警重啟：先詢問使用者，避免打斷未儲存的工作
+    const { response } = await dialog.showMessageBox({
+      type: "info",
+      buttons: ["立即重啟更新", "稍後再說"],
+      defaultId: 0,
+      message: "新版本已下載完成",
+      detail: "重新啟動應用程式即可完成更新。"
+    });
+
+    if (response === 0) autoUpdater.quitAndInstall();
   });
 }
 
 function checkForUpdates() {
-  autoUpdater.checkForUpdatesAndNotify();
+  autoUpdater.checkForUpdates();
 }
 
 module.exports = { setupAutoUpdate, checkForUpdates };
 ```
 
+> 這裡用 `checkForUpdates()` 而非 `checkForUpdatesAndNotify()`：後者會在下載完成後直接跳系統通知，與我們自己控制的對話框流程重複。整條流程是「檢查 → 有新版就下載 → 下載完詢問使用者 → 同意才重啟安裝」。
+
 ---
 
-## 9.7 打包與更新驗證
+## 9.7 在 main.js 接上更新流程
+
+`src/main/main.js` 的 `app.whenReady()` 中加入：
+
+```javascript
+const { setupAutoUpdate, checkForUpdates } = require("./updater");
+
+app.whenReady().then(() => {
+  // ...前幾章既有的 IPC 註冊與視窗建立（見第七章 7.3 完整區塊）
+
+  // 只在打包後的正式版本檢查更新：
+  // 開發模式沒有打包產物與版本資訊可比對，autoUpdater 會直接報錯
+  if (app.isPackaged) {
+    setupAutoUpdate();
+    checkForUpdates();
+  }
+});
+```
+
+---
+
+## 9.8 打包與更新驗證
 
 ```bash
 # 先產生新版安裝檔，供更新機制比對版本
@@ -111,18 +144,31 @@ npm run dist
 # 先登入 GitHub CLI，確保後續 release 上傳有權限
 gh auth login
 
-# 建立 GitHub Release 並上傳 release 目錄產物（手動示範流程）
-gh release create v1.0.1 release/* --title "v1.0.1" --notes "Electron app release"
+# 建立 GitHub Release 並上傳打包產物與更新資訊檔（手動示範流程）
+# latest*.yml 是 electron-updater 判斷「有沒有新版」的依據，務必一併上傳
+gh release create v1.0.1 release/*.dmg release/*.zip release/*.blockmap release/latest*.yml --title "v1.0.1" --notes "Electron app release"
 
 # 查看 release 清單，確認版本與檔案是否已成功上傳
 gh release list
 ```
 
-> 提醒：自動更新通常只在「已打包版本」中可完整測試，開發模式常無法模擬真實更新流程。
+> 提醒：
+>
+> - 上面的檔案清單以 macOS 產物為例（`.dmg`、`.zip`、`latest-mac.yml`），Windows / Linux 請依實際產物調整（`.exe`、`.AppImage`、`latest.yml` 等）。不要用 `release/*` 一把抓——`release/` 下還有 `mac/`、`win-unpacked/` 等資料夾，`gh` 無法上傳資料夾會直接失敗。
+> - 自動更新通常只在「已打包版本」中可完整測試，開發模式無法模擬真實更新流程。
+
+### macOS 的兩個硬性前提
+
+`electron-updater` 在 macOS 上有兩個沒滿足就直接報錯的要求：
+
+1. **App 必須經過程式碼簽章**（Apple Developer 憑證）。未簽章的版本呼叫 autoUpdater 會拋出錯誤，這也是很多人「本機測試更新一直失敗」的原因。
+2. `build.mac.target` 需包含 `zip`（第八章已設定），macOS 的更新實際透過 zip 包進行，`dmg` 只用於首次安裝。
+
+簽章與公證（notarization）需要 Apple Developer 帳號，設定方式參考 electron-builder 的 [Code Signing 文件](https://www.electron.build/code-signing)。Windows 也建議取得程式碼簽章憑證，可避免 SmartScreen 對未簽章安裝檔的攔截警告。
 
 ---
 
-## 9.8 安全檢查清單
+## 9.9 安全檢查清單
 
 - `nodeIntegration: false`
 - `contextIsolation: true`
@@ -133,7 +179,7 @@ gh release list
 
 ---
 
-## 9.9 本章小結
+## 9.10 本章小結
 
 - 你建立了 Electron 的核心安全基線
 - 你完成了 `electron-updater` 的基本整合

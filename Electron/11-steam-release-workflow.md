@@ -165,7 +165,7 @@ touch steam/scripts/depot_build_123456_windows.vdf
 ## 11.9 首次上傳流程（完整命令）
 
 ```bash
-# 1) 打包 Steam 用的 Windows 內容（輸出到 dist/win-unpacked）
+# 1) 打包 Steam 用的 Windows 內容（輸出到 release/win-unpacked，沿用第八章 directories.output 設定）
 npm run build:steam:win
 
 # 2) 清空舊版上傳內容，避免舊檔殘留
@@ -175,7 +175,7 @@ rm -rf steam/content/windows
 mkdir -p steam/content/windows
 
 # 4) 複製本次 build 到 Steam content root
-cp -R dist/win-unpacked/. steam/content/windows/
+cp -R release/win-unpacked/. steam/content/windows/
 
 # 5) 確認執行檔是否存在（避免上傳後無法啟動）
 ls -la steam/content/windows
@@ -206,7 +206,7 @@ npm run build:steam:win
 # 3) 同步最新檔案到 Steam content 目錄
 rm -rf steam/content/windows
 mkdir -p steam/content/windows
-cp -R dist/win-unpacked/. steam/content/windows/
+cp -R release/win-unpacked/. steam/content/windows/
 
 # 4) 重新上傳到 Steam（建議先上 beta 分支）
 steamcmd +login "$STEAM_USERNAME" +run_app_build "steam/scripts/app_build_123456.vdf" +quit
@@ -226,13 +226,15 @@ steamcmd +login "$STEAM_USERNAME" +run_app_build "steam/scripts/app_build_123456
 
 ```bash
 # 檢查打包輸出內容是否完整（資源、exe、dll）
-ls -la dist/win-unpacked
+ls -la release/win-unpacked
 
 # 建立 steam_appid.txt（讓本機啟動時可取得 AppID 上下文）
-echo "123456" > dist/win-unpacked/steam_appid.txt
+echo "123456" > release/win-unpacked/steam_appid.txt
 ```
 
-> 接著在 Windows 上直接執行 `dist/win-unpacked/<你的程式>.exe` 做基礎冒煙測試。
+> `steam_appid.txt` 只有在 App 有整合 Steamworks API（成就、雲端存檔、好友清單等，例如透過 [steamworks.js](https://github.com/ceifa/steamworks.js)）時才有意義：在 Steam 客戶端之外直接執行 exe 時，SDK 靠這個檔案得知 AppID。若你的 App 完全沒呼叫 Steam API，可跳過這一步。另外注意**不要把這個檔案上傳到 Steam Depot**，它只供本機測試使用。
+>
+> 接著在 Windows 上直接執行 `release/win-unpacked/<你的程式>.exe` 做基礎冒煙測試。
 
 ### B. Steam Beta 分支測試
 
@@ -316,7 +318,7 @@ npm run build:steam:win
 # 準備上傳內容
 rm -rf steam/content/windows
 mkdir -p steam/content/windows
-cp -R dist/win-unpacked/. steam/content/windows/
+cp -R release/win-unpacked/. steam/content/windows/
 
 # 執行上傳
 steamcmd +login "$STEAM_USERNAME" +run_app_build "steam/scripts/app_build_123456.vdf" +quit

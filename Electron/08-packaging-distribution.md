@@ -44,7 +44,7 @@ npm install --save-dev electron-builder
       "package.json"
     ],
     "mac": {
-      "target": ["dmg"],
+      "target": ["dmg", "zip"],
       "category": "public.app-category.developer-tools"
     },
     "win": {
@@ -58,6 +58,11 @@ npm install --save-dev electron-builder
 ```
 
 `devDependencies` 的實際版本號建議以 `npm install` 產生結果為主。
+
+設定重點：
+
+- `directories.output` 統一輸出到 `release/`：第九章（上傳 GitHub Release）與第十一章（Steam 上傳）都沿用這個路徑，請勿任意更名
+- mac 的 target 除了 `dmg` 外還有 `zip`：這是第九章 `electron-updater` 在 macOS 上做自動更新的**必要格式**，缺少 zip 會導致更新檢查失敗
 
 ---
 
