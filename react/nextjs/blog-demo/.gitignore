@@ -1,0 +1,20 @@
+# dependencies
+/node_modules
+
+# next.js
+/.next
+/out
+
+# production
+/build
+
+# prisma 本地 SQLite 資料庫（每人自己 migrate 產生）
+/prisma/dev.db
+/prisma/dev.db-journal
+
+# 額外環境變數（密鑰放這裡，別提交）
+.env.local
+
+# misc
+.DS_Store
+*.log

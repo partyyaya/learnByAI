@@ -45,6 +45,20 @@ npm run dev
 
 ---
 
+## 📦 延伸課程：Next.js（App Router）
+
+學完 React 想進到「全端 React 框架」？接著上 Next.js 篇：
+
+> **[nextjs/](./nextjs/)** — Next.js 15 App Router 完整課程（01～15 章）。
+
+- Server Components、Server Actions、資料抓取與快取、動態路由、Route Handlers。
+- Prisma + SQLite 資料庫、Cookie 認證與 Middleware、SEO、渲染策略、測試與部署。
+- 期末專題 [nextjs/blog-demo/](./nextjs/blog-demo/)：可 `npm run dev` 實跑的全端部落格。
+
+> 從 [Next.js 第 1 章](./nextjs/01-nextjs-intro-and-setup.md) 開始，或看 [課程總覽](./nextjs/README.md)。
+
+---
+
 ## 你會學到什麼
 
 - 建立可維護的 React 元件與頁面結構
