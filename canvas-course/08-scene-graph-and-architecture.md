@@ -30,6 +30,12 @@ function render() {
 場景圖的核心思想極簡單:**用一個陣列存「所有圖形物件」,每個物件知道怎麼畫自己、怎麼判斷命中**。render 變成「遍歷陣列,叫每個物件畫自己」。
 
 ```js
+// ── 小工具:把點 (x,y) 繞原點旋轉 angle 弧度(第 03 章旋轉公式:x'=cosθ·x−sinθ·y, y'=sinθ·x+cosθ·y)──
+function rotatePoint(x, y, angle) {
+  const cos = Math.cos(angle), sin = Math.sin(angle);
+  return { x: x * cos - y * sin, y: x * sin + y * cos };
+}
+
 // ── 基底類別:所有圖形的共同介面 ──
 class Shape {
   constructor(props) {
@@ -80,6 +86,13 @@ const scene = [
   new RectShape({ x: 100, y: 100, fill: '#e63946' }),
   new CircleShape({ x: 300, y: 150, fill: '#457b9d' }),
 ];
+
+// ── 相機(第 03 章):畫所有物件之前,先套用的一個變換 ──
+const camera = { x: 0, y: 0, zoom: 1 };
+function applyCamera(ctx, camera) {
+  ctx.scale(camera.zoom, camera.zoom);   // 先縮放
+  ctx.translate(-camera.x, -camera.y);   // 再平移(相機往右看 = 世界往左移)
+}
 
 // ── render 變成:遍歷,叫每個物件畫自己 ──
 function render() {
@@ -168,6 +181,12 @@ function sendToBack(scene, shape) {
 到目前我們每幀都「清空 + 全部重畫」。物件不多時沒問題,但複雜場景中,**移動一個小圖形卻重畫整個畫面**很浪費。優化叫**髒矩形(dirty rectangle)**:只清除並重畫「有變動的那塊區域」。
 
 ```js
+// 兩個包圍盒 {x,y,w,h} 有沒有重疊(標準 AABB 矩形相交測試,第 07 章)
+function intersects(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+         a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
 function renderDirty(ctx, scene, dirtyRect) {
   ctx.save();
   // 只清除髒區域
@@ -184,11 +203,11 @@ function renderDirty(ctx, scene, dirtyRect) {
 }
 ```
 
-當一個物件移動,髒區域 = 「**它移動前的包圍盒 ∪ 移動後的包圍盒**」(要把舊位置擦掉、新位置畫上)。
+當一個物件移動,髒區域 = 「**一塊同時把舊位置和新位置都框進去的矩形**」——因為你要把舊位置擦乾淨、又要在新位置畫上,兩塊都算「有變動」,所以取一個能把兩者都涵蓋的範圍。
 
 > 這裡假設每個 `Shape` 都實作了 `getBounds()`(回傳**世界座標的包圍盒** `{x,y,w,h}`)——8.2 的基底 `Shape` 只留了空的 `getBounds()`,實務上每種形狀要各自 override(矩形回傳自身範圍、圓形回傳 `{x-r, y-r, 2r, 2r}`)。第 11 章 capstone 有完整實作。
 
-> **務實提醒**:髒矩形邏輯不好寫對(重疊、半透明、陰影都會讓「受影響區域」變大),容易出殘影 bug。**實務上,更常用、更簡單的優化是「分層 canvas」**(把靜態背景和動態前景拆成不同 canvas,只重畫動的那層)——這留到第 09 章。本節讓你理解原理即可:**重繪成本 ∝ 重畫面積,縮小重畫面積就是優化**。
+> **務實提醒**:髒矩形邏輯不好寫對(重疊、半透明、陰影都會讓「受影響區域」變大),容易出殘影 bug。**實務上,更常用、更簡單的優化是「分層 canvas」**(把靜態背景和動態前景拆成不同 canvas,只重畫動的那層)——這留到第 09 章。本節讓你理解原理即可:**重畫的面積越大、成本就越高,所以縮小每次重畫的面積,就是優化**。
 
 ---
 

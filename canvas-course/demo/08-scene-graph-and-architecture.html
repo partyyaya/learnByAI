@@ -278,7 +278,132 @@ function frame(){
   prev = nb;                               // 下一幀要負責擦掉這一幀的框
   requestAnimationFrame(frame);
 }
-frame();` }
+frame();` },
+{ id:'homework', label:'💡 動手作業:有場景圖的圖形編輯器', code:
+`// 第 08 章作業:Shape 基類 + Rect/Circle/Text 子類,新增/選取/拖曳/刪除 + 快照式 Undo/Redo + localStorage 存檔
+// 注入工具列(playground 沒有這排按鈕;離開範例會自動清掉),鍵盤:Delete 刪除 / Ctrl+Z 復原 / Ctrl+Shift+Z 重做
+const stage = canvas.parentNode; stage.style.flexDirection = 'column';
+const bar = document.createElement('div'); bar.className = 'demo-inject';
+bar.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px;font-size:13px;';
+const mk = t => { const b = document.createElement('button'); b.textContent = t; return b; };
+const bRect = mk('+ 矩形'), bCircle = mk('+ 圓形'), bText = mk('+ 文字'), bSave = mk('存檔'), bLoad = mk('載入');
+const hint = document.createElement('span'); hint.style.color = '#888';
+hint.textContent = '點擊選取 / 拖曳移動 / Delete 刪除 / Ctrl+Z / Ctrl+Shift+Z';
+bar.append(bRect, bCircle, bText, bSave, bLoad, hint); stage.insertBefore(bar, canvas);
+
+// ---- Shape 基類:自己知道怎麼畫、怎麼命中、怎麼變純資料 ----
+class Shape {
+  constructor(props) { Object.assign(this, { x: 0, y: 0, fill: '#888' }, props); }
+  draw(ctx) {}
+  containsPoint(p) { return false; }
+  getBounds() { return { x: this.x, y: this.y, w: 0, h: 0 }; }
+  toJSON() { return { type: this.constructor.name, x: this.x, y: this.y, fill: this.fill }; }   // 白名單:只存純資料
+}
+class RectShape extends Shape {
+  constructor(props) { super(Object.assign({ w: 90, h: 56 }, props)); }
+  draw(ctx) { ctx.fillStyle = this.fill; ctx.fillRect(this.x - this.w / 2, this.y - this.h / 2, this.w, this.h); }
+  containsPoint(p) { return Math.abs(p.x - this.x) <= this.w / 2 && Math.abs(p.y - this.y) <= this.h / 2; }
+  getBounds() { return { x: this.x - this.w / 2, y: this.y - this.h / 2, w: this.w, h: this.h }; }
+  toJSON() { return Object.assign(super.toJSON(), { w: this.w, h: this.h }); }
+}
+class CircleShape extends Shape {
+  constructor(props) { super(Object.assign({ r: 34 }, props)); }
+  draw(ctx) { ctx.fillStyle = this.fill; ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2); ctx.fill(); }
+  containsPoint(p) { const dx = p.x - this.x, dy = p.y - this.y; return dx * dx + dy * dy <= this.r * this.r; }
+  getBounds() { return { x: this.x - this.r, y: this.y - this.r, w: this.r * 2, h: this.r * 2 }; }
+  toJSON() { return Object.assign(super.toJSON(), { r: this.r }); }
+}
+class TextShape extends Shape {
+  constructor(props) { super(Object.assign({ text: '你好 Canvas', size: 24 }, props)); }
+  draw(ctx) {
+    ctx.fillStyle = this.fill; ctx.font = this.size + 'px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(this.text, this.x, this.y);
+  }
+  measureWidth() { ctx.font = this.size + 'px sans-serif'; return ctx.measureText(this.text).width; }   // 量測前先設同字型
+  containsPoint(p) { return Math.abs(p.x - this.x) <= this.measureWidth() / 2 && Math.abs(p.y - this.y) <= this.size / 2; }
+  getBounds() { const w = this.measureWidth(); return { x: this.x - w / 2, y: this.y - this.size / 2, w: w, h: this.size }; }
+  toJSON() { return Object.assign(super.toJSON(), { text: this.text, size: this.size }); }
+}
+
+// ---- 序列化(8.8):場景 → 純資料;載入用型別註冊表重建實例 ----
+const SHAPE_REGISTRY = { RectShape, CircleShape, TextShape };
+function serialize(scene) { return scene.map(s => s.toJSON()); }               // 回傳全新純資料,天然就是深拷貝
+function deserialize(data) { return data.map(d => new SHAPE_REGISTRY[d.type](d)); }
+
+// ---- 快照式 Undo/Redo(8.7 做法 A) ----
+class History {
+  constructor() { this.past = []; this.future = []; }
+  commit(scene) { this.past.push(serialize(scene)); this.future = []; }        // 存快照;有新操作就清空 redo
+  undo(apply) { if (this.past.length < 2) return; this.future.push(this.past.pop()); apply(this.past[this.past.length - 1]); }
+  redo(apply) { if (!this.future.length) return; const s = this.future.pop(); this.past.push(s); apply(s); }
+}
+
+// ---- 編輯器狀態:場景陣列是唯一真相來源,畫面只是投影(8.3) ----
+let scene = [], selected = null, dragging = null, dragOffset = { x: 0, y: 0 }, dragMoved = false;
+const history = new History();
+history.commit(scene);                                                         // 先存初始空場景,第一次新增才撤銷得掉
+function applyState(data) { scene = deserialize(data); selected = null; invalidate(); }   // undo/redo = 重建實例再投影
+
+let dirty = true; function invalidate() { dirty = true; }
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  for (const s of scene) s.draw(ctx);                                          // 正向遍歷:後畫的蓋上面(8.5)
+  if (selected) {
+    const b = selected.getBounds();
+    ctx.strokeStyle = '#1d7fe0'; ctx.lineWidth = 2; ctx.strokeRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8);
+  }
+}
+function frame() { if (dirty) { render(); dirty = false; } requestAnimationFrame(frame); }
+requestAnimationFrame(frame);
+
+// ---- 命中測定與拖曳(第 07 章) ----
+function hitTest(p) { for (let i = scene.length - 1; i >= 0; i--) if (scene[i].containsPoint(p)) return scene[i]; return null; }
+function getPointerPos(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+canvas.addEventListener('pointerdown', (e) => {
+  const p = getPointerPos(e); selected = hitTest(p);                           // 點空白 = 取消選取
+  if (selected) { dragging = selected; dragMoved = false; dragOffset = { x: p.x - selected.x, y: p.y - selected.y }; canvas.setPointerCapture(e.pointerId); }
+  invalidate();
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!dragging) return; const p = getPointerPos(e);
+  dragging.x = p.x - dragOffset.x; dragging.y = p.y - dragOffset.y; dragMoved = true; invalidate();   // 拖曳 = 改資料
+});
+canvas.addEventListener('pointerup', (e) => {
+  if (dragging && dragMoved) history.commit(scene);                            // 拖曳結束才存快照,不是每個 move 都存
+  dragging = null; canvas.releasePointerCapture(e.pointerId);
+});
+
+// ---- 鍵盤:掛在 window,離開範例時記得移除(見下方 __demoCleanup) ----
+function onKey(e) {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;   // 在程式碼編輯器打字時不誤觸
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selected) {
+    scene.splice(scene.indexOf(selected), 1); selected = null; history.commit(scene); invalidate();   // 刪除 = 移除再投影
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) history.redo(applyState); else history.undo(applyState);
+  }
+}
+window.addEventListener('keydown', onKey);
+window.__demoCleanup = () => { stage.style.flexDirection = ''; window.removeEventListener('keydown', onKey); };
+
+// ---- 工具列:新增圖形 ----
+const COLORS = ['#e63946', '#457b9d', '#2a9d8f', '#f4a261', '#9b5de5'];
+function addShape(ShapeClass) {
+  const s = new ShapeClass({ x: 70 + Math.random() * (W - 140), y: 60 + Math.random() * (H - 120), fill: COLORS[Math.floor(Math.random() * COLORS.length)] });
+  scene.push(s); selected = s; history.commit(scene); invalidate();           // 新增也 commit,Ctrl+Z 才撤銷得掉
+}
+bRect.onclick = () => addShape(RectShape);
+bCircle.onclick = () => addShape(CircleShape);
+bText.onclick = () => addShape(TextShape);
+
+// ---- localStorage 存檔/載入(8.8):存的是純資料 JSON,不是像素 ----
+const STORAGE_KEY = 'ch08-demo-scene';
+bSave.onclick = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(serialize(scene)));
+bLoad.onclick = () => {
+  const raw = localStorage.getItem(STORAGE_KEY); if (!raw) return;
+  scene = deserialize(JSON.parse(raw)); selected = null; history.commit(scene); invalidate();
+};` }
   ]
 };
 </script>

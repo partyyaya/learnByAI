@@ -223,6 +223,38 @@ function frame() {
   requestAnimationFrame(frame);
 }
 
+requestAnimationFrame(frame);` },
+{ id:'homework', label:'💡 動手作業:五顆彈跳球', code:
+`// 第 01 章作業:5 顆顏色/大小/速度都不同的球,用一個陣列 + 迴圈管理
+// (playground 已提供 ctx/canvas/W/H;正式頁面要自己做 1.4 的 HiDPI 設定)
+const balls = [
+  { x: 60,  y: 60,  r: 14, vx: 2.6, vy: 1.8,  color: '#e63946' },
+  { x: 180, y: 150, r: 9,  vx: -2,  vy: 3,    color: '#457b9d' },
+  { x: 300, y: 90,  r: 20, vx: 1.4, vy: -1.6, color: '#2a9d8f' },
+  { x: 340, y: 200, r: 11, vx: -3,  vy: -2.4, color: '#f4a261' },
+  { x: 120, y: 210, r: 17, vx: 2,   vy: -3,   color: '#9b5de5' },
+];
+function update() {                       // 作業要求:在 update 用迴圈逐顆更新
+  for (const b of balls) {
+    b.x += b.vx; b.y += b.vy;
+    if (b.x - b.r < 0 || b.x + b.r > W) b.vx *= -1;   // 撞左右牆:x 方向反向
+    if (b.y - b.r < 0 || b.y + b.r > H) b.vy *= -1;   // 撞上下牆:y 方向反向
+  }
+}
+function render() {                       // 作業要求:在 render 也用迴圈,照各自資料畫
+  for (const b of balls) {
+    ctx.fillStyle = b.color;              // 每顆球用自己的顏色
+    ctx.beginPath();                      // 開新路徑,免得這顆和上一顆連在一起
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+function frame() {
+  ctx.clearRect(0, 0, W, H);              // 清:一次擦掉 5 顆球
+  update();                               // 算:更新每顆球位置
+  render();                               // 畫:照新資料重畫
+  requestAnimationFrame(frame);           // 預約下一幀,形成自我延續的迴圈
+}
 requestAnimationFrame(frame);` }
   ]
 };

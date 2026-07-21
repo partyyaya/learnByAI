@@ -131,7 +131,74 @@ function loop(t) {
   ctx.fillText('600 方塊依顏色分組畫(少切 fillStyle) · FPS ' + fps, 8, 16);
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);` }
+requestAnimationFrame(loop);` },
+{ id:'homework', label:'💡 動手作業:10000 粒子壓力測試', code:
+`// 第 09 章作業:由基準開始,逐個打開優化、看 FPS 變化,親手量出哪個最有效
+// 注入控制面板(playground 沒有這排 checkbox;離開範例會自動清掉)
+const stage = canvas.parentNode; stage.style.flexDirection = 'column';
+const panel = document.createElement('div'); panel.className = 'demo-inject';
+panel.style.cssText = 'display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;font-size:13px;';
+const fpsWrap = document.createElement('span'); fpsWrap.innerHTML = 'FPS:<strong>—</strong>';
+const fpsEl = fpsWrap.querySelector('strong'); panel.append(fpsWrap);
+function chk(label) {
+  const l = document.createElement('label'); l.style.cssText = 'display:flex;gap:4px;align-items:center;';
+  const c = document.createElement('input'); c.type = 'checkbox'; l.append(c, document.createTextNode(label)); panel.append(l); return c;
+}
+const optSprite = chk('①離屏快取貼圖'), optBatch = chk('②同色批次'), optOnDemand = chk('③按需渲染'), pause = chk('暫停移動');
+stage.insertBefore(panel, canvas);
+window.__demoCleanup = () => { stage.style.flexDirection = ''; };
+
+// ---- 建 10000 顆移動粒子(壓力測試規模);速度單位「像素/秒」配合 delta-time(第 06 章) ----
+const COLORS = ['#e63946', '#f4a261', '#2a9d8f', '#457b9d', '#9b5de5'];
+const R = 3;                                          // 半徑固定,離屏貼圖才能所有粒子共用
+const particles = [];
+for (let i = 0; i < 10000; i++) {
+  particles.push({ x: R + Math.random() * (W - R * 2), y: R + Math.random() * (H - R * 2),
+    vx: (Math.random() - 0.5) * 200, vy: (Math.random() - 0.5) * 200, colorIndex: i % COLORS.length });
+}
+const byColor = COLORS.map(() => []);                 // 優化②前置:依顏色分組(顏色不變,分一次就好)
+for (const p of particles) byColor[p.colorIndex].push(p);
+function makeSprite(color) {                           // 優化①:離屏快取粒子貼圖(算一次,用很多次)
+  const off = document.createElement('canvas'); off.width = off.height = R * 2;
+  const octx = off.getContext('2d'); octx.fillStyle = color;
+  octx.beginPath(); octx.arc(R, R, R, 0, Math.PI * 2); octx.fill(); return off;
+}
+const sprites = COLORS.map(makeSprite);
+let dirty = true;
+for (const c of [optSprite, optBatch, optOnDemand, pause]) c.addEventListener('change', () => { dirty = true; });   // 開關變動也要重畫一次
+
+function update(dt) {
+  if (pause.checked) return;                          // 全部靜止:不動,也就不設 dirty
+  for (const p of particles) {
+    p.x += p.vx * dt; p.y += p.vy * dt;               // 位移 = 速度 × 時間
+    if (p.x < R || p.x > W - R) p.vx *= -1;           // 撞牆反彈
+    if (p.y < R || p.y > H - R) p.vy *= -1;
+  }
+  dirty = true;
+}
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  if (optSprite.checked) {                            // 優化①:每幀只 drawImage,比 10000 次 arc+fill 快很多
+    for (const p of particles) ctx.drawImage(sprites[p.colorIndex], p.x - R, p.y - R);
+  } else if (optBatch.checked) {                      // 優化②:同色排一起,fillStyle 一種顏色只設一次
+    for (let c = 0; c < COLORS.length; c++) {
+      ctx.fillStyle = COLORS[c];
+      for (const p of byColor[c]) { ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, Math.PI * 2); ctx.fill(); }
+    }
+  } else {                                            // 基準:每幀全畫、逐顆切狀態 + arc+fill(對照組)
+    for (const p of particles) { ctx.fillStyle = COLORS[p.colorIndex]; ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, Math.PI * 2); ctx.fill(); }
+  }
+}
+let frames = 0, lastFpsTime = performance.now(), lastTime = performance.now();
+function frame(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.1); lastTime = now;   // clamp 防暴衝(6.7)
+  frames++;
+  if (now - lastFpsTime >= 1000) { fpsEl.textContent = frames; frames = 0; lastFpsTime = now; }   // 顯示在 DOM,才不會被按需渲染凍住
+  update(dt);
+  if (!optOnDemand.checked || dirty) { render(); dirty = false; }      // 優化③:按需渲染,靜止時整個 render 被跳過
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);` }
   ]
 };
 </script>

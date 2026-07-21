@@ -125,7 +125,72 @@ ctx.fillStyle = '#1d3557'; ctx.font = 'bold 20px system-ui, sans-serif';
 ctx.fillText('Gary Cai', 125, 55);
 ctx.fillStyle = '#6c757d'; ctx.font = '14px system-ui, sans-serif';
 ctx.fillText('Canvas 課學員', 125, 82);
-ctx.restore();` }
+ctx.restore();` },
+{ id:'homework', label:'💡 動手作業:迷因產生器', code:
+`// 第 04 章作業:上下置中、帶黑邊的白色粗體字;過長先縮字級,縮到下限仍塞不下才換行。改上面輸入框看即時效果
+// 注入兩個輸入框(playground 沒有工具列 DOM;離開這個範例會自動清掉)
+const stage = canvas.parentNode; stage.style.flexDirection = 'column';
+const bar = document.createElement('div'); bar.className = 'demo-inject';
+bar.style.cssText = 'display:flex;gap:6px;margin-bottom:8px;width:100%;max-width:' + W + 'px;';
+const topInput = document.createElement('input'); topInput.value = '當你學會了 CANVAS'; topInput.style.flex = '1';
+const bottomInput = document.createElement('input'); bottomInput.value = '卻發現連文字換行都要自己寫,而且瀏覽器完全不會幫你'; bottomInput.style.flex = '1.6';
+bar.append(topInput, bottomInput); stage.insertBefore(bar, canvas);
+window.__demoCleanup = () => { stage.style.flexDirection = ''; };
+
+// 底圖:用離屏 canvas 畫一張「夕陽山景」,免依賴外部圖檔(4.6:另一張 canvas 也是合法 drawImage 來源)
+function makeBaseImage(w, h) {
+  const off = document.createElement('canvas'); off.width = w; off.height = h;
+  const c = off.getContext('2d');
+  const sky = c.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, '#35558f'); sky.addColorStop(1, '#f2b06a');
+  c.fillStyle = sky; c.fillRect(0, 0, w, h);
+  c.fillStyle = '#ffe9a8'; c.beginPath(); c.arc(w * 0.7, h * 0.58, 42, 0, Math.PI * 2); c.fill();   // 太陽
+  c.fillStyle = '#22344f'; c.beginPath();                                                            // 遠山
+  c.moveTo(0, h); c.lineTo(w * 0.28, h * 0.55); c.lineTo(w * 0.52, h); c.lineTo(w * 0.62, h);
+  c.lineTo(w * 0.82, h * 0.68); c.lineTo(w, h); c.closePath(); c.fill();
+  return off;
+}
+const baseImage = makeBaseImage(W, H);
+
+// 跟 4.3 的 wrapText 同一套量測邏輯,但「只切行、先不畫」(底部文字要從最後一行往上排)
+function layoutLines(text, maxWidth) {
+  const tokens = text.match(/[一-鿿]|[A-Za-z0-9]+|\\s|\\S/g) || [];
+  const lines = []; let line = '';
+  for (const tk of tokens) {
+    const test = line + tk;
+    if (ctx.measureText(test).width > maxWidth && line.trim() !== '') {
+      lines.push(line); line = tk.trim() === '' ? '' : tk;   // 換行,行首不留空白
+    } else { line = test; }
+  }
+  if (line) lines.push(line);
+  return lines;
+}
+// 過長先縮小字級,縮到下限仍塞不下才換行
+function drawMemeText(text, anchorY, growDown) {
+  if (!text.trim()) return;
+  const maxWidth = W - 40;
+  let size = 40;
+  ctx.font = 'bold ' + size + 'px sans-serif';
+  while (size > 18 && ctx.measureText(text).width > maxWidth) { size -= 2; ctx.font = 'bold ' + size + 'px sans-serif'; }
+  const lines = layoutLines(text, maxWidth);
+  const lineHeight = size * 1.2;
+  for (let i = 0; i < lines.length; i++) {
+    const y = growDown ? anchorY + i * lineHeight : anchorY - (lines.length - 1 - i) * lineHeight;
+    ctx.strokeText(lines[i], W / 2, y);   // 先畫黑色描邊(墊在下層)
+    ctx.fillText(lines[i], W / 2, y);     // 再畫白色填色蓋上去 → 白字黑框
+  }
+}
+function render() {
+  ctx.drawImage(baseImage, 0, 0);         // 底圖鋪滿,同時蓋掉上一次文字
+  ctx.textAlign = 'center';               // x 一律給中線 W/2(4.2)
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000';
+  ctx.lineWidth = 5; ctx.lineJoin = 'round';   // 描邊夠粗、圓角轉折才有迷因味(第 02 章)
+  ctx.textBaseline = 'top';    drawMemeText(topInput.value, 14, true);
+  ctx.textBaseline = 'bottom'; drawMemeText(bottomInput.value, H - 14, false);
+}
+topInput.addEventListener('input', render);    // 邊打字邊即時重畫
+bottomInput.addEventListener('input', render);
+render();` }
   ]
 };
 </script>

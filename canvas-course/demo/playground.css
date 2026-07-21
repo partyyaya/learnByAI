@@ -16,6 +16,8 @@ body {
   font-family: system-ui, -apple-system, "PingFang TC", "Microsoft JhengHei", sans-serif;
   background: var(--bg); color: var(--text); line-height: 1.5;
 }
+/* 各章 playground 的最外層容器(playground.js 建立):直向 flex,撐滿整個視窗高度 */
+.app { display: flex; flex-direction: column; min-height: 100vh; }
 header {
   padding: 14px 20px; border-bottom: 1px solid var(--border);
   display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
@@ -26,12 +28,17 @@ header a { color: var(--accent); text-decoration: none; }
 header a:hover { text-decoration: underline; }
 
 main {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
-  padding: 16px 20px; max-width: 1220px; margin: 0 auto; align-items: start;
+  flex: 1 1 auto; min-height: 0;                 /* 撐滿 header 以下的高度,一路到螢幕最底 */
+  display: grid; gap: 16px; padding: 16px 20px;
+  grid-template-columns: 40vw 40vw;              /* 兩塊各佔整個螢幕寬的 40% */
+  grid-template-rows: 1fr;                        /* 單列吃滿 main 的高度 */
+  justify-content: center;                        /* 80vw 內容置中,兩側留白 */
 }
-@media (max-width: 880px) { main { grid-template-columns: 1fr; } }
 
-.pane { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.pane {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden;
+  display: flex; flex-direction: column; min-height: 0;   /* head 固定、內容區(編輯器/畫布)撐滿 */
+}
 .pane-head {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 10px 12px; border-bottom: 1px solid var(--border);
@@ -49,7 +56,7 @@ button:hover { filter: brightness(1.04); }
 label.chk { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
 
 textarea#editor {
-  width: 100%; height: 420px; border: 0; resize: vertical; display: block;
+  width: 100%; flex: 1 1 auto; min-height: 160px; border: 0; resize: none; display: block;
   background: var(--code-bg); color: var(--code-text); padding: 14px 16px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   font-size: 13px; line-height: 1.6; tab-size: 2; outline: none;
@@ -67,7 +74,7 @@ textarea#editor {
 .stage {
   padding: 16px; display: flex; justify-content: center; align-items: center;
   background: repeating-linear-gradient(45deg, transparent 0 9px, rgba(128,128,128,.06) 9px 10px);
-  min-height: 300px;
+  flex: 1 1 auto; min-height: 240px; overflow: auto;   /* 撐滿畫布區;畫布比框大時可捲動 */
 }
 canvas#cv {
   background: #ffffff;
@@ -97,3 +104,12 @@ canvas#cv.grid {
 .hub li a:hover { border-color: var(--accent); }
 .hub .n { color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; margin-right: 8px; }
 .hub .t { color: var(--muted); font-size: 12.5px; display: block; margin-top: 2px; }
+
+/* ── 窄螢幕:放棄「各 40vw + 滿高」,改回上下堆疊、自然高度(擺在檔尾才蓋得過上面的基準規則)── */
+@media (max-width: 880px) {
+  .app { display: block; min-height: 0; }
+  main { display: block; padding: 16px; }
+  .pane { display: block; margin-bottom: 16px; }
+  textarea#editor { flex: none; height: 60vh; min-height: 320px; resize: vertical; }
+  .stage { flex: none; min-height: 300px; }
+}

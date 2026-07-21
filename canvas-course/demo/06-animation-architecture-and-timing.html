@@ -183,7 +183,55 @@ function loop(t) {
   ctx.globalAlpha = 1;                   // 用完務必還原
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);` }
+requestAnimationFrame(loop);` },
+{ id:'homework', label:'💡 動手作業:煙火粒子(delta-time)', code:
+`// 第 06 章作業:點一下爆出 50 個粒子,受重力、透明度隨時間 ease 到 0。全程 delta-time + clamp dt
+function getCanvasPoint(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+const Easing = { easeOut: t => 1 - Math.pow(1 - t, 3) };   // 快進慢出(6.5)
+const GRAVITY = 600;                                        // 像素/秒²(所有速度都以秒為單位,6.2)
+const COLORS = ['#e63946', '#f4a261', '#2a9d8f', '#457b9d', '#9b5de5'];
+const particles = [];
+canvas.addEventListener('click', (e) => {                   // 作業要求:點一下生成 50 個粒子
+  const p = getCanvasPoint(e);
+  for (let i = 0; i < 50; i++) {
+    const angle = Math.random() * Math.PI * 2;              // 先抽方向:整個圓上均勻,爆開才圓
+    const speed = 60 + Math.random() * 200;                // 再抽速率(像素/秒)
+    particles.push({ x: p.x, y: p.y,
+      vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,   // 方向 × 速率 → x/y 分量
+      life: 0, maxLife: 1 + Math.random() * 1.5,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)] });
+  }
+});
+function update(dt) {                                        // 只改資料,不碰畫布(6.3)
+  for (let i = particles.length - 1; i >= 0; i--) {          // 倒著走:邊遍歷邊 splice 不會跳過元素
+    const pt = particles[i];
+    pt.vy += GRAVITY * dt;                                   // 作業要求:重力 vy += gravity * dt
+    pt.x += pt.vx * dt; pt.y += pt.vy * dt;                  // 位移 = 速度 × 時間
+    pt.life += dt;
+    if (pt.life >= pt.maxLife) particles.splice(i, 1);       // 壽命到了就移除
+  }
+}
+function render() {                                          // 只讀資料、畫到畫布(6.3)
+  ctx.fillStyle = '#1d1d2b'; ctx.fillRect(0, 0, W, H);       // 深色底(取代原作業的 CSS 背景)
+  for (const pt of particles) {
+    ctx.globalAlpha = 1 - Easing.easeOut(pt.life / pt.maxLife);   // 作業要求:透明度用 easing 衰減到 0
+    ctx.fillStyle = pt.color;
+    ctx.beginPath(); ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;                                       // globalAlpha 是持續狀態,記得改回來
+  if (!particles.length) {
+    ctx.globalAlpha = 1; ctx.fillStyle = '#8a8aa0'; ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText('點畫布任一處,放一場煙火', W / 2, H / 2);
+  }
+}
+let lastTime = performance.now();
+function frame(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.1);         // 作業要求:clamp dt,防背景分頁回來暴衝
+  lastTime = now;
+  update(dt); render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);` }
   ]
 };
 </script>

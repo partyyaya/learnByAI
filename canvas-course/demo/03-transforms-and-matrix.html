@@ -290,7 +290,68 @@ function render() {
 }
 
 canvas.addEventListener('mousemove', (e) => { mouse = getCanvasPoint(e); render(); });
-render();` }
+render();` },
+{ id:'homework', label:'💡 動手作業:可平移縮放的無限網格', code:
+`// 第 03 章作業:相機 + 無限網格。拖曳平移、滾輪以游標為中心縮放,左上角即時顯示世界座標
+const camera = { x: 0, y: 0, zoom: 1 };    // 物件住世界座標裡不動,變的只是相機(3.5)
+function applyCamera(ctx, camera) {
+  ctx.scale(camera.zoom, camera.zoom);     // 先縮放
+  ctx.translate(-camera.x, -camera.y);     // 再平移:相機往右看 = 世界往左移
+}
+function getCanvasPoint(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function screenToWorld(s, cam) {            // 相機的逆運算(3.6)
+  return { x: s.x / cam.zoom + cam.x, y: s.y / cam.zoom + cam.y };
+}
+let mouse = { x: 0, y: 0 };
+// 作業要求 1:拖曳平移——用 setPointerCapture,放開就算移出畫布也收得到(playground 內免掛 window 監聽)
+let dragging = false, last = null;
+canvas.addEventListener('pointerdown', (e) => { dragging = true; last = getCanvasPoint(e); canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener('pointerup',   (e) => { dragging = false; canvas.releasePointerCapture(e.pointerId); });
+canvas.addEventListener('pointermove', (e) => {
+  const p = getCanvasPoint(e); mouse = p;
+  if (dragging) {
+    camera.x -= (p.x - last.x) / camera.zoom;   // 拖曳反向移動相機,記得除以 zoom
+    camera.y -= (p.y - last.y) / camera.zoom;
+    last = p;
+  }
+});
+// 作業要求 3:滾輪以游標為中心縮放(3.7 整段搬入)
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const s = getCanvasPoint(e);
+  const before = screenToWorld(s, camera);      // 縮放前游標指著的世界座標
+  camera.zoom *= (e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  camera.zoom = Math.max(0.2, Math.min(camera.zoom, 20));
+  const after = screenToWorld(s, camera);       // 縮放後同一螢幕點指著的世界座標
+  camera.x += before.x - after.x;               // 平移差值,讓游標下的世界點回到原位
+  camera.y += before.y - after.y;
+}, { passive: false });
+// 作業要求 4:「無限」網格——格線起訖依可視範圍計算,平移到哪都有格線
+const GRID = 50;
+function drawGrid() {
+  const tl = screenToWorld({ x: 0, y: 0 }, camera);   // 把螢幕四角換算回世界座標
+  const br = screenToWorld({ x: W, y: H }, camera);
+  ctx.strokeStyle = '#d0d7de';
+  ctx.lineWidth = 1 / camera.zoom;               // 抵銷縮放,格線在螢幕上永遠約 1px 粗
+  ctx.beginPath();
+  for (let x = Math.floor(tl.x / GRID) * GRID; x <= br.x; x += GRID) { ctx.moveTo(x, tl.y); ctx.lineTo(x, br.y); }
+  for (let y = Math.floor(tl.y / GRID) * GRID; y <= br.y; y += GRID) { ctx.moveTo(tl.x, y); ctx.lineTo(br.x, y); }
+  ctx.stroke();
+  ctx.fillStyle = '#e5534b';                     // 世界原點紅點,平移縮放時當參考
+  ctx.beginPath(); ctx.arc(0, 0, 6 / camera.zoom, 0, Math.PI * 2); ctx.fill();
+}
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);            // 每幀重設變換(playground 無 HiDPI,用單位矩陣)
+  ctx.clearRect(0, 0, W, H);
+  ctx.save(); applyCamera(ctx, camera); drawGrid(); ctx.restore();
+  // 作業要求 2:角落即時顯示滑鼠當前的世界座標(畫在畫布上,取代原作業的 DOM)
+  const w = screenToWorld(mouse, camera);
+  ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.fillRect(6, 6, 176, 22);
+  ctx.fillStyle = '#333'; ctx.font = '13px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.fillText('world: (' + w.x.toFixed(1) + ', ' + w.y.toFixed(1) + ')', 12, 17);
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);` }
   ]
 };
 </script>

@@ -120,7 +120,50 @@ for (let y = 0; y < H; y++) {
     o[oi] = clamp(r); o[oi+1] = clamp(g); o[oi+2] = clamp(b); o[oi+3] = 255;
   }
 }
-ctx.putImageData(dst, 0, 0);` }
+ctx.putImageData(dst, 0, 0);` },
+{ id:'homework', label:'💡 動手作業:綠幕去背', code:
+`// 第 05 章作業:綠幕去背 + 合成。左=原圖(綠幕前景),右=去背後疊到背景
+const SW = 320, SH = 240;
+// ① 綠幕前景圖(離屏;實務換成真照片)。綠幕用漸層模擬打光不均 → 待會不能用「等於某個綠」判斷
+const fg = document.createElement('canvas'); fg.width = SW; fg.height = SH;
+const fgCtx = fg.getContext('2d', { willReadFrequently: true });   // 要頻繁讀像素(5.6)
+const scr = fgCtx.createLinearGradient(0, 0, SW, SH);
+scr.addColorStop(0, 'rgb(40,190,70)'); scr.addColorStop(1, 'rgb(20,150,50)');
+fgCtx.fillStyle = scr; fgCtx.fillRect(0, 0, SW, SH);
+fgCtx.fillStyle = '#f2c9a0'; fgCtx.beginPath(); fgCtx.arc(160, 80, 32, 0, Math.PI * 2); fgCtx.fill();  // 頭
+fgCtx.fillStyle = '#3b5bdb'; fgCtx.fillRect(128, 116, 64, 92);                                          // 身體
+fgCtx.strokeStyle = '#3b5bdb'; fgCtx.lineWidth = 16; fgCtx.lineCap = 'round';                           // 手臂
+fgCtx.beginPath(); fgCtx.moveTo(130, 130); fgCtx.lineTo(92, 176); fgCtx.moveTo(190, 130); fgCtx.lineTo(228, 176); fgCtx.stroke();
+// ② 背景圖(離屏;實務同樣換成照片)
+const bg = document.createElement('canvas'); bg.width = SW; bg.height = SH;
+const bgCtx = bg.getContext('2d');
+const sky = bgCtx.createLinearGradient(0, 0, 0, SH);
+sky.addColorStop(0, '#1e3a8a'); sky.addColorStop(1, '#f97316');
+bgCtx.fillStyle = sky; bgCtx.fillRect(0, 0, SW, SH);
+bgCtx.fillStyle = '#fde047'; bgCtx.beginPath(); bgCtx.arc(80, 150, 28, 0, Math.PI * 2); bgCtx.fill();
+bgCtx.fillStyle = '#292524'; bgCtx.fillRect(0, SH - 36, SW, 36);
+// 先存一份「原圖」快照(左邊要畫),因為去背會就地改掉 fg
+const before = document.createElement('canvas'); before.width = SW; before.height = SH;
+before.getContext('2d').drawImage(fg, 0, 0);
+// ③ 去背核心:遍歷像素,把「綠明顯高於紅藍」的像素 alpha 設 0
+const im = fgCtx.getImageData(0, 0, SW, SH), d = im.data;   // GPU→CPU 回讀很貴,整張只做一次
+for (let i = 0; i < d.length; i += 4) {
+  const r = d[i], g = d[i + 1], b = d[i + 2];
+  if (g > r * 1.4 && g > b * 1.4) d[i + 3] = 0;   // 相對比較:不能用絕對門檻,否則亮膚色/白色會一起被挖掉
+}
+fgCtx.putImageData(im, 0, 0);                     // putImageData 直接蓋記憶體、不做 alpha 混合(5.4)
+// ④ 合成:背景先畫,去背後前景用 drawImage 疊上去(尊重透明度)
+const after = document.createElement('canvas'); after.width = SW; after.height = SH;
+const aCtx = after.getContext('2d');
+aCtx.drawImage(bg, 0, 0); aCtx.drawImage(fg, 0, 0);   // 透明像素透出背景 → 合成就是在玩 alpha
+// ── 把「原圖 / 合成」兩張並排畫到 playground 這張畫布上 ──
+ctx.clearRect(0, 0, W, H);
+const gap = 10, halfW = (W - gap) / 2, halfH = halfW * SH / SW, y0 = (H - halfH) / 2 + 8;
+ctx.drawImage(before, 0, y0, halfW, halfH);
+ctx.drawImage(after, halfW + gap, y0, halfW, halfH);
+ctx.fillStyle = '#333'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+ctx.fillText('原圖(綠幕前景)', halfW / 2, y0 - 4);
+ctx.fillText('去背後疊到背景', halfW + gap + halfW / 2, y0 - 4);` }
   ]
 };
 </script>

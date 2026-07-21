@@ -10,7 +10,7 @@
    ──────────────────────────────────────────────────────────────── */
 (function () {
   const CH = window.CH || {};
-  const W = CH.W || 360, H = CH.H || 240;
+  let W = CH.W || 360, H = CH.H || 240;   // 每次執行時依「畫布區」實際大小重算(見 computeSize)
   const LS_KEY = 'canvas-demo-' + (CH.chapter || 'x');
 
   // ── 建立離屏素材 ──────────────────────────────────────────────
@@ -63,6 +63,7 @@
   document.title = chLabel;
 
   const root = document.createElement('div');
+  root.className = 'app';   // 直向 flex 容器,讓 main 能撐滿到螢幕最底(見 playground.css .app)
   root.innerHTML = `
     <header>
       <h1>🎨 ${escapeHtml(chLabel)}</h1>
@@ -112,6 +113,22 @@
     o.value = i; o.textContent = p.label; presetSel.appendChild(o);
   });
 
+  // 依「畫布區(.stage)」實際大小算出這次的邏輯尺寸:寬佔 80%、高佔 60%。
+  // 保持 backing store == CSS 尺寸(1:1),互動範例的 getBoundingClientRect 座標才對得上、畫面也不會被拉糊。
+  function computeSize() {
+    const stage = (canvasEl && canvasEl.parentNode) || document.querySelector('.stage');
+    if (stage && stage.clientWidth > 0 && stage.clientHeight > 0) {
+      const cs = getComputedStyle(stage);
+      const availW = stage.clientWidth  - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const availH = stage.clientHeight - parseFloat(cs.paddingTop)  - parseFloat(cs.paddingBottom);
+      W = Math.max(240, Math.round(availW * 0.8));
+      H = Math.max(180, Math.round(availH * 0.6));
+    } else {
+      W = CH.W || 360; H = CH.H || 240;   // 量不到就退回章節預設
+    }
+    byId('dims').textContent = W + '×' + H;
+  }
+
   function freshCanvas() {
     stopAnim();
     const fresh = document.createElement('canvas');
@@ -127,10 +144,20 @@
   function showError(msg) { errBox.textContent = '⚠ ' + msg; errBox.classList.add('show'); }
   function clearError() { errBox.textContent = ''; errBox.classList.remove('show'); }
 
+  // 有些範例(例如各章「動手作業」)會自己注入工具列/輸入框、或掛 window/document 監聽器。
+  // 重跑或切換範例前先清乾淨:移除標了 .demo-inject 的節點,並呼叫範例登記的 window.__demoCleanup。
+  function cleanupInjected() {
+    if (window.__demoCleanup) { try { window.__demoCleanup(); } catch (e) {} window.__demoCleanup = null; }
+    document.querySelectorAll('.demo-inject').forEach(el => el.remove());
+  }
+
   function run() {
     clearError();
-    // 清空 = 換一張全新的 canvas(順便丟掉上一次加的事件監聽器);不清空 = 沿用同一張,可疊畫
-    const cv = autoClear.checked ? freshCanvas() : (stopAnim(), canvasEl);
+    cleanupInjected();
+    // 清空 = 依畫布區大小換一張全新的 canvas(順便丟掉上一次加的事件監聽器);不清空 = 沿用同一張,可疊畫
+    let cv;
+    if (autoClear.checked) { computeSize(); cv = freshCanvas(); }
+    else { stopAnim(); cv = canvasEl; }
     const ctx = cv.getContext('2d');
     try {
       const fn = new Function(
@@ -154,6 +181,10 @@
   byId('run').addEventListener('click', run);
   byId('resetCode').addEventListener('click', () => loadPreset(+presetSel.value));
   gridChk.addEventListener('change', () => canvasEl.classList.toggle('grid', gridChk.checked));
+
+  // 視窗大小變動 → 依新畫布區重算尺寸並重跑(debounce 避免拖曳時狂觸發)
+  let resizeT;
+  window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(run, 250); });
 
   let debounce;
   editor.addEventListener('input', () => {
