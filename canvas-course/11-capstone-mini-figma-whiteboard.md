@@ -214,6 +214,7 @@ drawSelection = (ctx, shape) => {   // 填入 11.5 預留的空殼
   ctx.strokeStyle = '#3b82f6';
   ctx.lineWidth = 1 / camera.zoom;            // 線寬抵消縮放,維持 1px 觀感
   ctx.strokeRect(b.x, b.y, b.w, b.h);
+  if (shape instanceof TextShape) return;     // 文字只框選、不畫縮放手把(大小由 fontSize 決定)
   const r = HANDLE / camera.zoom / 2;         // 手把大小抵消縮放
   ctx.fillStyle = '#fff';
   for (const p of Object.values(getHandles(shape))) {
@@ -237,6 +238,8 @@ function hitShape(wp) {
 }
 ```
 
+> **文字為什麼是例外**:文字的大小由 `fontSize` 決定,不走「拉框縮放」,所以**不畫手把、也不進 `resizing`**。若照樣畫,一行小字會被 8 個手把幾乎蓋滿——你想拖曳移動時十之八九先碰到手把、變成 resize;偏偏 `TextShape.draw()` 每幀又用 `measureText` 覆寫 `w/h`,拉了也彈回,體感就會「怪怪的」。把文字排除在框縮放之外,整個包圍盒就成了乾淨的拖曳區(要改大小去調 `fontSize`)。
+
 ### 互動狀態機
 
 互動的本質是一台小狀態機(呼應你 [影音課](../video-player-course/README.md) 的「播放器是狀態機」心法):`idle → 依工具與命中結果進入 creating / dragging / resizing / panning → up 回到 idle`。
@@ -256,8 +259,8 @@ canvas.addEventListener('pointerdown', (e) => {
   canvas.setPointerCapture(e.pointerId);
 
   if (tool === 'select') {
-    // 先看是否抓到選中物件的手把 → 縮放
-    if (selected) {
+    // 先看是否抓到選中物件的手把 → 縮放(文字除外:它不做框縮放,直接當可拖曳物件)
+    if (selected && !(selected instanceof TextShape)) {
       const handle = hitHandle(selected, wp);
       if (handle) {
         mode = 'resizing'; resizeHandle = handle;
@@ -347,6 +350,68 @@ function applyResize(s, wp) {
   else { s.y = a.oy; s.h = a.oh; }
 }
 ```
+
+### 文字雙擊編輯:把 DOM `<input>` 疊在世界座標上(第 03、04 章)
+
+`TextShape` 的預設字是「雙擊編輯」——現在來兌現它。Canvas **畫不出可輸入的文字**(第 04 章:它只會把字「畫成像素」),所以標準做法是:**雙擊時在文字的螢幕位置疊一個真的 `<input>` 給使用者打字,打完把字寫回 shape、再畫回 canvas**。這需要「世界座標 → 螢幕座標」的換算,正是 11.4 `screenToWorld` 的反運算:
+
+```js
+function worldToScreen(wx, wy) {   // screenToWorld 的反運算:世界座標 → 螢幕像素
+  return { x: (wx - camera.x) * camera.zoom, y: (wy - camera.y) * camera.zoom };
+}
+```
+
+```js
+const stage = document.getElementById('stage');   // #stage 是 position:relative 的定位容器(見 11.8)
+let editing = null;                                // 正在編輯的 TextShape;render 要跳過它(改由 input 顯示)
+
+canvas.addEventListener('dblclick', (e) => {
+  if (tool !== 'select') return;
+  const hit = hitShape(eventToWorld(e));
+  if (hit instanceof TextShape) { selected = hit; invalidate(); startTextEdit(hit); }
+});
+
+function startTextEdit(shape) {
+  editing = shape; invalidate();                       // 讓 canvas 這格文字先別畫
+
+  const fs = shape.fontSize * camera.zoom;             // 螢幕上的字級 = 世界字級 × zoom
+  const p = worldToScreen(shape.x, shape.y);           // input 要擺的螢幕位置
+  const input = document.createElement('input');
+  input.value = shape.text;
+  input.style.cssText =
+    `position:absolute;left:${p.x}px;top:${p.y}px;` +
+    `font:${fs}px sans-serif;color:${shape.fill};` +
+    `margin:0;padding:0 1px;border:0;outline:1px solid #3b82f6;background:rgba(255,255,255,.92);`;
+  stage.appendChild(input);
+  input.focus(); input.select();
+
+  function finish(commit) {
+    if (editing !== shape) return;                     // Esc 已先收尾就不重複(避免 blur 又跑一次)
+    editing = null;
+    if (commit) {
+      const v = input.value.trim();
+      if (v === '') scene.splice(scene.indexOf(shape), 1);   // 清空 = 刪除這個文字
+      else shape.text = v;
+      history.commit();                                // 收尾進 Undo/Redo(第 08 章)
+    }
+    input.remove(); invalidate();
+  }
+  input.addEventListener('blur', () => finish(true));                      // 點別處 = 完成並存檔
+  input.addEventListener('keydown', (ev) => {
+    ev.stopPropagation();
+    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }         // Enter = 完成
+    else if (ev.key === 'Escape') { editing = null; input.remove(); invalidate(); }   // Esc = 取消(不寫回)
+  });
+}
+```
+
+三個關鍵細節(漏了就會出 bug):
+
+① **位置和字級都要乘 `camera.zoom`**——`<input>` 是螢幕上的 DOM,不吃相機變換,所以世界座標與字級都得自己換算成螢幕像素,平移縮放後才對得上。
+② **編輯中要讓 canvas 跳過這個 shape**——在渲染迴圈把它濾掉(`for (const s of scene) { if (s === editing) continue; s.draw(ctx); }`),否則畫布上的靜態字會和 input 疊字。
+③ **收尾要 `history.commit()`**;而且 11.7 的全域快捷鍵早就寫了「焦點在 `<input>`/IME 組字時不攔截」——所以打字時按 Delete、Ctrl+Z 不會誤刪圖形或誤觸 undo,**當初那行防呆就是為這裡鋪的**。
+
+> **心智模型**:Canvas 畫不了可編輯文字,但你有整個 DOM 可用。**「平常用 canvas 畫靜態、要編輯時借一個 DOM 元件疊上去、編輯完再畫回 canvas」是所有 canvas 編輯器(Figma、Excalidraw、tldraw)的通用套路**——把兩個世界黏起來的膠水,就是第 03 章的世界↔螢幕座標換算。
 
 ---
 
@@ -537,7 +602,6 @@ canvas.addEventListener('keydown', (e) => {
 
 | 挑戰 | 回去深化哪章 |
 |------|--------------|
-| 文字雙擊進入編輯(疊一個 DOM `<input>` 在世界座標上) | 03(座標換算)、04 |
 | 框選多個物件 + 群組移動 | 07(矩形相交)、08(群組) |
 | 物件旋轉手把 | 03(繞中心旋轉)、07(本地座標命中) |
 | 對齊輔助線(snap to 其他物件邊緣) | 07(幾何) |

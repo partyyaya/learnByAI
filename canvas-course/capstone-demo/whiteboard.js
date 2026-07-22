@@ -75,6 +75,7 @@
   const dpr = window.devicePixelRatio || 1;
   const content = document.getElementById('content');
   const overlay = document.getElementById('overlay');
+  const stage = document.getElementById('stage');   // 定位參考:文字編輯的 DOM input 疊在這裡面
   const canvas = overlay;                 // 事件綁在最上層
   const contentCtx = content.getContext('2d');
   const overlayCtx = overlay.getContext('2d');
@@ -93,6 +94,7 @@
   const camera = { x: 0, y: 0, zoom: 1 };
   let tool = 'select';                    // 'select' | 'rect' | 'circle' | 'text'
   let selected = null;
+  let editing = null;                     // 正在雙擊編輯的 TextShape(此時改用 DOM input 顯示)
   let mode = 'idle';                      // idle | creating | dragging | resizing | panning
   let dragOffset = null, resizeHandle = null, resizeAnchor = null, creating = null, createOrigin = null, panStart = null;
   let contentDirty = true, overlayDirty = true;
@@ -107,6 +109,9 @@
   }
   function screenToWorld(sx, sy) {
     return { x: sx / camera.zoom + camera.x, y: sy / camera.zoom + camera.y };
+  }
+  function worldToScreen(wx, wy) {   // screenToWorld 的反運算:世界座標 → 螢幕像素
+    return { x: (wx - camera.x) * camera.zoom, y: (wy - camera.y) * camera.zoom };
   }
   function eventToWorld(e) {
     const rect = canvas.getBoundingClientRect();
@@ -128,6 +133,7 @@
     ctx.strokeStyle = '#3b82f6';
     ctx.lineWidth = 1 / camera.zoom;
     ctx.strokeRect(b.x, b.y, b.w, b.h);
+    if (shape instanceof TextShape) return;   // 文字大小由 fontSize 決定,不給框縮放手把(否則手把蓋滿小字、一拖就變 resize),只留外框可拖曳移動
     const r = HANDLE / camera.zoom / 2;
     ctx.fillStyle = '#fff';
     for (const p of Object.values(getHandles(shape))) {
@@ -198,7 +204,7 @@
       contentCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
       contentCtx.clearRect(0, 0, W, H);
       contentCtx.save(); applyCamera(contentCtx);
-      for (const s of scene) s.draw(contentCtx);
+      for (const s of scene) { if (s === editing) continue; s.draw(contentCtx); }   // 編輯中的文字改由 DOM input 顯示
       contentCtx.restore();
       contentDirty = false;
     }
@@ -207,7 +213,7 @@
       overlayCtx.clearRect(0, 0, W, H);
       overlayCtx.save(); applyCamera(overlayCtx);
       if (creating) creating.draw(overlayCtx);
-      if (selected) drawSelection(overlayCtx, selected);
+      if (selected && selected !== editing) drawSelection(overlayCtx, selected);   // 編輯中的文字不畫選取框(input 自帶外框)
       overlayCtx.restore();
       overlayDirty = false;
     }
@@ -221,7 +227,7 @@
     if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId);
 
     if (tool === 'select') {
-      if (selected) {
+      if (selected && !(selected instanceof TextShape)) {   // 文字不做框縮放,直接當可拖曳物件處理
         const handle = hitHandle(selected, wp);
         if (handle) {
           mode = 'resizing'; resizeHandle = handle;
@@ -309,6 +315,66 @@
     camera.y += before.y - after.y;
     invalidate();
   }, { passive: false });
+
+  // ─────────────────────────── 文字雙擊編輯:疊一個 DOM input 在世界座標上(第 03 座標換算 + 第 04 文字) ───────────────────────────
+  canvas.addEventListener('dblclick', (e) => {
+    if (tool !== 'select') return;
+    const hit = hitShape(eventToWorld(e));
+    if (hit instanceof TextShape) { selected = hit; invalidate(); startTextEdit(hit); }
+  });
+
+  function startTextEdit(shape) {
+    editing = shape;
+    invalidate();                                     // 讓 canvas 這格文字先別畫,改由 input 顯示
+
+    const fs = shape.fontSize * camera.zoom;          // 螢幕上的字級(隨相機縮放)
+    const p = worldToScreen(shape.x, shape.y);        // 螢幕座標(相對 #stage 左上,恰好等於視窗左上)
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = shape.text;
+    input.style.cssText =
+      'position:absolute;margin:0;padding:0 1px;border:0;' +
+      'outline:1px solid #3b82f6;background:rgba(255,255,255,.92);' +
+      'left:' + p.x + 'px;top:' + p.y + 'px;' +
+      'font:' + fs + 'px sans-serif;line-height:1.2;height:' + (fs * 1.2) + 'px;' +
+      'color:' + shape.fill + ';';
+    stage.appendChild(input);
+
+    const fitWidth = () => {                           // 隨輸入內容變寬(measureText,第 04 章)
+      contentCtx.font = fs + 'px sans-serif';
+      input.style.width = (contentCtx.measureText(input.value).width + 4) + 'px';
+    };
+    fitWidth();
+    input.addEventListener('input', fitWidth);
+
+    function finish(commit) {
+      if (editing !== shape) return;                  // 已結束過(例如 Escape 先跑了)就不重複
+      editing = null;
+      if (commit) {
+        const v = input.value.trim();
+        if (v === '') {                               // 清空 = 視為刪除這個文字
+          const i = scene.indexOf(shape);
+          if (i >= 0) scene.splice(i, 1);
+          if (selected === shape) selected = null;
+        } else {
+          shape.text = v;
+        }
+        history.commit();                             // 進 Undo/Redo(第 08 章)
+      }
+      input.remove();
+      invalidate();
+    }
+
+    input.addEventListener('blur', () => finish(true));         // 點別處 = 完成並存檔
+    input.addEventListener('keydown', (ev) => {
+      ev.stopPropagation();                                     // 別讓全域快捷鍵處理這次按鍵
+      if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }                                   // Enter = 完成
+      else if (ev.key === 'Escape') { ev.preventDefault(); editing = null; input.remove(); invalidate(); }   // Esc = 取消(不寫回)
+    });
+
+    input.focus();
+    input.select();
+  }
 
   // ─────────────────────────── 鍵盤:Undo/Redo/Delete(第 08 章) ───────────────────────────
   window.addEventListener('keydown', (e) => {

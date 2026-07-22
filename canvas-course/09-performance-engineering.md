@@ -21,8 +21,9 @@ function frame(now) {
     frames = 0; lastFpsTime = now;
   }
   render();
-  requestAnimationFrame(frame);
+  requestAnimationFrame(frame);   // 排下一幀:讓迴圈自我延續
 }
+requestAnimationFrame(frame);     // ★ 起手式:先踢一次,迴圈才會跑起來(少了這行 frame 永遠不會被呼叫)
 ```
 
 更好的是用瀏覽器內建:Chrome DevTools 的 **Rendering → Frame Rendering Stats**(即時 FPS 浮層),以及 **Performance 面板**錄一段,看每幀時間花在哪。
@@ -54,7 +55,10 @@ performance.measure('render', 'render-start', 'render-end');
 | **overdraw**:同一像素畫很多次 | 大量重疊半透明 | 減少重疊層數 |
 | **主執行緒被佔住** | 繪圖時 UI 卡住、無法捲動 | OffscreenCanvas + Worker(9.4) |
 
-> **重點**:不同瓶頸,優化方向完全相反。「每幀全畫」要靠減少重畫;「主執行緒卡住」要靠搬到 Worker;「像素回讀」要靠避免 `getImageData`。**先用 9.1 量出是哪一種,再選對應的招**,否則白忙。
+> **重點**:不同瓶頸,優化方向完全相反。**先用 9.1 量出是哪一種,再選對應的招**,否則白忙。
+>「每幀全畫」要靠減少重畫;
+>「主執行緒卡住」要靠搬到 Worker;
+>「像素回讀」要靠避免 `getImageData`。
 
 ---
 
@@ -190,7 +194,8 @@ function loop() {
 
 ## 9.5 記憶體:canvas 比你想的吃記憶體
 
-每張 canvas 吃的記憶體 ≈ **緩衝區實體像素數 × 4 bytes**(RGBA 各 1 byte)。換算時注意**別重複乘 dpr**:要嘛用「實體尺寸 × 4」、要嘛用「CSS 尺寸 × 4 × dpr²」,兩者等價、擇一。例:一張顯示 1920×1080 的畫布,在 dpr=2 的螢幕上,實體緩衝區是 3840×2160,`3840 × 2160 × 4 ≈ 33MB`(若誤用「實體尺寸 ×4×dpr²」會算成四倍的 ~133MB,那就是重複乘了)。大量離屏 canvas(離屏快取、隱藏命中緩衝)會迅速吃光記憶體。
+每張 canvas 吃的記憶體 ≈ **緩衝區實體像素數 × 4 bytes**(RGBA 各 1 byte)。換算時注意**別重複乘 dpr**:要嘛用「實體尺寸 × 4」、要嘛用「CSS 尺寸 × 4 × dpr²」,兩者等價、擇一。例:
+一張顯示 1920×1080 的畫布,在 dpr=2 的螢幕上,實體緩衝區是 3840×2160,`3840 × 2160 × 4 ≈ 33MB`(若誤用「實體尺寸 ×4×dpr²」會算成四倍的 ~133MB,那就是重複乘了)。大量離屏 canvas(離屏快取、隱藏命中緩衝)會迅速吃光記憶體。
 
 - 不再用的離屏 canvas,把寬高設為 0(`c.width = c.height = 0`)幫助回收。
 - 行動裝置對 canvas 總面積有上限,超過會直接失效或崩潰——別開超大或超多畫布。
