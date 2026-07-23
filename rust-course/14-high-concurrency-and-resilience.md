@@ -199,18 +199,19 @@ cargo add tower_governor
 ```rust
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 
-let governor = GovernorConfigBuilder::default()
-    .per_second(10)          // 每個來源每秒 10 個
-    .burst_size(20)          // 允許短暫爆量到 20（令牌桶）
+let governor_conf = GovernorConfigBuilder::default()
+    .per_second(2)           // 每 2 秒補 1 個 token
+    .burst_size(5)           // 允許短暫爆量到 5
     .finish()
     .unwrap();
 
 let app = Router::new()
     .route(/* ... */)
-    .layer(GovernorLayer { config: governor.into() });   // 超過限額回 429 Too Many Requests
+    .layer(GovernorLayer::new(governor_conf));           // 超過限額回 429 Too Many Requests
 ```
 
 - 底層是**令牌桶（token bucket）**：桶裡的令牌以固定速率補充，每個請求耗一個令牌，沒令牌就回 `429`。`burst_size` 允許短暫爆發。
+- `tower_governor` 的 `per_second(n)` 不是「每秒 n 個」，而是「每 n 秒補 1 個 token」。若要近似每秒 10 個，應使用更短的補充週期或改用其他支援每秒速率語意的 limiter。照官方範例時，務必讀清楚這個語意，否則限流量級會差很多。
 - 限流保護你不被單一惡意/失控的客戶端打爆，也讓資源公平分配。
 
 | 手法 | 限制什麼 | Rust 工具 | 過載時回 |
@@ -591,29 +592,27 @@ impl BookMetadataProvider for CachedProvider {
     async fn lookup(&self, isbn: &Isbn) -> Result<BookMetadata, MetadataError> {
         let key = isbn.as_str().to_string();
 
-        // 1. 先查快取（single-flight，同 ISBN 並發只打一次）
-        if let Some(hit) = self.cache.get(&key).await {
-            return Ok(hit);
-        }
-        // 2. 斷路器：外部若已掛，快速失敗、不浪費資源
-        if !self.breaker.allow_request() {
-            return Err(MetadataError::Upstream("書目服務暫時停用中".into()));
-        }
-        // 3. 號誌：同時最多 N 個打外部，保護對方也保護自己
-        let _permit = self.limiter.acquire().await.unwrap();
-
-        // 4. 真的呼叫（內部已有第 12 章的逾時 + 重試）
-        match self.inner.lookup(isbn).await {
-            Ok(meta) => {
-                self.breaker.on_success();
-                self.cache.insert(key, meta.clone()).await;   // 回填快取
-                Ok(meta)
+        // try_get_with 具備 single-flight：同 ISBN 並發 miss 時，只會有一個閉包真的打外部。
+        // 成功才寫入快取；失敗不快取，避免把暫時性錯誤保存起來。
+        self.cache.try_get_with(key.clone(), async {
+            // 1. 斷路器：外部若已掛，快速失敗、不浪費資源
+            if !self.breaker.allow_request() {
+                return Err(MetadataError::Upstream("書目服務暫時停用中".into()));
             }
-            Err(e) => { self.breaker.on_failure(); Err(e) }
-        }
+            // 2. 號誌：同時最多 N 個打外部，保護對方也保護自己
+            let _permit = self.limiter.acquire().await.unwrap();
+
+            // 3. 真的呼叫（內部已有第 12 章的逾時 + 重試）
+            match self.inner.lookup(isbn).await {
+                Ok(meta) => { self.breaker.on_success(); Ok(meta) }
+                Err(e)   => { self.breaker.on_failure(); Err(e) }
+            }
+        }).await.map_err(|e| MetadataError::Upstream(e.to_string()))
     }
 }
 ```
+
+> **注意 `try_get_with` 的錯誤型別**：moka 會把初始化錯誤包成 `Arc<E>` 回傳，因為同一個 miss 可能有多個並發呼叫在等待同一個錯誤。上面為了保持示例簡短，把它轉成 `Upstream(String)`；正式專案可讓錯誤型別實作 `Clone` 後保留原始 variant，或在 cache 層統一回傳 `Arc<MetadataError>`。
 
 ```rust
 // handlers.rs / router：伺服器端限流 + 負載卸除（14.5）
@@ -627,7 +626,7 @@ Router::new()
             .layer(ConcurrencyLimitLayer::new(200))           // 依壓測結果設定
             .layer(TimeoutLayer::new(Duration::from_secs(5))) // 逾時預算（14.6）
     )
-    .layer(GovernorLayer { config: governor.into() })         // 每 IP 限流（14.5）
+    .layer(GovernorLayer::new(governor_conf))                 // 每 IP 限流（14.5）
     .with_state(state)
 ```
 
@@ -713,6 +712,6 @@ Router::new()
 
 **進階強化篇（14）完成。** 你的服務現在不只「能上線」，還「扛得住尖峰、擋得住故障」——這正是資深後端工程師與初階的分野。
 
-你已經走完了從 Rust 語法到生產級高併發後端的完整旅程。把第 13 章的成品套上這章的韌性防護，你就有了一個真正**可上線、可擴展、可觀測**的 Rust 服務。接下來就是拿真實流量去驗證、持續量測與調校——那是永無止境、但也最有成就感的工程實踐。
+你已經走完了從 Rust 語法到生產級高併發後端的完整旅程。把第 13 章的成品套上這章的韌性防護，你就有了一個真正**可上線、可擴展、可觀測**的 Rust 服務。接下來可以拿真實流量去驗證、持續量測與調校；如果你想往 GPU/AI 方向延伸，則可接著走第 15～17 章的 `wgpu → GPU Compute → AI` 進階路線。
 
 回到 [課程首頁](./README.md) 複習任何章節。去把你的服務打到倒，再讓它站起來。🦀

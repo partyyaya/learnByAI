@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    // === 產出目標 ===
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler", // 不需要在 import 補上 .js 副檔名，最貼近 tsx 的解析方式
+    "lib": ["ES2022", "DOM"], // 加入 DOM，讓第 2、3 章的 document/HTMLElement 範例能通過型別檢查
+    "types": ["node"], // 讓 process、path 等 Node API 有型別
+
+    // === 嚴格檢查（課程建議的底線）===
+    "strict": true,
+    "noUnusedLocals": false, // playground 常有暫時沒用到的變數，關掉比較好玩
+    "noUnusedParameters": false,
+
+    // === 相容性與體驗 ===
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+
+    // 只做型別檢查，實際執行交給 tsx（見 README）
+    "noEmit": true
+
+    // === 想測試「舊版裝飾器」（第 11 章 NestJS / TypeORM 風格）時，取消下面註解 ===
+    // "experimentalDecorators": true,
+    // "emitDecoratorMetadata": true
+  },
+  "include": ["src"]
+}

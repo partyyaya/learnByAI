@@ -144,6 +144,15 @@ CREATE TABLE orders (
     amount      BIGINT      NOT NULL,          -- 以「分」為單位（回扣第 09 章 Money）
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- 10.8 的交易範例會示範「建立訂單 + 扣庫存」必須一起成功，
+-- 所以這裡也放一張最小庫存表，避免交易範例引用不存在的表。
+CREATE TABLE inventory (
+    product     TEXT   PRIMARY KEY,
+    stock       BIGINT NOT NULL CHECK (stock >= 0)
+);
+
+INSERT INTO inventory (product, stock) VALUES ('default', 100);
 ```
 
 套用 migration：
@@ -380,6 +389,21 @@ impl OrderRepository for PgOrderRepo {
             customer: r.customer,
             amount: Money(r.amount),
         }))
+    }
+
+    async fn list(&self) -> Result<Vec<Order>, RepoError> {
+        let rows = sqlx::query!(
+            "SELECT id, customer, amount FROM orders ORDER BY id"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(to_repo_err)?;
+
+        Ok(rows.into_iter().map(|r| Order {
+            id: OrderId(r.id as u64),
+            customer: r.customer,
+            amount: Money(r.amount),
+        }).collect())
     }
 }
 ```

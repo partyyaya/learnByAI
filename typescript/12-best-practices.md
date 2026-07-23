@@ -575,3 +575,12 @@ const store = createStore({
 7. **選擇合適的框架整合** — Vue、React、Nuxt、Next.js 都有成熟的 TypeScript 支援
 
 > 持續練習，讓 TypeScript 成為你開發的利器！
+
+---
+
+## 想更進一步？
+
+以下兩章屬於**進階補充**，帶你深入 TypeScript 型別系統的深水區與工具開發：
+
+- [第十三章 — 型別層級程式設計](./13-type-level-programming.md)：把型別當成程式語言，用泛型、條件型別與遞迴做編譯期運算。
+- [第十四章 — TypeScript Compiler API](./14-compiler-api.md)：用程式操作編譯器本身，開發 codemod、linter 與程式碼產生器。

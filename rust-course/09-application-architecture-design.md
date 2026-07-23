@@ -129,6 +129,7 @@ pub struct Order {
 pub trait OrderRepository: Send + Sync {
     async fn save(&self, order: &Order) -> Result<(), RepoError>;
     async fn find(&self, id: u64) -> Result<Option<Order>, RepoError>;
+    async fn list(&self) -> Result<Vec<Order>, RepoError>;
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -294,6 +295,7 @@ pub enum RepoError {
 pub trait OrderRepository: Send + Sync {
     async fn save(&self, order: &Order) -> Result<(), RepoError>;
     async fn find(&self, id: OrderId) -> Result<Option<Order>, RepoError>;
+    async fn list(&self) -> Result<Vec<Order>, RepoError>;
 }
 ```
 
@@ -374,6 +376,11 @@ impl OrderRepository for InMemoryOrderRepo {
     async fn find(&self, id: OrderId) -> Result<Option<Order>, RepoError> {
         let map = self.store.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
         Ok(map.get(&id.0).cloned())
+    }
+
+    async fn list(&self) -> Result<Vec<Order>, RepoError> {
+        let map = self.store.lock().map_err(|e| RepoError::Backend(e.to_string()))?;
+        Ok(map.values().cloned().collect())
     }
 }
 ```

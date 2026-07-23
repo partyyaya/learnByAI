@@ -139,13 +139,28 @@ async fn list_orders(Query(p): Query<Pagination>) -> String {
     format!("第 {} 頁，每頁 {}", p.page, p.size)
 }
 
-// 3. Json：請求 body 的 JSON，自動反序列化成 struct（回扣第 04 章 serde）
+// 3. Json：請求 body 的 JSON，自動反序列化成 struct（靠 serde）
 #[derive(Deserialize)]
 struct CreateOrderBody { customer: String, amount_cents: i64 }
 async fn create_order(Json(body): Json<CreateOrderBody>) -> String {
     format!("建立 {} 的訂單，金額 {}", body.customer, body.amount_cents)
 }
 ```
+
+`serde` 是 Rust 生態最常用的序列化/反序列化 crate。後端 API 幾乎都會用它把 JSON 轉成 Rust struct、再把 Rust struct 轉回 JSON。幾個常見屬性先認得：
+
+```rust
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateOrderBody {
+    customer: String,
+    amount_cents: i64,
+}
+```
+
+- `rename_all = "camelCase"`：外部 JSON 用 `amountCents`，Rust 欄位仍維持慣用的 `amount_cents`。
+- `deny_unknown_fields`：client 傳了 API 沒定義的欄位就拒絕，避免拼錯欄位卻悄悄被忽略。
+- 對外的 request/response struct（DTO）建議跟 domain entity 分開；HTTP 契約變動不應直接拉動核心業務型別。
 
 常用擷取器一覽：
 
@@ -204,6 +219,7 @@ use std::sync::Arc;
 // 共享狀態：包住所有依賴（第 09 章）
 #[derive(Clone)]                                       // State 必須能 Clone
 struct AppState {
+    create_order: Arc<application::CreateOrder<infrastructure::PgOrderRepo>>,
     orders: Arc<dyn domain::OrderRepository>,          // 第 09 章的 port，第 10 章的 Postgres 實作
     // config: Arc<Config>, external: Arc<WeatherClient>, ...（第 12 章會加）
 }
@@ -224,6 +240,7 @@ async fn get_order(
 
 ```rust
 let state = AppState {
+    create_order: Arc::new(application::CreateOrder::new(PgOrderRepo::new(pool.clone()))),
     orders: Arc::new(PgOrderRepo::new(pool)),    // 組合根注入具體實作（第 10 章）
 };
 
@@ -266,7 +283,8 @@ impl IntoResponse for ApiError {
         let (status, msg) = match &self {
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::Domain(_) => (StatusCode::BAD_REQUEST, self.to_string()),        // 業務規則違反 → 400
-            ApiError::Application(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ApiError::Application(application::CreateOrderError::Domain(e)) => (StatusCode::BAD_REQUEST, e.to_string()),
+            ApiError::Application(application::CreateOrderError::Repo(_)) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
             ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
         };
         // 統一的 JSON 錯誤格式，讓前端好處理
@@ -399,10 +417,12 @@ fn init_tracing() {
 use axum::{
     extract::{Path, State},
     http::StatusCode,
+    response::IntoResponse,
     routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -421,6 +441,31 @@ struct OrderView { id: u64, customer: String, amount_cents: i64 }
 impl From<domain::Order> for OrderView {
     fn from(o: domain::Order) -> Self {
         OrderView { id: o.id.0, customer: o.customer, amount_cents: o.amount.0 }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum ApiError {
+    #[error("找不到資源")]
+    NotFound,
+    #[error(transparent)]
+    Domain(#[from] domain::DomainError),
+    #[error(transparent)]
+    Application(#[from] application::CreateOrderError),
+    #[error("內部錯誤")]
+    Internal,
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, msg) = match &self {
+            ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
+            ApiError::Domain(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+            ApiError::Application(application::CreateOrderError::Domain(e)) => (StatusCode::BAD_REQUEST, e.to_string()),
+            ApiError::Application(application::CreateOrderError::Repo(_)) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
+            ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
+        };
+        (status, Json(json!({ "error": msg }))).into_response()
     }
 }
 
@@ -443,6 +488,13 @@ async fn get_order(
         .map_err(|_| ApiError::Internal)?
         .ok_or(ApiError::NotFound)?;               // None → 404
     Ok(Json(OrderView::from(order)))
+}
+
+async fn list_orders(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, ApiError> {
+    let orders = state.orders.list().await.map_err(|_| ApiError::Internal)?;
+    Ok(Json(orders.into_iter().map(OrderView::from).collect::<Vec<_>>()))
 }
 
 async fn health() -> &'static str { "ok" }

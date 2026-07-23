@@ -1,6 +1,6 @@
 # 第 13 章：Capstone —— 整合一切的完整後端成品
 
-> 恭喜你走到最後一章。前十二章像是各自打磨的零件，這一章要把它們**組裝成一台能跑的機器**。
+> 恭喜你走到後端主線的整合章。前十二章像是各自打磨的零件，這一章要把它們**組裝成一台能跑的機器**。
 > 我們要做一個真正的後端服務：**書櫃 API（Bookshelf）**——使用者可以把書加進書櫃（只給 ISBN），
 > 服務會去**外部 API 查書名與作者**（第 12 章 reqwest），把完整書籍資料**存進 PostgreSQL**（第 10 章 SQLx），
 > 對外提供 **RESTful API**（第 11 章 Axum），整體用**分層架構**組織（第 09 章），並附上**測試、Docker 化與部署**。
@@ -501,7 +501,13 @@ impl IntoResponse for ApiError {
 ### handler 與 router（`handlers.rs`，第 11 章）
 
 ```rust
-use axum::{extract::{Path, Query, State}, http::StatusCode, routing::get, Json, Router};
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{delete, get},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 use crate::{error::ApiError, state::AppState};
 
@@ -873,15 +879,15 @@ docker compose up --build       # 一鍵起 DB + app
 
 ---
 
-## 🎓 課程總結：你走完了什麼
+## 🎓 後端主線總結：你走完了什麼
 
-回頭看看這條路：
+回頭看看後端主線這條路：
 
 - **語言核心（01～06）**：你能寫出正確、安全、組織良好的 Rust——變數與型別、所有權與生命週期、trait 與泛型、錯誤處理、集合與迭代器、模組與測試。
 - **進階能力（07～08）**：智慧指標與內部可變性、以及無懼併發與 async/Tokio。
 - **工程實戰（09～13）**：分層架構、SQLx 資料庫、Axum Web API、reqwest 外部串接，最後整合成一個能上線的成品。
 
-你已經不再是「跟編譯器打架的初學者」，而是能**用 Rust 做工程決策、蓋出乾淨可測後端**的工程師。README 承諾的四項需求——**架構設計、資料庫串接、網路 API 串接、成品範例**——你全部做到了。
+你已經不再是「跟編譯器打架的初學者」，而是能**用 Rust 做工程決策、蓋出乾淨可測後端**的工程師。README 承諾的四項主線需求——**架構設計、資料庫串接、網路 API 串接、成品範例**——你全部做到了。接下來第 14 章會把這個成品強化成更接近生產環境的高併發服務；第 15～17 章則是 GPU/AI 選修進階路線。
 
 ### 下一步可以往哪走
 

@@ -68,6 +68,40 @@ println!("{}", origin.0);
 struct AlwaysEqual;
 ```
 
+### struct 裡存參考：生命週期會出現
+
+第 02 章說過：只要 struct 裡存的是**參考**，Rust 就需要知道「這個參考至少活多久」。所以型別本身要帶生命週期參數：
+
+```rust
+struct Excerpt<'a> {
+    text: &'a str,
+}
+
+fn first_sentence<'a>(article: &'a str) -> Excerpt<'a> {
+    let end = article.find('.').unwrap_or(article.len());
+    Excerpt { text: &article[..end] }
+}
+
+fn main() {
+    let article = String::from("Rust is fast. It is also safe.");
+    let ex = first_sentence(&article);
+    println!("{}", ex.text);
+}
+```
+
+`Excerpt<'a>` 的意思不是「讓資料活更久」，而是告訴編譯器：`Excerpt` 裡的 `text` 不能比它借用的原始字串活得更久。
+
+```rust
+let ex;
+{
+    let article = String::from("短命文章");
+    ex = Excerpt { text: &article };
+} // article 在這裡被 drop
+// println!("{}", ex.text); // ❌ 不能用，因為 ex.text 會指向已釋放的 article
+```
+
+> **實務建議**：後端的 domain/entity 多半直接擁有資料（例如 `String`），因為它們要跨層、跨 async、放進資料庫或回傳 JSON。`&str` 欄位常出現在「解析器、暫時視圖、零拷貝效能優化」場景。初學做後端時，優先用 owned 型別；等真的需要避免複製，再引入帶生命週期的 struct。
+
 ---
 
 ## 3.3 為 struct 加方法：`impl`

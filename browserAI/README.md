@@ -29,6 +29,26 @@
 
 ---
 
+## 圖學補充課（Graphics Track）
+
+> 主線是「WebGPU 作為 AI 計算後端」，因此不涵蓋傳統 3D 圖學。
+> 這個補充軌補齊**電腦圖學向**的線性代數、3D 相機與光照，適合想從渲染角度理解 WebGPU、或想做 3D 場景的人。建議在主線第 01–03 課之後閱讀。
+
+| 編號 | 檔案 | 主題 | 重點 | 作業 |
+|------|------|------|------|------|
+| G1 | [g01-linear-algebra-for-graphics.md](./g01-linear-algebra-for-graphics.md) | 圖學向線性代數 | 向量、點積、外積、矩陣、變換與齊次座標 | 向量 + 2D 變換互動 playground |
+| G2 | [g02-3d-transforms-and-camera.md](./g02-3d-transforms-and-camera.md) | 3D 變換與相機 | Model/View/Projection、MVP、透視、深度測試 | 會旋轉的 3D 立方體 + 可調相機 |
+| G3 | [g03-lighting-blinn-phong.md](./g03-lighting-blinn-phong.md) | 光照模型（Blinn-Phong） | 法線、normal matrix、Ambient/Diffuse/Specular | 可互動的光照立方體 |
+
+```text
+Graphics Track 路線
+  G1 線性代數（向量/點積/外積/矩陣）
+    → G2 3D 相機（MVP + 深度測試）
+      → G3 光照（Lambert + Blinn-Phong）
+```
+
+---
+
 ## 學習路線建議
 
 ```text
