@@ -1,0 +1,24 @@
+# 相依套件
+node_modules
+.DS_Store
+dist
+dist-ssr
+coverage
+*.local
+
+# 環境變數（本機）
+.env.local
+.env.*.local
+
+# 編輯器目錄與檔案
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# 型別建置快取
+*.tsbuildinfo

@@ -1,0 +1,30 @@
+{
+  "name": "react-app",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "type-check": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "axios": "^1.7",
+    "react": "^19",
+    "react-dom": "^19",
+    "react-router-dom": "^7",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@vitejs/plugin-react": "^4",
+    "typescript": "~5.6",
+    "vite": "^6"
+  }
+}

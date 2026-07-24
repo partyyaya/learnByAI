@@ -252,10 +252,11 @@ console.log(greet(userName));
 
 | 擴充套件 | 說明 |
 |----------|------|
-| TypeScript Importer | 自動匯入模組 |
 | Pretty TypeScript Errors | 更友善的錯誤訊息顯示 |
 | Error Lens | 行內顯示錯誤訊息 |
 | ESLint | 程式碼風格檢查 |
+
+> 💡 自動匯入模組不需要額外裝套件：VS Code 內建的 TypeScript 語言服務就會在打字時跳出自動匯入建議，或用 `Cmd+.`／`Ctrl+.` 選「Add all missing imports」一次補齊。
 
 ### 基本 tsconfig.json
 

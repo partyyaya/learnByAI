@@ -1,0 +1,206 @@
+/* 導覽列 */
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.5rem;
+  background: #1f2933;
+  color: #fff;
+}
+
+.navbar-brand {
+  font-weight: 700;
+}
+
+.navbar-links {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.navbar-links a {
+  color: #cbd5e1;
+}
+
+.navbar-links a.active {
+  color: #fff;
+  font-weight: 600;
+}
+
+.navbar-badge {
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  background: #f59e0b;
+  color: #1f2933;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+/* 版面容器 */
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+/* 首頁 */
+.home p {
+  max-width: 640px;
+}
+
+.button-link {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+}
+
+.button-link:hover {
+  text-decoration: none;
+  background: #1d4ed8;
+}
+
+/* 搜尋框 */
+.search-input {
+  width: 100%;
+  max-width: 360px;
+  margin: 0.5rem 0 1rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 1rem;
+}
+
+.hint {
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+/* 使用者列表 */
+.user-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 1rem;
+}
+
+.user-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.user-card:hover {
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+  transform: translateY(-2px);
+}
+
+.user-card-email {
+  color: #475569;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.user-card-company {
+  color: #94a3b8;
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+/* 收藏按鈕 */
+.favorite-button {
+  align-self: flex-start;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid #f59e0b;
+  border-radius: 999px;
+  background: #fff;
+  color: #b45309;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.favorite-button[aria-pressed='true'] {
+  background: #f59e0b;
+  color: #1f2933;
+}
+
+/* 狀態訊息 */
+.status {
+  color: #475569;
+}
+
+.status-error {
+  color: #dc2626;
+}
+
+/* 使用者詳細頁 */
+.back-link {
+  display: inline-block;
+  margin-bottom: 1rem;
+}
+
+.user-detail-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.user-detail-meta {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1.5rem;
+  color: #334155;
+}
+
+.user-detail-meta li {
+  padding: 0.15rem 0;
+}
+
+/* 文章列表 */
+.post-list {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.post-item {
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+}
+
+.post-item h3 {
+  text-transform: capitalize;
+}
+
+.post-item p {
+  color: #475569;
+  margin: 0;
+}
+
+/* 404 頁面 */
+.not-found {
+  text-align: center;
+  padding: 3rem 1rem;
+}
+
+.not-found h1 {
+  font-size: 3rem;
+  margin: 0 0 0.5rem;
+  color: #94a3b8;
+}
+
+.not-found p {
+  margin: 0 0 1rem;
+  color: #64748b;
+}

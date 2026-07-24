@@ -1,0 +1,16 @@
+/* 全域基礎樣式 */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family:
+    'Inter', system-ui, -apple-system, 'Segoe UI', 'Noto Sans TC', sans-serif;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+a {
+  color: #2563eb;
+}

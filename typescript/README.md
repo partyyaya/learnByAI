@@ -25,6 +25,19 @@
 
 ---
 
+## 實戰專案
+
+除了章節教材，[projects/](./projects/) 資料夾另收錄兩個**可實際執行**、功能互相對應的小型前端專案，示範 TypeScript 在真實專案（狀態管理、路由、API 串接）中的用法，可左右對照：
+
+| 專案 | 技術棧 | 說明 |
+|------|--------|------|
+| [projects/vue-app](./projects/vue-app/) | Vue 3 + Pinia + Vue Router + axios | Vue 版「使用者與文章瀏覽器」 |
+| [projects/react-app](./projects/react-app/) | React 19 + Zustand + React Router + axios | React 版「使用者與文章瀏覽器」 |
+
+詳見 [projects/README.md](./projects/README.md)。
+
+---
+
 ## 課程特色
 
 - **漸進式學習**：從基礎型別到進階應用，循序漸進

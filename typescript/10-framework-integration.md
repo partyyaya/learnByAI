@@ -1068,4 +1068,15 @@ npm install -D @typescript-eslint/parser @typescript-eslint/eslint-plugin
 
 ---
 
+## 延伸：兩個可執行的實戰專案
+
+本章講的是「怎麼在框架裡設定並啟用 TypeScript」。如果想看設定好之後、一個帶有**狀態管理、路由、API 串接**的真實專案長什麼樣，課程另外附了兩個**可實際執行**、功能互相對應的範例專案，方便左右對照同一件事在 Vue 與 React 各怎麼用 TypeScript 寫：
+
+- [projects/vue-app](./projects/vue-app/) — Vue 3 + Pinia + Vue Router + axios
+- [projects/react-app](./projects/react-app/) — React 19 + Zustand + React Router + axios
+
+兩者都串接公開的 JSONPlaceholder API，示範型別化的 axios 封裝、store 型別推論、型別化路由參數與泛型 composable/hook。總覽與對照請見 [projects/README.md](./projects/README.md)。
+
+---
+
 > 下一章：[第十一章 — 裝飾器（Decorators）](./11-decorators.md)
