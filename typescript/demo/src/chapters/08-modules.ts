@@ -75,6 +75,28 @@ export * from "./product";
 // 匯出型別
 export type { User } from "./user";
 
+// ===== 8.1 ES Modules — 動態匯入（Dynamic import()）與頂層 await =====
+
+// 動態匯入：在需要時才載入模組，回傳 Promise<模組物件>
+async function loadUser() {
+  const mod = await import("./user");
+  const user = mod.createUser("Gary", "gary@example.com");
+  console.log(mod.MAX_USERS); // 100
+  return user;
+}
+
+// 常見用途：條件式載入、程式碼分割（code splitting）、避免載入用不到的模組
+async function loadServiceOnDemand(shouldLoad: boolean) {
+  if (!shouldLoad) return null;
+  const { default: UserService } = await import("./user"); // 取出預設匯出
+  return new UserService();
+}
+
+// 頂層 await（需要 target: ES2022 + module: ESNext/NodeNext，本 demo 的 tsconfig 剛好符合）
+const topLevelMod = await import("./user");
+const topLevelGary = topLevelMod.createUser("Gary", "gary@example.com");
+console.log(`已載入使用者：${topLevelGary.name}`);
+
 // ===== 8.2 import type — 型別匯入 =====
 // ✅ 明確的型別匯入（推薦）
 import type { User, Product } from "./types";
@@ -149,7 +171,7 @@ import { User } from "../../../types/user";
 import { formatDate } from "../../utils/date";
 
 // 使用路徑別名
-import { User } from "@types/user";
+import { User } from "@models/user";
 import { formatDate } from "@utils/date";
 import Header from "@components/Header";
 

@@ -174,6 +174,8 @@ let method = HttpMethod.GET; // 編譯後：let method = "GET";
 
 ### 何時使用 Enum vs Union Type？
 
+> ⚠️ 下面兩段刻意分成兩個獨立區塊：`enum Role` 與 `type Role` 同名會產生 TS2567 衝突，實際專案中只會擇一使用。
+
 ```typescript
 // Enum — 適合有邏輯分組的常數
 enum Role {
@@ -182,8 +184,14 @@ enum Role {
   Guest = "GUEST",
 }
 
+let adminRole: Role = Role.Admin;
+```
+
+```typescript
 // Union Type — 適合簡單的字面值聯合（推薦）
 type Role = "admin" | "user" | "guest";
+
+let userRole: Role = "user";
 ```
 
 > 💡 現代 TypeScript 開發中，**字串聯合型別（Union Type）** 通常比 Enum 更受歡迎，因為它更簡潔且不會產生額外的 JavaScript 程式碼。

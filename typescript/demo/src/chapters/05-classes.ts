@@ -54,6 +54,34 @@
   console.log(user.greet()); // "Hi, I'm Gary!"
 }
 
+// --- 5.1（範例三）readonly 參數屬性 + 箭頭函式類別欄位（詞法 this）---
+{
+  class Point {
+    constructor(
+      public readonly x: number,
+      public readonly y: number,
+    ) {}
+  }
+
+  const point = new Point(1, 2);
+  // point.x = 10; // ❌ readonly 參數屬性，編譯期禁止賦值
+
+  class Button {
+    constructor(private label: string) {}
+
+    // 箭頭函式類別欄位：this 在定義時就綁定為目前實例，
+    // 適合當回呼傳遞（例如 addEventListener("click", button.onClick)）而不怕 this 跑掉
+    onClick = () => {
+      console.log(`${this.label} clicked`);
+    };
+  }
+
+  const button = new Button("Submit");
+  const handler = button.onClick;
+  handler(); // "Submit clicked"
+  console.log("5.1 readonly point:", point.x, point.y);
+}
+
 // ===== 5.2 存取修飾符（Access Modifiers）=====
 
 // --- 5.2（範例一）public / protected / private ---
@@ -107,6 +135,39 @@
   // counter.#count; // ❌ 語法層面的私有，無法存取
 }
 
+// --- 5.2（範例三）#field vs private：執行期的差異 ---
+{
+  class WithHash {
+    #secret = "hidden";
+
+    reveal(): string {
+      return this.#secret;
+    }
+
+    // #field in obj：品牌檢查（brand check），只有真正的 WithHash 實例才會是 true
+    static isWithHash(obj: unknown): boolean {
+      return typeof obj === "object" && obj !== null && #secret in obj;
+    }
+  }
+
+  class WithPrivate {
+    private secret = "hidden";
+
+    reveal(): string {
+      return this.secret;
+    }
+  }
+
+  const a = new WithHash();
+  const b = new WithPrivate();
+
+  console.log("5.2 品牌檢查:", WithHash.isWithHash(a), WithHash.isWithHash(b));
+  console.log("5.2 JSON #field:", JSON.stringify(a)); // {} — 看不到 #secret
+  console.log("5.2 JSON private:", JSON.stringify(b)); // {"secret":"hidden"} — private 只是型別層級
+  console.log("5.2 bracket #field:", (a as any)["#secret"]); // undefined，真正的私有
+  console.log("5.2 bracket private:", (b as any)["secret"]); // "hidden"，執行期仍可見
+}
+
 // ===== 5.3 繼承（Inheritance）=====
 // 同一條繼承鏈（Animal / Dog / Cat）放在同一個區塊內。
 {
@@ -148,6 +209,34 @@
   const cat = new Cat("Whiskers");
   console.log(cat.makeSound()); // "Whiskers says Meow!"
   console.log(cat.purr()); // "Whiskers is purring..."
+}
+
+// --- 5.3 override 關鍵字（TS 4.3+）：覆寫父類別的具體方法 ---
+{
+  class Employee {
+    constructor(protected name: string) {}
+
+    describe(): string {
+      return `${this.name} is an employee`;
+    }
+  }
+
+  class Manager extends Employee {
+    constructor(
+      name: string,
+      private teamSize: number,
+    ) {
+      super(name);
+    }
+
+    // override 明確標示：這是覆寫父類別的具體方法（非抽象）
+    override describe(): string {
+      return `${this.name} manages a team of ${this.teamSize}`;
+    }
+  }
+
+  const manager = new Manager("Alice", 5);
+  console.log(manager.describe()); // "Alice manages a team of 5"
 }
 
 // ===== 5.4 抽象類別（Abstract Classes）=====
@@ -360,6 +449,25 @@
   const db1 = Database.getInstance();
   const db2 = Database.getInstance();
   console.log(db1 === db2); // true — 同一個實例
+}
+
+// --- 5.7（範例三）ES2022 static 初始化區塊 ---
+{
+  class AppConfig {
+    static apiUrl: string;
+    static isProduction: boolean;
+
+    // ES2022：static 初始化區塊，可以做比單一運算式更複雜的邏輯
+    static {
+      const env = process.env.NODE_ENV ?? "development";
+      this.isProduction = env === "production";
+      this.apiUrl = this.isProduction
+        ? "https://api.example.com"
+        : "http://localhost:3000";
+    }
+  }
+
+  console.log("5.7 static block:", AppConfig.apiUrl, AppConfig.isProduction);
 }
 
 // ===== 5.8 泛型類別 =====

@@ -45,6 +45,34 @@ class User {
 }
 ```
 
+同樣的語法也可以加上 `readonly`，鎖定參數屬性建構後不可修改；另外，類別欄位若賦值為箭頭函式，`this` 在定義當下就會綁定為目前實例，很適合當回呼傳遞：
+
+```typescript
+class Point {
+  constructor(
+    public readonly x: number,
+    public readonly y: number,
+  ) {}
+}
+
+const point = new Point(1, 2);
+// point.x = 10; // ❌ readonly 參數屬性，編譯期禁止賦值
+
+class Button {
+  constructor(private label: string) {}
+
+  // 箭頭函式類別欄位：this 在定義時就綁定為目前實例，
+  // 適合當回呼傳遞（例如 addEventListener("click", button.onClick)）而不怕 this 跑掉
+  onClick = () => {
+    console.log(`${this.label} clicked`);
+  };
+}
+
+const button = new Button("Submit");
+const handler = button.onClick;
+handler(); // "Submit clicked"
+```
+
 ---
 
 ## 5.2 存取修飾符（Access Modifiers）
@@ -105,6 +133,8 @@ const counter = new Counter();
 // counter.#count; // ❌ 語法層面的私有，無法存取
 ```
 
+> **`#field` vs `private` 的差異**：`#count` 是 JavaScript 執行期真正封裝的私有欄位——外部無法透過 `obj["#count"]` 或 `JSON.stringify(obj)` 存取到它，甚至能用 `#count in obj` 做「品牌檢查」（brand check）判斷物件是否為同一類別的實例；`private` 則只是 TypeScript 型別層級的檢查，編譯後會被抹除，執行期仍可透過 `obj["balance"]` 或 `JSON.stringify(obj)` 看到該欄位，只是在「型別」上被擋下來而已。
+
 ---
 
 ## 5.3 繼承（Inheritance）
@@ -149,6 +179,39 @@ const cat = new Cat("Whiskers");
 console.log(cat.makeSound()); // "Whiskers says Meow!"
 console.log(cat.purr());      // "Whiskers is purring..."
 ```
+
+### override 關鍵字（TS 4.3+）
+
+上面的 Dog、Cat 只是「新增」方法，並沒有覆寫父類別已存在的具體方法。若子類別要覆寫父類別的**具體**（非 abstract）方法，建議加上 `override` 關鍵字：
+
+```typescript
+class Employee {
+  constructor(protected name: string) {}
+
+  describe(): string {
+    return `${this.name} is an employee`;
+  }
+}
+
+class Manager extends Employee {
+  constructor(
+    name: string,
+    private teamSize: number,
+  ) {
+    super(name);
+  }
+
+  // override 明確標示：這是覆寫父類別的具體方法（非抽象）
+  override describe(): string {
+    return `${this.name} manages a team of ${this.teamSize}`;
+  }
+}
+
+const manager = new Manager("Alice", 5);
+console.log(manager.describe()); // "Alice manages a team of 5"
+```
+
+建議在 `tsconfig.json` 開啟 `"noImplicitOverride": true`：只要子類別覆寫了父類別方法卻忘記加 `override`，編譯器就會報錯。這樣一來，未來若父類別的方法被改名或移除，子類別裡「原本想覆寫」的方法就不會悄悄變成一個沒人呼叫的全新方法，而是立刻在編譯期被抓出來。
 
 ---
 
@@ -359,6 +422,28 @@ class Database {
 const db1 = Database.getInstance();
 const db2 = Database.getInstance();
 console.log(db1 === db2); // true — 同一個實例
+```
+
+### ES2022 static 初始化區塊（`static { }`）
+
+`static { ... }` 讓你在類別內執行任意的靜態初始化邏輯（例如依賴環境變數、計算多個靜態屬性之間的相依順序），比單一運算式更有彈性：
+
+```typescript
+class AppConfig {
+  static apiUrl: string;
+  static isProduction: boolean;
+
+  // ES2022：static 初始化區塊，可以做比單一運算式更複雜的邏輯
+  static {
+    const env = process.env.NODE_ENV ?? "development";
+    this.isProduction = env === "production";
+    this.apiUrl = this.isProduction
+      ? "https://api.example.com"
+      : "http://localhost:3000";
+  }
+}
+
+console.log(AppConfig.apiUrl, AppConfig.isProduction);
 ```
 
 ---

@@ -66,6 +66,29 @@
   createUser("Gary", "admin");  // { name: "Gary", role: "admin" }
 }
 
+// --- NoInfer<T>（TypeScript 5.4+） ---
+{
+  type Status = "active" | "inactive" | "suspended";
+
+  // 沒有 NoInfer：T 同時由 value 與 fallback 推斷
+  function setDefaultLoose<T>(value: T, fallback: T): T {
+    return value ?? fallback;
+  }
+
+  const currentStatus: Status = "active";
+  const loose = setDefaultLoose(currentStatus, "not-a-status"); // ⚠️ 不會報錯！T 被拓寬成 "active" | "not-a-status"
+
+  // 使用 NoInfer：fallback 不參與型別推斷，只能是 value 推斷出的型別
+  function setDefault<T>(value: T, fallback: NoInfer<T>): T {
+    return value ?? fallback;
+  }
+
+  const strict = setDefault(currentStatus, "active"); // ✅ OK
+  // setDefault(currentStatus, "not-a-status"); // ❌ 正確報錯：不是合法的 Status
+
+  console.log(loose, strict);
+}
+
 // ===== 3.3 剩餘參數（Rest Parameters）=====
 {
   // 使用 ... 接收不定數量的參數
@@ -115,6 +138,25 @@
   }
 }
 
+// --- 箭頭函式版本的多載：改用多個呼叫簽名的 interface ---
+{
+  // function 宣告可以疊加多個多載簽名；賦值給變數的箭頭函式做不到，
+  // 需改用具有多個呼叫簽名的 interface（或 type）來達到同樣效果。
+  interface Parse {
+    (value: string): number;
+    (value: number): string;
+  }
+
+  const parse: Parse = ((value: string | number) => {
+    if (typeof value === "string") {
+      return parseInt(value, 10);
+    }
+    return value.toString();
+  }) as Parse;
+
+  console.log(parse("42"), parse(42));
+}
+
 // ===== 3.5 回呼函式（Callback）型別 =====
 {
   // 定義回呼型別
@@ -126,7 +168,8 @@
       const result = `Data from ${url}`;
       callback(null, result);
     } catch (error) {
-      callback(error as Error);
+      // catch 到的 error 型別是 unknown，須先型別縮窄（見 2.5 unknown）才能安全使用
+      callback(error instanceof Error ? error : new Error(String(error)));
     }
   }
 

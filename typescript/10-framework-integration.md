@@ -105,11 +105,17 @@ const props = withDefaults(defineProps<Props>(), {
   count: 0,
 })
 
-// 定義 emits 型別
+// 定義 emits 型別（呼叫簽章寫法，Vue 3.0+ 皆可用）
 const emit = defineEmits<{
   (e: 'update', value: number): void
   (e: 'close'): void
 }>()
+
+// Vue 3.3+ 起可用更簡潔的「型別字面值」寫法（推薦用於新專案）：
+// const emit = defineEmits<{
+//   update: [value: number]
+//   close: []
+// }>()
 
 // ref 會自動推斷型別
 const message = ref('Hello')         // Ref<string>
@@ -180,6 +186,13 @@ echo '/// <reference types="vite/client" />' > src/env.d.ts
 ```typescript
 import type { Ref, ComputedRef, PropType } from 'vue'
 
+// 本節範例共用的 User 型別
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
 // Ref 型別
 const name: Ref<string> = ref('Gary')
 
@@ -202,6 +215,7 @@ const state = reactive<State>({
 import type { InjectionKey } from 'vue'
 
 const userKey: InjectionKey<User> = Symbol('user')
+const currentUser: User = { id: 1, name: 'Gary', email: 'gary@example.com' }
 provide(userKey, currentUser)
 const user = inject(userKey) // 型別為 User | undefined
 
@@ -264,6 +278,8 @@ my-react-app/
 ```
 
 > 關鍵依賴：`typescript`、`@types/react`、`@types/react-dom`。
+
+> 💡 **React 19 新增**：函式元件現在可以直接把 `ref` 當成一般 prop 傳入與讀取，不需要再用 `forwardRef` 包裝元件。
 
 **2. 檢查 tsconfig.json**
 
@@ -343,6 +359,12 @@ function Layout({ children, title }: LayoutProps) {
 }
 
 // 使用 useState 搭配型別
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
 function UserList() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(false)        // 自動推斷 boolean
@@ -558,6 +580,13 @@ export default defineNuxtConfig({
 // ref, computed, watch 等來自 Vue
 // useRoute, useRouter, useFetch 等來自 Nuxt
 
+// 本節範例共用的 User 型別
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
 const { data, pending, error } = await useFetch<User[]>('/api/users')
 // data 的型別自動推斷為 Ref<User[] | null>
 
@@ -604,6 +633,15 @@ export default defineEventHandler(async (event) => {
 
 ```typescript
 // composables/useAuth.ts
+
+// 與上面 pages/users/[id].vue 相同的 User 型別，這裡整段複製供本檔案獨立閱讀
+interface User {
+  id: number
+  name: string
+  email: string
+  role: 'admin' | 'user'
+}
+
 interface AuthState {
   user: User | null
   isAuthenticated: boolean
@@ -793,6 +831,14 @@ export default async function UsersPage() {
 
 ```tsx
 // src/app/users/[id]/page.tsx — 動態路由
+
+// 與 src/app/page.tsx 相同的 User 型別，這裡整段複製供本檔案獨立閱讀
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
 interface PageProps {
   params: Promise<{ id: string }>
 }
@@ -822,6 +868,13 @@ export async function generateStaticParams() {
 ```tsx
 // src/app/api/users/route.ts — API Route
 import { NextRequest, NextResponse } from 'next/server'
+
+// 與 src/app/page.tsx 相同的 User 型別，這裡整段複製供本檔案獨立閱讀
+interface User {
+  id: number
+  name: string
+  email: string
+}
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams

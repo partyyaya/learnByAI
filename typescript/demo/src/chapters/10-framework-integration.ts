@@ -30,11 +30,17 @@ const props = withDefaults(defineProps<Props>(), {
   count: 0,
 })
 
-// 定義 emits 型別
+// 定義 emits 型別（呼叫簽章寫法，Vue 3.0+ 皆可用）
 const emit = defineEmits<{
   (e: 'update', value: number): void
   (e: 'close'): void
 }>()
+
+// Vue 3.3+ 起可用更簡潔的「型別字面值」寫法（推薦用於新專案）：
+// const emit = defineEmits<{
+//   update: [value: number]
+//   close: []
+// }>()
 
 // ref 會自動推斷型別
 const message = ref('Hello')         // Ref<string>
@@ -58,6 +64,13 @@ const doubled = computed(() => props.count * 2) // ComputedRef<number>
 // ===== 10.1 Vue:常用型別 =====
 import type { Ref, ComputedRef, PropType } from 'vue'
 
+// 本節範例共用的 User 型別
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
 // Ref 型別
 const name: Ref<string> = ref('Gary')
 
@@ -80,6 +93,7 @@ const state = reactive<State>({
 import type { InjectionKey } from 'vue'
 
 const userKey: InjectionKey<User> = Symbol('user')
+const currentUser: User = { id: 1, name: 'Gary', email: 'gary@example.com' }
 provide(userKey, currentUser)
 const user = inject(userKey) // 型別為 User | undefined
 
@@ -133,6 +147,12 @@ function Layout({ children, title }: LayoutProps) {
 }
 
 // 使用 useState 搭配型別
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
 function UserList() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(false)        // 自動推斷 boolean

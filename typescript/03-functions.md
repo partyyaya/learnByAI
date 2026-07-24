@@ -68,6 +68,30 @@ createUser("Gary");           // { name: "Gary", role: "user" }
 createUser("Gary", "admin");  // { name: "Gary", role: "admin" }
 ```
 
+### NoInfer\<T\>（TypeScript 5.4+）
+
+一般情況下，`T` 會同時從 `value` 和 `fallback` 兩個參數推斷，導致 `fallback` 若傳入預期範圍外的字面值，`T` 會被意外拓寬，讓本不該通過的值也通過型別檢查。用 `NoInfer<T>` 包住 `fallback`，讓它「只被檢查、不參與推斷」，型別完全以 `value` 為準。
+
+```typescript
+type Status = "active" | "inactive" | "suspended";
+
+// 沒有 NoInfer：T 同時由 value 與 fallback 推斷
+function setDefaultLoose<T>(value: T, fallback: T): T {
+  return value ?? fallback;
+}
+
+const currentStatus: Status = "active";
+setDefaultLoose(currentStatus, "not-a-status"); // ⚠️ 不會報錯！T 被拓寬成 "active" | "not-a-status"
+
+// 使用 NoInfer：fallback 不參與型別推斷，只能是 value 推斷出的型別
+function setDefault<T>(value: T, fallback: NoInfer<T>): T {
+  return value ?? fallback;
+}
+
+setDefault(currentStatus, "active");        // ✅ OK
+// setDefault(currentStatus, "not-a-status"); // ❌ 正確報錯：不是合法的 Status
+```
+
 ---
 
 ## 3.3 剩餘參數（Rest Parameters）
@@ -119,6 +143,23 @@ function querySelector(selector: string): HTMLElement {
 }
 ```
 
+> 💡 以上多載都寫在 `function` 宣告上。如果把函式改成賦值給變數的箭頭函式（`const parse = (value: string | number) => ...`），無法直接在它身上疊加多個多載簽名——箭頭函式只有一個型別位置可以標註。要達到同樣效果，得改用具有多個呼叫簽名的 `interface`（或 `type`）：
+
+```typescript
+// 箭頭函式版本的多載：改用多個呼叫簽名的 interface
+interface Parse {
+  (value: string): number;
+  (value: number): string;
+}
+
+const parse: Parse = ((value: string | number) => {
+  if (typeof value === "string") {
+    return parseInt(value, 10);
+  }
+  return value.toString();
+}) as Parse;
+```
+
 ---
 
 ## 3.5 回呼函式（Callback）型別
@@ -133,7 +174,8 @@ function fetchData(url: string, callback: Callback): void {
     const result = `Data from ${url}`;
     callback(null, result);
   } catch (error) {
-    callback(error as Error);
+    // catch 到的 error 型別是 unknown，須先型別縮窄（見 2.5 unknown）才能安全使用
+    callback(error instanceof Error ? error : new Error(String(error)));
   }
 }
 
@@ -212,6 +254,13 @@ identity("hello");         // 也可以省略，TypeScript 會自動推斷
 ### Promise 回傳型別
 
 ```typescript
+// 自足：補上此範例用到的 User 型別定義
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
 async function fetchUser(id: number): Promise<User> {
   const response = await fetch(`/api/users/${id}`);
   return response.json();

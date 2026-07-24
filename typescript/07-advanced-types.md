@@ -29,8 +29,40 @@ function getArea(shape: Shape): number {
       return shape.side ** 2;
     case "rectangle":
       return shape.width * shape.height;
+    default: {
+      // 窮盡性檢查：若 shape 的型別不是 never，表示還有分支沒處理
+      const _exhaustive: never = shape;
+      throw new Error(`Unhandled shape: ${JSON.stringify(_exhaustive)}`);
+    }
   }
 }
+```
+
+加上 `default` 分支的窮盡性檢查（exhaustiveness check）後，未來替 `Shape` 新增一種變體（例如 `{ kind: "triangle"; ... }`）卻忘記在 `getArea` 補上對應 `case` 時，`shape` 在 `default` 分支的型別就不會是 `never`，`const _exhaustive: never = shape` 這一行會在**編譯期**直接報錯，而不用等到執行期才發現漏處理。
+
+### satisfies 運算子（TS 4.9+）
+
+`satisfies` 讓你在檢查物件是否符合某個型別結構的同時，仍然保留物件的字面值型別，跟一般型別標註（`: T`）或 `as T` 斷言都不一樣：
+
+```typescript
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "square"; side: number }
+  | { kind: "rectangle"; width: number; height: number };
+
+// 一般型別標註：值被拓寬成 Shape，之後只能存取聯合型別共有欄位
+const configA: Shape = { kind: "circle", radius: 5 };
+// configA.radius; // ❌ 型別是 Shape，TypeScript 不知道一定是 circle 分支
+
+// as 斷言：不會做完整結構檢查，多打的欄位可能就這樣溜過去
+const configB = { kind: "circle", radius: 5, extraFlag: true } as Shape;
+
+// satisfies：檢查是否符合 Shape 結構（含多餘屬性檢查），同時保留字面值型別
+const configC = { kind: "circle", radius: 5 } satisfies Shape;
+configC.radius; // ✅ 型別仍是 { kind: "circle"; radius: number }，可以直接存取
+
+// const configD = { kind: "circle", radius: 5, extraFlag: true } satisfies Shape;
+// ❌ 物件字面值有多餘屬性 extraFlag，satisfies 會抓出來
 ```
 
 ---
@@ -198,6 +230,28 @@ type ElementOf<T> = T extends (infer E)[] ? E : never;
 type Item = ElementOf<string[]>; // string
 ```
 
+### 分佈式條件型別（Distributive Conditional Types）
+
+當條件型別檢查的對象是一個「裸露」的型別參數（naked type parameter），且傳入聯合型別時，TypeScript 會把條件型別分別套用到每個成員上再組合回聯合型別，這稱為分佈式（distributive）；用 `[T] extends [U]` 把 `T` 包進元組，就能關閉分佈行為：
+
+```typescript
+// T 是裸露的型別參數 → 對聯合型別會分佈
+type ToArray<T> = T extends any ? T[] : never;
+
+type StrOrNumArray = ToArray<string | number>;
+// 分佈後等於 ToArray<string> | ToArray<number>，也就是 string[] | number[]
+// 而不是 (string | number)[]
+
+// [T] extends [U]：把 T 包進元組，關閉分佈行為
+type ToArrayNonDist<T> = [T] extends [any] ? T[] : never;
+
+type CombinedArray = ToArrayNonDist<string | number>;
+// (string | number)[]，整個聯合型別被當成單一整體處理
+
+const a: StrOrNumArray = ["x", "y"]; // ✅ 只能是 string[] 或 number[] 其中一種
+const b: CombinedArray = ["x", 1];   // ✅ 混合陣列也可以
+```
+
 ---
 
 ## 7.5 映射型別（Mapped Types）
@@ -230,9 +284,40 @@ type OptionalUser = Optional<User>;
 // { id?: number; name?: string; email?: string }
 ```
 
+除了加上 `readonly` / `?`，也可以在前面加負號 `-` 來**移除**修飾詞：
+
+```typescript
+type Mutable<T> = {
+  -readonly [K in keyof T]: T[K];
+};
+
+type Concrete<T> = {
+  [K in keyof T]-?: T[K];
+};
+
+interface Point {
+  readonly x?: number;
+  readonly y?: number;
+}
+
+type MutablePoint = Mutable<Point>;   // { x?: number; y?: number }
+type ConcretePoint = Concrete<Point>; // { readonly x: number; readonly y: number }
+
+const mp: MutablePoint = {};
+mp.x = 10; // ✅ 已移除 readonly，可以修改
+
+const cp: ConcretePoint = { x: 1, y: 2 }; // ✅ 已移除 ?，兩個屬性都必填
+```
+
 ### 鍵值重新映射（Key Remapping）
 
 ```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
 // 為所有鍵加上前綴
 type Prefixed<T, P extends string> = {
   [K in keyof T as `${P}${Capitalize<string & K>}`]: T[K];
@@ -333,7 +418,37 @@ type UserReturn = ReturnType<typeof createUser>;
 
 // Parameters<T> — 取得函式參數型別
 type CreateParams = Parameters<typeof createUser>; // []
+
+// Awaited<T> — 攤平 Promise（含巢狀 Promise），取得最終解析出的值型別
+interface ApiResponse<T> {
+  data: T;
+  status: number;
+}
+
+async function fetchApi<T>(url: string): Promise<ApiResponse<T>> {
+  const response = await fetch(url);
+  return response.json();
+}
+
+type FetchedUser = Awaited<ReturnType<typeof fetchApi<User>>>;
+// { data: User; status: number }
 ```
+
+> **常見陷阱**：`Omit` 對聯合型別不會逐一分佈處理，而是先取所有成員「共同」的鍵，可能得到出乎意料的結果：
+>
+> ```typescript
+> type A = { kind: "a"; x: number };
+> type B = { kind: "b"; y: number };
+> type Both = A | B;
+>
+> type BadOmit = Omit<Both, "kind">;
+> // 預期可能是 { x: number } | { y: number }
+> // 但 keyof (A | B) 只會取兩者共同的鍵（也就是只有 "kind"），
+> // 排除 "kind" 之後剩下的鍵是 never，結果 BadOmit 實際上是 {}，
+> // x、y 兩個屬性都在型別上直接消失了
+>
+> const bad: BadOmit = {}; // ✅ 型別上完全合法，但已經失去 x / y 的資訊
+> ```
 
 ### 組合工具型別
 

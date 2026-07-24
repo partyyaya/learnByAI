@@ -79,6 +79,31 @@ type T3 = 1 extends number ? true : false;        // true
 type T4 = { a: 1; b: 2 } extends { a: 1 } ? true : false; // true（多的屬性仍相容）
 ```
 
+### 型變標註 `in` / `out`（TypeScript 4.7+）
+
+`extends` 問的是「A 能不能賦值給 B」，而**型變（variance）** 問的是：當 `A extends B` 成立時，包了一層泛型的 `Box<A>` 是否也該滿足 `Box<A> extends Box<B>`——這正是型別層級程式設計裡「精確描述型別關係」的核心問題之一。第 6 章 6.4 節已經示範過 `out`（協變，`T` 只出現在讀出位置）與 `in`（逆變，`T` 只出現在寫入位置）這兩種標註；這裡補上第三種、也是最嚴格的一種——`in out`（不變）：當 `T` 同時出現在讀跟寫的位置（例如可讀可寫的屬性），就必須讀寫兩個方向都能互相賦值，只滿足其中一邊是不夠的：
+
+```typescript
+class Animal {
+  name = "";
+}
+class Dog extends Animal {
+  breed = ""; // Dog 比 Animal 多這個欄位
+}
+
+interface Container<in out T> {
+  value: T;
+}
+
+const dogContainer: Container<Dog> = { value: new Dog() };
+let animalContainer: Container<Animal>;
+// ❌ 不變：Dog extends Animal 成立，但 Animal extends Dog 不成立（缺少 breed），
+//    兩個方向沒有同時滿足，所以 Container<Dog> 不是 Container<Animal> 的子型別
+animalContainer = dogContainer;
+```
+
+不標記時 TypeScript 仍會自動推導型變方向，但推導在遞迴或複雜型別上可能昂貴、甚至不夠精確；明確標註能讓編譯器檢查更快，也讓錯誤訊息更貼近問題根源。
+
 ### 條件型別 = if / else
 
 ```typescript
@@ -286,6 +311,10 @@ type Replace<
 
 type Replaced = Replace<"hello world", "world", "TypeScript">; // "hello TypeScript"
 
+// 💡 TypeScript 內建 4 個「內建字串操作型別」（intrinsic string manipulation types），
+//    不需要自己實作：Uppercase<S>、Lowercase<S>、Capitalize<S>、Uncapitalize<S>。
+//    下面的 SnakeToCamel 就用到其中的 Capitalize。
+
 // snake_case 轉 camelCase
 type SnakeToCamel<S extends string> = S extends `${infer Head}_${infer Tail}`
   ? `${Head}${Capitalize<SnakeToCamel<Tail>>}`
@@ -489,6 +518,21 @@ bus.emit("submit", { formId: "login" }); // ✅
 ### 除錯技巧
 
 ```typescript
+// 自足：Split 定義見 13.6，這裡整段複製供技巧二使用
+type Split<
+  S extends string,
+  D extends string,
+> = S extends `${infer Head}${D}${infer Tail}` ? [Head, ...Split<Tail, D>] : [S];
+
+// 自足：Get 定義見 13.8 案例一，這裡整段複製供技巧三使用
+type Get<T, P extends string> = P extends `${infer Key}.${infer Rest}`
+  ? Key extends keyof T
+    ? Get<T[Key], Rest>
+    : never
+  : P extends keyof T
+    ? T[P]
+    : never;
+
 // 技巧一：用一個「展開」型別強制 IDE hover 顯示最終結果
 type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
 
@@ -496,8 +540,15 @@ type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
 type Step1 = Split<"a-b-c", "-">; // 滑鼠移上去看是不是 ["a","b","c"]
 
 // 技巧三：善用 @ts-expect-error 標記「這裡本來就該報錯」
-// @ts-expect-error 路徑不存在，預期報錯
-type ShouldFail = Get<{ a: 1 }, "b">;
+// 注意：本章的 Get 對錯誤路徑回傳 never（並不會報錯），@ts-expect-error 在這裡不會抓到任何東西，
+// 反而會因為「沒有實際錯誤可抓」而讓 TypeScript 回報 TS2578（未使用的 @ts-expect-error 指令）：
+type ShouldBeNever = Get<{ a: 1 }, "b">; // 滑鼠移上去看是不是 never（不是編譯錯誤）
+
+// 若想讓錯誤路徑在編譯期真的被擋下（@ts-expect-error 才有東西可抓），
+// 要把 P 收斂成 keyof T，而不是任意 string：
+type StrictGet<T, P extends keyof T> = T[P];
+// @ts-expect-error 'b' 不存在於 { a: 1 }，預期報錯
+type ShouldFail = StrictGet<{ a: 1 }, "b">;
 ```
 
 ### 什麼時候該收手？
@@ -512,6 +563,8 @@ type ShouldFail = Get<{ a: 1 }, "b">;
 
 複雜型別也需要測試。社群常用兩個工具型別來斷言型別是否符合預期，這也是 [type-challenges](https://github.com/type-challenges/type-challenges) 使用的標準寫法。
 
+為什麼 `Equal` 要寫成這種「雙重條件式函式」比較，而不是直接寫 `X extends Y ? Y extends X ? true : false : false`？因為 `any` 這個型別對 `extends` 來說是特例：**任何型別 `extends any` 都成立，`any extends 任何型別` 也都成立**，所以簡單版本會誤判 `Equal<any, string>` 為 `true`（`any` 混進去卻沒被抓出來）。把 `X`、`Y` 分別包進兩個函式型別的回傳位置再互相比較，能利用 TypeScript 對函式型別比較的實作細節，讓 `any` 和其他型別不再被視為互相相容，藉此正確區分出 `any`。
+
 ```typescript
 // Equal：嚴格比較兩個型別是否完全相等
 type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y
@@ -522,6 +575,41 @@ type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y
 
 // Expect：只接受 true，若傳入 false 就會是型別錯誤
 type Expect<T extends true> = T;
+
+// 自足：把下面測試會用到的型別，從本章前面各節整段複製進來
+type BuildTuple<
+  L extends number,
+  T extends unknown[] = [],
+> = T["length"] extends L ? T : BuildTuple<L, [...T, unknown]>;
+
+type Add<A extends number, B extends number> = [
+  ...BuildTuple<A>,
+  ...BuildTuple<B>,
+]["length"];
+
+type Reverse<T extends unknown[]> = T extends [infer Head, ...infer Tail]
+  ? [...Reverse<Tail>, Head]
+  : [];
+
+type Split<
+  S extends string,
+  D extends string,
+> = S extends `${infer Head}${D}${infer Tail}` ? [Head, ...Split<Tail, D>] : [S];
+
+type SnakeToCamel<S extends string> = S extends `${infer Head}_${infer Tail}`
+  ? `${Head}${Capitalize<SnakeToCamel<Tail>>}`
+  : S;
+
+type PathParams<Path extends string> =
+  Path extends `${string}:${infer Param}/${infer Rest}`
+    ? Param | PathParams<`/${Rest}`>
+    : Path extends `${string}:${infer Param}`
+      ? Param
+      : never;
+
+type RouteParams<Path extends string> = {
+  [K in PathParams<Path>]: string;
+};
 
 // ---- 型別測試 ----
 type Cases = [
@@ -534,7 +622,7 @@ type Cases = [
 // 只要有任何一個型別不符，這一行就會出現紅線
 ```
 
-其中 `Reverse`、`Add`、`Split`、`SnakeToCamel`、`RouteParams` 的定義請見本章前面各節。把它們和上面的測試放進同一個 `.ts` 檔即可完整驗證。
+把整段複製進同一個 `.ts` 檔即可完整驗證。
 
 ---
 

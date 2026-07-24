@@ -200,9 +200,49 @@ const user: User = { name: "Gary", age: 30 };
 // type User = { age: number }; // ❌ 重複定義
 ```
 
+實務上宣告合併真正常用的場合，是**模組擴充（Module Augmentation）**——替第三方套件或全域型別補充自訂屬性，而不是像上面那樣在同一檔案裡刻意重複宣告：
+
+```typescript
+// 替 Express 的 Request 型別加上自訂屬性（例如登入後掛上的 user）
+declare global {
+  namespace Express {
+    interface Request {
+      user?: { id: number; name: string };
+    }
+  }
+}
+
+// 之後在任何看得到這份宣告的檔案中，req.user 都能直接使用且有型別
+// app.get("/me", (req, res) => res.json(req.user));
+
+export {}; // declare global 只能出現在「模組」裡；沒有任何 import/export 的檔案會被當成純指令碼，需要這行把它變成模組
+```
+
+> 💡 這才是宣告合併存在的主因：讓你在不修改套件原始碼的情況下，為既有型別「補洞」。
+
 ### 何時使用哪個？
 
 ```typescript
+// 自足：補上此範例引用到的型別定義
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+interface CreateUserDto {
+  name: string;
+  email: string;
+  password: string;
+}
+interface Success<T> {
+  ok: true;
+  value: T;
+}
+interface Failure {
+  ok: false;
+  error: string;
+}
+
 // ✅ 使用 Interface：定義物件結構、需要繼承、對外 API
 interface UserService {
   getUser(id: number): Promise<User>;
@@ -248,6 +288,16 @@ const profile: UserProfile = {
 };
 ```
 
+> ⚠️ 固定屬性的型別必須能指派給索引簽名的值型別，否則會出現 TS2411 錯誤：
+>
+> ```typescript
+> interface Invalid {
+>   name: string;
+>   age: number;          // ❌ TS2411：number 不能指派給索引簽名的 string
+>   [key: string]: string;
+> }
+> ```
+
 ### Record 工具型別（替代方案）
 
 ```typescript
@@ -275,6 +325,12 @@ const permissions: RolePermissions = {
 ## 4.6 介面與函式
 
 ```typescript
+// 自足：補上 SearchFunc 引用到的 SearchResult 型別
+interface SearchResult {
+  id: number;
+  title: string;
+}
+
 // 定義可呼叫的介面
 interface SearchFunc {
   (query: string, limit?: number): Promise<SearchResult[]>;
@@ -310,6 +366,13 @@ console.log(log.level);   // "info"
 ### API Response 型別設計
 
 ```typescript
+// 自足：補上此範例引用到的 User 型別
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
 // 通用回應結構
 interface ApiResponse<T> {
   code: number;
@@ -378,6 +441,12 @@ interface Cat extends Pet { /* ... */ }
 將以下 Type 改寫為 Interface，並思考哪些無法用 Interface 表達：
 
 ```typescript
+// 自足：補上 UserMap / ReadonlyUser 引用到的 User
+interface User {
+  id: number;
+  name: string;
+}
+
 type Status = "pending" | "active" | "inactive";
 type Point = [number, number];
 type UserMap = Record<string, User>;

@@ -59,6 +59,29 @@
   console.log("6.2 toArray:", toArray(1), toArray2("a"));
 }
 
+// ===== 6.2 NoInfer<T>（TS 5.4+）避免推斷型別被意外撐大 =====
+{
+  // 沒有 NoInfer：fallbackRole 的型別也會拿去推斷 T，讓 T 被意外撐大
+  function pickRole<T extends string>(roles: T[], fallbackRole?: T): T {
+    return fallbackRole ?? roles[0];
+  }
+
+  const role = pickRole(["admin", "user"], "guest");
+  // role 的型別被撐大成 "admin" | "user" | "guest"，
+  // 即使 "guest" 根本不在 roles 陣列裡，也不會報錯
+
+  // 用 NoInfer<T> 排除 fallbackRole 對 T 的推斷貢獻，只讓 roles 陣列決定 T
+  function pickRoleFixed<T extends string>(roles: T[], fallbackRole?: NoInfer<T>): T {
+    return fallbackRole ?? roles[0];
+  }
+
+  const roleFixed = pickRoleFixed(["admin", "user"], "admin"); // ✅ T 只會是 "admin" | "user"
+  // pickRoleFixed(["admin", "user"], "guest");
+  // ❌ Argument of type '"guest"' is not assignable to parameter of type '"admin" | "user" | undefined'
+
+  console.log("6.2 NoInfer:", role, roleFixed);
+}
+
 // ===== 6.3 泛型約束（Generic Constraints）=====
 {
   // 約束 T 必須有 length 屬性
@@ -134,12 +157,14 @@
     return response.json();
   }
 
-  // 呼叫時指定型別（用 async IIFE 包住，避免區塊內的頂層 await 問題）
-  void (async () => {
+  // 呼叫時指定型別 — 刻意不執行這個 IIFE：fetch("/api/users/1") 是相對路徑，
+  // 在 Node.js 環境下會直接丟出 "Failed to parse URL" 而讓整個範例中斷，
+  // 這裡只是要展示呼叫時的型別標注寫法，不需要真的發出網路請求
+  async () => {
     const userRes = await fetchApi<User>("/api/users/1");
     // userRes.data 的型別是 User
     console.log("6.4 fetchApi:", userRes.data);
-  });
+  };
 
   // 讓型別別名被使用一下，避免被視為完全孤立
   const _demoUserResponse: UserResponse = {
@@ -155,6 +180,30 @@
     timestamp: "2026-07-23",
   };
   console.log("6.4 ApiResponse:", _demoUserResponse.data, _demoProductResponse.data);
+}
+
+// ===== 6.4 型別變異標記 in / out（TS 4.7+）=====
+{
+  interface Producer<out T> {
+    produce(): T;
+  }
+
+  interface Consumer<in T> {
+    consume(value: T): void;
+  }
+
+  class Animal {}
+  class Dog extends Animal {}
+
+  const dogProducer: Producer<Dog> = { produce: () => new Dog() };
+  // out T：Producer<Dog> 可以當作 Producer<Animal> 使用（協變）
+  const producer: Producer<Animal> = dogProducer;
+
+  const animalConsumer: Consumer<Animal> = { consume: (a) => console.log(a) };
+  // in T：Consumer<Animal> 可以當作 Consumer<Dog> 使用（逆變）
+  const consumer: Consumer<Dog> = animalConsumer;
+
+  console.log("6.4 variance in/out:", producer.produce(), typeof consumer.consume);
 }
 
 // ===== 6.4 泛型介面 — Repository 模式 =====
@@ -377,6 +426,12 @@
   }
 
   // 用 type（而非 interface）才能滿足 Record<string, unknown> 的索引簽章約束
+  interface AppEventsBad {
+    login: { userId: number };
+  }
+  // new EventEmitter<AppEventsBad>();
+  // ❌ interface 沒有索引簽章，不滿足 Record<string, unknown> 的約束
+
   type AppEvents = {
     login: { userId: number };
     logout: { userId: number; reason: string };

@@ -65,6 +65,43 @@ type Expect<T extends true> = T;
   ];
 }
 
+// 型變標註 in / out（TypeScript 4.7+）
+{
+  interface Animal {
+    name: string;
+  }
+  interface Dog extends Animal {
+    breed: string;
+  }
+
+  interface Box<out T> {
+    get(): T; // T 只出現在回傳位置 → 協變
+  }
+
+  const boxOfDog: Box<Dog> = { get: () => ({ name: "Rex", breed: "Labrador" }) };
+  let boxOfAnimal: Box<Animal>;
+  boxOfAnimal = boxOfDog; // ✅ 協變：Dog 是 Animal 的子型別，Box<Dog> 也是 Box<Animal> 的子型別
+
+  interface Setter<in T> {
+    set(value: T): void; // T 只出現在參數位置 → 逆變
+  }
+
+  const setAnimal: Setter<Animal> = { set: (v) => console.log(v.name) };
+  let setDog: Setter<Dog>;
+  setDog = setAnimal; // ✅ 逆變：方向相反，能設定 Animal 的 setter 也能拿來設定 Dog
+
+  interface Container<in out T> {
+    value: T; // T 兼具讀寫 → 不變
+  }
+
+  const containerOfDog: Container<Dog> = { value: { name: "Rex", breed: "Labrador" } };
+  let containerOfAnimal: Container<Animal>;
+  // @ts-expect-error 不變：Container<Dog> 不是 Container<Animal> 的子型別，反之亦然
+  containerOfAnimal = containerOfDog;
+
+  console.log(boxOfAnimal.get().name, setDog, containerOfDog.value.name, containerOfAnimal);
+}
+
 // 條件型別 = if / else
 {
   type IsArray<T> = T extends any[] ? true : false;
@@ -397,8 +434,11 @@ type Expect<T extends true> = T;
 // 案例四：型別安全的事件系統
 {
   // 定義事件名稱與對應的 payload 型別
-  // （原文為 interface EventMap；改為 type 才能滿足下方 Record<string, any> 約束，
-  //   因為 interface 沒有隱式索引簽章、無法賦值給 Record<string, any>）
+  // （原文為 interface EventMap；這裡改用 type 純粹是風格一致，並非型別系統強制——
+  //   經實測 TS 5.9：約束是 Record<string, any> 時，沒有索引簽章的 interface 一樣能
+  //   賦值過去，因為值型別是 any 時索引簽章比對會被跳過。只有約束換成非 any 的值型別
+  //   （例如 Record<string, unknown>）時，沒有索引簽章的 interface 才會報錯
+  //   「Index signature for type 'string' is missing」，那時才需要真的改用 type）
   type EventMap = {
     click: { x: number; y: number };
     submit: { formId: string };

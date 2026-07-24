@@ -246,6 +246,33 @@ import { z } from "zod";
   console.log(state, route);
 }
 
+// as const vs satisfies(TS 4.9+)
+{
+  type RouteMap = Record<"home" | "users" | "settings", string>;
+
+  // satisfies:驗證形狀符合 RouteMap,驗證通過後型別仍是最窄的字面值
+  const ROUTES_SATISFIES = {
+    home: "/",
+    users: "/users",
+    settings: "/settings",
+  } satisfies RouteMap;
+
+  type RouteSatisfies = (typeof ROUTES_SATISFIES)[keyof typeof ROUTES_SATISFIES];
+  // "/" | "/users" | "/settings"
+
+  // 對照組:一般型別標註,形狀檢查一樣會過,但型別被拓寬成 RouteMap
+  const ROUTES_ANNOTATED: RouteMap = {
+    home: "/",
+    users: "/users",
+    settings: "/settings",
+  };
+  type WidenedHome = typeof ROUTES_ANNOTATED.home; // string(拓寬了,不再是 "/")
+
+  const r1: RouteSatisfies = ROUTES_SATISFIES.home; // ✅ "/"
+  const r2: WidenedHome = ROUTES_ANNOTATED.home; // string
+  console.log(r1, r2);
+}
+
 // -------------------------------------------------------------
 // 12.4 型別安全的事件系統
 // -------------------------------------------------------------
@@ -502,6 +529,39 @@ import { z } from "zod";
   const legacy: IUser = {};
   const user: User = {};
   console.log(profile, resp, id, method, legacy, user);
+}
+
+// 品牌型別(Branded / Nominal Types)— UserId 不該和 OrderId 混用
+{
+  type UserId = string;
+  type OrderId = string;
+
+  function getUser(_id: UserId) {
+    /* ... */
+  }
+
+  const orderId: OrderId = "order_123";
+  getUser(orderId); // ✅ 編譯通過(結構化型別系統擋不住這種誤用)——這正是問題所在
+
+  // 加上「品牌」欄位,讓結構不再相容
+  type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
+  type BrandedUserId = Branded<string, "UserId">;
+  type BrandedOrderId = Branded<string, "OrderId">;
+
+  function createUserId(id: string): BrandedUserId {
+    return id as BrandedUserId; // 型別轉換只在「建立」這一個點做一次
+  }
+
+  function getUserSafe(_id: BrandedUserId) {
+    /* ... */
+  }
+
+  const safeUserId = createUserId("user_1");
+  const safeOrderId = "order_123" as BrandedOrderId;
+
+  getUserSafe(safeUserId); // ✅
+  // getUserSafe(safeOrderId); // ❌ 型別錯誤:缺少品牌 "UserId"
+  console.log(safeUserId, safeOrderId);
 }
 
 // -------------------------------------------------------------

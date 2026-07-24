@@ -109,6 +109,8 @@ const greet = (name) => `Hello, ${name}`;
 }
 ```
 
+> ⚠️ **`strict: true` 不等於「全部嚴格選項」**：上面這些才是 `strict: true` 實際包含的旗標。像 `noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`noImplicitOverride` 這幾個常見的嚴格旗標**都不包含在 `strict` 裡**，必須額外手動開啟——不要以為開了 `strict` 就萬無一失，詳見下方「不包含在 strict 內的常用嚴格旗標」。
+
 ### 嚴格模式差異範例
 
 ```typescript
@@ -129,6 +131,27 @@ class User {
 ```
 
 > 💡 **強烈建議**：新專案一律開啟 `"strict": true`。
+
+### 不包含在 strict 內的常用嚴格旗標
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true, // 索引存取（arr[i]、record[key]）的結果多包一層 undefined
+    "exactOptionalPropertyTypes": true, // 可選屬性不可明確賦值 undefined，須與「完全沒有這個屬性」區分
+    "noImplicitOverride": true // 覆寫父類別方法時，強制寫出 override 關鍵字
+  }
+}
+```
+
+```typescript
+// noUncheckedIndexedAccess: true
+const scores: number[] = [90, 85];
+const first = scores[0]; // 沒開啟時型別是 number；開啟後型別是 number | undefined，逼你先檢查再用
+```
+
+> 💡 **`noUncheckedIndexedAccess`** 是目前實務上最常被推薦、但預設沒開啟的嚴格旗標之一：它讓陣列與物件的索引存取結果多一層 `| undefined`，避免「明明陣列存取卻在執行期噴 undefined」的常見錯誤。由於它會讓既有程式碼多出不少檢查，建議新專案從一開始就開啟，既有專案則可以評估後再逐步導入。
 
 ---
 
@@ -216,6 +239,15 @@ class User {
 
 ## 9.6 常見專案設定範本
 
+下面的範本會重複用到幾個選項，先簡單說明它們的作用與取捨：
+
+| 選項 | 作用與取捨 |
+|------|-----------|
+| `esModuleInterop` | 讓 `import x from "cjs-module"` 這種預設匯入語法，也能套用在沒有真正 `default` 匯出的 CommonJS 模組上（詳見第 8 章「與 CommonJS 互通」）。實務上新專案幾乎都會開啟。 |
+| `skipLibCheck` | 跳過所有 `.d.ts`（含 `node_modules` 內的型別定義檔）的型別檢查。能大幅加快編譯速度，代價是可能「蓋住」不同套件之間互相衝突的型別問題（例如兩個套件對同一個全域型別的宣告有衝突，不會被抓出來）。 |
+| `isolatedModules` | 要求每個檔案都能「被單獨轉譯」，不依賴跨檔案的型別資訊。這是 esbuild、swc、Babel 等單檔案轉譯器（一次只看一個檔案，不做完整型別分析）的必要條件，會限制某些重新匯出（如 `export { Type }` 需搭配 `export type`）與 `const enum` 的用法。 |
+| `composite` | 啟用 Project References（見 9.8），讓這個專案可以被其他專案用 `references` 引用。開啟後會強制要求 `declaration: true`，且輸出設定（如 `rootDir`）要更嚴謹，換取增量建置（`tsc --build`）的效能。 |
+
 ### Node.js 後端專案
 
 ```json
@@ -228,6 +260,7 @@ class User {
     "outDir": "./dist",
     "rootDir": "./src",
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -278,6 +311,7 @@ class User {
     "moduleResolution": "bundler",
     "lib": ["ES2020"],
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
@@ -383,6 +417,74 @@ npx tsc --build
 
 # 清除建置結果
 npx tsc --build --clean
+```
+
+---
+
+## 9.9 verbatimModuleSyntax、moduleDetection 與 isolatedDeclarations
+
+TypeScript 5.0 之後新增了幾個與模組語法／宣告檔輸出有關的選項。第 8 章曾提過 `verbatimModuleSyntax`，這裡完整說明它與另外兩個相關選項。
+
+### verbatimModuleSyntax（TS 5.0+）
+
+```json
+{
+  "compilerOptions": {
+    "verbatimModuleSyntax": true
+  }
+}
+```
+
+開啟後：
+
+- 型別匯入／匯出**必須**明確寫 `import type` / `export type`，混合匯入要加上 `type` 修飾字（如 `import { createUser, type User } from "./user"`），否則會編譯錯誤。
+- 匯入的程式碼會「逐字（verbatim）」保留到輸出檔案——TypeScript 不會自動幫你判斷某個匯入只用到型別而悄悄把它移除；你寫什麼就輸出什麼。
+- 取代了舊版的 `importsNotUsedAsValues` 與 `preserveValueImports` 兩個選項，效果上也和 `isolatedModules` 大致相容，是目前推薦的統一設定（見第 8 章 8.2）。
+
+### moduleDetection
+
+```json
+{
+  "compilerOptions": {
+    "moduleDetection": "force" // 常用值："auto"（預設）、"legacy"、"force"
+  }
+}
+```
+
+控制 TypeScript 如何判斷一個檔案是「模組」還是「全域指令碼」：
+
+- `"auto"`（預設）：檔案只要有 `import` / `export` 就視為模組；在 `module: nodenext` 下也會參考 `package.json` 的 `type` 欄位判斷。
+- `"force"`：把**所有**檔案都當成模組處理，即使檔案裡完全沒有 `import` / `export`。適合已知專案內所有檔案都應該是模組，但有些檔案暫時還沒寫任何 import/export（例如只放型別宣告）的情況，避免它們被誤判為全域腳本、彼此汙染全域變數。
+
+### isolatedDeclarations（TS 5.5+）
+
+```json
+{
+  "compilerOptions": {
+    "isolatedDeclarations": true, // 需要 TypeScript 5.5 以上
+    "declaration": true
+  }
+}
+```
+
+> ⚠️ **版本注意**：`isolatedDeclarations` 是 TypeScript **5.5** 才新增的選項，若專案鎖定在更早的版本會被 `tsc` 回報無法識別。本課程 demo 的 `package.json` 雖然寫的是 `typescript: ^5.4.0`，但 `^` 代表「允許安裝 5.4.0 以上、6.0.0 以下的任何版本」——實際安裝進 `node_modules` 的版本以 `package-lock.json` 鎖定的為準，通常會是符合範圍的最新版（執行 `npx tsc -v` 可確認實際版本），所以不一定需要手動升級才能在 demo 環境試用這個選項；只有當專案明確把版本鎖死在 5.4.x（例如用 `"typescript": "5.4.0"` 不加 `^`）時，才需要真的升級。
+
+開啟後，TypeScript 會要求每個匯出的宣告（函式、類別、變數等）都有**足夠的顯式型別標註**，讓編譯器不需要做跨檔案的型別推論就能單獨產生該檔案的 `.d.ts`。這與 `isolatedModules` 的精神類似（每個檔案都能被獨立處理），但這次是針對「宣告檔輸出」——目的是讓 esbuild、swc 這類單檔案工具也能快速產生型別宣告檔，不必依賴完整的 TypeScript 型別檢查器。
+
+```typescript
+// isolatedDeclarations: true
+// ❌ 缺少回傳型別標註，無法單獨推導出宣告檔
+export function double(x: number) {
+  return x * 2;
+}
+```
+
+```typescript
+// isolatedDeclarations: true
+// ✅ 顯式標註回傳型別
+export function double(x: number): number {
+  return x * 2;
+}
 ```
 
 ---

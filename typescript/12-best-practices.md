@@ -184,6 +184,40 @@ type Route = (typeof ROUTES)[keyof typeof ROUTES];
 // "/" | "/users" | "/settings"
 ```
 
+### `as const` vs `satisfies`（TypeScript 4.9+）
+
+`as const` 只負責「把值凍結成最窄的字面值型別」，不會檢查值的形狀對不對。想要「既驗證形狀、又保留最窄字面值型別」，就該用 `satisfies`：
+
+```typescript
+type RouteMap = Record<"home" | "users" | "settings", string>;
+
+// ✅ satisfies：驗證 ROUTES_SATISFIES 符合 RouteMap 的形狀（少一個 key 或型別不符都會報錯），
+//    驗證通過後，型別仍然是推斷出的最窄字面值，而不是被拓寬成 RouteMap
+const ROUTES_SATISFIES = {
+  home: "/",
+  users: "/users",
+  settings: "/settings",
+} satisfies RouteMap;
+
+type RouteSatisfies = (typeof ROUTES_SATISFIES)[keyof typeof ROUTES_SATISFIES];
+// "/" | "/users" | "/settings" —— 和 as const 一樣窄
+
+// 對照組：用一般的型別標註，形狀檢查一樣會過，但型別被拓寬成 RouteMap
+const ROUTES_ANNOTATED: RouteMap = {
+  home: "/",
+  users: "/users",
+  settings: "/settings",
+};
+type WidenedHome = typeof ROUTES_ANNOTATED.home; // string（拓寬了，不再是 "/"）
+
+// const BAD_ROUTES = {
+//   home: "/",
+//   users: "/users",
+// } satisfies RouteMap; // ❌ 缺少 'settings'，編譯期就會被擋下
+```
+
+> 💡 三者的取捨：`as const` 只凍結、不驗證形狀；`: T` 標註驗證形狀、但會拓寬型別；`satisfies T` 兩者兼顧——驗證形狀，同時保留推斷出的最窄型別。
+
 ---
 
 ## 12.4 型別安全的事件系統
@@ -261,6 +295,10 @@ interface ApiRoutes {
 // 型別安全的 fetch 封裝
 type ExtractMethod<T extends string> = T extends `${infer M} ${string}` ? M : never;
 type ExtractPath<T extends string> = T extends `${string} ${infer P}` ? P : never;
+
+// 用法示範：從路由字串字面值中拆出 HTTP 方法與路徑
+type M = ExtractMethod<"GET /users">; // "GET"
+type P = ExtractPath<"GET /users">;   // "/users"
 
 async function apiClient<K extends keyof ApiRoutes>(
   route: K,
@@ -365,6 +403,8 @@ const host = config.database?.host; // string | undefined
 const port = config.database?.port ?? 3306; // number
 ```
 
+> 📎 另外兩個常被找、但屬於基礎章節的主題：判別聯合型別（discriminated unions）見 [第七章 7.1](./07-advanced-types.md)；用 `never` 做窮盡性檢查（exhaustiveness check）見 [第二章 2.5](./02-basic-types.md)。
+
 ---
 
 ## 12.7 專案組織建議
@@ -416,6 +456,39 @@ interface IUser {}    // Java/C# 風格，TypeScript 不推薦
 // ✅ 推薦：直接使用名稱
 interface User {}
 ```
+
+### 品牌型別（Branded / Nominal Types）
+
+`type UserId = string` 只是替 `string` 取了個別名，底層還是同一個型別。TypeScript 是**結構化型別系統（structural typing）**，不是 Java/C# 那種**具名型別系統（nominal typing）**——只要結構相同就能互相賦值，因此 `UserId` 和 `OrderId` 這種語意完全不同的字串 ID，一樣能被誤傳、混用而不會有任何編譯錯誤：
+
+```typescript
+type UserId = string;
+type OrderId = string;
+
+function getUser(id: UserId) { /* ... */ }
+
+const orderId: OrderId = "order_123";
+getUser(orderId); // ✅ 編譯通過——但這其實是個錯誤的呼叫！
+
+// 加上一個「品牌」欄位，讓結構不再相容
+type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
+type BrandedUserId = Branded<string, "UserId">;
+type BrandedOrderId = Branded<string, "OrderId">;
+
+function createUserId(id: string): BrandedUserId {
+  return id as BrandedUserId; // 型別轉換只在「建立」這一個點做一次
+}
+
+function getUserSafe(id: BrandedUserId) { /* ... */ }
+
+const safeUserId = createUserId("user_1");
+const safeOrderId = "order_123" as BrandedOrderId;
+
+getUserSafe(safeUserId); // ✅
+// getUserSafe(safeOrderId); // ❌ 型別錯誤：缺少品牌 "UserId"，兩者不再結構相容
+```
+
+> 💡 品牌欄位（如 `__brand`）在執行期完全不存在，純粹是編譯期用來製造「名義區別」的標記。適合用在 ID、金額單位（分 vs 元）、已驗證 vs 未驗證的字串等容易混淆、卻又同為 `string`/`number` 的場景。
 
 ---
 

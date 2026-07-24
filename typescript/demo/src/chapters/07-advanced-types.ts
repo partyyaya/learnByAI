@@ -32,6 +32,11 @@
         return shape.side ** 2;
       case "rectangle":
         return shape.width * shape.height;
+      default: {
+        // 窮盡性檢查：新增 Shape 變體卻忘記補 case 時，這行會在編譯期報錯
+        const _exhaustive: never = shape;
+        throw new Error(`Unhandled shape: ${JSON.stringify(_exhaustive)}`);
+      }
     }
   }
 
@@ -39,6 +44,30 @@
   printId("abc");
   printId(3.14159);
   console.log("圓面積:", getArea({ kind: "circle", radius: 2 }));
+}
+
+// ===== 7.1 satisfies 運算子（TS 4.9+） =====
+{
+  type Shape =
+    | { kind: "circle"; radius: number }
+    | { kind: "square"; side: number }
+    | { kind: "rectangle"; width: number; height: number };
+
+  // 一般型別標註：值被拓寬成 Shape，之後只能存取聯合型別共有欄位
+  const configA: Shape = { kind: "circle", radius: 5 };
+  // configA.radius; // ❌ 型別是 Shape，TypeScript 不知道一定是 circle 分支
+
+  // as 斷言：不會做完整結構檢查，多打的欄位可能就這樣溜過去
+  const configB = { kind: "circle", radius: 5, extraFlag: true } as Shape;
+
+  // satisfies：檢查是否符合 Shape 結構（含多餘屬性檢查），同時保留字面值型別
+  const configC = { kind: "circle", radius: 5 } satisfies Shape;
+  configC.radius; // ✅ 型別仍是 { kind: "circle"; radius: number }
+
+  // const configD = { kind: "circle", radius: 5, extraFlag: true } satisfies Shape;
+  // ❌ 物件字面值有多餘屬性 extraFlag，satisfies 會抓出來
+
+  console.log("satisfies:", configA.kind, configB.kind, configC.radius);
 }
 
 // ===== 7.2 交集型別（Intersection Types） =====
@@ -237,6 +266,25 @@
   console.log(result, params, item);
 }
 
+// --- 分佈式條件型別（Distributive Conditional Types） ---
+{
+  // T 是裸露的型別參數 → 對聯合型別會分佈
+  type ToArray<T> = T extends any ? T[] : never;
+
+  type StrOrNumArray = ToArray<string | number>;
+  // 分佈後等於 ToArray<string> | ToArray<number>，也就是 string[] | number[]
+
+  // [T] extends [U]：把 T 包進元組，關閉分佈行為
+  type ToArrayNonDist<T> = [T] extends [any] ? T[] : never;
+
+  type CombinedArray = ToArrayNonDist<string | number>;
+  // (string | number)[]，整個聯合型別被當成單一整體處理
+
+  const a: StrOrNumArray = ["x", "y"];
+  const b: CombinedArray = ["x", 1];
+  console.log("分佈式條件型別:", a, b);
+}
+
 // ===== 7.5 映射型別（Mapped Types） =====
 {
   // 基本映射型別（區塊內刻意遮蔽全域的 Readonly）
@@ -269,6 +317,31 @@
   const opt: OptionalUser = { name: "Gary" };
   const nul: Nullable<User> = { id: null, name: "Gary", email: null };
   console.log(ro.name, opt.name, nul.name);
+}
+
+// --- 映射型別修飾符：-readonly / -? ---
+{
+  type Mutable<T> = {
+    -readonly [K in keyof T]: T[K];
+  };
+
+  type Concrete<T> = {
+    [K in keyof T]-?: T[K];
+  };
+
+  interface Point {
+    readonly x?: number;
+    readonly y?: number;
+  }
+
+  type MutablePoint = Mutable<Point>; // { x?: number; y?: number }
+  type ConcretePoint = Concrete<Point>; // { readonly x: number; readonly y: number }
+
+  const mp: MutablePoint = {};
+  mp.x = 10; // ✅ 已移除 readonly，可以修改
+
+  const cp: ConcretePoint = { x: 1, y: 2 }; // ✅ 已移除 ?，兩個屬性都必填
+  console.log("-readonly / -?:", mp.x, cp.x, cp.y);
 }
 
 // --- 鍵值重新映射（Key Remapping） ---
@@ -388,6 +461,26 @@
   // Parameters<T> — 取得函式參數型別
   type CreateParams = Parameters<typeof createUser>; // []
 
+  // Awaited<T> — 攤平 Promise（含巢狀 Promise），取得最終解析出的值型別
+  interface ApiResponse<T> {
+    data: T;
+    status: number;
+  }
+
+  async function fetchApi<T>(url: string): Promise<ApiResponse<T>> {
+    const response = await fetch(url);
+    return response.json();
+  }
+
+  type FetchedUser = Awaited<ReturnType<typeof fetchApi<User>>>;
+  // { data: User; status: number }
+
+  const fetched: FetchedUser = {
+    data: { id: 1, name: "Gary", email: "g@x.com", age: 30, role: "user" },
+    status: 200,
+  };
+  console.log("Awaited:", fetched.data.name);
+
   // 讓型別被引用
   const upd: UpdateUser = { name: "Gary" };
   const strict: StrictUser = {
@@ -423,6 +516,21 @@
     ret,
     args
   );
+}
+
+// --- 常見陷阱：Omit 對聯合型別不會逐一分佈 ---
+{
+  type A = { kind: "a"; x: number };
+  type B = { kind: "b"; y: number };
+  type Both = A | B;
+
+  type BadOmit = Omit<Both, "kind">;
+  // 預期可能是 { x: number } | { y: number }
+  // 但 keyof (A | B) 只會取兩者共同的鍵（也就是只有 "kind"），
+  // 排除 "kind" 之後剩下的鍵是 never，結果 BadOmit 實際上是 {}
+
+  const bad: BadOmit = {}; // ✅ 型別上完全合法，但已經失去 x / y 的資訊
+  console.log("Omit 聯合型別陷阱:", bad);
 }
 
 // --- 組合工具型別 ---

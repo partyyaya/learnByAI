@@ -23,6 +23,8 @@
 | 型別轉換 | TS 型別 → JSON Schema / Zod | ts-to-zod、typescript-json-schema |
 | 打包工具外掛 | 自訂編譯期轉換 | ts-loader、ttypescript |
 
+> ⚠️ 重要提醒：`ts` 這個命名空間**沒有 semver 穩定的公開介面**。官方並不承諾小版本升級時 API 形狀不變——`SyntaxKind` 成員、內部型別的結構、甚至某些函式簽章都可能在 minor 版之間調整，這是社群長期以來公認的「移動標靶」。因此，直接依賴 Compiler API 開發的工具，`package.json` 應該**鎖定明確版本**（如 `"typescript": "5.9.3"`），而不是用 `^5.9.3` 這種 caret range，並在升級 `typescript` 時把它當成一次需要重新測試的變更，而非單純的 patch 更新。
+
 ---
 
 ## 14.2 核心概念與架構

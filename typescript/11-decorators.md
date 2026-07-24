@@ -18,6 +18,18 @@
 
 > TypeScript 5.0+ 也支援 [TC39 Stage 3 裝飾器](https://github.com/tc39/proposal-decorators)（不需要 `experimentalDecorators`），但目前大部分框架仍使用舊版裝飾器。
 
+### 舊版裝飾器 vs 標準（TC39）裝飾器
+
+| | 舊版裝飾器（Legacy，`experimentalDecorators`） | 標準裝飾器（TC39 Stage 3，TS 5.0+） |
+|---|---|---|
+| 啟用方式 | tsconfig 設定 `"experimentalDecorators": true` | 不需要任何 tsconfig 旗標，TS 5.0+ 預設支援 |
+| 裝飾器函式簽章 | 依附加位置不同：`(target, propertyKey, descriptor)`、`(target, propertyKey, parameterIndex)` … | 統一為 `(value, context) => ...`，`context` 帶有 `kind`/`name`/`metadata` 等資訊 |
+| 參數裝飾器 | ✅ 支援（`@Validate` 這類建構子參數注入寫法） | ❌ 規格已完全移除，見 11.5 說明 |
+| DI / 元資料反射 | 搭配 `emitDecoratorMetadata` + `reflect-metadata` 可做執行期型別反射 | 沒有內建型別反射；改用 `context.metadata`（Decorator Metadata，TS 5.2+，見 11.6b） |
+| 主要使用框架 | NestJS、TypeORM、Angular（遷移前）等 | 目前尚無主流後端框架採用 |
+
+> ⚠️ 這兩套系統語法、語意都不相容，**一個專案的一次編譯只能二選一**：整個 tsconfig 要嘛開 `experimentalDecorators` 走舊版，要嘛不開走標準版，無法在同一份設定裡混用兩種裝飾器。
+
 ---
 
 ## 11.2 類別裝飾器（Class Decorator）
@@ -259,6 +271,8 @@ class UserService {
 }
 ```
 
+> 📌 標準（TC39）裝飾器規格**完全移除了參數裝飾器**這個類別——不是語法改了，而是新規格裡根本沒有對應的擴充點。這正是 NestJS、Angular 這類仰賴建構子參數注入（constructor-injection，如上面的 `@Validate`、下一節 NestJS 範例的 `@Param`/`@Body`）的框架，短期內無法搬到新裝飾器語法的根本原因。
+
 ---
 
 ## 11.6 TC39 Stage 3 裝飾器（TypeScript 5.0+）
@@ -293,6 +307,46 @@ class Calculator {
   }
 }
 ```
+
+---
+
+## 11.6b Accessor 裝飾器與 Decorator Metadata（TypeScript 5.2+）
+
+標準裝飾器新增了 `accessor` 這個欄位修飾字——加了它之後，類別欄位會自動產生底層的 get/set，也因此可以被裝飾器包裝讀寫行為（一般的 `@Decorator field: T` 屬性欄位是包不住 get/set 的）。搭配 `context.metadata`（一個掛在該類別 `Symbol.metadata` 上的共用物件，TS 5.2+ 支援的 Decorator Metadata 提案），多個裝飾器之間可以互相留言、傳資料，不需要額外自建 `Map`/`WeakMap`。
+
+```typescript
+function trackChanges<This, Value>(
+  target: ClassAccessorDecoratorTarget<This, Value>,
+  context: ClassAccessorDecoratorContext<This, Value>,
+): ClassAccessorDecoratorResult<This, Value> {
+  const fieldName = String(context.name);
+
+  // context.metadata：把資訊寫進去，之後透過 Symbol.metadata 讀回來
+  (context.metadata as Record<string, unknown>)[fieldName] = "tracked";
+
+  return {
+    get(this: This): Value {
+      return target.get.call(this);
+    },
+    set(this: This, value: Value) {
+      console.log(`${fieldName} changed to`, value);
+      target.set.call(this, value);
+    },
+  };
+}
+
+class Settings {
+  @trackChanges accessor theme: string = "light";
+}
+
+const settings = new Settings();
+settings.theme = "dark"; // 印出：theme changed to dark
+
+// 透過 Symbol.metadata 讀取裝飾器附加的中繼資料
+console.log(Settings[Symbol.metadata]?.theme); // "tracked"
+```
+
+> 💡 若編譯器提示 `Symbol.metadata` 不存在，代表 tsconfig 的 `lib` 需要包含 `esnext`（Decorator Metadata 提案的型別宣告目前掛在這裡，`ES2022` 尚未內建）。
 
 ---
 

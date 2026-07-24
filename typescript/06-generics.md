@@ -55,6 +55,30 @@ const toArray = <T>(value: T): T[] => [value];
 const toArray2 = <T,>(value: T): T[] => [value];
 ```
 
+### NoInfer\<T\>（TS 5.4+）避免推斷型別被意外撐大
+
+泛型函式若有多個參數都能推斷同一個型別參數 `T`，其中一個「意料之外」的參數也可能把 `T` 撐大成不是你想要的聯合型別。用 `NoInfer<T>` 包住某個參數的型別，能讓它不參與 `T` 的推斷，只負責檢查：
+
+```typescript
+// 沒有 NoInfer：fallbackRole 的型別也會拿去推斷 T，讓 T 被意外撐大
+function pickRole<T extends string>(roles: T[], fallbackRole?: T): T {
+  return fallbackRole ?? roles[0];
+}
+
+const role = pickRole(["admin", "user"], "guest");
+// role 的型別被撐大成 "admin" | "user" | "guest"，
+// 即使 "guest" 根本不在 roles 陣列裡，也不會報錯
+
+// 用 NoInfer<T> 排除 fallbackRole 對 T 的推斷貢獻，只讓 roles 陣列決定 T
+function pickRoleFixed<T extends string>(roles: T[], fallbackRole?: NoInfer<T>): T {
+  return fallbackRole ?? roles[0];
+}
+
+const roleFixed = pickRoleFixed(["admin", "user"], "admin"); // ✅ T 只會是 "admin" | "user"
+// pickRoleFixed(["admin", "user"], "guest");
+// ❌ Argument of type '"guest"' is not assignable to parameter of type '"admin" | "user" | undefined'
+```
+
 ---
 
 ## 6.3 泛型約束（Generic Constraints）
@@ -142,9 +166,41 @@ const userRes = await fetchApi<User>("/api/users/1");
 // userRes.data 的型別是 User
 ```
 
+### 型別變異標記 in / out（TS 4.7+）
+
+在泛型介面或型別別名的型別參數上加 `out`（協變，只當輸出用）或 `in`（逆變，只當輸入用），可以明確告訴編譯器這個參數的變異方向，讓結構相容性檢查更快、錯誤訊息也更精準：
+
+```typescript
+interface Producer<out T> {
+  produce(): T;
+}
+
+interface Consumer<in T> {
+  consume(value: T): void;
+}
+
+class Animal {}
+class Dog extends Animal {}
+
+const dogProducer: Producer<Dog> = { produce: () => new Dog() };
+// out T：Producer<Dog> 可以當作 Producer<Animal> 使用（協變）
+const producer: Producer<Animal> = dogProducer; // ✅
+
+const animalConsumer: Consumer<Animal> = { consume: (a) => console.log(a) };
+// in T：Consumer<Animal> 可以當作 Consumer<Dog> 使用（逆變）
+const consumer: Consumer<Dog> = animalConsumer; // ✅
+```
+
+不標記時 TypeScript 仍會自動推斷變異方向，但明確標記能讓編譯器檢查更快，型別不相容時也能給出更貼近問題根源的錯誤訊息，而不是籠統的「結構不相容」。第 13 章「型別層級程式設計」還會再補上第三種變異——`in out`（不變）。
+
 ### 泛型介面 — Repository 模式
 
 ```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
 interface Repository<T extends { id: number }> {
   findAll(): Promise<T[]>;
   findById(id: number): Promise<T | null>;
@@ -154,11 +210,22 @@ interface Repository<T extends { id: number }> {
 }
 
 class UserRepository implements Repository<User> {
-  async findAll(): Promise<User[]> { /* ... */ }
-  async findById(id: number): Promise<User | null> { /* ... */ }
-  async create(data: Omit<User, "id">): Promise<User> { /* ... */ }
-  async update(id: number, data: Partial<User>): Promise<User> { /* ... */ }
-  async delete(id: number): Promise<boolean> { /* ... */ }
+  // 實務上這裡會呼叫資料庫／API；下面補上最小可編譯的假實作
+  async findAll(): Promise<User[]> {
+    return [];
+  }
+  async findById(id: number): Promise<User | null> {
+    return null;
+  }
+  async create(data: Omit<User, "id">): Promise<User> {
+    return { id: 0, ...data };
+  }
+  async update(id: number, data: Partial<User>): Promise<User> {
+    return { id, name: "unknown", ...data };
+  }
+  async delete(id: number): Promise<boolean> {
+    return true;
+  }
 }
 ```
 
@@ -167,6 +234,11 @@ class UserRepository implements Repository<User> {
 ## 6.5 泛型類別
 
 ```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
 class DataStore<T> {
   private items: T[] = [];
 
@@ -258,6 +330,11 @@ if (result.success) {
 ### Builder 模式
 
 ```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
 class QueryBuilder<T> {
   private conditions: string[] = [];
   private orderByField?: string;
@@ -327,6 +404,29 @@ groupBy(users, "role");
 ### 練習 2：泛型類別
 
 建立一個 `EventEmitter<T>` 泛型類別，T 定義了事件名稱和對應的資料型別。
+
+> **小提醒（interface vs type 的索引簽章差異）**：若把 `T` 約束為 `T extends Record<string, unknown>`，事件表必須用 `type`（型別別名）宣告，不能用 `interface`——因為 `interface` 不會自動具備索引簽章，即使欄位都已知，也無法滿足 `Record<string, unknown>` 的結構檢查；`type` 別名可以。
+>
+> ```typescript
+> class EventEmitter<T extends Record<string, unknown>> {
+>   private listeners: { [K in keyof T]?: Array<(payload: T[K]) => void> } = {};
+>
+>   on<K extends keyof T>(event: K, listener: (payload: T[K]) => void): void {
+>     (this.listeners[event] ??= []).push(listener);
+>   }
+> }
+>
+> interface AppEventsBad {
+>   login: { userId: number };
+> }
+> // new EventEmitter<AppEventsBad>();
+> // ❌ interface 沒有索引簽章，不滿足 Record<string, unknown> 的約束
+>
+> type AppEvents = {
+>   login: { userId: number };
+> };
+> new EventEmitter<AppEvents>(); // ✅ type 別名可以
+> ```
 
 ### 練習 3：泛型約束
 
