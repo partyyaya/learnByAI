@@ -392,6 +392,23 @@ let tags = ["electronics", "phone", "apple"];
 let rating = [4.5, 4.8, 4.2, 4.9];
 ```
 
+<details>
+<summary>參考解答</summary>
+
+依照每個變數的初始值判斷型別：字串用 `string`、數字用 `number`、布林用 `boolean`，字串陣列用 `string[]`、數字陣列用 `number[]`。
+
+```typescript
+let productName: string = "iPhone 15";
+let price: number = 35900;
+let inStock: boolean = true;
+let tags: string[] = ["electronics", "phone", "apple"];
+let rating: number[] = [4.5, 4.8, 4.2, 4.9];
+```
+
+重點提醒：其實這些變數在初始化時，TypeScript 就能自動推論出相同型別，手動標註只是練習語法；真正一定要標註的是「函式參數」與「初始化為空陣列」等推論不出來的情況。
+
+</details>
+
 ### 練習 2：元組
 
 定義一個代表 RGB 顏色的元組型別，並建立幾個顏色常數：
@@ -405,9 +422,59 @@ const green: RGB = ???;
 const blue: RGB = ???;
 ```
 
+<details>
+<summary>參考解答</summary>
+
+RGB 顏色是三個固定位置的數字（紅、綠、藍），正好用「固定長度、每個位置有明確型別」的元組來表達。這裡用具名元組讓每個位置的意義更清楚。
+
+```typescript
+// 具名元組（TypeScript 4.0+），三個位置都是 number
+type RGB = [r: number, g: number, b: number];
+
+const red: RGB = [255, 0, 0];
+const green: RGB = [0, 255, 0];
+const blue: RGB = [0, 0, 255];
+```
+
+重點提醒：用 `[number, number, number]` 也完全正確；具名元組的名稱只是提升可讀性，不影響型別檢查。元組長度固定，寫成 `[255, 0]` 或 `[255, 0, 0, 0]` 都會報錯。
+
+</details>
+
 ### 練習 3：列舉與聯合型別
 
 分別用 Enum 和 Union Type 定義一組「訂單狀態」：pending、processing、shipped、delivered、cancelled。
+
+<details>
+<summary>參考解答</summary>
+
+Enum 版把每個狀態列為成員並指定字串值；Union Type 版則直接把五個字面值用 `|` 串起來。兩者放在同一段程式時名稱要取不同（同名會產生 TS2567 衝突），實務上擇一使用即可。
+
+```typescript
+// 方式一：Enum
+enum OrderStatus {
+  Pending = "pending",
+  Processing = "processing",
+  Shipped = "shipped",
+  Delivered = "delivered",
+  Cancelled = "cancelled",
+}
+
+const status1: OrderStatus = OrderStatus.Shipped;
+
+// 方式二：Union Type（名稱刻意不同，避免與上面的 enum 衝突）
+type OrderStatusText =
+  | "pending"
+  | "processing"
+  | "shipped"
+  | "delivered"
+  | "cancelled";
+
+const status2: OrderStatusText = "shipped";
+```
+
+重點提醒：現代 TypeScript 多半偏好 Union Type，因為它更簡潔、不會編譯出額外的 JavaScript 程式碼；需要反向映射或整組常數集中管理時，Enum 才較有優勢。
+
+</details>
 
 ---
 

@@ -639,6 +639,39 @@ type A = Filter<[1, "a", 2, "b", 3], number>; // [1, 2, 3]
 type B = Filter<[true, 0, "x", false], boolean>; // [true, false]
 ```
 
+<details>
+<summary>參考解答</summary>
+
+思路：用 `[infer H, ...infer R]` 拆出頭元素與剩餘，逐一走訪；`H extends U` 成立就把 `H` 留在結果最前面、否則跳過，再對 `R` 遞迴，空元組時結束。
+
+```typescript
+// 逐一走訪元組：符合條件的元素才收進結果，不符合就跳過
+type Filter<T extends unknown[], U> = T extends [infer H, ...infer R]
+  ? H extends U
+    ? [H, ...Filter<R, U>]
+    : Filter<R, U>
+  : [];
+
+type A = Filter<[1, "a", 2, "b", 3], number>; // [1, 2, 3]
+type B = Filter<[true, 0, "x", false], boolean>; // [true, false]
+
+// ---- 型別測試（Equal / Expect 為 type-challenges 標準寫法）----
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
+    ? true
+    : false;
+type Expect<T extends true> = T;
+
+type _cases = [
+  Expect<Equal<A, [1, 2, 3]>>,
+  Expect<Equal<B, [true, false]>>,
+];
+```
+
+重點提醒：這裡的過濾條件是「可賦值給 `U`」（子型別判斷），所以 `0 extends boolean` 為 `false`、`"x" extends boolean` 也為 `false`，才會被濾掉。
+
+</details>
+
 ### 練習 2：字串轉聯合型別
 
 實作一個 `CharUnion<S>`，把字串拆成每個字元的聯合型別：
@@ -648,6 +681,33 @@ type CharUnion<S extends string> = ???;
 
 type A = CharUnion<"abc">; // "a" | "b" | "c"
 ```
+
+<details>
+<summary>參考解答</summary>
+
+思路：模板字面值 `${infer Head}${infer Rest}` 會把字串拆成「第一個字元」與「剩餘字串」，用 `Head | CharUnion<Rest>` 逐字遞迴收集；字串被拆到空字串時不再符合模板，回傳 `never`（聯合型別中的 `never` 會自動被吸收）。
+
+```typescript
+// 逐字元遞迴，把每個字元收集成聯合型別
+type CharUnion<S extends string> = S extends `${infer Head}${infer Rest}`
+  ? Head | CharUnion<Rest>
+  : never;
+
+type A = CharUnion<"abc">; // "a" | "b" | "c"
+
+// ---- 型別測試 ----
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
+    ? true
+    : false;
+type Expect<T extends true> = T;
+
+type _cases = [Expect<Equal<A, "a" | "b" | "c">>];
+```
+
+重點提醒：模板字面值裡連續兩個 `infer` 時，第一個只會抓「單一字元」，這正是逐字拆解字串的關鍵；終止分支回傳 `never` 而非 `""`，才不會讓空字串混進結果。
+
+</details>
 
 ### 練習 3：實作 DeepReadonly（含陣列與函式）
 
@@ -664,6 +724,52 @@ type Frozen = DeepReadonly<State>;
 // user、user.name、user.roles 都是 readonly，但 update 仍是可呼叫的函式
 ```
 
+<details>
+<summary>參考解答</summary>
+
+思路：條件順序是關鍵。先攔截函式型別（用 `(...args: any[]) => any` 比對），原封不動回傳以保持可呼叫；接著才處理其他 `object`（陣列也是 object），用映射型別加上 `readonly` 並對每個屬性遞迴；最後基本型別直接回傳。因為陣列也走 `object` 分支，`string[]` 會遞迴成 `readonly string[]`。
+
+```typescript
+// 順序很關鍵：先排除函式，物件/陣列才遞迴加 readonly
+type DeepReadonly<T> = T extends (...args: any[]) => any
+  ? T
+  : T extends object
+    ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+    : T;
+
+interface State {
+  user: { name: string; roles: string[] };
+  update: () => void;
+}
+type Frozen = DeepReadonly<State>;
+
+// ---- 型別測試 ----
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
+    ? true
+    : false;
+type Expect<T extends true> = T;
+
+type _cases = [
+  Expect<
+    Equal<
+      Frozen,
+      {
+        readonly user: {
+          readonly name: string;
+          readonly roles: readonly string[];
+        };
+        readonly update: () => void;
+      }
+    >
+  >,
+];
+```
+
+重點提醒：函式在 TypeScript 裡也是 `object`，若不先攔截，映射型別會把它的呼叫簽章「攤平」成一個只有 readonly 屬性、卻不能再呼叫的型別，因此判斷順序一定要把函式放在物件前面。
+
+</details>
+
 ### 練習 4：型別層級的 SQL SELECT
 
 給定一個資料表型別與欄位名稱聯合型別，回傳只包含這些欄位的型別（自己實作，不要用內建 `Pick`）：
@@ -675,6 +781,40 @@ interface User { id: number; name: string; email: string; password: string }
 type PublicUser = Select<User, "id" | "name" | "email">;
 // { id: number; name: string; email: string }
 ```
+
+<details>
+<summary>參考解答</summary>
+
+思路：`K extends keyof T` 保證欄位名稱都合法，接著用映射型別 `{ [P in K]: T[P] }` 走訪指定的欄位聯合，逐一從 `T` 取出對應型別——這其實就是內建 `Pick` 的核心實作。
+
+```typescript
+// 用映射型別挑出指定欄位（等同自己實作 Pick，不使用內建）
+type Select<T, K extends keyof T> = { [P in K]: T[P] };
+
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  password: string;
+}
+type PublicUser = Select<User, "id" | "name" | "email">;
+// { id: number; name: string; email: string }
+
+// ---- 型別測試 ----
+type Equal<X, Y> =
+  (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2
+    ? true
+    : false;
+type Expect<T extends true> = T;
+
+type _cases = [
+  Expect<Equal<PublicUser, { id: number; name: string; email: string }>>,
+];
+```
+
+重點提醒：把 `K` 約束成 `keyof T`，就能在編譯期擋掉不存在的欄位名稱（例如 `Select<User, "age">` 會直接紅線），這正是型別安全「投影」的價值所在。
+
+</details>
 
 ---
 

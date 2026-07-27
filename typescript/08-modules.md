@@ -427,13 +427,255 @@ import type { Order } from "./order"; // 型別匯入不會造成循環
 - 工具函式（formatDate, slugify）
 - Barrel file 統一匯出
 
+<details>
+<summary>參考解答</summary>
+
+依「型別 / 服務 / 工具」三層拆分目錄，每層各放一個 `index.ts` 當 barrel file 統一對外匯出；型別用 `import type`／`export type` 匯入匯出，避免產生多餘的執行期程式碼與循環依賴。這是一個**多檔案**的結構示範（分屬不同檔案，不是單一可編譯片段）。
+
+目錄結構：
+
+```
+src/
+├── types/
+│   ├── user.ts
+│   ├── post.ts
+│   ├── comment.ts
+│   └── index.ts       # barrel file
+├── services/
+│   ├── user.service.ts
+│   ├── post.service.ts
+│   └── index.ts       # barrel file
+├── utils/
+│   ├── date.ts
+│   ├── slug.ts
+│   └── index.ts       # barrel file
+└── index.ts           # 專案進入點
+```
+
+型別定義：
+
+```typescript
+// src/types/user.ts
+export interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+// src/types/post.ts
+export interface Post {
+  id: number;
+  authorId: number;
+  title: string;
+  slug: string;
+  content: string;
+  createdAt: Date;
+}
+
+// src/types/comment.ts
+export interface Comment {
+  id: number;
+  postId: number;
+  authorId: number;
+  content: string;
+  createdAt: Date;
+}
+
+// src/types/index.ts —— barrel file，只匯出型別
+export type { User } from "./user";
+export type { Post } from "./post";
+export type { Comment } from "./comment";
+```
+
+工具函式：
+
+```typescript
+// src/utils/date.ts
+export function formatDate(date: Date): string {
+  return date.toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+// src/utils/slug.ts
+export function slugify(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-");
+}
+
+// src/utils/index.ts —— barrel file
+export { formatDate } from "./date";
+export { slugify } from "./slug";
+```
+
+服務層（用 `import type` 匯入型別，用一般 import 匯入工具函式）：
+
+```typescript
+// src/services/user.service.ts
+import type { User } from "../types";
+
+export class UserService {
+  private users: User[] = [];
+
+  add(user: User): void {
+    this.users.push(user);
+  }
+
+  findById(id: number): User | undefined {
+    return this.users.find((u) => u.id === id);
+  }
+}
+
+// src/services/post.service.ts
+import type { Post } from "../types";
+import { slugify } from "../utils";
+
+export class PostService {
+  private posts: Post[] = [];
+
+  create(authorId: number, title: string, content: string): Post {
+    const post: Post = {
+      id: Date.now(),
+      authorId,
+      title,
+      slug: slugify(title),
+      content,
+      createdAt: new Date(),
+    };
+    this.posts.push(post);
+    return post;
+  }
+}
+
+// src/services/index.ts —— barrel file
+export { UserService } from "./user.service";
+export { PostService } from "./post.service";
+```
+
+進入點只需要從各層 barrel file 匯入：
+
+```typescript
+// src/index.ts
+import type { User, Post } from "./types";
+import { UserService, PostService } from "./services";
+import { formatDate } from "./utils";
+
+const userService = new UserService();
+const postService = new PostService();
+
+const author: User = { id: 1, name: "Gary", email: "gary@example.com" };
+userService.add(author);
+
+const post: Post = postService.create(author.id, "Hello TypeScript", "內文…");
+console.log(`${post.slug} @ ${formatDate(post.createdAt)}`);
+```
+
+重點提醒：型別一律走 `export type` / `import type`，編譯後會被完全移除、也不會造成循環依賴；barrel file 讓外部只需 `import { ... } from "./services"` 一行就取用整層模組，是模組組織的常見手法。缺點是 barrel file 可能拖累 tree-shaking，大型專案要斟酌是否每一層都建。
+
+</details>
+
 ### 練習 2：型別宣告
 
 為一個假想的 JavaScript 函式庫 `simple-math` 撰寫 `.d.ts` 型別宣告。
 
+<details>
+<summary>參考解答</summary>
+
+用 `declare module "simple-math"` 為這個沒有型別的 JS 套件補上型別：裡面用 `export` 宣告函式、常數、介面與預設匯出的 class，只描述「型別長相」而不寫實作。把它存成專案裡的 `typings/simple-math.d.ts`，TypeScript 就會在 `import ... from "simple-math"` 時套用這份型別。
+
+```typescript
+// typings/simple-math.d.ts
+declare module "simple-math" {
+  export interface RoundOptions {
+    precision?: number;
+  }
+
+  export function add(a: number, b: number): number;
+  export function subtract(a: number, b: number): number;
+  export function multiply(a: number, b: number): number;
+  export function divide(a: number, b: number): number;
+  export function round(value: number, options?: RoundOptions): number;
+
+  export const PI: number;
+  export const E: number;
+
+  // 預設匯出：一個可鏈式呼叫的計算機 class
+  export default class Calculator {
+    constructor(initial?: number);
+    value: number;
+    add(n: number): this;
+    subtract(n: number): this;
+    result(): number;
+  }
+}
+```
+
+消費端就能享有完整型別檢查與自動完成：
+
+```typescript
+// main.ts
+import Calculator, { add, round, PI, type RoundOptions } from "simple-math";
+
+const sum: number = add(1, 2);
+const opts: RoundOptions = { precision: 2 };
+const rounded: number = round(3.14159, opts);
+
+const total: number = new Calculator(10).add(5).subtract(3).result();
+console.log(sum, rounded, PI, total);
+```
+
+重點提醒：這是**多檔案**示範——`declare module` 一定要放在「沒有頂層 `import` / `export` 的環境宣告檔（.d.ts）」裡，它才會被當成「為某個模組補型別」；如果把它寫進一個本身已經是模組的檔案（檔案內有其他 import/export），`declare module "simple-math"` 反而會被解讀成「模組擴增（augmentation）」而報 `module ... cannot be found`。另外要確保這個 `typings/simple-math.d.ts` 有被 `tsconfig.json` 的 `include`（或 `files`）涵蓋到。（不要用 `typeRoots`——它預期底下每個子資料夾都是一個「套件式」型別包、各自帶 `index.d.ts`，並不是拿來收單一 `.d.ts` 檔的機制。）
+
+</details>
+
 ### 練習 3：路徑別名
 
 設定 tsconfig.json 的路徑別名，並重構一個有深層相對路徑的專案。
+
+<details>
+<summary>參考解答</summary>
+
+先在 `tsconfig.json` 用 `baseUrl` + `paths` 定義別名，把常用目錄對應到簡短前綴，再把原本一長串的 `../../../` 相對路徑改寫成別名。以下的 tsconfig 是完整設定片段，import 改寫則是對照示範。
+
+`tsconfig.json` 設定：
+
+```json
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@components/*": ["src/components/*"],
+      "@models/*": ["src/models/*"],
+      "@services/*": ["src/services/*"],
+      "@utils/*": ["src/utils/*"]
+    }
+  }
+}
+```
+
+重構前（深層相對路徑，難讀又容易在搬移檔案時斷掉）：
+
+```typescript
+// src/features/dashboard/widgets/UserCard.tsx
+import { User } from "../../../models/user";
+import { formatDate } from "../../../../utils/date";
+import { UserService } from "../../../services/user.service";
+```
+
+重構後（用別名，路徑與檔案所在深度無關）：
+
+```typescript
+// src/features/dashboard/widgets/UserCard.tsx
+import type { User } from "@models/user";
+import { formatDate } from "@utils/date";
+import { UserService } from "@services/user.service";
+```
+
+重點提醒：`paths` 只在 **TypeScript 編譯器層面** 解析型別，實際打包／執行時還要讓對應工具知道相同別名——Vite/Webpack 需在各自設定裡同步一份 `resolve.alias`，用 `tsc` 直接輸出到 Node 執行時則要搭配 `tsc-alias` 之類的工具改寫路徑，否則執行期會找不到模組。另外別名建議避開 `@types/*`（容易和 npm 的 `@types` scope 混淆），本例改用 `@models/*` 表示 `src/models/*`。
+
+</details>
 
 ---
 

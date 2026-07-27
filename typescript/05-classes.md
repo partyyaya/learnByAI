@@ -498,6 +498,59 @@ stringStack.push("world");
 - 刪除事項
 - 取得所有未完成的事項
 
+<details>
+<summary>參考解答</summary>
+
+先用一個 `Todo` 介面描述單筆待辦的結構。類別內部把 `todos` 陣列與自動遞增的 `nextId` 都設為 `private`，避免外部直接亂改；四個功能各對應一個方法，用 `find` / `filter` 操作陣列即可。
+
+```typescript
+interface Todo {
+  id: number;
+  text: string;
+  done: boolean;
+}
+
+class TodoList {
+  private todos: Todo[] = [];
+  private nextId = 1;
+
+  // 新增待辦事項
+  add(text: string): Todo {
+    const todo: Todo = { id: this.nextId++, text, done: false };
+    this.todos.push(todo);
+    return todo;
+  }
+
+  // 標記完成
+  complete(id: number): void {
+    const todo = this.todos.find((t) => t.id === id);
+    if (todo) {
+      todo.done = true;
+    }
+  }
+
+  // 刪除事項
+  remove(id: number): void {
+    this.todos = this.todos.filter((t) => t.id !== id);
+  }
+
+  // 取得所有未完成的事項
+  getPending(): Todo[] {
+    return this.todos.filter((t) => !t.done);
+  }
+}
+
+const list = new TodoList();
+list.add("Learn TypeScript");
+const second = list.add("Write demo");
+list.complete(second.id);
+console.log(list.getPending()); // 只剩尚未完成的那筆
+```
+
+重點：把內部狀態（`todos`、`nextId`）設為 `private`，只透過方法操作，就是封裝的基本精神；`nextId` 由類別自己管理，呼叫端不必也不該傳入 id。
+
+</details>
+
 ### 練習 2：繼承與抽象類別
 
 設計一個支付系統的類別體系：
@@ -511,9 +564,124 @@ abstract class PaymentMethod {
 // 實作 CreditCard、BankTransfer、LinePay
 ```
 
+<details>
+<summary>參考解答</summary>
+
+`PaymentMethod` 是抽象類別，只規定「所有付款方式都必須有 `process` 與 `refund`」但不提供實作。三個子類別各自 `extends` 它並補上具體邏輯；有需要建構參數的（信用卡卡號、轉帳帳號）就在建構子用參數屬性接收，並記得呼叫 `super()`。最後就能用同一個 `PaymentMethod[]` 型別統一操作，不必在意實際型別——這就是多型。
+
+```typescript
+abstract class PaymentMethod {
+  abstract process(amount: number): Promise<boolean>;
+  abstract refund(transactionId: string): Promise<boolean>;
+}
+
+class CreditCard extends PaymentMethod {
+  constructor(private cardNumber: string) {
+    super();
+  }
+
+  async process(amount: number): Promise<boolean> {
+    console.log(`CreditCard 付款 ${amount}（卡號末四碼 ${this.cardNumber.slice(-4)}）`);
+    return true;
+  }
+
+  async refund(transactionId: string): Promise<boolean> {
+    console.log(`CreditCard 退款 ${transactionId}`);
+    return true;
+  }
+}
+
+class BankTransfer extends PaymentMethod {
+  constructor(private account: string) {
+    super();
+  }
+
+  async process(amount: number): Promise<boolean> {
+    console.log(`BankTransfer 付款 ${amount} 到 ${this.account}`);
+    return true;
+  }
+
+  async refund(transactionId: string): Promise<boolean> {
+    console.log(`BankTransfer 退款 ${transactionId}`);
+    return true;
+  }
+}
+
+class LinePay extends PaymentMethod {
+  async process(amount: number): Promise<boolean> {
+    console.log(`LinePay 付款 ${amount}`);
+    return true;
+  }
+
+  async refund(transactionId: string): Promise<boolean> {
+    console.log(`LinePay 退款 ${transactionId}`);
+    return true;
+  }
+}
+
+// 統一以 PaymentMethod 型別操作，不需在意實際是哪一種付款方式
+const methods: PaymentMethod[] = [
+  new CreditCard("1234567812345678"),
+  new BankTransfer("001-222-333"),
+  new LinePay(),
+];
+methods.forEach((m) => {
+  m.process(100);
+});
+```
+
+重點：抽象類別定義「契約 + 共用行為」，子類別負責填實作；把它們裝進 `PaymentMethod[]` 就能寫出對所有付款方式一視同仁的程式碼（多型）。
+
+</details>
+
 ### 練習 3：設計模式
 
 使用 TypeScript 類別實作 Observer 模式（觀察者模式）。
+
+<details>
+<summary>參考解答</summary>
+
+觀察者模式有兩個角色：被觀察的「主題」（`Subject`）與訂閱它的「觀察者」（`Observer`）。用泛型 `T` 表示通知時傳遞的資料型別，讓主題與觀察者對資料的認知一致。`Subject` 維護一份觀察者清單，提供訂閱／取消訂閱，`notify` 時逐一呼叫每個觀察者的 `update`。
+
+```typescript
+// 觀察者介面：所有觀察者都要實作 update
+interface Observer<T> {
+  update(data: T): void;
+}
+
+// 被觀察的主題：負責訂閱、取消訂閱、以及通知所有觀察者
+class Subject<T> {
+  private observers: Observer<T>[] = [];
+
+  subscribe(observer: Observer<T>): void {
+    this.observers.push(observer);
+  }
+
+  unsubscribe(observer: Observer<T>): void {
+    this.observers = this.observers.filter((o) => o !== observer);
+  }
+
+  notify(data: T): void {
+    this.observers.forEach((o) => o.update(data));
+  }
+}
+
+class LogObserver implements Observer<string> {
+  update(data: string): void {
+    console.log(`LogObserver 收到：${data}`);
+  }
+}
+
+const subject = new Subject<string>();
+const observer = new LogObserver();
+subject.subscribe(observer);
+subject.notify("hello observers"); // "LogObserver 收到：hello observers"
+subject.unsubscribe(observer);
+```
+
+重點：主題只依賴 `Observer<T>` 這個介面、不在意觀察者的具體型別，這種「面向介面而非實作」的鬆耦合，正是設計模式想達成的目標；泛型 `T` 則讓通知資料保有型別安全。
+
+</details>
 
 ---
 

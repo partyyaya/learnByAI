@@ -607,6 +607,57 @@ function processItems(items: any[]): any[] {
 }
 ```
 
+<details>
+<summary>參考解答</summary>
+
+兩個函式的 `any` 各有不同解法。`fetchData` 的回傳型別要由呼叫端決定，所以用**泛型** `T`；`url` 收斂成 `string`，`options` 用內建的 `RequestInit`。`processItems` 的輸入／輸出形狀是固定的，用 `interface` 明確定義即可，`filter`/`map` 的參數型別會自動推斷、不需再標註。
+
+```typescript
+// 回傳型別交給呼叫端以泛型指定，url/options 用內建型別
+async function fetchData<T>(url: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+// 明確定義輸入與輸出的形狀
+interface Item {
+  id: number;
+  name: string;
+  active: boolean;
+}
+
+interface ProcessedItem {
+  id: number;
+  label: string;
+}
+
+function processItems(items: Item[]): ProcessedItem[] {
+  return items
+    .filter((item) => item.active) // item 已推斷為 Item
+    .map((item) => ({
+      id: item.id,
+      label: item.name.toUpperCase(),
+    }));
+}
+
+// 使用示範
+interface User {
+  id: number;
+  name: string;
+  active: boolean;
+}
+
+const users = await fetchData<User[]>("/api/users"); // users: User[]
+const processed = processItems(users); // processed: ProcessedItem[]
+```
+
+重點：需要「由呼叫端決定型別」時用泛型，形狀固定時用 `interface`；`res.json()` 回傳 `Promise<any>`，用 `as Promise<T>` 把它收束到泛型結果即可，避免整條鏈都退化成 `any`。
+
+</details>
+
 ### 練習 2：型別安全的 Store
 
 使用 TypeScript 設計一個簡易的型別安全狀態管理：
@@ -625,6 +676,104 @@ const store = createStore({
 });
 ```
 
+<details>
+<summary>參考解答</summary>
+
+關鍵是讓 `createStore` 的三個泛型 `S`（state）、`A`（actions）、`G`（getters）互相關聯：`S` 由 `state` 推斷出來，`actions`/`getters` 的第一個參數再透過 `Record<string, (state: S, ...) => ...>` 的約束「反向」拿到 `S` 的型別（所以 `increment(state)` 的 `state` 不用標註也知道是 `{ count: number; user: User | null }`）。對外暴露時再用**條件型別 + `infer`** 把 action 的第一個 `state` 參數「藏起來」，並把 getter 轉成取值屬性。
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
+// action：第一個參數固定是 state，後面可帶任意額外參數
+type ActionsConfig<S> = Record<string, (state: S, ...args: any[]) => any>;
+// getter：只吃 state，回傳衍生值
+type GettersConfig<S> = Record<string, (state: S) => any>;
+
+interface StoreConfig<
+  S,
+  A extends ActionsConfig<S>,
+  G extends GettersConfig<S>,
+> {
+  state: S;
+  actions: A;
+  getters: G;
+}
+
+// 對外暴露的 action：把第一個 state 參數移除，只留下其餘參數
+type ExposedActions<S, A extends ActionsConfig<S>> = {
+  [K in keyof A]: A[K] extends (state: S, ...args: infer P) => infer R
+    ? (...args: P) => R
+    : never;
+};
+
+// getter 對外變成「取值」屬性
+type ExposedGetters<S, G extends GettersConfig<S>> = {
+  readonly [K in keyof G]: ReturnType<G[K]>;
+};
+
+interface Store<S, A extends ActionsConfig<S>, G extends GettersConfig<S>> {
+  state: S;
+  actions: ExposedActions<S, A>;
+  getters: ExposedGetters<S, G>;
+}
+
+function createStore<
+  S,
+  A extends ActionsConfig<S>,
+  G extends GettersConfig<S>,
+>(config: StoreConfig<S, A, G>): Store<S, A, G> {
+  const state = config.state;
+
+  const actions = {} as ExposedActions<S, A>;
+  for (const key in config.actions) {
+    // 呼叫時自動把 state 注入為第一個參數
+    actions[key] = ((...args: any[]) =>
+      config.actions[key](state, ...args)) as ExposedActions<S, A>[typeof key];
+  }
+
+  const getters = {} as Record<string, unknown>;
+  for (const key in config.getters) {
+    // getter 每次讀取都重新計算
+    Object.defineProperty(getters, key, {
+      get: () => config.getters[key](state),
+      enumerable: true,
+    });
+  }
+
+  return { state, actions, getters: getters as ExposedGetters<S, G> };
+}
+
+// 使用 —— state / actions / getters 全程型別安全
+const store = createStore({
+  state: { count: 0, user: null as User | null },
+  actions: {
+    increment(state) {
+      state.count++;
+    },
+    setUser(state, user: User) {
+      state.user = user;
+    },
+  },
+  getters: {
+    doubleCount(state) {
+      return state.count * 2;
+    },
+  },
+});
+
+store.actions.increment(); // ✅ 不需要傳 state
+store.actions.setUser({ id: 1, name: "Gary" }); // ✅ 只需傳 user
+const n: number = store.getters.doubleCount; // ✅ 推斷為 number
+// store.actions.setUser(); // ❌ 缺少 user 參數
+```
+
+重點：多個泛型互相約束（`A extends ActionsConfig<S>`）是讓 action 內 `state` 自動推斷的關鍵；用條件型別 + `infer P` 移除首個參數，讓對外 API 從 `(state, ...args)` 變成 `(...args)`，呼叫端不必也不能再手動傳 state。
+
+</details>
+
 ### 練習 3：綜合實作
 
 選擇一個你熟悉的框架（Vue / React），建立一個完整的 TypeScript 專案，包含：
@@ -632,6 +781,35 @@ const store = createStore({
 - 型別安全的 API 層
 - 型別安全的狀態管理
 - 元件的完整型別標註
+
+<details>
+<summary>參考解答</summary>
+
+這題是開放式整合練習，課程已經附上兩個**可實際執行**的完整參考實作，功能互相對應，正好涵蓋題目要求的四塊——建議直接對照原始碼閱讀：
+
+- [projects/vue-app](./projects/vue-app/) — Vue 3 + Pinia + Vue Router + axios
+- [projects/react-app](./projects/react-app/) — React 19 + Zustand + React Router + axios
+
+題目四項要求對應到專案裡的位置：
+
+| 要求 | vue-app | react-app |
+|------|---------|-----------|
+| 型別定義檔案 | `src/types/index.ts`（共用的 `User`/`Post`/`ApiError` DTO + `isApiError` 型別守衛） | 同左 |
+| 型別安全的 API 層 | `src/api/`（axios 攔截器把錯誤正規化成 `ApiError`，`get<T>()` 讓呼叫端直接拿到 `T`） | 同左 |
+| 型別安全的狀態管理 | `src/stores/`（Pinia setup store，含收藏清單持久化） | `src/stores/`（Zustand，`persist` middleware） |
+| 元件的完整型別標註 | `src/components/`、`src/views/`（`defineProps<T>()`、型別化路由參數） | 同左（`interface Props`、`useParams` 轉型） |
+
+動手做的建議步驟：
+
+1. 先用 `npm create vue@latest`（勾選 TypeScript / Router / Pinia）或 `npm create vite@latest -- --template react-ts` 建立骨架。
+2. 在 `src/types/` 定義領域型別與 `isApiError` 守衛，讓其餘各層都 import 同一份型別。
+3. 封裝一支型別化的 axios 實例（攔截器 + `get<T>()`），API 函式一律回傳 `Promise<具體型別>`。
+4. 用 Pinia / Zustand 建立 store，非同步 action 在 `catch` 用 `isApiError` 取出訊息（避免 `any` 與不安全的 `as`）。
+5. 元件的 props、事件、路由參數全部標註型別，最後跑 `npm run type-check`（Vue 用 `vue-tsc`、React 用 `tsc`）確認 0 型別錯誤。
+
+完整結構與逐檔說明見 [projects/README.md](./projects/README.md)。
+
+</details>
 
 ---
 

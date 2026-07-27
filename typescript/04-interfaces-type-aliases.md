@@ -425,6 +425,52 @@ type UpdateUserDto = Partial<Pick<User, "name" | "email">>;
 - `CartItem`：包含 Product 和數量
 - `Order`：id、購買者、訂單項目陣列、總金額、狀態
 
+<details>
+<summary>參考解答</summary>
+
+先定義最底層的 `Product`，把「可能不存在」的描述用 `?` 標成可選；`CartItem` 直接把整個 `Product` 當屬性組合進來（組合優於重複欄位）；`Order` 再持有一組 `CartItem`，並用字面量聯合型別限定 `status` 只能是幾個合法狀態。
+
+```typescript
+interface Product {
+  id: number;
+  name: string;
+  price: number;
+  stock: number;
+  category: string;
+  description?: string; // 可選的描述
+}
+
+interface CartItem {
+  product: Product;
+  quantity: number;
+}
+
+interface Order {
+  id: number;
+  buyer: string;
+  items: CartItem[];
+  total: number;
+  status: "pending" | "paid" | "shipped" | "completed" | "cancelled";
+}
+
+const order: Order = {
+  id: 1,
+  buyer: "Gary",
+  items: [
+    {
+      product: { id: 1, name: "TS Book", price: 500, stock: 10, category: "book" },
+      quantity: 2,
+    },
+  ],
+  total: 1000,
+  status: "pending",
+};
+```
+
+重點：用字面量聯合型別（`"pending" | ...`）取代 `string`，可以讓非法狀態在編譯期就被擋下；欄位「可能沒有」時才用 `?`，不要濫用。
+
+</details>
+
 ### 練習 2：介面繼承
 
 設計一個動物類別體系，使用介面繼承：
@@ -435,6 +481,52 @@ interface Pet extends Animal { /* ... */ }
 interface Dog extends Pet { /* ... */ }
 interface Cat extends Pet { /* ... */ }
 ```
+
+<details>
+<summary>參考解答</summary>
+
+把共通欄位往上放：所有動物都有 `name`、`age`；`Pet` 在動物之上多了 `owner`；`Dog`、`Cat` 再各自補上專屬欄位與行為方法。每一層 `extends` 都會累積上層所有成員，所以 `Dog` 同時擁有 `name`、`age`、`owner`、`breed`、`bark`。
+
+```typescript
+interface Animal {
+  name: string;
+  age: number;
+}
+
+interface Pet extends Animal {
+  owner: string;
+}
+
+interface Dog extends Pet {
+  breed: string;
+  bark(): void;
+}
+
+interface Cat extends Pet {
+  indoor: boolean;
+  meow(): void;
+}
+
+const dog: Dog = {
+  name: "Lucky",
+  age: 3,
+  owner: "Gary",
+  breed: "Shiba",
+  bark: () => console.log("Woof!"),
+};
+
+const cat: Cat = {
+  name: "Kitty",
+  age: 2,
+  owner: "Gary",
+  indoor: true,
+  meow: () => console.log("Meow!"),
+};
+```
+
+重點：把共用欄位抽到上層介面、專屬欄位留在下層，是介面繼承最典型的用途；`extends` 是累加而非取代。
+
+</details>
 
 ### 練習 3：Interface vs Type
 
@@ -452,6 +544,37 @@ type Point = [number, number];
 type UserMap = Record<string, User>;
 type ReadonlyUser = Readonly<User>;
 ```
+
+<details>
+<summary>參考解答</summary>
+
+逐一檢視：聯合型別（`Status`）、元組（`Point`）、以及 `Readonly<T>` 這類映射工具型別，都**無法**用 `interface` 表達，只能維持 `type`。唯一能改寫的是 `UserMap`——`Record<string, User>` 本質是索引簽名，`interface` 可以用 `[key: string]: User` 近似表達。
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+
+// ❌ 聯合型別無法用 interface 表達，只能用 type
+type Status = "pending" | "active" | "inactive";
+
+// ❌ 元組無法用 interface 表達，只能用 type
+type Point = [number, number];
+
+// Record 映射型別：可用索引簽名近似改寫為 interface
+type UserMap = Record<string, User>;
+interface UserMapInterface {
+  [key: string]: User;
+}
+
+// ❌ Readonly<T> 這類映射型別無法用 interface 表達，只能用 type
+type ReadonlyUser = Readonly<User>;
+```
+
+重點：`interface` 專長是「描述物件形狀」與繼承；聯合、元組、映射型別這些「型別運算」是 `type` 的地盤。判斷準則就是本章 4.4 那張對照表。
+
+</details>
 
 ---
 

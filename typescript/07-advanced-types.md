@@ -527,6 +527,23 @@ type B = Flatten<string[][]>;  // string[]
 type C = Flatten<string>;      // string
 ```
 
+<details>
+<summary>參考解答</summary>
+
+用條件型別搭配 `infer` 把陣列的元素型別「抓」出來：`T extends (infer E)[]` 成立時 `E` 就是元素型別，回傳 `E`；不是陣列則原樣回傳 `T`。
+
+```typescript
+type Flatten<T> = T extends (infer E)[] ? E : T;
+
+type A = Flatten<number[]>;   // number
+type B = Flatten<string[][]>; // string[]（把外層陣列脫掉一層，剩下 string[]）
+type C = Flatten<string>;     // string（不是陣列，原樣回傳）
+```
+
+重點提醒：這個版本只會脫掉「一層」陣列，所以 `Flatten<string[][]>` 得到的是 `string[]` 而不是 `string`。若想遞迴展平到最底層，把回傳分支改成遞迴呼叫即可：`type DeepFlatten<T> = T extends (infer E)[] ? DeepFlatten<E> : T;`。
+
+</details>
+
 ### 練習 2：映射型別
 
 建立一個 `Mutable<T>` 型別，將所有 readonly 屬性變成可修改的：
@@ -534,6 +551,32 @@ type C = Flatten<string>;      // string
 ```typescript
 type Mutable<T> = ???;
 ```
+
+<details>
+<summary>參考解答</summary>
+
+映射型別的修飾詞前面加負號 `-` 可以「移除」修飾詞。要拿掉 `readonly`，就在 `readonly` 前加 `-`：
+
+```typescript
+type Mutable<T> = {
+  -readonly [K in keyof T]: T[K];
+};
+
+interface Config {
+  readonly host: string;
+  readonly port: number;
+}
+
+type MutableConfig = Mutable<Config>;
+// { host: string; port: number }（readonly 已移除）
+
+const cfg: MutableConfig = { host: "localhost", port: 8080 };
+cfg.host = "127.0.0.1"; // ✅ 已移除 readonly，可以重新賦值
+```
+
+重點提醒：`-readonly` 與 `-?`（移除可選）是映射型別特有的修飾詞語法；不加正負號（單純 `readonly` / `?`）代表「加上」，加負號才是「移除」。內建的 `Readonly<T>` 是加上唯讀，本題的 `Mutable<T>` 剛好相反。
+
+</details>
 
 ### 練習 3：工具型別組合
 
@@ -549,6 +592,47 @@ interface FormField<T> {
 // 建立 FormState<T>，將 T 的每個屬性轉換為 FormField
 type FormState<T> = ???;
 ```
+
+<details>
+<summary>參考解答</summary>
+
+用映射型別走訪 `T` 的每個鍵 `K`，把原本的值型別 `T[K]` 包進 `FormField<T[K]>`：
+
+```typescript
+interface FormField<T> {
+  value: T;
+  error: string | null;
+  touched: boolean;
+}
+
+type FormState<T> = {
+  [K in keyof T]: FormField<T[K]>;
+};
+
+// 使用範例
+interface LoginForm {
+  username: string;
+  password: string;
+  remember: boolean;
+}
+
+type LoginFormState = FormState<LoginForm>;
+// {
+//   username: FormField<string>;
+//   password: FormField<string>;
+//   remember: FormField<boolean>;
+// }
+
+const state: LoginFormState = {
+  username: { value: "gary", error: null, touched: true },
+  password: { value: "", error: "必填", touched: false },
+  remember: { value: true, error: null, touched: false },
+};
+```
+
+重點提醒：關鍵在於 `FormField<T[K]>` 會把「每個欄位各自的型別」帶進 `value`，所以 `username.value` 是 `string`、`remember.value` 是 `boolean`，型別不會被混在一起。這正是映射型別最常見的實務用途之一：把一組資料欄位整批「包裝」成帶有額外中繼資訊（error、touched）的結構。
+
+</details>
 
 ---
 

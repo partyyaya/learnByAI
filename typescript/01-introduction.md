@@ -309,6 +309,24 @@ const area = calculateArea(10, 20);
 console.log(`面積為：${area}`);
 ```
 
+<details>
+<summary>參考解答</summary>
+
+這題重點在跑通「編譯 → 執行」的流程。把下面程式碼存成 `area.ts`，用 `npx tsc area.ts` 編譯出 `area.js`，再用 `node area.js` 執行；也可以用 `tsx area.ts` 一步到位。程式本身型別完全正確，可以順利編譯。
+
+```typescript
+function calculateArea(width: number, height: number): number {
+  return width * height;
+}
+
+const area = calculateArea(10, 20);
+console.log(`面積為：${area}`); // 面積為：200
+```
+
+重點提醒：`width`、`height` 標註為 `number`，回傳值也標註為 `number`，若不小心傳入字串就會在編譯階段被擋下來。
+
+</details>
+
 ### 練習 2：體驗型別錯誤
 
 嘗試以下程式碼，觀察 TypeScript 如何在編譯時期報錯：
@@ -322,6 +340,28 @@ function multiply(a: number, b: number): number {
 }
 multiply("3", "4"); // 觀察錯誤訊息
 ```
+
+<details>
+<summary>參考解答</summary>
+
+這題的程式碼**故意寫錯**，目的是親眼看到 TypeScript 在編譯階段就報錯（而不是等到執行時才爆炸）。下面兩行標了 `// ❌` 的地方就是預期會出現的錯誤：
+
+```typescript
+let message: string = "Hello";
+message = 42; // ❌ TS2322: Type 'number' is not assignable to type 'string'.
+
+function multiply(a: number, b: number): number {
+  return a * b;
+}
+multiply("3", "4"); // ❌ TS2345: Argument of type 'string' is not assignable to parameter of type 'number'.
+```
+
+- 第 2 行：`message` 被宣告成 `string`，卻想塞入 `number` 42，型別不相容。
+- 最後一行：`multiply` 的參數要 `number`，卻傳入字串 `"3"`、`"4"`。
+
+重點提醒：這兩個錯誤在你按下編譯（或編輯器即時檢查）時就會出現，完全不需要真的執行程式，這正是靜態型別的價值。若要讓程式通過編譯，把 `42` 換成字串、把 `"3"`、`"4"` 換成數字即可。
+
+</details>
 
 ---
 

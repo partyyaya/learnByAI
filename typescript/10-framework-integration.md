@@ -1055,6 +1055,115 @@ npm install -D @typescript-eslint/parser @typescript-eslint/eslint-plugin
 - 使用 `defineProps<T>()` 和 `defineEmits<T>()`
 - Pinia store 搭配 TypeScript
 
+<details>
+<summary>參考解答</summary>
+
+用 Pinia setup store 管理 `Todo[]` 與衍生的「未完成數量」，子元件 `TodoItem` 用 `defineProps<T>()` 收 todo、用 Vue 3.3+ 型別字面值的 `defineEmits` 對外發出 `toggle`/`remove` 事件，父層再把事件接到 store 的 action。
+
+```typescript
+// stores/todos.ts
+import { ref, computed } from 'vue'
+import { defineStore } from 'pinia'
+
+export interface Todo {
+  id: number
+  text: string
+  done: boolean
+}
+
+export const useTodoStore = defineStore('todos', () => {
+  const todos = ref<Todo[]>([])
+  const remaining = computed(() => todos.value.filter((t) => !t.done).length)
+
+  function add(text: string): void {
+    todos.value.push({ id: Date.now(), text, done: false })
+  }
+  function toggle(id: number): void {
+    const todo = todos.value.find((t) => t.id === id)
+    if (todo) todo.done = !todo.done
+  }
+  function remove(id: number): void {
+    todos.value = todos.value.filter((t) => t.id !== id)
+  }
+
+  return { todos, remaining, add, toggle, remove }
+})
+```
+
+```vue
+<!-- components/TodoItem.vue -->
+<script setup lang="ts">
+import type { Todo } from '@/stores/todos'
+
+// 帶型別的 props
+defineProps<{ todo: Todo }>()
+
+// 帶型別的 emits（Vue 3.3+ 型別字面值簡寫）
+const emit = defineEmits<{
+  toggle: [id: number]
+  remove: [id: number]
+}>()
+</script>
+
+<template>
+  <li>
+    <label>
+      <input
+        type="checkbox"
+        :checked="todo.done"
+        @change="emit('toggle', todo.id)"
+      />
+      <span :class="{ done: todo.done }">{{ todo.text }}</span>
+    </label>
+    <button type="button" @click="emit('remove', todo.id)">刪除</button>
+  </li>
+</template>
+```
+
+```vue
+<!-- App.vue -->
+<script setup lang="ts">
+import { ref } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useTodoStore } from '@/stores/todos'
+import TodoItem from '@/components/TodoItem.vue'
+
+const store = useTodoStore()
+const { todos, remaining } = storeToRefs(store) // 保留響應性
+const draft = ref('')
+
+function addTodo(): void {
+  const text = draft.value.trim()
+  if (!text) return
+  store.add(text)
+  draft.value = ''
+}
+</script>
+
+<template>
+  <section>
+    <h1>待辦事項（剩 {{ remaining }} 項）</h1>
+    <form @submit.prevent="addTodo">
+      <input v-model="draft" placeholder="新增待辦…" />
+      <button type="submit">新增</button>
+    </form>
+    <ul>
+      <TodoItem
+        v-for="todo in todos"
+        :key="todo.id"
+        :todo="todo"
+        @toggle="store.toggle"
+        @remove="store.remove"
+      />
+    </ul>
+  </section>
+</template>
+```
+
+重點：`storeToRefs` 解構 store 才不會弄丟響應性（action 可以直接解構）；`defineProps`/`defineEmits` 用純型別參數（不傳執行期物件），TypeScript 就能對 props 傳值與事件參數做完整檢查。更完整的版本（含路由與 API）見 [projects/vue-app](./projects/vue-app/)。
+
+</details>
+
 ### 練習 2：React + TypeScript
 
 建立一個 React + TypeScript 的表單元件，包含：
@@ -1062,9 +1171,173 @@ npm install -D @typescript-eslint/parser @typescript-eslint/eslint-plugin
 - 使用泛型的自定義 Hook
 - Context + useReducer 搭配完整型別
 
+<details>
+<summary>參考解答</summary>
+
+用**可辨識聯合**描述 `useReducer` 的 action，並用映射型別讓每個 `field` 與它的 `value` 型別互相對應；Context 同時提供 `state` 與 `dispatch`；泛型 hook `useField<K>` 綁定單一欄位，讓 `value` 與 `setValue` 的型別都跟著該欄位走。
+
+```tsx
+import {
+  createContext,
+  useContext,
+  useReducer,
+  type Dispatch,
+  type ReactNode,
+} from 'react'
+
+interface FormState {
+  username: string
+  email: string
+  age: number
+}
+
+// 每個欄位各自產生一個 action 成員，讓 field 與 value 的型別互相對應
+type FieldAction = {
+  [K in keyof FormState]: { type: 'setField'; field: K; value: FormState[K] }
+}[keyof FormState]
+
+type FormAction = FieldAction | { type: 'reset' }
+
+const initialState: FormState = { username: '', email: '', age: 0 }
+
+function reducer(state: FormState, action: FormAction): FormState {
+  switch (action.type) {
+    case 'setField':
+      return { ...state, [action.field]: action.value }
+    case 'reset':
+      return initialState
+  }
+}
+
+// Context 同時帶完整型別的 state 與 dispatch
+interface FormContextValue {
+  state: FormState
+  dispatch: Dispatch<FormAction>
+}
+const FormContext = createContext<FormContextValue | null>(null)
+
+function FormProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, initialState)
+  return (
+    <FormContext.Provider value={{ state, dispatch }}>
+      {children}
+    </FormContext.Provider>
+  )
+}
+
+function useFormContext(): FormContextValue {
+  const ctx = useContext(FormContext)
+  if (!ctx) throw new Error('useFormContext 必須在 <FormProvider> 內使用')
+  return ctx
+}
+
+// 泛型自訂 Hook：綁定單一欄位，value 與 setValue 都對應到該欄位型別
+function useField<K extends keyof FormState>(
+  field: K,
+): { value: FormState[K]; setValue: (value: FormState[K]) => void } {
+  const { state, dispatch } = useFormContext()
+  return {
+    value: state[field],
+    // 在泛型 K 之下，TS 無法把 field/value 關聯回聯合的某一個成員（相關聯合的已知限制），
+    // 這裡斷言為 FieldAction；對外 API（setValue 的參數是 FormState[K]）仍受完整型別檢查
+    setValue: (value) =>
+      dispatch({ type: 'setField', field, value } as FieldAction),
+  }
+}
+
+// 帶型別 props 的字串輸入元件
+interface TextFieldProps {
+  label: string
+  field: 'username' | 'email' // 只接受字串欄位
+}
+function TextField({ label, field }: TextFieldProps) {
+  const { value, setValue } = useField(field) // value 推斷為 string
+  return (
+    <label>
+      {label}
+      <input value={value} onChange={(e) => setValue(e.target.value)} />
+    </label>
+  )
+}
+
+function AgeField() {
+  const { value, setValue } = useField('age') // value 推斷為 number
+  return (
+    <label>
+      年齡
+      <input
+        type="number"
+        value={value}
+        onChange={(e) => setValue(Number(e.target.value))}
+      />
+    </label>
+  )
+}
+
+// 使用時，所有讀取欄位的元件都要在 Provider 之內
+export function SignupForm() {
+  return (
+    <FormProvider>
+      <TextField label="帳號" field="username" />
+      <TextField label="Email" field="email" />
+      <AgeField />
+    </FormProvider>
+  )
+}
+```
+
+重點：用映射型別 `{ [K in keyof FormState]: {...} }[keyof FormState]` 展開成可辨識聯合，是讓 `dispatch({ type:'setField', field, value })` 能檢查「`age` 只能配 `number`」的關鍵；`createContext<FormContextValue | null>(null)` 搭配 `useFormContext` 的 null 檢查，能在漏包 Provider 時立即報錯而不是拿到 `null`。
+
+</details>
+
 ### 練習 3：框架遷移
 
 選擇一個既有的 JavaScript 專案（Vue 或 React），按照本章的遷移步驟將其轉換為 TypeScript。
+
+<details>
+<summary>參考解答</summary>
+
+遷移的核心心法是**漸進式**：先讓 TypeScript 與 JavaScript 並存、全部能編譯，再一個檔案一個檔案補型別、最後才收緊 `strict`。不要一次把整包改完又同時開最嚴格模式，否則會被成百上千個錯誤淹沒。
+
+**步驟：**
+
+1. **安裝工具鏈**
+   ```bash
+   # React
+   npm install -D typescript @types/react @types/react-dom
+   # Vue（改用 vue-tsc 做型別檢查）
+   npm install -D typescript vue-tsc
+   ```
+
+2. **加入一份「寬鬆起步」的 tsconfig.json**，先允許 JS 與 TS 並存：
+   ```json
+   {
+     "compilerOptions": {
+       "target": "ES2020",
+       "module": "ESNext",
+       "moduleResolution": "bundler",
+       "jsx": "react-jsx",
+       "allowJs": true,        // 允許 .js 與 .ts 並存，邊遷移邊編譯
+       "checkJs": false,       // 先不檢查 .js
+       "strict": false,        // 起步先關掉，最後才逐項打開
+       "skipLibCheck": true,
+       "noEmit": true
+     },
+     "include": ["src"]
+   }
+   ```
+
+3. **逐檔改副檔名並補型別**：把 `.js` 改成 `.ts`、含 JSX 的 `.jsx` 改成 `.tsx`，從「葉子」模組（被依賴最少的工具函式、型別定義）開始往上改。每改一個檔就修掉它冒出來的型別錯誤，維持整體可編譯。
+
+4. **補上框架需要的環境宣告**：Vite 專案加 `src/vite-env.d.ts`（React）或 `env.d.ts`（Vue）並寫入 `/// <reference types="vite/client" />`；Vue 還要確認編輯器安裝 Vue 官方外掛（Volar）才認得 `.vue` 檔。
+
+5. **逐步收緊嚴格度**：等大部分檔案都轉成 TS 後，把 `strict` 打開（或先一項項開 `noImplicitAny`、`strictNullChecks`…），再把新冒出的錯誤清乾淨；最後視情況開 `checkJs` 或移除殘留的 `allowJs`。
+
+6. **接上 CI 型別檢查**：在 `package.json` 加 `"type-check": "tsc --noEmit"`（Vue 用 `"vue-tsc --build"`），把它納入 build/CI，之後型別錯誤就不會再溜進主分支。
+
+重點：`allowJs` + 由葉子往上、`strict` 最後才開，是把「大爆炸式重寫」拆成「隨時可編譯的小步驟」的關鍵。完整、已經設定好的成品結構可對照 [projects/vue-app](./projects/vue-app/) 與 [projects/react-app](./projects/react-app/)。
+
+</details>
 
 ---
 

@@ -248,6 +248,8 @@ const form = new UserForm();
 form.name = "Gary"; // ✅
 ```
 
+> ⚠️ 這種「把 getter/setter 定義到 prototype 上」的屬性裝飾器，遇到 `useDefineForClassFields: true`（`target` 為 ES2022 以上時的預設值）會**靜默失效**：`name!: string` 這類欄位宣告會在建構時於**實例**上定義同名屬性，蓋過 prototype 上的 setter，於是驗證完全不會被觸發、也不報錯。要讓範例如預期運作，需在 tsconfig 設 `"useDefineForClassFields": false`（或把 `target` 降到 ES2021 以下）。此外這裡用單一閉包變數 `value` 會讓所有實例共用同一份值，正式程式應改用 `WeakMap` 依實例存值（見本章練習 2 的解答）。
+
 ---
 
 ## 11.5 參數裝飾器（Parameter Decorator）
@@ -425,9 +427,145 @@ class UserCardComponent {
 
 建立一個 `@Retry(maxRetries: number)` 方法裝飾器，在方法失敗時自動重試。
 
+<details>
+<summary>參考解答</summary>
+
+用**舊版裝飾器**（`experimentalDecorators`，與 11.3 的方法裝飾器同一套）。思路：在裝飾器工廠裡包一層迴圈，攔截原方法的 `descriptor.value`，用 `try/catch` 反覆呼叫原方法；第一次是正常呼叫，之後最多再重試 `maxRetries` 次，全部失敗才把最後一個錯誤丟出去。因為方法可能是非同步，包裝後統一 `await`。
+
+```typescript
+function Retry(maxRetries: number) {
+  return function (
+    _target: any,
+    propertyKey: string,
+    descriptor: PropertyDescriptor,
+  ): PropertyDescriptor {
+    const original = descriptor.value;
+
+    descriptor.value = async function (...args: any[]) {
+      let lastError: unknown;
+      // 第 0 次是正常呼叫，之後最多再重試 maxRetries 次
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          return await original.apply(this, args);
+        } catch (error) {
+          lastError = error;
+          console.warn(
+            `${propertyKey} 第 ${attempt + 1} 次呼叫失敗：${(error as Error).message}`,
+          );
+        }
+      }
+      throw lastError;
+    };
+
+    return descriptor;
+  };
+}
+
+class ApiClient {
+  private count = 0;
+
+  @Retry(3)
+  async fetchData(): Promise<string> {
+    this.count++;
+    if (this.count < 3) {
+      throw new Error(`服務尚未就緒（第 ${this.count} 次）`);
+    }
+    return "成功取得資料";
+  }
+}
+
+const client = new ApiClient();
+console.log(await client.fetchData()); // 前兩次失敗、第三次成功
+```
+
+重點：`maxRetries` 是「重試次數」，所以總嘗試次數是 `maxRetries + 1`；包裝後方法一律回傳 `Promise`，記得呼叫端要 `await`。此範例需在 tsconfig 開啟 `experimentalDecorators`。
+
+</details>
+
 ### 練習 2：屬性裝飾器
 
 建立一組驗證裝飾器：`@IsEmail`、`@IsPositive`、`@MaxLength(n)`。
+
+<details>
+<summary>參考解答</summary>
+
+同樣走**舊版裝飾器**，沿用 11.4 的手法：用 `Object.defineProperty` 攔截屬性的 `set`，賦值當下就驗證，不合法直接丟錯。跟 11.4 的差別在於這裡改用 `WeakMap` 依 `this`（實例）存值，避免多個實例共用同一個閉包變數而互相污染。`@IsEmail`、`@IsPositive` 不帶參數（簽章是 `(target, propertyKey)`），`@MaxLength(n)` 需要參數所以多包一層工廠。
+
+```typescript
+function IsEmail(target: any, propertyKey: string) {
+  const store = new WeakMap<object, string>();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  Object.defineProperty(target, propertyKey, {
+    get(this: object) {
+      return store.get(this);
+    },
+    set(this: object, newValue: string) {
+      if (!emailRegex.test(newValue)) {
+        throw new Error(`${propertyKey} 不是合法的 email：${newValue}`);
+      }
+      store.set(this, newValue);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+function IsPositive(target: any, propertyKey: string) {
+  const store = new WeakMap<object, number>();
+  Object.defineProperty(target, propertyKey, {
+    get(this: object) {
+      return store.get(this);
+    },
+    set(this: object, newValue: number) {
+      if (newValue <= 0) {
+        throw new Error(`${propertyKey} 必須是正數，收到 ${newValue}`);
+      }
+      store.set(this, newValue);
+    },
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+function MaxLength(max: number) {
+  return function (target: any, propertyKey: string) {
+    const store = new WeakMap<object, string>();
+    Object.defineProperty(target, propertyKey, {
+      get(this: object) {
+        return store.get(this);
+      },
+      set(this: object, newValue: string) {
+        if (newValue.length > max) {
+          throw new Error(`${propertyKey} 長度不可超過 ${max}`);
+        }
+        store.set(this, newValue);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  };
+}
+
+class RegisterForm {
+  @IsEmail email!: string;
+  @MaxLength(10) username!: string;
+  @IsPositive age!: number;
+}
+
+const form = new RegisterForm();
+form.email = "gary@example.com"; // ✅
+form.username = "gary"; // ✅
+form.age = 30; // ✅
+// form.email = "not-an-email";           // ❌ Error：email 不是合法的 email
+// form.username = "this_is_way_too_long"; // ❌ Error：username 長度不可超過 10
+// form.age = -1;                          // ❌ Error：age 必須是正數
+```
+
+重點：屬性裝飾器拿不到 `descriptor`（只有 `target` 與 `propertyKey`），驗證要靠改寫 property 的 getter/setter；用 `WeakMap` 綁定實例可避開「所有實例共用一份值」的陷阱。此範例需開啟 `experimentalDecorators`。
+
+> ⚠️ 這個範例還有一個容易忽略、但會讓驗證**靜默失效**的關鍵設定：`useDefineForClassFields`。當 `target` 是 ES2022（含）以上時它預設為 `true`，`email!` 這類欄位宣告會在建構時用 `Object.defineProperty` 在**實例**上定義同名屬性，蓋掉裝飾器裝在 **prototype** 上的 getter/setter——結果賦值不會經過驗證、也不會報錯。要讓舊版屬性裝飾器如預期運作，必須額外設 `"useDefineForClassFields": false`（或把 `target` 設在 ES2021 以下）。這是舊版裝飾器 + 現代 `target` 常見的陷阱。
+
+</details>
 
 ### 練習 3：裝飾器組合
 
@@ -446,6 +584,112 @@ class UserController {
   getById() { /* ... */ }
 }
 ```
+
+<details>
+<summary>參考解答</summary>
+
+用**舊版裝飾器**（`experimentalDecorators`）搭配類別 + 方法裝飾器，且刻意**不依賴 `reflect-metadata`**：改把每個 controller 的路由暫存在它自己的 `prototype` 上。方法裝飾器 `@Get`/`@Post`… 把 `{ method, path, handlerName }` 累積成一個陣列；類別裝飾器 `@Controller(basePath)` 建立實例、把 base path 與各方法路徑合併後註冊進全域路由表，最後用一個 `dispatch` 依 method + path 找到並呼叫對應 handler。
+
+```typescript
+type HttpMethod = "GET" | "POST" | "PUT" | "DELETE";
+
+interface RouteDefinition {
+  method: HttpMethod;
+  path: string;
+  handlerName: string;
+}
+
+// 把單一 controller 的路由暫存在它的 prototype 上（用不可列舉的專屬鍵）
+const ROUTES_KEY = "__routes__";
+
+// 方法裝飾器工廠：產生 @Get / @Post / @Put / @Delete
+function createMethodDecorator(method: HttpMethod) {
+  return function (path: string) {
+    return function (
+      target: any,
+      propertyKey: string,
+      _descriptor: PropertyDescriptor,
+    ) {
+      // 確保每個 class 的 prototype 有自己的路由陣列
+      if (!Object.prototype.hasOwnProperty.call(target, ROUTES_KEY)) {
+        Object.defineProperty(target, ROUTES_KEY, {
+          value: [] as RouteDefinition[],
+          enumerable: false,
+        });
+      }
+      (target[ROUTES_KEY] as RouteDefinition[]).push({
+        method,
+        path,
+        handlerName: propertyKey,
+      });
+    };
+  };
+}
+
+const Get = createMethodDecorator("GET");
+const Post = createMethodDecorator("POST");
+const Put = createMethodDecorator("PUT");
+const Delete = createMethodDecorator("DELETE");
+
+// 全域路由表
+interface RegisteredRoute {
+  method: HttpMethod;
+  fullPath: string;
+  handler: () => unknown;
+}
+const registry: RegisteredRoute[] = [];
+
+// 類別裝飾器：把 base path 與各方法路由合併後註冊進 registry
+function Controller(basePath: string) {
+  return function <T extends new (...args: any[]) => any>(constructor: T) {
+    const instance = new constructor();
+    const routes: RouteDefinition[] = constructor.prototype[ROUTES_KEY] ?? [];
+    for (const route of routes) {
+      const fullPath = (basePath + route.path).replace(/\/+$/, "") || "/";
+      registry.push({
+        method: route.method,
+        fullPath,
+        handler: () => instance[route.handlerName](),
+      });
+    }
+  };
+}
+
+@Controller("/api/users")
+class UserController {
+  @Get("/")
+  getAll() {
+    return ["Gary", "Ada"];
+  }
+
+  @Post("/")
+  create() {
+    return { created: true };
+  }
+
+  @Get("/:id")
+  getById() {
+    return { id: 1, name: "Gary" };
+  }
+}
+
+// 簡單的分派：依 method + path 找到對應 handler
+function dispatch(method: HttpMethod, path: string): unknown {
+  const route = registry.find(
+    (r) => r.method === method && r.fullPath === path,
+  );
+  if (!route) throw new Error(`404 找不到路由：${method} ${path}`);
+  return route.handler();
+}
+
+console.log(dispatch("GET", "/api/users")); // ["Gary","Ada"]
+console.log(dispatch("GET", "/api/users/:id")); // { id: 1, name: "Gary" }
+console.log(dispatch("POST", "/api/users")); // { created: true }
+```
+
+重點：`@Controller` 是類別裝飾器、`@Get` 等是方法裝飾器，兩者透過暫存在 prototype 上的中繼資料串起來；用 `hasOwnProperty` 檢查確保每個 controller 各自持有一份路由陣列。真實框架（NestJS）會用 `reflect-metadata` 存這些資料，這裡用純物件屬性達成相同效果。此範例需開啟 `experimentalDecorators`。
+
+</details>
 
 ---
 

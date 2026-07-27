@@ -327,11 +327,54 @@ formatCurrency(1000);          // "TWD 1,000"
 formatCurrency(1000, "USD");   // "USD 1,000"
 ```
 
+<details>
+<summary>參考解答</summary>
+
+第二個參數 `currency` 給預設值 `"TWD"`，它就自動變成可選參數。金額的千分位可以用 `toLocaleString("en-US")` 產生（例如 `1000` → `"1,000"`），最後用模板字串把貨幣代碼和金額組起來。
+
+```typescript
+function formatCurrency(amount: number, currency: string = "TWD"): string {
+  return `${currency} ${amount.toLocaleString("en-US")}`;
+}
+
+formatCurrency(1000);        // "TWD 1,000"
+formatCurrency(1000, "USD"); // "USD 1,000"
+```
+
+重點提醒：有預設值的參數就等同於可選參數，不必再加 `?`；兩者一起用（`currency?: string = "TWD"`）反而是語法錯誤。
+
+</details>
+
 ### 練習 2：函式多載
 
 寫一個多載函式 `convert`：
 - 接收 `string` 回傳 `number`
 - 接收 `number` 回傳 `string`
+
+<details>
+<summary>參考解答</summary>
+
+先寫兩行「多載簽名」描述外部看到的輸入輸出對應，再寫一行「實作簽名」處理實際邏輯（它的型別要能涵蓋所有多載，所以用聯合型別）。實作簽名本身不會被外部呼叫。
+
+```typescript
+// 多載簽名
+function convert(value: string): number;
+function convert(value: number): string;
+// 實作簽名
+function convert(value: string | number): number | string {
+  if (typeof value === "string") {
+    return parseInt(value, 10);
+  }
+  return value.toString();
+}
+
+const n = convert("42"); // 型別為 number
+const s = convert(42);   // 型別為 string
+```
+
+重點提醒：呼叫端只看得到上面兩個多載簽名，因此 `convert("42")` 的回傳型別是 `number`、`convert(42)` 是 `string`，比單純寫 `number | string` 更精確。
+
+</details>
 
 ### 練習 3：回呼函式
 
@@ -345,6 +388,44 @@ async function retry<T>(
   // 實作...
 }
 ```
+
+<details>
+<summary>參考解答</summary>
+
+用一個迴圈嘗試執行 `operation`，成功就直接 `return` 結果；失敗就把錯誤記下來繼續下一輪。迴圈跑滿 `maxRetries` 次仍失敗，就把最後一次的錯誤拋出。`catch` 到的 `error` 型別是 `unknown`，拋出前先用 `instanceof Error` 縮窄（見 2.5 unknown）確保拋出的是 `Error`。
+
+```typescript
+async function retry<T>(
+  operation: () => Promise<T>,
+  maxRetries: number,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error; // 記住最後一次錯誤，重試次數用完後再拋出
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+// 範例：前兩次故意失敗，第三次成功
+let count = 0;
+async function unstable(): Promise<string> {
+  count++;
+  if (count < 3) {
+    throw new Error(`第 ${count} 次失敗`);
+  }
+  return "成功！";
+}
+
+retry(unstable, 5).then((result) => console.log(result)); // 成功！
+```
+
+重點提醒：`operation` 的回傳型別用泛型 `T` 帶著走，所以 `retry` 能適用任何非同步操作而不失去型別資訊（泛型將在第六章深入）；`for` 迴圈條件寫 `attempt <= maxRetries` 代表「第一次執行 + 額外重試 maxRetries 次」。
+
+</details>
 
 ---
 

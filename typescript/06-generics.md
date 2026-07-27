@@ -401,6 +401,35 @@ groupBy(users, "role");
 // { admin: [Alice, Charlie], user: [Bob] }
 ```
 
+<details>
+<summary>參考解答</summary>
+
+用 `reduce` 把陣列累積成一個物件：對每個元素取出 `item[key]` 當分組鍵，用 `String()` 轉成字串（物件的鍵是字串），再把元素推進對應的陣列。`??=`（空值合併賦值）在該鍵還沒有陣列時先建一個空陣列。累加器初始值 `{}` 要用 `as Record<string, T[]>` 標注型別。
+
+```typescript
+function groupBy<T>(arr: T[], key: keyof T): Record<string, T[]> {
+  return arr.reduce((acc, item) => {
+    const groupKey = String(item[key]);
+    (acc[groupKey] ??= []).push(item);
+    return acc;
+  }, {} as Record<string, T[]>);
+}
+
+// 使用
+const users = [
+  { name: "Alice", role: "admin" },
+  { name: "Bob", role: "user" },
+  { name: "Charlie", role: "admin" },
+];
+
+console.log(groupBy(users, "role"));
+// { admin: [Alice, Charlie], user: [Bob] }
+```
+
+重點：`key: keyof T` 約束了第二個參數只能是 `T` 真正有的屬性名；`String(item[key])` 是因為 `Record` 的鍵一律是字串，分組鍵可能是數字或其他型別時需要先轉換。
+
+</details>
+
 ### 練習 2：泛型類別
 
 建立一個 `EventEmitter<T>` 泛型類別，T 定義了事件名稱和對應的資料型別。
@@ -428,6 +457,44 @@ groupBy(users, "role");
 > new EventEmitter<AppEvents>(); // ✅ type 別名可以
 > ```
 
+<details>
+<summary>參考解答</summary>
+
+把 `T` 約束成「事件名稱對應資料型別」的對照表（`Record<string, unknown>`）。內部用映射型別 `{ [K in keyof T]?: ... }` 讓每個事件各存一組監聽器；`on` 與 `emit` 各自帶一個 `K extends keyof T`，這樣選定某個事件後，該事件的 `payload` 型別就會自動對上 `T[K]`。如小提醒所述，事件表必須用 `type` 宣告才能滿足 `Record<string, unknown>` 約束。
+
+```typescript
+// T 是「事件名稱 -> 對應資料型別」的對照表
+class EventEmitter<T extends Record<string, unknown>> {
+  // 每個事件各自存一組監聽器；用映射型別確保 payload 型別對得上
+  private listeners: { [K in keyof T]?: Array<(payload: T[K]) => void> } = {};
+
+  on<K extends keyof T>(event: K, listener: (payload: T[K]) => void): void {
+    (this.listeners[event] ??= []).push(listener);
+  }
+
+  emit<K extends keyof T>(event: K, payload: T[K]): void {
+    this.listeners[event]?.forEach((listener) => listener(payload));
+  }
+}
+
+// 事件表必須用 type（型別別名），interface 不具備索引簽章，
+// 無法滿足 T extends Record<string, unknown> 的約束
+type AppEvents = {
+  login: { userId: number };
+  logout: { userId: number; reason: string };
+};
+
+const emitter = new EventEmitter<AppEvents>();
+emitter.on("login", (payload) => console.log(`User ${payload.userId} logged in`));
+emitter.emit("login", { userId: 1 });
+// emitter.emit("login", { reason: "x" });
+// ❌ payload 型別不符：login 事件需要 { userId: number }
+```
+
+重點：`on` / `emit` 各自帶 `K extends keyof T`，讓事件名稱與 `payload` 型別綁在一起，寫錯事件名或傳錯資料形狀都會在編譯期報錯；這正是泛型類別搭配 `keyof` 與映射型別的威力。
+
+</details>
+
 ### 練習 3：泛型約束
 
 實作一個 `merge` 函式，合併兩個物件並回傳正確的型別：
@@ -437,6 +504,24 @@ function merge<T extends object, U extends object>(a: T, b: U): T & U {
   // 實作...
 }
 ```
+
+<details>
+<summary>參考解答</summary>
+
+實作本體只要用物件展開（spread）把兩個物件合併即可。關鍵在型別：兩個型別參數 `T`、`U` 各自約束為 `object`，回傳型別標成交集 `T & U`，這樣結果物件就同時擁有兩邊的屬性且各自保有正確型別。
+
+```typescript
+function merge<T extends object, U extends object>(a: T, b: U): T & U {
+  return { ...a, ...b };
+}
+
+const merged = merge({ name: "Gary" }, { age: 30 });
+console.log(merged.name, merged.age); // 兩個來源物件的屬性都保有正確型別
+```
+
+重點：交集型別 `T & U` 精準描述了「合併後同時具備雙方屬性」的結果，比回傳 `object` 或 `any` 保留了完整型別資訊；`extends object` 則擋掉傳入原始型別（如 `number`）的情況。
+
+</details>
 
 ---
 

@@ -707,17 +707,257 @@ for (const sourceFile of project.getSourceFiles()) {
 
 寫一個程式，走訪一份原始碼的 AST，統計每種 `SyntaxKind` 出現的次數，並由多到少印出。
 
+<details>
+<summary>參考解答</summary>
+
+用一個 `Map<ts.SyntaxKind, number>` 累加每個節點的 `kind`，走訪方式沿用本章的 `forEachChild` 遞迴，最後把 entries 依次數排序印出。`ts.SyntaxKind[kind]` 可以把數字 kind 反查回可讀名稱。
+
+```typescript
+import * as ts from "typescript";
+
+// 走訪 AST，統計每種 SyntaxKind 出現次數，由多到少印出
+function countKinds(code: string): void {
+  const sourceFile = ts.createSourceFile(
+    "example.ts",
+    code,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+
+  const counts = new Map<ts.SyntaxKind, number>();
+
+  function visit(node: ts.Node): void {
+    counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1);
+    node.forEachChild(visit);
+  }
+  visit(sourceFile);
+
+  const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [kind, count] of sorted) {
+    console.log(`${ts.SyntaxKind[kind]}: ${count}`);
+  }
+}
+
+countKinds(`
+const greeting: string = "Hello";
+function add(a: number, b: number): number {
+  return a + b;
+}
+`);
+```
+
+重點：`ts.SyntaxKind` 是雙向 enum，反查名稱時偶爾會拿到「別名」——例如變數敘述 `VariableStatement` 印出來會是 `FirstStatement`（兩者是同一個數值，反查取到第一個名稱），這是正常現象，不是統計錯誤。
+
+</details>
+
 ### 練習 2：找出所有 `any` 型別標註
 
 利用 Compiler API 找出程式碼中所有明確標註為 `any` 的位置（提示：尋找 `SyntaxKind.AnyKeyword`），印出檔名與行號——這是一個實用的程式碼品質檢查工具。
+
+<details>
+<summary>參考解答</summary>
+
+走訪時比對 `node.kind === ts.SyntaxKind.AnyKeyword`，命中就用 `sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))` 換算出行/列。注意行列都是從 0 起算，顯示時要 `+1`。
+
+```typescript
+import * as ts from "typescript";
+
+// 找出所有明確標註為 any 的位置，印出檔名與行號
+function findAnys(fileName: string, code: string): void {
+  const sourceFile = ts.createSourceFile(
+    fileName,
+    code,
+    ts.ScriptTarget.Latest,
+    true,
+  );
+
+  function visit(node: ts.Node): void {
+    if (node.kind === ts.SyntaxKind.AnyKeyword) {
+      const { line, character } = sourceFile.getLineAndCharacterOfPosition(
+        node.getStart(sourceFile),
+      );
+      console.log(`${fileName}:${line + 1}:${character + 1} 使用了 any`);
+    }
+    node.forEachChild(visit);
+  }
+  visit(sourceFile);
+}
+
+findAnys(
+  "sample.ts",
+  `
+let a: any;
+function f(x: any): any {
+  return x;
+}
+const arr: any[] = [];
+`,
+);
+// sample.ts:2:8 使用了 any
+// sample.ts:3:15 使用了 any
+// sample.ts:3:21 使用了 any
+// sample.ts:6:12 使用了 any
+```
+
+重點：這只抓「明確寫出來的 `any`」（`AnyKeyword` 語法節點）；由推斷而來的隱含 any 不會出現在語法樹裡，要抓那種得改用 Program + TypeChecker 對每個節點問型別。
+
+</details>
 
 ### 練習 3：Transformer — 自動加上 `readonly`
 
 寫一個 transformer，把所有 `interface` 的屬性都加上 `readonly` 修飾字。
 
+<details>
+<summary>參考解答</summary>
+
+介面的每個屬性在 AST 裡是 `PropertySignature`。用 `ts.isPropertySignature` 認出它，沒有 `readonly` 的就用 `factory.updatePropertySignature` 在 modifiers 最前面補上一個 `ReadonlyKeyword`，其餘欄位（name / questionToken / type）原樣帶回。
+
+```typescript
+import * as ts from "typescript";
+
+const code = `
+interface User {
+  id: number;
+  name: string;
+  active?: boolean;
+}
+`;
+
+const sourceFile = ts.createSourceFile(
+  "input.ts",
+  code,
+  ts.ScriptTarget.Latest,
+  true,
+);
+
+const addReadonly: ts.TransformerFactory<ts.SourceFile> = (context) => {
+  const { factory } = context;
+  return (rootNode) => {
+    function visit(node: ts.Node): ts.Node {
+      if (ts.isPropertySignature(node)) {
+        const hasReadonly = node.modifiers?.some(
+          (m) => m.kind === ts.SyntaxKind.ReadonlyKeyword,
+        );
+        if (!hasReadonly) {
+          return factory.updatePropertySignature(
+            node,
+            [
+              factory.createModifier(ts.SyntaxKind.ReadonlyKeyword),
+              ...(node.modifiers ?? []),
+            ],
+            node.name,
+            node.questionToken,
+            node.type,
+          );
+        }
+      }
+      return ts.visitEachChild(node, visit, context);
+    }
+    return ts.visitNode(rootNode, visit) as ts.SourceFile;
+  };
+};
+
+const result = ts.transform(sourceFile, [addReadonly]);
+const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+console.log(printer.printFile(result.transformed[0]));
+result.dispose();
+
+/*
+interface User {
+    readonly id: number;
+    readonly name: string;
+    readonly active?: boolean;
+}
+*/
+```
+
+重點：命中並改寫節點後直接 `return`（不再往下 `visitEachChild`），因為屬性簽章底下不會再有屬性簽章；其餘節點才繼續遞迴。先檢查 `hasReadonly` 可避免重複加上修飾字。
+
+</details>
+
 ### 練習 4：Code generation — 從 interface 產生工廠函式
 
 給定一個 `interface`，用 `ts.factory` 產生一個 `createXxx()` 工廠函式的原始碼，回傳一個帶預設值的物件。
+
+<details>
+<summary>參考解答</summary>
+
+用 `ts.factory` 由下往上組出 AST：先為每個欄位建立「屬性 = 預設值」的 `PropertyAssignment`，組成物件字面值，再包進 `return`、塞進 `export function createXxx(): TypeName {...}`，最後用 Printer 的 `printNode` 印成字串。
+
+```typescript
+import * as ts from "typescript";
+
+interface FieldDef {
+  name: string;
+  type: "string" | "number" | "boolean";
+}
+
+function generateFactory(typeName: string, fields: FieldDef[]): string {
+  const f = ts.factory;
+
+  // 各型別對應的預設值運算式
+  function defaultFor(type: FieldDef["type"]): ts.Expression {
+    switch (type) {
+      case "string":
+        return f.createStringLiteral("");
+      case "number":
+        return f.createNumericLiteral(0);
+      case "boolean":
+        return f.createFalse();
+    }
+  }
+
+  const objectLiteral = f.createObjectLiteralExpression(
+    fields.map((field) =>
+      f.createPropertyAssignment(field.name, defaultFor(field.type)),
+    ),
+    true, // 多行排版
+  );
+
+  // export function createXxx(): TypeName { return { ... }; }
+  const funcDecl = f.createFunctionDeclaration(
+    [f.createModifier(ts.SyntaxKind.ExportKeyword)],
+    undefined,
+    `create${typeName}`,
+    undefined,
+    [],
+    f.createTypeReferenceNode(typeName, undefined),
+    f.createBlock([f.createReturnStatement(objectLiteral)], true),
+  );
+
+  const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
+  const resultFile = ts.createSourceFile(
+    "gen.ts",
+    "",
+    ts.ScriptTarget.Latest,
+    false,
+    ts.ScriptKind.TS,
+  );
+  return printer.printNode(ts.EmitHint.Unspecified, funcDecl, resultFile);
+}
+
+console.log(
+  generateFactory("User", [
+    { name: "id", type: "number" },
+    { name: "name", type: "string" },
+    { name: "active", type: "boolean" },
+  ]),
+);
+
+/*
+export function createUser(): User {
+    return {
+        id: 0,
+        name: "",
+        active: false
+    };
+}
+*/
+```
+
+重點：`printNode` 需要一個「宿主」SourceFile 當第三個參數（這裡建一個空的即可）；把 `createObjectLiteralExpression` 與 `createBlock` 的最後一個布林參數設 `true` 就會多行排版，輸出比較好讀。
+
+</details>
 
 ---
 

@@ -510,13 +510,202 @@ export function double(x: number): number {
 }
 ```
 
+<details>
+<summary>參考解答</summary>
+
+這是一份典型的「Vite + React」前端專案設定：TypeScript 只做型別檢查（`noEmit`），實際打包與轉譯交給 bundler。逐項作用如下：
+
+| 選項 | 作用 |
+|------|------|
+| `"target": "ES2022"` | 型別檢查與（若有輸出時的）語法降級以 ES2022 為基準，可安心使用頂層 await、`.at()`、class fields 等特性。 |
+| `"module": "ESNext"` | 使用最新的 ES Modules 語法輸出，保留原生 `import` / `export` 與動態 `import()`，交給 bundler 處理。 |
+| `"moduleResolution": "bundler"` | 用打包工具（Vite/Webpack/esbuild）的解析規則，相對匯入**不必**補 `.js` 副檔名，最貼近實際開發體驗。 |
+| `"strict": true` | 一次開啟所有核心嚴格檢查（`noImplicitAny`、`strictNullChecks`、`strictFunctionTypes` 等），是新專案的建議起點。 |
+| `"noEmit": true` | TypeScript 只負責型別檢查、不輸出任何 `.js`；產出交給 Vite。這也是前端專案最常見的搭配。 |
+| `"isolatedModules": true` | 要求每個檔案都能被「單獨轉譯」，配合 esbuild/swc 這類單檔案轉譯器；會限制某些 re-export（型別要用 `export type`）與 `const enum` 的用法。 |
+| `"jsx": "react-jsx"` | 使用 React 17+ 的新版 JSX transform，元件檔不必再手動 `import React`。 |
+| `"lib": ["ES2022", "DOM"]` | 納入 ES2022 內建 API 與瀏覽器 DOM 型別（`document`、`window`、`fetch` 等），因為程式跑在瀏覽器環境。 |
+
+重點提醒：`noEmit + isolatedModules + moduleResolution: bundler` 這組合幾乎就是在宣告「型別檢查歸 TypeScript，打包歸 bundler」的分工；而 `lib` 帶了 `DOM` 正是「這是前端而非 Node.js 專案」的關鍵線索（Node 後端範本通常只寫 `["ES2022"]`）。
+
+</details>
+
 ### 練習 2：設定遷移
 
 將一個 `"strict": false` 的專案逐步遷移到嚴格模式，列出步驟和注意事項。
 
+<details>
+<summary>參考解答</summary>
+
+核心思路：**不要一次把 `strict` 打開**（大型專案往往瞬間噴出上千個錯誤，難以收拾），而是「逐旗標開啟、逐一消化」，最後再收斂成 `strict: true`。`strict` 其實是多個子旗標的總開關，可以拆開來一顆一顆開。
+
+建議步驟：
+
+```json
+// 步驟 0：現況（起點）
+{ "compilerOptions": { "strict": false } }
+```
+
+```json
+// 步驟 1：先開 noImplicitAny —— 逼出所有「隱含 any」的參數與變數，
+// 逐一補上型別標註（通常是遷移量最大的一步）
+{ "compilerOptions": { "strict": false, "noImplicitAny": true } }
+```
+
+```json
+// 步驟 2：再開 strictNullChecks —— 這是影響最深遠的一顆，
+// 會抓出所有可能為 null / undefined 卻沒防呆的存取
+{
+  "compilerOptions": {
+    "strict": false,
+    "noImplicitAny": true,
+    "strictNullChecks": true
+  }
+}
+```
+
+```json
+// 步驟 3：補齊其餘子旗標
+{
+  "compilerOptions": {
+    "strict": false,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "useUnknownInCatchVariables": true,
+    "alwaysStrict": true
+  }
+}
+```
+
+```json
+// 步驟 4：全部消化完畢後，收斂成單一開關（此時等價，但更簡潔、面向未來）
+{ "compilerOptions": { "strict": true } }
+```
+
+注意事項：
+
+- **一次只開一顆旗標**，把該旗標引發的錯誤修完、通過編譯後再開下一顆，讓每次 PR 的變更範圍可控、可 review。
+- `strictNullChecks` 通常是工程量最大的一步，因為它會連帶影響型別推論；預留較多時間。
+- 過渡期若某些檔案暫時修不完，可用「`// @ts-expect-error` 標記待辦」或先把該檔案排除在 `include` 之外，但要留下追蹤，避免變成永久技術債；盡量少用 `as any` 蓋錯誤。
+- 也可搭配 `noUncheckedIndexedAccess` 等**不在 `strict` 內**的旗標一起評估，但同樣建議放到最後、獨立導入。
+- 最後記得把散開的子旗標刪掉、改回 `"strict": true`：語意更清楚，且未來 TypeScript 若在 `strict` 底下新增旗標也會自動涵蓋。
+
+</details>
+
 ### 練習 3：Monorepo 設定
 
 為一個含有 `frontend`（React）和 `backend`（Node.js）的 monorepo 設計 tsconfig 結構。
+
+<details>
+<summary>參考解答</summary>
+
+思路：用「一份共用基底 + `extends` 覆寫 + Project References 串接」三件事組出 monorepo。根目錄放 `tsconfig.base.json` 收攏共用嚴格設定，`frontend` / `backend` 各自 `extends` 基底再覆寫自己的 `target` / `module` / `lib`，最後在根目錄用 `references` 把兩個子專案串起來，一道 `tsc --build` 就能增量建置整個倉庫。
+
+目錄結構：
+
+```
+my-monorepo/
+├── tsconfig.base.json      # 共用基礎設定
+├── tsconfig.json           # 根：只做 references 統籌，不含實際檔案
+├── packages/
+│   ├── frontend/
+│   │   ├── tsconfig.json    # React 前端
+│   │   └── src/
+│   └── backend/
+│       ├── tsconfig.json    # Node.js 後端
+│       └── src/
+```
+
+共用基底（放所有子專案都一致的嚴格與品質設定）：
+
+```json
+// tsconfig.base.json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true
+  }
+}
+```
+
+前端（瀏覽器 + React，帶 DOM，交給 Vite 打包所以 `noEmit`）：
+
+```json
+// packages/frontend/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
+  },
+  "include": ["src"]
+}
+```
+
+後端（Node.js 原生 ESM，只需 ES 標準庫，實際輸出到 dist）：
+
+```json
+// packages/backend/tsconfig.json
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src"]
+}
+```
+
+根設定（不含自身檔案，只負責用 references 統籌建置順序）：
+
+```json
+// tsconfig.json（根）
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/frontend" },
+    { "path": "./packages/backend" }
+  ]
+}
+```
+
+```bash
+# 增量建置整個 monorepo（tsc 會依 references 拓撲順序建置有變動的專案）
+npx tsc --build
+
+# 清除所有建置產物
+npx tsc --build --clean
+```
+
+重點提醒：
+
+- **共用的放 base、差異的放各自 tsconfig**。前後端最大的差異就是執行環境：前端要 `DOM` lib、`jsx`、`bundler` 解析與 `noEmit`；後端不要 DOM、用 `NodeNext` 並實際 `outDir` 輸出。
+- 要用 Project References 就必須在被引用的專案開 `composite: true`（本例放進 base 一次到位），它會強制要求 `declaration: true`，換來 `tsc --build` 的增量建置與正確的跨專案建置順序。
+- 根目錄 `tsconfig.json` 寫 `"files": []` 是慣例：它本身不編譯任何檔案，只作為 `references` 的入口。
+- 若前後端要共用型別，正確做法是把它們抽成一個**會輸出宣告檔的** `packages/shared`（`composite: true`、不要開 `noEmit`），再讓 frontend／backend 各自 `references` 指向它，`tsc --build` 會自動先建這個相依專案。注意**不要**反過來 `references` 指向本例的 `frontend`——它開了 `noEmit` 不會產生 `.d.ts`，被引用時 `tsc --build` 會以 `TS6310`（referenced project may not disable emit）報錯。
+
+</details>
 
 ---
 
