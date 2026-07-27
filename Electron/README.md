@@ -64,4 +64,30 @@
 
 ---
 
+## 延伸方向：整合前端框架（React / Vue + Vite）
+
+本課程刻意用原生 HTML / CSS / JS 撰寫 renderer，目的是把焦點放在 **Electron 本身**（三進程架構、IPC、打包、發佈），不被前端框架的設定細節分散注意力。
+
+當你要做真實產品、需要 React / Vue 的元件化、TypeScript 與 HMR 熱更新時，會再加一層前端建置工具。核心概念只有一個——**開發時載入 dev server，打包後載入建置好的靜態檔**：
+
+```javascript
+// main.js（概念示意）
+if (!app.isPackaged) {
+  // 開發：連到 Vite dev server，享受 HMR 熱更新
+  win.loadURL(process.env.VITE_DEV_SERVER_URL);
+} else {
+  // 正式：載入 Vite 建置後的靜態產物
+  win.loadFile(path.join(__dirname, "../renderer/dist/index.html"));
+}
+```
+
+常見的兩條整合路線：
+
+- **[Electron Forge](https://www.electronforge.io/) + Vite plugin**：官方推薦的一站式工具，含開發、打包、發佈。
+- **[electron-vite](https://electron-vite.org/)**：以 Vite 為核心、對 main / preload / renderer 三端都做好設定的整合方案。
+
+本 repo 另有 React、Vue 與 Vite 課程，學完本課程後可搭配使用，把這裡的 Electron 主程序骨架接上框架化的前端。
+
+---
+
 > 準備好了嗎？從 [第一章：Electron 介紹與開發環境安裝](./01-electron-introduction-setup.md) 開始。

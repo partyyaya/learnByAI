@@ -172,6 +172,37 @@ const enum HttpMethod {
 let method = HttpMethod.GET; // 編譯後：let method = "GET";
 ```
 
+### 普通 enum vs const enum，該選哪個？
+
+兩者寫法幾乎一樣，差別在「編譯後有沒有留下東西」：
+
+| 比較項目 | 普通 enum | const enum |
+| --- | --- | --- |
+| 編譯結果 | 產生一個真實的 JS 物件 | 完全消除，直接把值 inline 進去 |
+| 執行期是否存在 | 存在，可傳遞、可遍歷 | 不存在，沒有物件可用 |
+| `Object.values()` 遍歷 | ✅ 可以 | ❌ 不行（物件已被消除） |
+| 打包後體積 | 較大 | 較小（零額外程式碼） |
+| 工具相容性 | 到處都能用 | Babel / esbuild / Vite / swc 等單檔轉譯工具不支援 |
+
+```typescript
+// 普通 enum 可以在執行期遍歷（做下拉選單、驗證輸入很常用）
+enum Color {
+  Red = "RED",
+  Green = "GREEN",
+  Blue = "BLUE",
+}
+Object.values(Color).forEach((c) => console.log(c)); // RED / GREEN / BLUE
+
+// const enum 沒有這個物件，上面這行會直接編譯錯誤
+```
+
+**選擇原則：**
+
+- **預設用普通 enum。** 需要在執行期遍歷、傳遞、或用 `Object.values()` / `Object.keys()` 時只能用它。
+- **只有在確定用不到執行期物件、又想省下打包體積時，才考慮 const enum。**
+- ⚠️ **用 Vite / esbuild / Babel / swc 建置的專案（也就是大多數現代前端專案）請避免 const enum**，這些工具是逐檔轉譯、看不到 enum 的完整定義，會報錯或行為不正確。
+- 💡 如果只是想要「一組字面值」而不需要 enum 的物件特性，通常直接用下面的 **Union Type** 會更單純。
+
 ### 何時使用 Enum vs Union Type？
 
 > ⚠️ 下面兩段刻意分成兩個獨立區塊：`enum Role` 與 `type Role` 同名會產生 TS2567 衝突，實際專案中只會擇一使用。
@@ -271,6 +302,35 @@ function getArea(shape: Shape): number {
   }
 }
 ```
+
+### void vs never，該用哪一個？
+
+兩者都表示「沒有回傳值」，但關鍵差別在於**函式到底會不會正常結束**：
+
+| | void | never |
+| --- | --- | --- |
+| 函式會正常執行完嗎 | ✅ 會，只是不回傳有意義的值 | ❌ 不會，根本走不到結尾 |
+| 實際回傳的值 | `undefined` | 沒有任何值（連 undefined 都沒有） |
+| 典型情境 | 有副作用但不需回傳（log、事件處理、setter） | 一定會 throw、無窮迴圈、窮盡檢查 |
+
+```typescript
+// void：做完事情就結束，回傳 undefined
+function printReceipt(total: number): void {
+  console.log(`總金額：${total}`); // 有副作用，但呼叫端不需要拿到回傳值
+}
+
+// never：這個函式「保證」不會把控制權還給呼叫端
+function fail(message: string): never {
+  throw new Error(message); // 執行到這裡就中斷了，後面的程式碼永遠不會跑
+}
+```
+
+**判斷方法：** 問自己「這個函式呼叫完之後，下一行程式碼會不會執行？」
+
+- 會執行 → 用 **`void`**（大多數不回傳值的函式都是這種）。
+- 不會執行（一定 throw 或卡死） → 用 **`never`**。
+
+> 💡 `never` 大部分時候是 TypeScript **自動推論**出來的，你很少需要手動標註。真正常用它的地方是上面的**窮盡檢查**：當 `Shape` 之後新增了型別卻忘了補 `case`，`shape` 就不再是 `never`，`const _exhaustive: never = shape;` 這行會立刻報錯，提醒你少處理了一種情況。
 
 ---
 
@@ -376,6 +436,49 @@ const config2 = {
 // config2 所有屬性都變成 readonly
 ```
 
+#### 為什麼型別會變？先搞懂「型別拓寬」
+
+很多人會困惑：`config` 明明是 `const`，為什麼 `method` 還被推論成 `string`，而不是 `"GET"`？
+
+關鍵在於 **`const` 鎖住的是「變數」，不是「物件內容」**。物件屬性本身是可以改的：
+
+```typescript
+const config = {
+  url: "https://api.example.com",
+  method: "GET",
+};
+
+config.method = "POST"; // ✅ 完全合法！物件屬性可以被重新賦值
+```
+
+正因為 TypeScript 知道 `config.method` 之後**還可能被改成別的字串**，所以它保守地把型別「拓寬」成 `string`，而不是死守 `"GET"`。這個「把字面值放寬成通用型別」的行為就叫 **型別拓寬（Type Widening）**。
+
+```typescript
+// 對照：直接用 const 宣告「原始值」時，不會拓寬
+const method = "GET";   // 型別是 "GET"（字面值，因為 method 不可能再被改）
+let   method2 = "GET";  // 型別是 string（let 可以被改，所以拓寬）
+```
+
+#### as const 做了什麼
+
+`as const` 等於告訴 TypeScript：「這整個值都是不可變的常數，請用最窄的字面值型別，別拓寬。」
+
+```typescript
+const config2 = {
+  url: "https://api.example.com",
+  method: "GET",
+} as const;
+
+// config2.method = "POST"; // ❌ 錯誤：屬性是 readonly，不能改
+```
+
+它一次做了兩件事：
+
+1. **所有屬性變成 `readonly`** → 保證內容不會再變。
+2. **屬性型別收窄成字面值** → 既然不會變，`method` 就能安全地推論為 `"GET"`。
+
+換句話說：**因為 `as const` 承諾了「不會再改」，TypeScript 才敢把型別收到最窄。** 這也是為什麼它很適合用來定義設定檔、常數表，或搭配前面的字串聯合型別使用。
+
 ---
 
 ## 練習題
@@ -447,7 +550,9 @@ const blue: RGB = [0, 0, 255];
 <details>
 <summary>參考解答</summary>
 
-Enum 版把每個狀態列為成員並指定字串值；Union Type 版則直接把五個字面值用 `|` 串起來。兩者放在同一段程式時名稱要取不同（同名會產生 TS2567 衝突），實務上擇一使用即可。
+Enum 版把每個狀態列為成員並指定字串值；Union Type 版則直接把五個字面值用 `|` 串起來。
+
+> ⚠️ 下面兩段刻意分成兩個獨立區塊：`enum OrderStatus` 與 `type OrderStatus` 同名會產生 TS2567 衝突，實務上擇一使用即可。
 
 ```typescript
 // 方式一：Enum
@@ -459,17 +564,19 @@ enum OrderStatus {
   Cancelled = "cancelled",
 }
 
-const status1: OrderStatus = OrderStatus.Shipped;
+const status: OrderStatus = OrderStatus.Shipped;
+```
 
-// 方式二：Union Type（名稱刻意不同，避免與上面的 enum 衝突）
-type OrderStatusText =
+```typescript
+// 方式二：Union Type
+type OrderStatus =
   | "pending"
   | "processing"
   | "shipped"
   | "delivered"
   | "cancelled";
 
-const status2: OrderStatusText = "shipped";
+const status: OrderStatus = "shipped";
 ```
 
 重點提醒：現代 TypeScript 多半偏好 Union Type，因為它更簡潔、不會編譯出額外的 JavaScript 程式碼；需要反向映射或整組常數集中管理時，Enum 才較有優勢。

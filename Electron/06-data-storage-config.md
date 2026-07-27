@@ -190,7 +190,75 @@ initTheme();
 
 ---
 
-## 6.7 執行驗證
+## 6.7 記住視窗大小與位置
+
+6.1 一開頭就提到「記住視窗大小」是桌面應用的常見需求。有了 `electron-store`，就能把上次的視窗尺寸與位置存起來，下次啟動時還原——這也順便補上第五章 `createMainWindow` 每次都用固定寬高的缺口。
+
+先在 6.3 的設定服務追加視窗資料的存取（`src/main/store/settings.store.js`）：
+
+```javascript
+const store = new Store({
+  name: "settings",
+  defaults: {
+    theme: "light",
+    language: "zh-Hant",
+    autoLaunch: false,
+    windowBounds: { width: 1200, height: 800 } // 首次啟動的預設大小
+  }
+});
+
+// ...原本的 getSetting / setSetting 保留不動
+
+function getWindowBounds() {
+  return store.get("windowBounds");
+}
+
+function saveWindowBounds(bounds) {
+  store.set("windowBounds", bounds);
+}
+
+module.exports = {
+  getSetting,
+  setSetting,
+  getWindowBounds, // 本節新增
+  saveWindowBounds // 本節新增
+};
+```
+
+再改第五章的 `createMainWindow`，開窗時套用存下來的尺寸、關窗前把當前尺寸寫回：
+
+```javascript
+const { getWindowBounds, saveWindowBounds } = require("./store/settings.store");
+
+function createMainWindow() {
+  const bounds = getWindowBounds(); // 讀取上次的 { x, y, width, height }
+
+  mainWindow = new BrowserWindow({
+    ...bounds, // 套用上次的寬高與位置（首次啟動時只有 width/height，會自動置中）
+    minWidth: 900,
+    minHeight: 600,
+    title: "Learn Electron",
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+
+  // 關閉前記住目前的視窗大小與位置；getBounds() 會回傳 { x, y, width, height }
+  mainWindow.on("close", () => {
+    saveWindowBounds(mainWindow.getBounds());
+  });
+}
+```
+
+> 進階提醒：如果使用者上次在第二個螢幕、下次卻只剩一個螢幕，還原的位置可能落在畫面外。正式產品可用 `screen.getDisplayMatching(bounds)` 檢查存下來的座標是否仍在可見範圍，超出就退回置中。這裡先示範最常用的寬高還原即可。
+
+---
+
+## 6.8 執行驗證
 
 ```bash
 # 重新啟動應用，驗證設定值是否可儲存且重開後仍保留
@@ -200,12 +268,13 @@ npm run dev
 測試流程：
 
 1. 切換主題為 dark
-2. 關閉應用程式
-3. 重新啟動後確認主題仍是 dark
+2. 拖曳調整視窗大小與位置
+3. 關閉應用程式
+4. 重新啟動後確認主題仍是 dark，且視窗維持上次的大小與位置
 
 ---
 
-## 6.8 資料儲存位置查詢（除錯用）
+## 6.9 資料儲存位置查詢（除錯用）
 
 `electron-store` 實例的 `path` 屬性就是設定檔的完整路徑。可在 `settings.store.js` 暫時加一行：
 
@@ -224,11 +293,12 @@ console.log("settings file:", store.path);
 
 ---
 
-## 6.9 本章小結
+## 6.10 本章小結
 
 - 你學會使用 `electron-store` 保存設定
 - 你完成了設定存取的 IPC 封裝
 - 你建立了可持久化的使用者偏好機制
+- 你用同一套 store 記住視窗大小與位置，讓 App 更貼近原生體驗
 
 ---
 

@@ -74,6 +74,9 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, "../renderer/index.html"));
+
+  // 延續第二章：開發模式自動打開 DevTools，打包後不觸發
+  if (!app.isPackaged) win.webContents.openDevTools();
 }
 
 app.whenReady().then(() => {

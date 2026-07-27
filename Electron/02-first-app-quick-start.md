@@ -50,6 +50,9 @@ function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, "src/renderer/index.html"));
+
+  // 開發模式自動打開 DevTools 方便除錯；打包後（app.isPackaged 為 true）不會觸發
+  if (!app.isPackaged) win.webContents.openDevTools();
 }
 
 app.whenReady().then(() => {
@@ -71,6 +74,8 @@ app.on("window-all-closed", () => {
 - `activate`：macOS 專屬情境。當使用者點擊 Dock 圖示、而目前沒有任何開啟中的視窗時，慣例是重新建立主視窗，所以先檢查 `getAllWindows().length === 0` 再呼叫 `createWindow()`。
 
 少了這兩段，App 在 macOS 上會出現「關窗後點 Dock 圖示沒反應」、在 Windows 上會出現「視窗關了但程序還留在背景」的非預期行為。
+
+另外那行 `if (!app.isPackaged) win.webContents.openDevTools();` 是開發便利設定：`app.isPackaged` 在 `npm run dev` 時為 `false`、打包後為 `true`，所以 DevTools 只會在開發時自動打開，正式版本不會把開發者工具塞給使用者。之後幾章的 `main.js` 都會沿用這個慣例。
 
 ---
 

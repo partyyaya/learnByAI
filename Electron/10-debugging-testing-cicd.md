@@ -25,7 +25,68 @@ npx electron --version
 
 ---
 
-## 10.3 建立程式碼品質檢查
+## 10.3 日誌與當機回報
+
+`console.log` 在開發時很好用，但**打包後的 App 沒有終端機**——使用者端出錯時，你什麼都看不到。正式產品需要把日誌寫進檔案、把當機記錄下來，才有辦法遠端排查。
+
+### 持久化日誌（electron-log）
+
+```bash
+# 安裝 electron-log，自動把 log 寫進檔案並輪替
+npm install electron-log
+```
+
+`src/main/logger.js`：
+
+```javascript
+const log = require("electron-log/main");
+
+// 讓 renderer 端的 console 也能匯流到同一份 log 檔
+log.initialize();
+
+// 保留主控台輸出，同時寫入檔案
+log.transports.file.level = "info";
+
+module.exports = log;
+```
+
+在 `main.js` 最上方引入，之後用 `log.info` / `log.error` 取代 `console`：
+
+```javascript
+const log = require("./logger");
+
+log.info("應用啟動", { version: app.getVersion() });
+```
+
+log 檔預設位置（依平台）：
+
+- macOS：`~/Library/Logs/<appName>/main.log`
+- Windows：`%USERPROFILE%\AppData\Roaming\<appName>\logs\main.log`
+- Linux：`~/.config/<appName>/logs/main.log`
+
+請使用者回報問題時，直接請他們附上這個檔案，就能看到完整脈絡。
+
+### 捕捉當機事件
+
+即使程序整個掛掉，也應留下線索。監聽兩個當機事件寫進 log：
+
+```javascript
+// renderer 程序當掉（例如頁面 OOM、崩潰）
+app.on("render-process-gone", (_event, _webContents, details) => {
+  log.error("renderer 當掉：", details.reason);
+});
+
+// GPU 或其他子程序當掉
+app.on("child-process-gone", (_event, details) => {
+  log.error("子程序當掉：", details.type, details.reason);
+});
+```
+
+> 若要把當機自動上傳到伺服器集中分析，可用 Electron 內建的 `crashReporter.start({ submitURL })`（需自架或使用第三方接收端），或直接接 [Sentry](https://docs.sentry.io/platforms/javascript/guides/electron/) 這類託管服務——它同時涵蓋 main 與 renderer 的例外與當機，適合正式產品。本課程先以 electron-log 建立最基本的可觀測性即可。
+
+---
+
+## 10.4 建立程式碼品質檢查
 
 ```bash
 # 安裝 ESLint（JavaScript 靜態分析）與 Prettier（格式化工具）
@@ -56,13 +117,13 @@ npm run format
 
 ---
 
-## 10.4 加入單元測試（Vitest 範例）
+## 10.5 加入單元測試（Vitest 範例）
 
 ```bash
 # 安裝 Vitest，建立快速的單元測試流程
 npm install --save-dev vitest
 
-# 建立單元測試目錄（與 10.5 的 E2E 測試分開放）
+# 建立單元測試目錄（與 10.6 的 E2E 測試分開放）
 mkdir -p tests/unit
 ```
 
@@ -106,7 +167,7 @@ describe("isSafeExternalUrl", () => {
 }
 ```
 
-> 腳本刻意把範圍限定在 `tests/unit`：10.5 的 Playwright 測試檔（`tests/e2e/*.spec.js`）也符合 Vitest 預設的掃描規則，不加範圍的話 Vitest 會誤把 E2E 測試當單元測試執行而報錯。
+> 腳本刻意把範圍限定在 `tests/unit`：10.6 的 Playwright 測試檔（`tests/e2e/*.spec.js`）也符合 Vitest 預設的掃描規則，不加範圍的話 Vitest 會誤把 E2E 測試當單元測試執行而報錯。
 
 ```bash
 # 執行一次性測試，適合 CI 使用
@@ -118,7 +179,7 @@ npm run test:watch
 
 ---
 
-## 10.5 E2E 測試（Playwright + Electron）
+## 10.6 E2E 測試（Playwright + Electron）
 
 ```bash
 # 安裝 Playwright 測試框架，建立端到端互動測試
@@ -167,7 +228,7 @@ npm run test:e2e
 
 ---
 
-## 10.6 建立 CI 工作流程
+## 10.7 建立 CI 工作流程
 
 建立 `.github/workflows/release.yml`：
 
@@ -219,7 +280,7 @@ jobs:
 
 ---
 
-## 10.7 發版建議流程
+## 10.8 發版建議流程
 
 ```bash
 # 先確認工作區乾淨，避免把暫存測試檔打進正式版
@@ -246,9 +307,10 @@ git push origin v1.1.0
 
 ---
 
-## 10.8 本章小結
+## 10.9 本章小結
 
 - 你建立了可重複的除錯與驗證流程
+- 你用 electron-log 與當機事件建立了打包後也查得到的可觀測性
 - 你導入了 Lint、單元測試與 E2E 測試基礎
 - 你掌握了以 Git Tag 觸發 CI/CD 發版的實務路線
 

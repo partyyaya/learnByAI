@@ -41,6 +41,7 @@ npm install --save-dev electron-builder
     },
     "files": [
       "src/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "mac": {
@@ -63,6 +64,8 @@ npm install --save-dev electron-builder
 
 - `directories.output` 統一輸出到 `release/`：第九章（上傳 GitHub Release）與第十一章（Steam 上傳）都沿用這個路徑，請勿任意更名
 - mac 的 target 除了 `dmg` 外還有 `zip`：這是第九章 `electron-updater` 在 macOS 上做自動更新的**必要格式**，缺少 zip 會導致更新檢查失敗
+- `files` 除了 `src/**/*` 外**務必列入 `assets/**/*`**：第五章的系統匣圖示放在專案根目錄的 `assets/`（`assets/trayTemplate.png`），它既不在 `src/` 下、也不是 node_modules。`files` 是「白名單」——沒被列到的目錄不會打進 `app.asar`。少了這行，`npm run dev` 一切正常，但 `npm run dist` 後啟動就會**載入不到圖示**，重演第五章 5.2 警告過的「隱形系統匣」問題。
+  - 反之，production 相依套件（第六章 `electron-store`、第九章 `electron-updater`）與 `package.json` 由 electron-builder 依 `dependencies` 自動含入，不必列在 `files`；`build/` 底下的 icon 也會自動偵測。真正需要你手動補的是這類「非程式碼的資源目錄」。
 
 ---
 
