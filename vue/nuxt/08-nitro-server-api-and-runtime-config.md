@@ -200,7 +200,35 @@ async function add() {
 
 ---
 
-## 9. Runtime Config：管環境變數與金鑰
+## 9. `server/routes/`：不加 `/api` 前綴的路由
+
+第 1 節的目錄表提過 `server/routes/`。它和 `server/api/` 幾乎一樣（都用 `defineEventHandler`），差別只有一個：
+
+- `server/api/foo.js` → 網址是 **`/api/foo`**（自動加 `/api` 前綴）。
+- `server/routes/foo.js` → 網址是 **`/foo`**（不加前綴）。
+
+所以「要放在根路徑、不想被塞進 `/api` 底下」的端點就用 `server/routes/`——典型例子是 `robots.txt`、`sitemap.xml`、webhook 回呼、健康檢查 `/healthz` 等。也因為它不受 `/api` 慣例約束，很適合回傳「非 JSON」的內容（自己設 `Content-Type`）：
+
+```js
+// server/routes/robots.txt.js  → 對應 /robots.txt（回純文字，不是 JSON）
+export default defineEventHandler((event) => {
+  // 設好 Content-Type，直接回字串（Nitro 不會硬把它包成 JSON）
+  setHeader(event, 'Content-Type', 'text/plain')
+  return [
+    'User-agent: *',
+    'Allow: /',
+    'Sitemap: https://example.com/sitemap.xml',
+  ].join('\n')
+})
+```
+
+啟動後打開 `http://localhost:3000/robots.txt`，會看到純文字內容——網址沒有 `/api`、回應也不是 JSON。
+
+> 判斷：**給前端/程式吃的 JSON 資料 API** → `server/api/`（有 `/api` 前綴、回 JSON）；**要放在特定根路徑、或非 JSON 的端點**（`robots.txt`、`sitemap.xml`、webhook）→ `server/routes/`。（第 12 章的 `@nuxtjs/seo` 會自動幫你產 `robots.txt` / `sitemap.xml`，這裡是讓你理解底層是怎麼運作的。）
+
+---
+
+## 10. Runtime Config：管環境變數與金鑰
 
 硬寫金鑰在程式裡會外洩、也難換環境。Nuxt 用 `runtimeConfig` 統一管：
 
@@ -274,7 +302,7 @@ console.log(config.apiSecret)       // ❌ undefined（不會外洩到瀏覽器�
 
 ---
 
-## 10. 本章小練習
+## 11. 本章小練習
 
 1. 寫 `GET /api/hello` 回你的名字，瀏覽器直接打開網址確認。
 2. 用 `server/utils/db.js` 做假資料庫，實作 `GET /api/posts`、`GET /api/posts/[id]`（查無回 404）、`POST /api/posts`。

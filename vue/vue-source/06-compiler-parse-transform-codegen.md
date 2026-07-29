@@ -48,6 +48,8 @@ parse 做的是語法分析，不處理執行期資料。
 | `SimpleExpression` | 表達式內容 |
 | `Attribute` / `Directive` | props、`v-if`、`v-for` 等 |
 
+> 版本註記（Vue 3.5.x）：**Vue 3.4 起 template parser 已重寫為 tokenizer 狀態機**（`compiler-core/src/tokenizer.ts`），解析效能約提升 2x。上面「讀字元流、遞迴下降建樹」只是**概念模型**；實際追 `baseParse` 會看到它驅動一個 `Tokenizer`，用一連串狀態與 callback（`onopentagname`、`ontext`、`onattribdata`…）邊掃邊建 AST，而不是傳統遞迴下降。看不懂新結構時，先用這裡的概念模型理解「要產出什麼」，再回頭對照 tokenizer 的狀態流。
+
 ---
 
 ## 6.4 以範例理解 parse 結果
@@ -113,6 +115,71 @@ transform 會做三類事情：
 ### C. Directive（`v-if` / `v-for`）
 
 會把模板語法糖改寫成條件/循環結構，並生成對應 codegen 節點。
+
+> 以下 D / E / F 對應 Vue 3.5.x，是實務最常追的三種 directive transform。
+
+### D. `v-model`（`transformModel`）
+
+`v-model` 是語法糖，編譯期由 `transformModel` 展開。
+
+**用在元件上** → 拆成一個 prop + 一個更新事件：
+
+```js
+// <MyInput v-model="msg" /> 編譯後（概念）
+_createVNode(MyInput, {
+  modelValue: _ctx.msg,
+  "onUpdate:modelValue": $event => (_ctx.msg = $event)
+})
+```
+
+具名 `v-model:title="x"` 則展開成 `title` + `onUpdate:title`。這正是 `defineModel()`（見 09 章）背後對應的協定。
+
+**用在原生表單元素上**（由 `compiler-dom` 覆寫的 `transformModel` 接手）→ 展開成 **value 綁定 + input 事件**，並掛上對應的 runtime directive：
+
+```js
+// <input v-model="msg" /> 編譯後（概念）
+_withDirectives(_createElementVNode("input", {
+  "onUpdate:modelValue": $event => (_ctx.msg = $event)
+}, null, 512 /* NEED_PATCH */), [
+  [_vModelText, _ctx.msg]   // vModelText 負責設 el.value 並監聽 input 事件
+])
+```
+
+### E. 事件（`transformOn` + `cacheHandlers`）
+
+`transformOn` 把 `@click="fn"` 轉成 `onClick` prop。問題是：若每次 render 都產生新的處理函式，傳給子元件當 prop 會破壞其穩定性、也讓 patch 多做事。於是有 **`cacheHandlers`** 優化——把處理器**快取進 `_cache`**，之後每次 render 都拿同一個函式：
+
+```js
+// <button @click="fn"> 編譯後（開啟 cacheHandlers）
+_createElementVNode("button", {
+  onClick: _cache[0] || (_cache[0] = (...args) => (_ctx.fn && _ctx.fn(...args)))
+})
+```
+
+`_cache` 由 render function 的參數帶入（`render(_ctx, _cache)`），跨 render 保留。因為引用穩定，這類節點甚至不需要 `PROPS` patch flag。
+
+### F. slots（`buildSlots`）
+
+slots 分兩端編譯。
+
+**插槽出口**（元件模板內的 `<slot>`）→ 編成 `_renderSlot`：
+
+```js
+// <slot name="header" :item="item" />
+_renderSlot(_ctx.$slots, "header", { item: item })
+```
+
+**插槽內容**（使用元件時的 `<template #name>`）→ 由 `buildSlots` 編成一個 slots 物件，每個具名 slot 都用 `withCtx` 包起來（保留正確的 render 上下文），scoped slot 的參數就是 callback 的參數：
+
+```js
+// <Comp><template #header="{ item }">{{ item.name }}</template></Comp>
+_createVNode(Comp, null, {
+  header: _withCtx(({ item }) => [ _toDisplayString(item.name) ]),
+  _: 1 /* STABLE */
+})
+```
+
+若 slot 內容是**條件/動態產生**的（`v-if`、`v-for` 包住 `<template #x>`），`buildSlots` 無法靜態確定 slot 集合，會標上 **`DYNAMIC_SLOTS`** flag（輸出 `_: 2`），runtime 就會走較保守的 slot 更新路徑（見 07 章 patch flags）。
 
 ---
 

@@ -80,13 +80,16 @@ S1 現象定義
 | 列表重排或狀態錯位 | diff / `patchKeyedChildren` |
 | 模板轉譯異常 | `compiler-core` / `compiler-sfc` |
 | `.vue` 熱更新異常 | plugin-vue / Vite 模組圖 |
+| `watch` / `watchEffect` 行為 | **3.5 起核心在 `@vue/reactivity`（`watch.ts` / `baseWatch`）**，`runtime-core/apiWatch.ts` 只是包裝 |
 
 接著執行：
 
 1. 找入口 API
 2. 設斷點在主鏈關鍵函式
-3. 追核心資料（`activeEffect`、`subTree`、`queue`、index map）
+3. 追核心資料（`activeSub`、`subTree`、`queue`、index map）
 4. 記錄第一個「與預期分歧」的點
+
+> 術語提醒：`reactivity` 裡「當前作用中的訂閱者」在 3.4+ 原始碼叫 **`activeSub`**（不是 `activeEffect`，見 01 章 1.3.1）；grep 時別找錯名字。
 
 ---
 
@@ -214,7 +217,7 @@ v-for 使用 index 當 key，拖曳排序後輸入框內容錯位。
 
 你已走過：
 
-- 反應式（01-02）
+- 響應式（01-02）
 - 渲染與更新（03-05）
 - 編譯器與最佳化（06-07）
 - 進階內建與工程整合（08-09）

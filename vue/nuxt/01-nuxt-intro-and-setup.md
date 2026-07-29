@@ -64,7 +64,6 @@ Nuxt 4 是目前 `create nuxt` 的預設版本，API 與 Nuxt 3 **大致相容**
 | 原始碼位置 | 專案根目錄（`pages/`、`components/`…） | 集中在 **`app/`** 目錄（`app/pages/`、`app/components/`…） |
 | 資料抓取回傳 | `data` 是深層響應式 `ref` | `data` 改為 **`shallowRef`**（效能更好） |
 | 同 key 的抓取 | 各自持有資料 | 同 `key` 的 `useFetch`/`useAsyncData` **共用** `data`/`error`/`status` |
-| 元件名稱 | 依檔名 | 依路由/目錄結構 |
 
 最有感的就是第一點：**Nuxt 4 把前端原始碼都收進 `app/`**。原因是把程式碼跟 `.git/`、`node_modules/` 分開，檔案監看更快、結構更清楚。第 6 章會再講 `shallowRef` 對你寫資料抓取的實際影響。
 

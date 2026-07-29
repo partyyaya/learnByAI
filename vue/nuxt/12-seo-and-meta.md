@@ -169,13 +169,17 @@ export default defineNuxtConfig({
 
 ```js
 // server/api/__sitemap__/urls.js
-export default defineSitemapUrls(async () => {
-  const posts = await prisma.post.findMany({ select: { id: true } })
-  return posts.map((p) => ({ loc: `/posts/${p.id}`, changefreq: 'weekly' }))
+export default defineSitemapEventHandler(async () => {
+  const posts = await prisma.post.findMany({ select: { id: true, createdAt: true } })
+  return posts.map((p) => ({
+    loc: `/posts/${p.id}`,
+    changefreq: 'weekly',
+    lastmod: p.createdAt, // 用文章的建立/更新時間當最後修改時間
+  }))
 })
 ```
 
-> `@nuxtjs/seo` 版本演進較快，實際設定以你安裝版本的文件為準；核心觀念不變：**告訴它 `site.url`，並提供動態路由清單**。
+> 注意 API 名稱是 **`defineSitemapEventHandler`**（`@nuxtjs/sitemap` 提供，`@nuxtjs/seo` 已內含），不是 `defineSitemapUrls`——後者並不存在，寫錯會直接跑不起來。`@nuxtjs/seo` 版本演進較快，實際設定以你安裝版本的文件為準；核心觀念不變：**告訴它 `site.url`，並提供動態路由清單**。
 
 ---
 

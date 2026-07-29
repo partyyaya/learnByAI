@@ -153,7 +153,7 @@ export default defineNuxtRouteMiddleware((to) => {
 })
 ```
 
-想讓某個中介層**只在 client 跑**，可在 `definePageMeta` 設定或用上面的環境判斷。多數守衛應該兩端都跑（否則 SSR 首屏會先閃出受保護內容再被踢走）。
+想讓某個中介層**只在 client 跑**，就用上面的 `if (import.meta.server) return` 環境判斷——`definePageMeta` 並**沒有**「讓中介層只在某一端跑」這種設定，別去那裡找。多數守衛其實應該兩端都跑（否則 SSR 首屏會先閃出受保護內容再被踢走）。
 
 > 為什麼要在 server 也擋？因為使用者可能**直接貼網址**進受保護頁。若只在 client 擋，伺服器會先把內容算出來送出去（內容外洩 + 畫面閃一下），才被前端踢走。**兩端都擋才安全。**
 

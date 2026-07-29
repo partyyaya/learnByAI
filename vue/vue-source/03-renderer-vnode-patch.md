@@ -50,10 +50,12 @@ Renderer 不直接看 template，而是看 VNode 樹。
 
 ## 3.4 `patch` 主流程（整章核心）
 
+> 以下對應 Vue 3.5.x。
+
 你可以把 `patch` 看成一個大分派器：
 
 ```text
-patch(n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, slotScopeIds, optimized)
+patch(n1, n2, container, anchor, parentComponent, parentSuspense, namespace, slotScopeIds, optimized)
   -> type / shapeFlag 分流
      - Text
      - Comment
@@ -62,6 +64,8 @@ patch(n1, n2, container, anchor, parentComponent, parentSuspense, isSVG, slotSco
      - Element
      - Component
 ```
+
+> **簽名版本註記**：第 7 個參數在 Vue 3.4 起由 `isSVG: boolean` 改為 `namespace: ElementNamespace`（值為 `'svg' | 'mathml' | undefined`）——**3.4 起為了支援 MathML，把只能二選一的 `isSVG` 換成能表達三態的 `namespace`**。連帶 `mountElement` / `patchElement` / `patchChildren` 等下游函式的對應參數也一起從 `isSVG` 改名為 `namespace`。你在 3.5.x 原始碼裡追這條線時，看到的都是 `namespace`。
 
 ### 先判斷「是不是同一節點」
 
@@ -193,7 +197,59 @@ state change
 
 ---
 
-## 3.10 讀源碼建議路徑（本章）
+## 3.10 另一條渲染路徑：hydration（SSR 場景）
+
+> 以下對應 Vue 3.5.x。
+
+前面 3.8 / 3.9 講的是 **client-only render**：從零建立 DOM。它的入口是 `render(vnode, container)`，內部走 `patch(null, vnode, ...)`——因為沒有舊節點（`n1` 為 `null`），每個節點都是「新建 DOM 再插入」。
+
+但在 SSR（伺服器已先輸出 HTML 字串）場景，瀏覽器一開始就有一份**現成 DOM**。這時若再 `patch(null, ...)` 重建一次，等於把伺服器的成果丟掉。Vue 因此提供**第二條路徑：hydration（水合）**。
+
+### 3.10.1 兩條路徑對照
+
+| | client-only render | hydration（SSR） |
+|---|---|---|
+| 入口 | `createRenderer` 的 `render()` | `createHydrationRenderer` 產生的 `hydrate()` |
+| 起點 | 沒有既有 DOM | 已有伺服器輸出的 DOM |
+| 動作 | `patch(null, vnode)` 從零建立 | 走訪既有 DOM 與 vnode **配對** |
+| 對 DOM 做什麼 | 建立 + 插入 | **不重建**，只補事件監聽與響應式綁定 |
+
+hydration 的核心函式 `hydrateNode` 會「一邊沿著真實 DOM 節點走、一邊沿著 vnode 樹走」，把 `vnode.el` 指到既有的 DOM 節點，並補上 client 端才有的東西：事件監聽、`ref`、動態綁定、以及 component 實例與其 render effect。
+
+### 3.10.2 hydration mismatch
+
+若伺服器輸出的 DOM 與 client 端 vnode 對不起來（標籤不同、文字不同、少了節點），就是 **hydration mismatch**。開發模式下 Vue 會 `console.warn` 指出不一致的節點，並退回「以 client 端 vnode 為準」重建該處。
+
+常見成因：SSR 與 client 用到了不確定值（`Date.now()`、`Math.random()`、只在瀏覽器存在的 API），導致兩邊產出的結構不一致。
+
+### 3.10.3 3.5 的兩個相關能力
+
+- **`data-allow-mismatch`（3.5 新增）**：在確定「這裡本來就會不一致」時（例如刻意顯示 client 端時間），於元素標上此屬性可**抑制該節點的 mismatch 警告**。可指定允許的類型，如 `data-allow-mismatch="text"` / `"children"` / `"class"` / `"style"` / `"attribute"`，留空則全部允許。
+- **async component 的 lazy hydration（3.5 新增）**：搭配 `defineAsyncComponent({ hydrate })`，讓非同步元件的水合延後到「真正需要」才做，降低首屏要立即執行的 JS 量。內建策略：
+
+  ```ts
+  import {
+    defineAsyncComponent,
+    hydrateOnVisible,
+    hydrateOnIdle,
+    hydrateOnMediaQuery,
+    hydrateOnInteraction,
+  } from 'vue'
+
+  const Comp = defineAsyncComponent({
+    loader: () => import('./Comp.vue'),
+    hydrate: hydrateOnVisible(),                         // 進入視窗才水合（IntersectionObserver）
+    // hydrate: hydrateOnIdle(),                         // requestIdleCallback 空閒時
+    // hydrate: hydrateOnMediaQuery('(max-width: 500px)'), // 符合媒體查詢才水合
+    // hydrate: hydrateOnInteraction('click'),           // 使用者互動才水合
+  })
+  ```
+
+> 追源碼時：`createHydrationRenderer`、`hydrate()`、`hydrateNode()` 在 `runtime-core/src/hydration.ts`；lazy hydration 策略在 `runtime-core/src/hydrationStrategies.ts`。
+
+---
+
+## 3.11 讀源碼建議路徑（本章）
 
 先追這組函式即可：
 
@@ -208,7 +264,7 @@ state change
 
 ---
 
-## 3.11 常見誤區
+## 3.12 常見誤區
 
 ### 誤區一：把 Renderer 當成只操作 DOM 的函式集合
 
@@ -225,7 +281,7 @@ state change
 
 ---
 
-## 3.12 本章作業
+## 3.13 本章作業
 
 ### 必做
 
@@ -246,7 +302,7 @@ state change
 
 ---
 
-## 3.13 下一章預告
+## 3.14 下一章預告
 
 下一章聚焦 component instance 與生命週期：  
 `setup` 怎麼接進 render effect？`onMounted` / `onUpdated` 實際在什麼時機觸發？

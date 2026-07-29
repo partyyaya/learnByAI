@@ -68,31 +68,55 @@ component instance 可以想成「單個組件執行期狀態容器」，常見�
 
 ## 4.5 `setupRenderEffect`：生命週期的交會點
 
-`setupRenderEffect` 是 component 更新主引擎，通常會建立一個 effect：
+`setupRenderEffect` 是 component 更新主引擎。它做的事只有一件：把「render + patch」包成一個 **render effect**，讓響應式資料一變就能自動重跑。
 
 - 首次執行：走 mount 分支
 - 後續執行：走 update 分支
 
-概念上像：
+> 以下對應 Vue 3.5.x。舊教學常寫成 `effect(fn, scheduler)`，那**不是**現在的真實實作，別再照那個簽名追碼。
+
+真實實作大致是這樣：
 
 ```ts
-instance.update = effect(function componentEffect() {
+// 1) 要跑的內容：首掛走 mount、之後走 update
+const componentUpdateFn = () => {
   if (!instance.isMounted) {
     // beforeMount hooks
-    const subTree = renderComponentRoot(instance);
-    patch(null, subTree, container, anchor, instance, parentSuspense);
-    instance.subTree = subTree;
+    const subTree = (instance.subTree = renderComponentRoot(instance));
+    patch(null, subTree, container, anchor, instance, parentSuspense, namespace);
     instance.isMounted = true;
     // mounted hooks
   } else {
     // beforeUpdate hooks
     const nextTree = renderComponentRoot(instance);
-    patch(instance.subTree, nextTree, container, anchor, instance, parentSuspense);
+    const prevTree = instance.subTree;
     instance.subTree = nextTree;
+    patch(prevTree, nextTree, container, anchor, instance, parentSuspense, namespace);
     // updated hooks
   }
-}, scheduler);
+};
+
+// 2) 用底層類別 ReactiveEffect（見 01 章），並在 instance.scope 內建立
+instance.scope.on();
+const effect = (instance.effect = new ReactiveEffect(componentUpdateFn));
+instance.scope.off();
+
+// 3) 兩個 runner：update 強制跑、job 只在 dirty 時才跑
+const update = (instance.update = effect.run.bind(effect));
+const job = (instance.job = effect.runIfDirty.bind(effect)); // runIfDirty：dirty 才重跑
+job.i = instance;   // 3.5：把 instance 掛在 job 上，方便 scheduler 排序/找父子
+job.id = instance.uid;
+
+// 4) 資料變動不是同步 patch，而是把 job 丟進 queue（見 3.8 scheduler）
+effect.scheduler = () => queueJob(job);
 ```
+
+幾個關鍵點：
+
+- **不是 `effect(fn, scheduler)`**：Vue 用的是底層類別 `ReactiveEffect`（見 01 章），`new ReactiveEffect(componentUpdateFn)` 建立後，再把 `effect.scheduler` 設成 `() => queueJob(job)`；所以資料變動時走的是「排程」而非同步重繪。
+- **`instance.update` vs `instance.job`**：`update` 是 `effect.run`（強制重跑）；`job` 是 `effect.runIfDirty`——**只有 dirty 才重跑**，避免無謂 render。真正被 scheduler 入列的是 `job`。
+- **3.5 的 `job.i = instance`**：把元件實例掛在 job 上，scheduler 才能依 `instance.uid` 做父子排序、去重與尋找 parent，確保「父先於子」更新。
+- **綁在 `instance.scope`（EffectScope）**：effect 是在 `instance.scope.on()` / `off()` 之間建立的，也就是註冊進該元件的 `EffectScope`（見 01 章 effectScope）。元件卸載時只要 `instance.scope.stop()`，這個 render effect 連同 `setup` 裡建立的所有 `watch` / `computed` 會被**整包 stop**，不會外洩。
 
 ---
 
@@ -148,7 +172,62 @@ instance.update = effect(function componentEffect() {
 
 ---
 
-## 4.10 本章源碼閱讀建議路徑
+## 4.10 錯誤處理與除錯 hooks
+
+> 以下對應 Vue 3.5.x。
+
+### 4.10.1 錯誤怎麼被接住：`callWithErrorHandling`
+
+Vue 幾乎不「裸呼叫」使用者提供的函式（render、生命週期 hook、watch callback、事件處理器…），而是包一層：
+
+- `callWithErrorHandling(fn, instance, type, args)`：同步呼叫 `fn`，`try/catch` 後把錯誤交給 `handleError`。
+- `callWithAsyncErrorHandling(fn, instance, type, args)`：同上，但額外處理「回傳 Promise」的情況——`.catch` 到的 rejection 也會進 `handleError`（否則 async 錯誤會漏接）。
+
+`type` 是 `ErrorCodes`（例如 `SETUP_FUNCTION`、`RENDER_FUNCTION`、`WATCH_CALLBACK`），警告訊息會告訴你錯在哪個階段。
+
+### 4.10.2 錯誤怎麼冒泡：`onErrorCaptured`
+
+`handleError` 會**沿著 `instance.parent` 往上走**，依序呼叫每一層註冊的 `onErrorCaptured(err, instance, info)`：
+
+- 任一層的 `onErrorCaptured` 回傳 `false`，就**停止繼續往上冒泡**（視為已處理）。
+- 都沒攔截（或都沒回傳 `false`），最後落到全域 `app.config.errorHandler`；再沒有就 `console.error`。
+
+```ts
+// 父元件當「錯誤邊界」
+onErrorCaptured((err, instance, info) => {
+  reportToServer(err, info)   // info 例如 'render function'、'setup function'
+  hasError.value = true
+  return false                // 攔下來，不再往上冒泡
+})
+```
+
+### 4.10.3 兩個除錯 hook：`onRenderTracked` / `onRenderTriggered`
+
+這兩個是**開發模式專用**、掛在 render effect 上的除錯鉤子：
+
+- `onRenderTracked({ target, key, type })`：render 期間**收集到某個依賴**時觸發——回答「這次 render 讀了哪些響應式資料」。
+- `onRenderTriggered({ target, key, type, oldValue, newValue })`：某個依賴**變動而觸發這次 re-render** 時觸發——回答「到底是誰害我重渲染」。
+
+實作上它們對應到 render effect 的 `onTrack` / `onTrigger` 回呼（`ReactiveEffect` 的兩個 debug 選項），所以只有 dev build 會接。追「莫名其妙一直 re-render」時特別好用。
+
+---
+
+## 4.11 async setup 與 Suspense 的掛載路徑
+
+> 以下對應 Vue 3.5.x；Suspense 目前仍是**實驗性 API**（見 08 章）。
+
+若 `setup()` 回傳的是 **Promise**（`async setup`），這個元件就不能像同步元件一樣「setup 完馬上 render」。流程改成：
+
+1. `setupStatefulComponent` 發現 `setup` 回傳 Promise，把它掛成 `instance.asyncDep`。
+2. 這個元件必須在一個 **`<Suspense>`** 邊界底下。`mountComponent` 看到 `instance.asyncDep`，就把它**登記到最近的 Suspense**（`parentSuspense.registerDep`），並**先不建立 render effect**。
+3. Suspense 這段期間顯示 **fallback 分支**（`#fallback` slot）。
+4. 當 `asyncDep` resolve，Suspense 回頭對這個實例補做 `handleSetupResult` → `setupRenderEffect` 完成真正掛載；等所有 async 依賴都就緒後，Suspense 從 fallback 切到 content 分支。
+
+一句話心智模型：**async setup 把「該元件的掛載」延後，交給上層 Suspense 統一調度**；沒有 Suspense 包著的 async setup 會直接報錯。
+
+---
+
+## 4.12 本章源碼閱讀建議路徑
 
 先看這條主線：
 
@@ -162,7 +241,7 @@ instance.update = effect(function componentEffect() {
 
 ---
 
-## 4.11 常見誤區
+## 4.13 常見誤區
 
 ### 誤區一：以為 `setup` 每次更新都會重跑
 
@@ -180,7 +259,7 @@ component update 的核心其實是「新舊 `subTree` patch」，
 
 ---
 
-## 4.12 本章作業
+## 4.14 本章作業
 
 ### 必做
 
@@ -201,7 +280,7 @@ component update 的核心其實是「新舊 `subTree` patch」，
 
 ---
 
-## 4.13 下一章預告
+## 4.15 下一章預告
 
 下一章會深挖最核心效能熱點：`patchKeyedChildren`。  
 你會學到 Vue 如何用 head/tail sync + key map + LIS 降低 DOM 移動成本。

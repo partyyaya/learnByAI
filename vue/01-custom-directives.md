@@ -416,13 +416,49 @@ app.directive("color", (el, binding) => {
 - 全域 / Options：`app.directive('myThing')` → 用 `v-my-thing`
 - `<script setup>`：變數必須是 `vMyThing`（駝峰、`v` 開頭）→ 用 `v-my-thing`
 
-### 11.5 SSR 注意
+### 11.5 SSR 注意：所有生命週期 hook 都只在 client 跑
 
-伺服器端渲染時，只有 `created`、`beforeMount`、`mounted` 之外的 DOM hook 不會在 server 執行
-（server 沒有真實 DOM）。涉及 `window` / `document` 的程式碼要放在 client-only 的 hook（如 `mounted`），
-或加 `typeof window !== 'undefined'` 防護。
+伺服器端渲染（SSR）時，server 上沒有真實 DOM，所以指令的**生命週期 hook 一個都不會在 server 執行**——
+`created`、`beforeMount`、`mounted`、`updated`、`beforeUnmount`、`unmounted` 全部都是 client-only。
+它們只會在瀏覽器端 hydration 之後才第一次被呼叫。
 
-### 11.6 不要濫用指令
+因此：
+
+- 這些 hook 裡可以安全使用 `window` / `document`（因為它們本來就只在 client 跑），不需要 `typeof window` 防護。
+- 但要注意：只靠 `mounted` 去改 DOM，會讓 server 端輸出的 HTML **不含**這個效果，直到 client hydration 後才補上——
+  若這個效果會改變版面（例如加/移除節點、改屬性），可能造成 hydration mismatch 或畫面閃動。
+- 若你需要「server 端輸出的 HTML 就帶上指令的效果」，要用下一節的 `getSSRProps`。
+
+### 11.6 `getSSRProps`：讓指令在 server 端也能輸出屬性
+
+SSR 唯一會在 server 執行的指令 hook 是 `getSSRProps(binding, vnode)`。
+它不碰 DOM，而是**回傳一組 props（通常是屬性）**，由 Vue 在 server 端渲染成 HTML 字串。
+
+```js
+// 一個會在 server 端就把顏色寫進 style 的指令
+export const color = {
+  // client 端：hydration 後照常用 mounted/updated 操作 DOM
+  mounted(el, binding) {
+    el.style.color = binding.value;
+  },
+  updated(el, binding) {
+    el.style.color = binding.value;
+  },
+  // server 端：回傳要 render 進 HTML 的屬性
+  getSSRProps(binding /*, vnode */) {
+    return { style: { color: binding.value } };
+  },
+};
+```
+
+這樣 server 輸出的 HTML 就會是 `<p style="color:red">...</p>`，hydration 前後畫面一致、不閃動。
+
+重點：
+
+- `getSSRProps` **只在 server 執行**，`mounted`/`updated` 等**只在 client 執行**，兩者互補：server 先把靜態結果寫進 HTML，client 再接手處理互動與後續更新。
+- 只有「能表達成屬性」的效果適合 `getSSRProps`（如 `style`、`class`、`aria-*`）。像 `v-focus`、`v-click-outside` 這種本質是「事件監聽 / 呼叫 DOM API」的指令，server 端沒有對應輸出，就維持只寫 client hook 即可。
+
+### 11.7 不要濫用指令
 
 能用 `:class` / `:style` / `v-if` / 事件綁定解決的，就不要做成指令。
 指令的代價是「繞過 Vue 的宣告式模型直接操作 DOM」，過度使用會讓狀態難以追蹤。

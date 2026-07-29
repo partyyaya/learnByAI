@@ -18,13 +18,15 @@ Vue 3 是 monorepo，核心在 `packages` 下。你先抓這些包就好：
 
 | 套件 | 職責 | 你在哪些章節會重點讀 |
 |---|---|---|
-| `reactivity` | 響應式系統（`reactive` / `ref` / `effect` / `computed`） | 01, 02 |
-| `runtime-core` | 平台無關的執行核心（組件、scheduler、renderer 核心） | 02, 03, 04, 05 |
+| `reactivity` | 響應式系統（`reactive` / `ref` / `effect` / `computed`；3.5 起也含 `watch` 核心） | 01, 02 |
+| `runtime-core` | 平台無關的執行核心（組件、scheduler、renderer 核心、`apiWatch` 包裝） | 02, 03, 04, 05 |
 | `runtime-dom` | DOM 平台實作（事件、props、平台 API） | 03, 04 |
 | `compiler-core` | 模板編譯主流程（parse/transform/codegen） | 06, 07 |
 | `compiler-dom` | DOM 相關編譯擴展 | 06, 07 |
 | `shared` | 共用工具函式與常數 | 全章節 |
 | `vue` | 打包後對外 API 匯出入口 | 入門追路徑時會用到 |
+
+> 版本註記（Vue 3.5.x）：`watch` 的**核心實作在 3.5 已從 `runtime-core` 抽到 `@vue/reactivity`**（`packages/reactivity/src/watch.ts`，即開發期常被稱作 `baseWatch` 的那份邏輯）；`runtime-core/src/apiWatch.ts` 只剩「加上元件生命週期綁定」的包裝層（例如 `flush: 'post'` 接 scheduler、元件卸載時清理 watcher）。所以追 `watch` 別停在 `runtime-core`，真正的依賴收集與觸發邏輯要進 `reactivity`。
 
 ---
 
@@ -123,6 +125,8 @@ pnpm dev
 - Q1:
 - Q2:
 ```
+
+> 版本註記（Vue 3.5.x）：上面「關鍵資料」裡的 `activeEffect`，在 3.4+ 的響應式重構後原始碼已改稱 **`activeSub`**（Subscriber，泛指「訂閱者」，同時涵蓋 `effect` 與 `computed`）。若你照舊教學 grep `activeEffect` 找不到，改找 `activeSub`。
 
 ---
 

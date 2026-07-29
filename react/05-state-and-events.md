@@ -9,6 +9,7 @@
 3. 使用不可變更新方式操作陣列與物件 state。
 4. 做出可新增、切換、刪除的互動列表。
 5. 分辨 `useState` 與 `useRef` 的使用時機。
+6. 認識 `useReducer`，處理「一組狀態有多種操作」的情境。
 
 ---
 
@@ -130,13 +131,74 @@ state 與 ref 的分工：
 
 ---
 
-## 6. 本章小練習
+## 6. `useReducer`：當一組狀態有多種操作
+
+本章的任務追蹤器有三個動作：新增、切換、刪除，全部都在改同一份 `tasks`。
+當「同一份狀態有多種更新方式」時，把散落的 `setTasks` 收斂成一個 **reducer** 會更好維護。
+
+`useReducer` 有兩個角色：
+
+- **reducer**：`(state, action) => newState` 的純函式，集中所有更新邏輯
+- **dispatch**：發送一個 `action`（描述「發生了什麼事」）來觸發更新
+
+```jsx
+import { useReducer } from "react";
+
+function tasksReducer(tasks, action) {
+  switch (action.type) {
+    case "added":
+      return [...tasks, { id: Date.now(), title: action.title, done: false }];
+    case "toggled":
+      return tasks.map((task) =>
+        task.id === action.id ? { ...task, done: !task.done } : task
+      );
+    case "deleted":
+      return tasks.filter((task) => task.id !== action.id);
+    default:
+      throw new Error(`未知的 action：${action.type}`);
+  }
+}
+
+function TaskApp() {
+  const [tasks, dispatch] = useReducer(tasksReducer, initialTasks);
+
+  // 元件裡不再直接寫更新邏輯，只發送「發生了什麼事」
+  const handleAdd = (title) => dispatch({ type: "added", title });
+  const handleToggle = (id) => dispatch({ type: "toggled", id });
+  const handleDelete = (id) => dispatch({ type: "deleted", id });
+
+  // ...渲染與 useState 版相同，只是把 setTasks 換成上面三個 handler
+}
+```
+
+跟 `useState` 版比起來，好處是：
+
+1. 所有更新邏輯集中在 `tasksReducer`，元件只負責「發事件」，畫面與邏輯分離。
+2. reducer 是純函式，很好單獨測試（第 14 章）。
+3. 動作一多（例如 5 個以上）時，比一堆 `setTasks` 好讀。
+
+`useState` 與 `useReducer` 怎麼選：
+
+| | `useState` | `useReducer` |
+|---|---|---|
+| 適合 | 單一、獨立的值 | 一組相關狀態、多種更新動作 |
+| 更新邏輯 | 分散在各 handler | 集中在 reducer |
+| 例子 | 輸入框文字、開關 | 任務清單、多欄位表單、購物車 |
+
+> 判斷準則：**狀態單純就用 `useState`；當同一份狀態被很多個 `setX` 用不同方式更新，就換 `useReducer`。**
+
+（第 11 章的 Zustand 也是同一種「把更新邏輯集中成 actions」的思路，只是再把狀態提升到全域。）
+
+---
+
+## 7. 本章小練習
 
 1. 建一個學習任務列表（title + done）。
 2. 可以新增任務。
 3. 可以切換任務完成狀態。
 4. 可以刪除任務並顯示完成比例。
 5. 新增任務後，用 `useRef` 讓輸入框自動重新聚焦。
+6. 把上面的任務追蹤器改用 `useReducer` 重寫，行為維持不變。
 
 ---
 

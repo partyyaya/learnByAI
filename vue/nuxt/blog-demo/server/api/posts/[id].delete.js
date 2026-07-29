@@ -2,6 +2,10 @@
 export default defineEventHandler(async (event) => {
   const { user } = await requireUserSession(event)
   const id = Number(getRouterParam(event, 'id'))
+  // 驗證 id，避免 /api/posts/abc → NaN 傳給 Prisma 變成 500
+  if (!Number.isInteger(id)) {
+    throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  }
 
   const post = await prisma.post.findUnique({ where: { id } })
   if (!post) {

@@ -10,6 +10,7 @@
 4. 建立可重複的除錯與性能檢查流程。
 5. 用 `React.lazy` 做路由層級的 code splitting。
 6. 用 Error Boundary 防止單一元件錯誤癱瘓整頁。
+7. 用 `useDeferredValue` 讓大量渲染時輸入框仍然順暢。
 
 ---
 
@@ -42,7 +43,55 @@
 
 ---
 
-## 3. 除錯重點清單
+## 3. `useDeferredValue`：大量渲染時保持輸入順暢
+
+`useMemo` 快取的是「計算結果」，但如果「計算 + 渲染」本身就很重（例如打字即時過濾上千筆並渲染），每敲一個字畫面仍會頓一下——因為 React 得先算完、渲染完，才輪到處理下一個按鍵。
+
+`useDeferredValue` 讓你把「不急的那份值」延後：輸入框綁最新值（永遠跟手），清單吃延後值（React 有空再更新）。
+
+```jsx
+import { useDeferredValue, useMemo, useState } from "react";
+
+function SearchableList({ allItems }) {
+  const [keyword, setKeyword] = useState("");
+  const deferredKeyword = useDeferredValue(keyword); // 延後版的關鍵字
+
+  const filtered = useMemo(
+    () => allItems.filter((item) => item.title.includes(deferredKeyword)),
+    [allItems, deferredKeyword]
+  );
+
+  return (
+    <>
+      {/* 輸入框綁「即時」的 keyword，打字永遠跟手 */}
+      <input value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+      {/* 清單吃「延後」的結果，落後一點點沒關係 */}
+      <ul>
+        {filtered.map((item) => (
+          <li key={item.id}>{item.title}</li>
+        ))}
+      </ul>
+    </>
+  );
+}
+```
+
+- 輸入框永遠即時回應，消除打字卡頓的體感。
+- `deferredKeyword` 會「慢半拍」跟上，重的過濾與渲染都掛在它身上。
+- 想在延後期間顯示「更新中」的視覺，可用 `keyword !== deferredKeyword` 判斷。
+
+如果你要延後的是「一段操作」而不是「一個值」（例如切換分頁、送出篩選），用它的姊妹 API `useTransition`：
+
+```jsx
+const [isPending, startTransition] = useTransition();
+startTransition(() => setTab(nextTab)); // 標記成「非緊急」更新，isPending 可拿來顯示 loading
+```
+
+> 判斷準則：**`useMemo` 省掉「重複計算」；`useDeferredValue` / `useTransition` 則是把「不緊急的更新」讓路給使用者輸入。兩者常常一起用。**
+
+---
+
+## 4. 除錯重點清單
 
 1. 資料是否重複來源（同資料被兩份 state 管理）
 2. effect 是否缺依賴或依賴過多
@@ -51,7 +100,7 @@
 
 ---
 
-## 4. Code Splitting：`React.lazy` 與 `Suspense`
+## 5. Code Splitting：`React.lazy` 與 `Suspense`
 
 預設情況下，Vite 會把所有頁面打包成一包 JS，首頁載入時「連沒去過的頁面」也一起下載。  
 搭配 React Router 時，用 `React.lazy` 把頁面改成「進入時才載入」：
@@ -84,7 +133,7 @@ function App() {
 
 ---
 
-## 5. Error Boundary：不讓一個元件炸掉整頁
+## 6. Error Boundary：不讓一個元件炸掉整頁
 
 React 元件在渲染時拋出錯誤，預設會讓**整個畫面變成空白**。  
 Error Boundary 可以把錯誤攔在區塊內，顯示友善的錯誤畫面。
@@ -128,14 +177,15 @@ class ErrorBoundary extends Component {
 
 ---
 
-## 6. 本章小練習
+## 7. 本章小練習
 
 1. 建立一個 2000 筆列表篩選頁。
 2. 先做無優化版本，觀察輸入延遲。
 3. 套用 `useMemo` 與 `React.memo`，比較差異。
-4. 用 Profiler 記錄優化前後。
-5. 把任兩個頁面改成 `React.lazy` 載入，用 `npm run build` 的輸出驗證拆包。
-6. 寫一個會在渲染時故意丟錯的元件，用 Error Boundary 攔住它。
+4. 把關鍵字改用 `useDeferredValue`，比較打字時的順暢度差異。
+5. 用 Profiler 記錄優化前後。
+6. 把任兩個頁面改成 `React.lazy` 載入，用 `npm run build` 的輸出驗證拆包。
+7. 寫一個會在渲染時故意丟錯的元件，用 Error Boundary 攔住它。
 
 ---
 
@@ -328,6 +378,7 @@ li {
 2. `LessonList` 用 `React.memo` 包起來，避免父層無關狀態（如 theme）變更時重渲染。
 3. `handleBookmark` 用 `useCallback` 固定引用，避免函式變動造成 memo 失效。
 4. 篩選結果只渲染前 120 筆，示範「計算優化 + DOM 數量控制」雙管齊下。
+5. 進一步練習：把 `keyword` 包一層 `useDeferredValue`，讓過濾吃延後值，打字會更跟手（見本章第 3 節）。
 
 ---
 

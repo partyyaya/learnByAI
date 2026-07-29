@@ -45,7 +45,7 @@ Nitro 最強的地方是**同一份程式可以打包成不同平台的格式**�
 | 自己的 Node 伺服器 / Docker | `npm run build` → 跑 `.output/server/index.mjs` | `node-server`（預設） |
 | **Vercel** | 連 Git repo，push 自動部署 | 自動 |
 | **Netlify** | 連 Git repo，push 自動部署 | 自動 |
-| **Cloudflare Pages/Workers** | 連 Git 或 `wrangler` | `cloudflare_module` 等 |
+| **Cloudflare Pages/Workers** | 連 Git 或 `wrangler` | `cloudflare-pages`（建議部落格用）/ `cloudflare-module` |
 | 靜態主機（GitHub Pages…） | `npm run generate` 丟 `.output/public/` | 靜態 |
 
 需要手動指定時：
@@ -53,7 +53,7 @@ Nitro 最強的地方是**同一份程式可以打包成不同平台的格式**�
 ```ts
 // nuxt.config.ts
 export default defineNuxtConfig({
-  nitro: { preset: 'node-server' }, // 或 'vercel'、'cloudflare_module'…
+  nitro: { preset: 'node-server' }, // 或 'vercel'、'cloudflare-pages'…（注意是連字號，不是底線）
 })
 ```
 

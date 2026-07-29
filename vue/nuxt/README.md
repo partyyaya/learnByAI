@@ -31,7 +31,7 @@
 
 ## 🚀 期末專題：全端部落格
 
-課程 2～15 章的重點，整合成一個可實際操作的專案：
+整合課程核心的全端能力——**檔案式路由、SSR 資料抓取、Nitro API、Prisma CRUD、Cookie 認證、動態 SEO**——成一個可實際操作的專案：
 
 > **[blog-demo/](./blog-demo/)** — Nuxt 4 + Nitro API + Prisma/SQLite + Cookie 認證打造的全端部落格。
 

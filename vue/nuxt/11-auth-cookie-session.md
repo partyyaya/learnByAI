@@ -247,7 +247,92 @@ export default defineEventHandler(async (event) => {
 
 ---
 
-## 8. 本章小練習
+## 8. `useCookie`：SSR-safe 的偏好型 cookie
+
+前面的 session 是 `httpOnly` cookie——**JS 讀不到**、由 `nuxt-auth-utils` 在伺服器端管理，這是安全需求。但有些 cookie 你**希望前端也讀得到、也想直接寫**：主題（深/淺色）、語系、「不再顯示公告」這類**非機密偏好**。這時用 Nuxt 內建的 `useCookie`：
+
+```vue
+<script setup>
+// 一個「像 ref 的 cookie」，對應瀏覽器的 theme cookie
+const theme = useCookie('theme', {
+  sameSite: 'lax',            // CSRF 緩解：跨站請求不會自動帶這個 cookie
+  maxAge: 60 * 60 * 24 * 365, // 存一年（單位：秒）
+  default: () => 'light',
+})
+
+function toggle() {
+  // 直接改 .value 就會寫回 cookie，下次請求（含 SSR）都讀得到
+  theme.value = theme.value === 'light' ? 'dark' : 'light'
+}
+</script>
+
+<template>
+  <button @click="toggle">目前主題：{{ theme }}</button>
+</template>
+```
+
+`useCookie` 的特點：
+
+- **SSR-safe、兩端可讀寫**：伺服器渲染時就讀得到 cookie 值（首屏主題不閃、不跳動），瀏覽器端改 `.value` 會自動同步回 cookie。
+- 適合放**非 `httpOnly` 的偏好**（主題、語系、UI 記憶）；**機密（登入憑證）絕不要用它**——那要走前面的 `httpOnly` session。
+- 值會自動 JSON 序列化/反序列化，可直接存物件。
+
+和「伺服器端」的 cookie 函式分工：
+
+| 用途 | 工具 | 在哪用 |
+|---|---|---|
+| 元件/頁面裡讀寫偏好 cookie | `useCookie('name', options)` | 前端 + SSR（`app/` 端） |
+| 在 API handler 裡讀 cookie | `getCookie(event, 'name')` | `server/`（第 8 章） |
+| 在 API handler 裡寫 cookie | `setCookie(event, 'name', value, options)` | `server/` |
+
+> 一句話：**`app/` 端要一個「像 ref 的 cookie」用 `useCookie`；`server/` 的 API handler 裡要讀寫 cookie 用 `getCookie` / `setCookie`。** 登入 session 這種機密，交給 `nuxt-auth-utils`（它底層就是用 `httpOnly` 的 `setCookie` 幫你封裝），別自己用 `useCookie` 存。
+
+---
+
+## 9. 別忘了輸入驗證與 CSRF
+
+認證安全不只「密碼有沒有雜湊」，**輸入驗證**也是 API 安全的一環。第 4 節的註冊 API 只擋了「email/密碼必填」，實務上還要：
+
+- **驗 email 格式**：長得不像 email 的就擋掉。
+- **密碼最小長度**（例如 ≥ 8）：太短的弱密碼直接回錯。
+- **email 正規化為小寫**：否則 `Foo@x.com` 與 `foo@x.com` 會變成兩個不同帳號（連 `@unique` 都擋不住，因為字串本身不一樣）。
+
+手動一條條 `if` 檢查容易漏。h3（Nitro 底層）內建 **`readValidatedBody(event, validate)`**，可搭配 [zod](https://zod.dev)（先 `npm install zod`）這類 schema 驗證庫，比手寫 `readBody` + 一堆 `if` 更穩、錯誤訊息也更一致：
+
+```js
+// server/api/auth/register.post.js（加上驗證的版本）
+import { z } from 'zod'
+
+const schema = z.object({
+  // email 正規化為小寫 + 去頭尾空白，避免大小寫造成重複帳號
+  email: z.string().email().trim().toLowerCase(),
+  password: z.string().min(8, '密碼至少 8 碼'),
+  name: z.string().min(1).optional(),
+})
+
+export default defineEventHandler(async (event) => {
+  // 驗證失敗會自動丟 400，不用自己組錯誤
+  const { email, password, name } = await readValidatedBody(event, schema.parse)
+
+  const exists = await prisma.user.findUnique({ where: { email } })
+  if (exists) throw createError({ statusCode: 409, statusMessage: 'email 已被註冊' })
+
+  const hashed = await hashPassword(password)
+  const user = await prisma.user.create({
+    data: { email, name: name || email, password: hashed },
+  })
+  await setUserSession(event, { user: { id: user.id, name: user.name, email: user.email } })
+  return { ok: true }
+})
+```
+
+（登入 API 同理，也要把 email 正規化為小寫再查，否則使用者用不同大小寫登入會查不到帳號。）
+
+**CSRF 一句話**：`nuxt-auth-utils` 的 session cookie 預設是 `SameSite=Lax`，這就是**主要的 CSRF 緩解**——跨站送過來的請求不會自動帶上你的 session cookie，惡意網站因此無法「借用你的登入狀態」偷打你的 API。但若情境是**跨站表單提交**或**第三方前端**（不同網域的 SPA 來打你的 API），`SameSite=Lax` 就不夠，要另外加 CSRF token 或搭配適當的 CORS 設定。一般同源部落格（本課情境）用預設即可。
+
+---
+
+## 10. 本章小練習
 
 1. 安裝 `nuxt-auth-utils`、設 `NUXT_SESSION_PASSWORD`、加 `User` 模型並 migrate。
 2. 做註冊/登入/登出三支 API，用 DevTools 觀察 cookie（會看到一個 `httpOnly` 的 session cookie，且 JS 讀不到）。

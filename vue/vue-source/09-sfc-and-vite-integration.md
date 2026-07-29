@@ -29,7 +29,7 @@
 
 ## 9.3 `compiler-sfc` 的核心角色
 
-`@vue/compiler-sfc` 主要提供三個核心能力：
+`@vue/compiler-sfc` 主要提供四個核心能力：
 
 1. `parse`：把 SFC 拆成 descriptor（script/template/style/custom blocks）
 2. `compileScript`：處理 `<script>` / `<script setup>`（含宏轉換）
@@ -42,14 +42,21 @@
 
 ## 9.4 `<script setup>` 轉換重點
 
-`compileScript` 會把 `<script setup>` 改寫成普通 component 選項形式可執行程式碼，並處理：
+`compileScript` 會把 `<script setup>` 改寫成普通 component 選項形式可執行程式碼，並處理下面這些**編譯期宏**（compiler macros）——它們不是真的 runtime 函式，`compileScript` 會在編譯時把它們展開/移除：
 
-- `defineProps` / `defineEmits`
-- `defineExpose`
-- `withDefaults`
-- top-level 綁定暴露給 template
+| 宏 | 版本 | 編譯後做什麼 |
+|----|------|------|
+| `defineProps` | 3.0 | 收集 props 宣告，改寫成 component 的 `props` 選項 |
+| `defineEmits` | 3.0 | 改寫成 `emits` 選項 |
+| `defineExpose` | 3.0 | 產生 `expose({...})` 呼叫，控制實例對外暴露的東西 |
+| `withDefaults` | 3.0 | 為以型別宣告的 props 補預設值（展開成 runtime 預設） |
+| **`defineModel`** | **3.4 穩定** | 宣告一個雙向綁定用的 model；展開成 `modelValue` prop + `update:modelValue` emit，並回傳一個「寫回會自動 emit」的 ref。**這是最該掌握的新宏**（元件版 `v-model` 的官方寫法） |
+| `defineOptions` | 3.3 | 在 `<script setup>` 內宣告 `name` / `inheritAttrs` 等原本要寫在一般 `<script>` 的選項 |
+| `defineSlots` | 3.3 | 純型別宏，為 slots 提供 TS 型別（無 runtime 產物） |
 
-這也是為什麼很多宏看起來像 runtime API，但其實是編譯期語法。
+此外，**reactive props destructure（3.5 穩定）**：以往 `const { foo } = defineProps()` 解構後會失去響應式，3.5 起編譯器會把解構出的變數改寫成「讀取時走 `props.foo`」，所以解構後**仍保持響應式**（含預設值 `const { foo = 1 } = defineProps<...>()` 也由編譯期處理）。這正是「宏是編譯期語法、不是 runtime API」的最好例子——同樣寫法在沒有編譯器的純 runtime 下並不成立。
+
+這也是為什麼很多宏看起來像 runtime API，但其實是編譯期語法：你在 runtime 匯入它們反而會拿到「這是宏、不該被呼叫」的警告。
 
 ---
 

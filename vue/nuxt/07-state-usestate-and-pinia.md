@@ -123,6 +123,8 @@ export default defineNuxtConfig({
 
 Store 放在 `app/stores/`（會被自動匯入）。有兩種寫法，本課用較直覺的 **setup 寫法**（跟 `<script setup>` 一樣的手感）：
 
+> ⚠️ Nuxt 4 把原始碼收進 `app/`，store 的路徑是 `app/stores/`。**較新版的 `@pinia/nuxt` 才會自動掃這個路徑**；若你發現 `useXxxStore()` 沒被自動匯入（報 undefined），先確認 `@pinia/nuxt` 是新版，或在 `nuxt.config` 設 `pinia: { storesDirs: ['./app/stores/**'] }` 明確指定掃描目錄。
+
 ```js
 // app/stores/cart.js
 export const useCartStore = defineStore('cart', () => {
@@ -190,11 +192,25 @@ export const useCartStore = defineStore('cart', {
 
 **hydration 自動搞定**：`@pinia/nuxt` 會把伺服器端 store 的 state 序列化進 payload，client 端自動接上，你什麼都不用做——這正是用官方模組（而非自己 `new Pinia()`）的好處。
 
-**持久化到 localStorage**：Pinia 的 state 預設不會存，重整就沒了。要保留（例如購物車、主題）可裝插件：
+**持久化到 localStorage**：Pinia 的 state 預設不會存，重整就沒了。要保留（例如購物車、主題），裝 `pinia-plugin-persistedstate`。**注意它是一個 Nuxt 模組，光 `npm install` 不會生效**——一定要把模組註冊起來：
 
 ```bash
-npm install pinia-plugin-persistedstate
+npx nuxi module add pinia-plugin-persistedstate
 ```
+
+它會裝好套件並把 `'pinia-plugin-persistedstate/nuxt'` 加進 `nuxt.config.ts`（也可以手動加，記得排在 `'@pinia/nuxt'` 之後）：
+
+```ts
+// nuxt.config.ts
+export default defineNuxtConfig({
+  modules: [
+    '@pinia/nuxt',
+    'pinia-plugin-persistedstate/nuxt', // 註冊後，store 的 persist 選項才會生效
+  ],
+})
+```
+
+模組註冊好之後，store 加 `persist: true` 才會啟用：
 
 ```js
 // app/stores/cart.js
@@ -205,6 +221,8 @@ export const useCartStore = defineStore('cart', () => {
 })
 ```
 
+> ⚠️ 最常見的坑：只跑了 `npm install pinia-plugin-persistedstate` 沒註冊模組，就寫 `persist: true`——這時 `persist` 會被**默默忽略**（不會報錯），重整資料照樣消失，很難察覺。看到「加了 `persist` 卻沒效果」，先檢查模組有沒有進 `modules`。
+>
 > ⚠️ `localStorage` 只有瀏覽器有。持久化插件會在 client 端補水，這是預期行為；但別在 store 初始值裡直接讀 `localStorage`（SSR 會炸），交給插件處理。
 
 ---

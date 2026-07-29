@@ -1,4 +1,4 @@
-# Vue 3 源碼解析課程（10 週）
+# Vue 3 源碼解析課程（11 週）
 
 > 這門課不是背 API，而是建立「看得懂、追得動、改得準」的源碼能力。  
 > 你會從 `reactivity` 走到 `runtime-core`、再到 `compiler-core`，最後能用調試與最小實作驗證理解。
@@ -20,14 +20,14 @@
 | 08 | [08-advanced-builtins-teleport-keepalive-suspense.md](./08-advanced-builtins-teleport-keepalive-suspense.md) | 進階內建機制 | Teleport、KeepAlive、Suspense | 做一份三者適用場景對照表 | ✅ 已完成 |
 | 09 | [09-sfc-and-vite-integration.md](./09-sfc-and-vite-integration.md) | SFC 與 Vite 整合鏈路 | `<script setup>` 編譯、plugin pipeline | 追一次 `.vue` 到瀏覽器執行的路徑 | ✅ 已完成 |
 | 10 | [10-practical-source-reading-workflow.md](./10-practical-source-reading-workflow.md) | 真實專案的源碼閱讀工作流 | issue 重現、定位、修補、驗證 | 完成一份源碼分析與修正提案 | ✅ 已完成 |
-| 11 | [11-real-world-performance-optimization.md](./11-real-world-performance-optimization.md) | 真實專案的效能優化實戰 | 反應式/渲染/載入三層成本、使用方式改寫對照、Review checklist | 用 checklist 找出 5 個優化點並做 before/after 量測 | ✅ 已完成 |
+| 11 | [11-real-world-performance-optimization.md](./11-real-world-performance-optimization.md) | 真實專案的效能優化實戰 | 響應式/渲染/載入三層成本、使用方式改寫對照、Review checklist | 用 checklist 找出 5 個優化點並做 before/after 量測 | ✅ 已完成 |
 
 ---
 
 ## 建議學習節奏
 
 ```text
-第一階段（00-02）：反應式基礎與調度心智模型
+第一階段（00-02）：響應式基礎與調度心智模型
   建立 track/trigger/effect + computed/watch/scheduler 的主鏈理解
 
 第二階段（03-05）：渲染與更新
@@ -55,3 +55,7 @@
 ---
 
 > 建議從 [00：課程地圖與源碼調試準備](./00-course-map-and-debug-setup.md) 開始，再進入 [01：Reactivity 核心](./01-reactivity-core-track-trigger-effect.md)。
+
+---
+
+> **前瞻（非本課範圍，一句話帶過）**：Vue 正在發展 **Vapor mode**（`runtime-vapor` / `compiler-vapor`，把模板編成直接操作 DOM、免虛擬 DOM 的模式），響應式核心也在 3.6 往 **signals**（採 alien-signals 演算法）演進；本課仍以 **Vue 3.5.x + 虛擬 DOM** 為主，上述屬未來方向、細節可能變動。

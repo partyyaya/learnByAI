@@ -184,6 +184,8 @@ npx nuxi module add <模組名>
 它會自動裝套件並加進 `nuxt.config.ts` 的 `modules` 陣列。之後就能用該模組提供的元件/composable（多半也是自動匯入）。
 
 > 本課用到的模組彙整：狀態 `@pinia/nuxt`、認證 `nuxt-auth-utils`、SEO `@nuxtjs/seo`、樣式 `@nuxtjs/tailwindcss`、圖片 `@nuxt/image`、字型 `@nuxt/fonts`、測試 `@nuxt/test-utils`（後面章節會用到）。
+>
+> 本課沒用到、但值得先記住名字的一個：**`@nuxtjs/i18n`**——官方的多語系（國際化）方案，幫你管翻譯訊息並自動生成多語系路由（`/en/about`、`/zh/about` 這類 URL 與語系切換）。要做網站國際化時再深入即可，這裡點到為止。
 
 ---
 
@@ -244,7 +246,19 @@ if (props.broken) {
 ```vue
 <script setup>
 const { $formatDate } = useNuxtApp()
-const now = new Date().toISOString()
+
+// ✅ 用「穩定值」示範 $formatDate：這個時間 server / client 兩端一致，不會 mismatch。
+// （實務上這裡通常是 post.createdAt 這種從資料抓來的固定時間。）
+const publishedAt = '2026-01-15T09:30:00.000Z'
+
+// 「當下時間」是最經典的 hydration mismatch 陷阱：setup 在 server 跑一次、
+// client 再跑一次，new Date() 兩邊值不同 → 直接寫在頂層再渲染就會對不起來。
+// 所以只在瀏覽器（onMounted）取值，並用 <ClientOnly> 包住顯示（見第 4 章）。
+const nowClient = ref(null)
+onMounted(() => {
+  nowClient.value = new Date().toISOString()
+})
+
 const broken = ref(false)
 </script>
 
@@ -254,8 +268,15 @@ const broken = ref(false)
 
     <section>
       <h2>1. Plugin 注入的 $formatDate</h2>
-      <p>原始：<code>{{ now }}</code></p>
-      <p>格式化：<strong>{{ $formatDate(now) }}</strong></p>
+
+      <!-- 穩定值：兩端一致，安全 -->
+      <p>文章發佈時間：<strong>{{ $formatDate(publishedAt) }}</strong></p>
+
+      <!-- 當下時間會 server/client 不一致 → 用 ClientOnly 只在瀏覽器算、渲染，避免 hydration mismatch -->
+      <ClientOnly>
+        <p>現在時間：<strong>{{ $formatDate(nowClient) }}</strong></p>
+        <template #fallback><p>現在時間：載入中…</p></template>
+      </ClientOnly>
     </section>
 
     <section>
@@ -290,6 +311,7 @@ h2 { font-size: 18px; margin-top: 24px; }
 跑起來後：
 
 - `$formatDate` 把 ISO 時間變成好讀的本地格式（plugin 注入成功，全站可用）。
+- 「文章發佈時間」用穩定值、直接 SSR 渲染沒問題；「現在時間」包在 `<ClientOnly>` 裡只在瀏覽器算，所以 console **不會**出現 hydration mismatch 警告。你可以試著把它從 `<ClientOnly>` 拿出來、改成在頂層 `new Date()`，就會看到警告——這正是第 4 章講的坑。
 - 勾「讓小工具壞掉」→ 只有那一塊變成紅色 fallback，標題與其他內容不受影響。
 - 按「重試」→ 小工具恢復正常（`clearError` 生效）。
 

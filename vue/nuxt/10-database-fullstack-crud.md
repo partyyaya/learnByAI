@@ -146,6 +146,10 @@ export default defineEventHandler(async (event) => {
 ```js
 export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, 'id'))
+  // 先驗證 id：/api/posts/abc → Number('abc') 是 NaN，直接丟給 Prisma 會拋錯變成 500
+  if (!Number.isInteger(id)) {
+    throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  }
   const post = await prisma.post.findUnique({ where: { id } })
   if (!post) {
     throw createError({ statusCode: 404, statusMessage: '找不到文章' })
@@ -153,6 +157,8 @@ export default defineEventHandler(async (event) => {
   return post
 })
 ```
+
+> ⚠️ **這支是公開端點，目前不會過濾 `published`**——連草稿都讀得到。列表端點應該 `where: { published: true }`；而詳情端點的「草稿只有作者能看」授權，要等第 11 章加上認證（`authorId` / session）後才補得上。**「前端把草稿藏起來」不算安全，公開端點自己一定要擋**（第 11 章會完整處理）。上線前務必補完。
 
 ### `server/api/posts/[id].put.js`（更新）
 

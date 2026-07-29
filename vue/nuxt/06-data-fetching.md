@@ -219,7 +219,76 @@ const { data } = await useAsyncData('posts', () => $fetch('/api/posts'))
 
 ---
 
-## 9. 本章小練習
+## 9. 站內切頁的快取：`getCachedData` 與 `useNuxtData`
+
+**坑：站內來回切頁，`useFetch` 預設會「再抓一次」。** 你從列表點進詳情、再退回列表，`useFetch` 往往會重新發一次請求。想「切回來直接沿用之前抓好的、不重打」，用 `getCachedData` 指定「怎麼取快取」：
+
+```vue
+<script setup>
+const { data: posts } = await useFetch('/api/posts', {
+  key: 'posts',
+  // 有快取就用：payload.data 是 SSR 傳來的、static.data 是 client 導覽時抓過的；兩個都沒有才重抓
+  getCachedData: (key, nuxtApp) => nuxtApp.payload.data[key] ?? nuxtApp.static.data[key],
+})
+</script>
+```
+
+**`useNuxtData(key)`：讀「別頁已經抓好」的資料。** 經典情境是「列表 → 詳情」：列表頁已抓過所有文章，進詳情頁時先拿列表快取裡的那一筆**立刻顯示**，再背景抓完整內容更新，體感秒開：
+
+```vue
+<script setup>
+const route = useRoute()
+
+// 讀列表頁（key: 'posts'）已抓好的資料，從中挑出這一筆當「初始值」
+const { data: cachedPosts } = useNuxtData('posts')
+const initial = cachedPosts.value?.find((p) => p.id === Number(route.params.id))
+
+// 再抓完整單篇；default 先給快取那筆，使用者不會先看到空白再跳出內容
+const { data: post } = await useFetch(`/api/posts/${route.params.id}`, {
+  key: `post-${route.params.id}`,
+  default: () => initial,
+})
+</script>
+```
+
+> 承第 8 節：`useFetch`/`useAsyncData` 的 `data` 預設是 **`shallowRef`**（只追蹤整包替換、不追蹤深層屬性）。若你確實需要深層響應（例如就地改 `data.value.xxx` 要即時反映到畫面），加 `deep: true` 讓它變回深層響應式的 `ref`（代價是稍多一點效能開銷）。
+
+---
+
+## 10. SSR 下 `$fetch` 不帶 cookie 的坑：`useRequestFetch` / `useRequestHeaders`
+
+這個坑做認證後最容易踩，先建立觀念，第 11 章會實際用到。
+
+`useFetch` 底層用的是 **`useRequestFetch()`**——SSR 期間它會**自動把瀏覽器這次請求的 cookie 轉發**給你要打的 API。所以 SSR 時 `useFetch('/api/me')` 能帶著登入 cookie，順利通過伺服器端的 `requireUserSession`（第 11 章）。
+
+但如果你在 SSR 期間改用**裸的 `$fetch`** 去打自家受保護 API，就沒有這層自動轉發：
+
+```js
+// ❌ 在 setup 頂層（SSR 也會執行）用裸 $fetch 打受保護 API
+// 「你的伺服器 → 再打自己 API」這段是全新請求，預設不帶瀏覽器的 cookie → 直接 401
+const me = await $fetch('/api/me')
+```
+
+原因：SSR 時「瀏覽器 → 你的 Nuxt 伺服器」帶了 cookie，但「你的伺服器 → 用 `$fetch` 再打自己的 API」是另一段全新的請求，預設不會把前一段的 cookie 接力過去。
+
+兩種解法：
+
+```js
+// 解法 A（推薦）：用 useRequestFetch()，它會自動轉發當前請求的 cookie 等 headers
+const requestFetch = useRequestFetch()
+const me = await requestFetch('/api/me')
+
+// 解法 B：手動把瀏覽器的 cookie header 轉發過去
+const me = await $fetch('/api/me', {
+  headers: useRequestHeaders(['cookie']),
+})
+```
+
+> 口訣：**頁面資料照用 `useFetch`（它已經用 `useRequestFetch`，cookie 自動帶）；只有在「SSR 期間手動 `$fetch` 自家受保護 API」時，才需要 `useRequestFetch()` 或 `useRequestHeaders(['cookie'])` 補上 cookie。** 純瀏覽器端（使用者互動觸發）的 `$fetch` 本來就會帶 cookie，不受這個坑影響。
+
+---
+
+## 11. 本章小練習
 
 1. 用 `useFetch` 抓一支公開 API（例如 `https://jsonplaceholder.typicode.com/posts`）並列出標題。
 2. 加上 `query: { _limit: 5 }` 只取 5 筆，再把 `_limit` 換成 `ref` 做「載入更多」。
@@ -287,7 +356,6 @@ const { data: posts, status, error, refresh } = await useFetch(
   {
     query: { _limit: limit },
     // 只留需要的欄位，縮小傳給前端的 payload
-    pick: undefined, // pick 作用在物件層級；這裡示範保留全部，實務可用 transform
     transform: (list) => list.map((p) => ({ id: p.id, title: p.title })),
   },
 )

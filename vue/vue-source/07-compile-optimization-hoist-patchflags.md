@@ -40,6 +40,8 @@ function render(_ctx, _cache) {
 
 結果：靜態節點只建立一次。
 
+> 版本註記：上面的 `_hoisted_*` 輸出樣式**以 3.5.x 實際編譯輸出為準**；parser / transform 在 3.4 經過重寫（見 06 章），靜態提升與快取的細節（例如部分靜態內容改用 `_cache` 快取）在不同小版本可能略有差異。追碼時以你手上版本的實際輸出為準，別死背某一版的字面樣式。
+
 ---
 
 ## 7.3 什麼節點不能 hoist
@@ -78,18 +80,31 @@ block 樹：直接拿 dynamicChildren 做重點更新
 ## 7.5 patch flags：告訴 runtime「只改哪裡」
 
 patch flag 是編譯期給 runtime 的提示位元。  
-常見語義（概念層）：
+以下對應 Vue 3.5.x 的 `PatchFlags` enum（正值可用位元 `|` 疊加、`&` 檢測）：
 
-| 類別 | 代表意義 |
-|---|---|
-| TEXT | 只有文字內容動態 |
-| CLASS / STYLE | 只有 class/style 變化 |
-| PROPS | 部分 props 動態 |
-| FULL_PROPS | 需較完整 props 比對 |
-| HYDRATE_EVENTS | 水合階段事件處理相關 |
-| STABLE/KEYED/UNKEYED_FRAGMENT | fragment 更新策略提示 |
+| 名稱 | 值 | 代表意義 |
+|---|---|---|
+| `TEXT` | 1 | 只有文字內容動態 |
+| `CLASS` | 2 | 只有 class 變化 |
+| `STYLE` | 4 | 只有 style 變化 |
+| `PROPS` | 8 | 部分（已知）props 動態，附 `dynamicProps` 清單 |
+| `FULL_PROPS` | 16 | props 含動態 key，需完整比對 |
+| `NEED_HYDRATION` | 32 | 需在水合時特別處理（如綁事件）；**3.5 前名為 `HYDRATE_EVENTS`** |
+| `STABLE_FRAGMENT` | 64 | fragment 子節點順序不變 |
+| `KEYED_FRAGMENT` | 128 | 有 key 的 fragment |
+| `UNKEYED_FRAGMENT` | 256 | 無 key 的 fragment |
+| `NEED_PATCH` | 512 | 本身無動態綁定，但仍需被 patch（如只有 `ref` 或 `onVnodeXXX` hook） |
+| `DYNAMIC_SLOTS` | 1024 | slots 為動態（`v-if` / `v-for` 產生），見 06 章 |
+| `DEV_ROOT_FRAGMENT` | 2048 | dev 專用：根為 fragment 且含註解節點 |
 
-> 具體常數值可在 `shared` 常數中查，不建議硬背數字。
+負值為**特殊旗標**（不參與位元運算，用 `===` 相等比較）：
+
+| 名稱 | 值 | 代表意義 |
+|---|---|---|
+| `CACHED` | -1 | 靜態提升／被快取的節點，diff 直接略過；**3.5 前名為 `HOISTED`** |
+| `BAIL` | -2 | 放棄最佳化，退回全量 diff（如遇到 runtime 手寫 render） |
+
+> 來源是 `@vue/shared` 的 `PatchFlags` enum（`packages/shared/src/patchFlags.ts`）。正值是可組合的位元旗標；負值是哨兵值（sentinel），只能相等比較。不建議硬背數字，但記住「正值可組合、負值是特例」很有幫助。
 
 ---
 

@@ -23,7 +23,7 @@ Vue 應用的執行成本，幾乎都落在這三層。優化前先判斷你卡�
 
 | 層級 | 成本來源 | 對應源碼 | 典型症狀 |
 |---|---|---|---|
-| 反應式層 | 依賴收集、trigger 過多 effect | `track` / `trigger` / `effect` | 改一個值卻觸發一堆無關更新 |
+| 響應式層 | 依賴收集、trigger 過多 effect | `track` / `trigger` / `effect` | 改一個值卻觸發一堆無關更新 |
 | 更新/渲染層 | re-render、patch、diff | `renderEffect` / `patch` / `patchKeyedChildren` | 列表卡頓、輸入延遲、滾動掉幀 |
 | 編譯/載入層 | bundle 過大、首屏載入慢 | `compiler` 輸出、Vite chunk | 首屏白屏久、TTI 高 |
 
@@ -31,7 +31,7 @@ Vue 應用的執行成本，幾乎都落在這三層。優化前先判斷你卡�
 
 ---
 
-## 11.3 反應式層：別讓「不需要反應的資料」變成反應式
+## 11.3 響應式層：別讓「不需要反應的資料」變成響應式
 
 ### 11.3.1 大型唯讀資料用 `shallowRef` / `shallowReactive`
 
@@ -57,7 +57,7 @@ function reload(newData) {
 
 ### 11.3.2 永遠不會變的資料用 `markRaw`
 
-像「靜態設定表、第三方類別實例（地圖、圖表、編輯器物件）」不需要反應式，包進 reactive 反而浪費，甚至可能因為被代理而出 bug。
+像「靜態設定表、第三方類別實例（地圖、圖表、編輯器物件）」不需要響應式，包進 reactive 反而浪費，甚至可能因為被代理而出 bug。
 
 ```js
 import { markRaw, reactive } from 'vue'
@@ -81,7 +81,7 @@ const state = reactive({
 
 ---
 
-## 11.4 反應式層：縮小依賴與觸發範圍
+## 11.4 響應式層：縮小依賴與觸發範圍
 
 ### 11.4.1 `computed` 取代「模板裡的即時運算」
 
@@ -99,7 +99,7 @@ const state = reactive({
 const activeCount = computed(() => list.value.filter(i => i.active).length)
 ```
 
-對應源碼：`computed` 有 `_dirty` / `_cacheable` 機制，依賴未變時直接回傳快取值，不執行 getter。
+對應源碼：`computed` 於 3.4 起改用**版本比對**（`dep.version` / `globalVersion`）判定是否重算，依賴未變時直接回傳快取值、不執行 getter；且**重算後值沒變也不會觸發下游**（見第 02 章 2.2.1）。（`_dirty` / `_cacheable` 是 3.4 前的舊欄位名，追新版源碼看不到。）
 
 ### 11.4.2 `watch` 別亂開 `deep: true`
 
@@ -220,7 +220,7 @@ const staticOptions = [1, 2, 3]
 
 ### 11.7.1 用元件邊界縮小 re-render 範圍
 
-Vue 的更新粒度是**組件**：一個組件內任何被模板用到的反應式資料變動，整個組件的 render function 會重跑（再靠 diff 收斂）。所以把高頻變動的部分抽成獨立子組件，可以把 re-render 侷限在小範圍。
+Vue 的更新粒度是**組件**：一個組件內任何被模板用到的響應式資料變動，整個組件的 render function 會重跑（再靠 diff 收斂）。所以把高頻變動的部分抽成獨立子組件，可以把 re-render 侷限在小範圍。
 
 ```text
 ❌ 一個巨大組件：頂部一個 timer 每秒跳動 → 整個大組件每秒重跑 render
@@ -323,7 +323,7 @@ const HeavyChart = defineAsyncComponent({
 
 拿這份去審任何 Vue 專案：
 
-**反應式**
+**響應式**
 - [ ] 大型 / 巢狀 / 整包替換的資料是否用 `shallowRef`？
 - [ ] 第三方實例、靜態設定是否 `markRaw`？
 - [ ] 模板裡有沒有可改成 `computed` 的即時運算？
@@ -366,7 +366,7 @@ const HeavyChart = defineAsyncComponent({
 
 ### 誤區二：以為 `Object.freeze` / shallow 一定更快
 
-它們省的是「反應式追蹤成本」。如果你的瓶頸其實在 DOM 數量或網路，這些改動毫無幫助，只是讓你誤以為在優化。
+它們省的是「響應式追蹤成本」。如果你的瓶頸其實在 DOM 數量或網路，這些改動毫無幫助，只是讓你誤以為在優化。
 
 ### 誤區三：把 index 當 key 還覺得「能跑就好」
 

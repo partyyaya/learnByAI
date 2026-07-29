@@ -31,6 +31,15 @@
 - `to` 目標改變時可能觸發搬移
 - `disabled` 為 true 時退回原位置渲染
 - 子內容更新仍走正常 patch 流程
+- **`defer`（3.5 新增）**：目標容器如果是「在同一輪渲染中、比 Teleport 更晚才被渲染出來」的元素，預設會找不到目標而報 warning。加上 `defer` 後，Teleport 會**延到當前 render 週期結束後**再解析 `to` 目標並傳送，解決「目標尚未存在」的時序問題。
+
+```vue
+<Teleport defer to="#late-container">
+  <div>我會等 #late-container 這一輪渲染出來後才傳送過去</div>
+</Teleport>
+<!-- 同一個模板稍後才出現的目標容器 -->
+<div id="late-container"></div>
+```
 
 ---
 
@@ -96,6 +105,18 @@ mount pending branch
 - pending / resolved 狀態切換
 - branch 的 patch 與切換時機
 - 與 parent suspense 的依賴傳遞關係
+
+### 8.5.4 props 與事件
+
+| 名稱 | 作用 |
+|------|------|
+| `timeout` | 從 pending 切到顯示 fallback 前的等待毫秒數；設 `0` 表示立即顯示 fallback |
+| `suspensible` | 讓「巢狀的 Suspense」把自己的 async 依賴**上交給外層 Suspense** 協調，而不是自己各管各的（父層才顯示一個統一的 fallback） |
+| `@pending` | 進入 pending 狀態時觸發 |
+| `@resolve` | content branch 的所有 async 依賴 resolve、切換完成時觸發 |
+| `@fallback` | 切換到顯示 fallback 時觸發 |
+
+> ⚠️ **Suspense 至今仍是實驗性 API**（experimental）。它的 props/行為在未來版本仍可能調整，正式專案使用前要留意版本相容性。
 
 ---
 
