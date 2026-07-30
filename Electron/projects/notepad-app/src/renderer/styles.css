@@ -1,0 +1,529 @@
+/* 兩套樣式只差這組變數；元件一律讀變數，不寫死顏色。
+   data-theme 由 app.js 在第一行掛到 <html> 上，值來自 main 存的 settings.json。 */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --surface: #fcfcfc; /* 主要顏色：sidebar、面板、彈窗 */
+  --canvas: #f1f2f4; /* 面板後面的底色，讓卡片浮得出來 */
+  --selected: #eeeeee; /* 列表選中 */
+  --hover: #f5f5f5;
+  --text: #1f2430;
+  --muted: #6f7684;
+  --border: #e4e6eb;
+  --shadow: 0 10px 24px rgba(31, 36, 48, 0.08);
+  --primary: #4f46e5;
+  --danger: #d64545;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --surface: #0d1117; /* 主要顏色 */
+  --canvas: #010409;
+  --selected: #212830; /* 列表選中 */
+  --hover: #171d25;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --border: #262c36;
+  --shadow: 0 10px 24px rgba(0, 0, 0, 0.4);
+  --primary: #4f46e5;
+  --danger: #d64545;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC",
+    "Microsoft JhengHei", sans-serif;
+  color: var(--text);
+  background: var(--canvas);
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  height: 100vh;
+}
+
+/* ---------- 左側 sidebar ---------- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0; /* 讓內部列表能正確捲動 */
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.sidebar__top {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.sidebar__bottom {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+}
+
+.note-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.note-list__empty {
+  margin: 24px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.note-item {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.note-item:hover {
+  background: var(--hover);
+}
+
+.note-item.is-active {
+  background: var(--selected);
+}
+
+.note-item__title {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-item__time {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ---------- 右側工作區 ---------- */
+
+.workspace {
+  min-width: 0;
+  padding: 24px;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.pane.is-hidden {
+  display: none;
+}
+
+.pane__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end; /* 按鈕靠右下 */
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+}
+
+.title-input {
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent; /* 不吃瀏覽器預設的白底黑字，才跟著主題走 */
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 600;
+  outline: none;
+}
+
+.title-input::placeholder {
+  color: var(--muted);
+}
+
+.title-input:focus {
+  border-bottom-color: var(--primary);
+}
+
+.editor {
+  flex: 1;
+  min-height: 0;
+  margin-top: 16px;
+  overflow-y: auto;
+  font-size: 15px;
+  line-height: 1.7;
+  outline: none;
+  white-space: pre-wrap; /* 與檢視模式一致：保留空白與換行 */
+  word-break: break-word;
+}
+
+.editor.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.editor img,
+.read-body img {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 8px 0;
+}
+
+.read-title {
+  margin: 0;
+  font-size: 24px;
+}
+
+.read-time {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.read-body {
+  flex: 1;
+  min-height: 0;
+  margin-top: 16px;
+  overflow-y: auto;
+  font-size: 15px;
+  line-height: 1.7;
+  white-space: pre-wrap; /* 保留輸入時的換行 */
+  word-break: break-word;
+}
+
+.hint {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hint.is-error {
+  color: var(--danger);
+}
+
+/* ---------- 按鈕 ---------- */
+
+.btn {
+  padding: 8px 17px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--selected);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.btn:hover {
+  filter: brightness(1.1);
+}
+
+/* 統一鍵盤操作的焦點外框（彈窗打開時會自動 focus 到「關閉」） */
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.note-item:focus-visible,
+.picker-option:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.btn--block {
+  display: block;
+  width: 100%;
+  font-weight: 600;
+}
+
+.btn--primary {
+  border-color: transparent;
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn--danger {
+  border-color: transparent;
+  background: var(--danger);
+  color: #fff;
+}
+
+/* 次要按鈕（例如「取消編輯」）：跟面板同色，只留一圈邊框 */
+.btn--ghost {
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.btn--ghost:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.btn.is-hidden {
+  display: none;
+}
+
+/* 左下角的圓形圖示按鈕 */
+.icon-btn {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* ---------- 彈窗 ---------- */
+
+.dialog {
+  width: min(420px, calc(100vw - 48px));
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin: auto; /* 置中，其餘由 showModal() 處理 */
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.dialog::backdrop {
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.dialog__title {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  margin-top: 16px;
+}
+
+/* 取代 window.confirm() 的確認彈窗 */
+.dialog--confirm {
+  width: min(360px, calc(100vw - 48px));
+}
+
+.dialog__message {
+  margin: 4px 0 0;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.shortcut-list {
+  margin: 0;
+}
+
+.shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.shortcut:last-child {
+  border-bottom: 0;
+}
+
+.shortcut dt {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+}
+
+.shortcut dd {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: right;
+}
+
+kbd {
+  min-width: 26px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 6px;
+  background: var(--selected);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ---------- 記事資料彈窗的動作清單 ---------- */
+
+.action-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.action {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.action:hover {
+  background: var(--hover);
+}
+
+.action:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.action__name {
+  font-weight: 600;
+}
+
+.action__hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.storage-path {
+  margin: 14px 0 0;
+  font-size: 12px;
+}
+
+.storage-path__label {
+  color: var(--muted);
+}
+
+.storage-path__value {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere; /* 路徑很長，讓它換行而不是把彈窗撐寬 */
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  user-select: text;
+}
+
+/* ---------- 語言 / 外觀樣式的兩格選單 ---------- */
+
+.picker-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.picker-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.picker-option:hover {
+  background: var(--hover);
+}
+
+.picker-option.is-active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary); /* 用外框標示目前這一個，不改它的底色 */
+}
+
+.picker-option__name {
+  font-weight: 600;
+}
+
+/* 用打勾標示「目前用的是這個」，才不會跟鍵盤焦點的外框混在一起 */
+.picker-option.is-active .picker-option__name::after {
+  content: " ✓";
+  color: var(--primary);
+}
+
+.picker-option__hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* 色票直接用寫死的兩組顏色，這樣在任一主題下都看得到對方長什麼樣 */
+.theme-swatch {
+  width: 44px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.theme-swatch--light {
+  background: linear-gradient(135deg, #fcfcfc 60%, #eeeeee 60%);
+}
+
+.theme-swatch--dark {
+  background: linear-gradient(135deg, #0d1117 60%, #212830 60%);
+}

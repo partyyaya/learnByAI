@@ -1,0 +1,11 @@
+# 相依套件
+node_modules
+.DS_Store
+
+# 打包產物
+dist
+out
+
+# 編輯器
+.vscode/*
+.idea

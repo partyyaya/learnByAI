@@ -105,6 +105,82 @@ const admin: AdminUser = {
 };
 ```
 
+### 注意事項
+
+#### 覆寫繼承來的同名屬性：只能「收窄」，不能不相容
+
+子介面可以重新宣告一個父介面已經有的屬性，但**新型別必須能指派給父型別**（也就是只能收窄成父型別的子集）。不相容就會出現 `TS2430`。
+
+```typescript
+interface Base {
+  value: string | number;
+  id: number;
+}
+
+// ✅ OK：把 value 收窄成 string（string 可指派給 string | number）
+interface Ok extends Base {
+  value: string;
+}
+
+// ❌ TS2430：id 從 number 改成 string，兩者不相容
+interface Bad extends Base {
+  id: string;
+  // Interface 'Bad' incorrectly extends interface 'Base'.
+  //   Types of property 'id' are incompatible.
+}
+```
+
+同理，**不能把父介面的「必要屬性」改成「可選屬性」**——因為可選等於允許 `undefined`，而 `number | undefined` 不能指派給 `number`：
+
+```typescript
+interface Base {
+  x: number;
+}
+
+// ❌ TS2430：可選會引入 undefined，違反父型別
+interface Bad extends Base {
+  x?: number;
+}
+```
+
+> 💡 記法：`extends` 是**累加 + 收窄**，不是「取代」。子介面對同名屬性只能讓它更嚴格，不能改成不相容或更寬鬆。
+
+#### readonly 不參與繼承檢查，而且只是「淺層、本地」保護
+
+和上面的型別相容性不同，`readonly` **修飾詞在 `extends` 時完全不被檢查**——你可以在子介面自由地加上或拿掉它，編譯器都不會報錯：
+
+```typescript
+interface Base {
+  readonly id: number;
+  name: string;
+}
+
+// ✅ 兩個修改都不會報錯
+interface Sub extends Base {
+  id: number;            // 拿掉了 readonly
+  readonly name: string; // 反而加上了 readonly
+}
+```
+
+更要小心的是，`readonly` 只保證「不能透過這個名字直接改寫」，它**不參與物件之間的可指派性**，所以很容易被一個可變的別名繞過：
+
+```typescript
+interface ReadonlyName {
+  readonly name: string;
+}
+interface MutableName {
+  name: string;
+}
+
+const mutable: MutableName = { name: "a" };
+const ro: ReadonlyName = mutable; // ✅ 可指派（readonly 不影響相容性）
+
+mutable.name = "b"; // 透過可變別名改寫
+console.log(ro.name); // "b"：ro 指向同一個物件，值一起變了
+```
+
+> ⚠️ `readonly` 是**編譯期的淺層保護**：只擋「直接對這個屬性賦值」，不保證整個物件不可變，也擋不住透過別名或型別轉換的修改。需要真正的不可變，請在執行期自行處理（例如 `Object.freeze`、複製而非修改），別把安全性建立在 `readonly` 上。
+
 ---
 
 ## 4.3 型別別名（Type Alias）
@@ -261,6 +337,8 @@ type ReadonlyUser = Readonly<User>;
 
 ## 4.5 索引簽名（Index Signatures）
 
+當物件的**鍵在寫程式時還不知道**（例如翻譯表、設定檔、API 回傳的動態欄位），就用索引簽名描述「任何符合這種鍵的屬性，值都是這個型別」。
+
 ```typescript
 // 動態鍵值
 interface StringMap {
@@ -273,7 +351,238 @@ const translations: StringMap = {
   thanks: "謝謝",
 };
 
-// 混合固定與動態屬性
+// 索引簽名讓「未宣告的鍵」也合法
+translations.welcome = "歡迎";   // ✅
+// translations.count = 1;      // ❌ 值型別必須是 string
+```
+
+`[key: string]` 裡的 `key` 只是**參數名稱**，可以隨便命名（`k`、`prop`、`index` 都一樣），真正有意義的是**冒號兩邊的型別**：左邊是「鍵的型別」，右邊是「值的型別」。
+
+### 鍵的型別可以放什麼
+
+只有四種：`string`、`number`、`symbol`、樣板字面值型別（template literal type），以及它們的聯合。
+
+```typescript
+interface KeyKinds {
+  [k1: string]: unknown;            // ✅ 字串鍵
+  [k2: symbol]: unknown;            // ✅ symbol 鍵
+  [k3: `data-${string}`]: unknown;  // ✅ 樣板字面值（TS 4.4+）
+}
+
+interface UnionKey {
+  [key: string | number]: string;   // ✅ 聯合＝同時宣告 string 與 number 兩個簽名
+}
+```
+
+> ⚠️ **不能**用具體的字面值聯合當鍵，會出現 TS1337：
+>
+> ```typescript
+> type Role = "admin" | "user";
+>
+> interface Bad {
+>   [key: Role]: string;  // ❌ TS1337: An index signature parameter type
+>                         //    cannot be a literal type or generic type.
+> }
+>
+> // ✅ 鍵是有限集合時，改用 Record（映射型別）
+> type Good = Record<Role, string>;
+> ```
+
+### 多個索引簽名
+
+一個型別可以同時有多個索引簽名，但要遵守兩條規則。
+
+#### 規則一：同一種鍵型別只能出現一次
+
+```typescript
+interface Duplicated {
+  [key: string]: string;
+  [prop: string]: string;  // ❌ TS2374: Duplicate index signature for type 'string'.
+}
+```
+
+樣板字面值也算「一種鍵型別」，同樣的樣式不能重複；但**不同**樣式可以並存：
+
+```typescript
+// ✅ 兩個不同樣式並存
+interface HtmlAttrs {
+  [key: `data-${string}`]: string;
+  [key: `aria-${string}`]: string;
+}
+
+const attrs: HtmlAttrs = {
+  "data-id": "42",
+  "aria-label": "關閉",
+  // "title": "x",   // ❌ 不符合任一樣式，不能加
+};
+```
+
+#### 規則二：兩個簽名「管到同一個鍵」時，不能各說各話
+
+這條規則是多數人卡住的地方，我們從頭推一次。
+
+**第一步：先看 JS 的事實 —— 物件的鍵永遠是字串**
+
+```javascript
+const obj = {};
+obj[0] = "hello";
+
+console.log(obj["0"]);         // "hello"      ← 用字串 "0" 也拿到同一個值
+console.log(Object.keys(obj)); // ["0"]        ← 鍵實際上被存成字串 "0"
+console.log(typeof Object.keys(obj)[0]); // "string"
+```
+
+所以 `obj[0]` 和 `obj["0"]` 不是兩個屬性，**是同一個屬性**。這點是理解整條規則的關鍵。
+
+**第二步：把索引簽名想成「一條承諾，管一組鍵」**
+
+每個索引簽名都在宣告「凡是符合這個鍵型別的屬性，值都是某個型別」。不同簽名管到的鍵範圍如下：
+
+```
+所有可能的字串鍵：  "name"   "abc"   "id-1"   "id-x"   "0"   "1"   "2"  ...
+                    └──────────────────────────────────────────────────┘
+                     [key: string]          ← 管「全部」字串鍵
+
+                                     └──────────┘
+                                     [key: `id-${string}`]  ← 只管 id- 開頭
+
+                                                    └────────────────┘
+                                                    [index: number]  ← 只管數字鍵
+                                                    （因為 0 就是 "0"，也落在字串鍵裡）
+```
+
+重點：`[key: string]` 的範圍**完整包含**另外兩個。`[index: number]` 和 `[key: \`id-${string}\`]` 都是它的**子集**。
+
+**第三步：範圍重疊，承諾就必須相容**
+
+```typescript
+interface Conflict {
+  [key: string]: string;   // 承諾 A：任何字串鍵 → 值是 string
+  [index: number]: number; // 承諾 B：任何數字鍵 → 值是 number
+}
+```
+
+拿 `obj[0]` 這一個屬性來問這個型別：
+
+- 走承諾 A（`"0"` 是字串鍵）→ 值是 `string`
+- 走承諾 B（`0` 是數字鍵）→ 值是 `number`
+
+**同一個屬性，兩個答案，而且互相矛盾** —— TypeScript 無法決定 `obj[0]` 是什麼型別，所以直接報錯：
+
+```typescript
+interface Conflict {
+  [key: string]: string;
+  [index: number]: number;
+  // ❌ TS2413: 'number' index type 'number' is not assignable to
+  //            'string' index type 'string'.
+  //    「數字鍵承諾的 number，不能塞進字串鍵承諾的 string」
+}
+```
+
+> 💡 用規章來想：`[key: string]` 是**公司規章**（管全體員工），`[index: number]` 是**部門規章**（只管一個部門）。部門規章可以比公司規章更嚴格，但**不能違反**公司規章 —— 因為部門員工同時受兩份規章管。
+
+**第四步：怎麼修 —— 讓窄的變成寬的「一種特例」**
+
+只要讓子集簽名的值型別成為母集簽名值型別的**子型別**，兩個承諾就不矛盾了：
+
+```typescript
+// ✅ 把公司規章放寬，讓部門規章成為它的一種特例
+interface Ok {
+  [key: string]: string | number; // 承諾 A：任何字串鍵 → string 或 number
+  [index: number]: number;        // 承諾 B：數字鍵 → 一定是 number
+}
+// 現在問 obj[0]：
+//   走 A → string | number（「可能是這兩種」）
+//   走 B → number        （「就是 number」）
+// B 只是把 A 講得更精確，沒有牴觸 → 合法，且讀取時採用更精確的 B
+
+// ✅ 樣板字面值同理：unknown 能容納任何值，所以永遠不會衝突
+interface EventMap {
+  [key: `on${string}`]: () => void; // 子集：on 開頭的鍵 → 函式
+  [key: string]: unknown;           // 母集：其他鍵 → unknown
+}
+// () => void 是 unknown 的子型別 → 合法
+```
+
+**第五步：範圍不重疊，就完全沒有約束**
+
+這條規則只在「兩個簽名管到同一個鍵」時才啟動。範圍互不相干的簽名可以隨便寫：
+
+```typescript
+// ✅ symbol 鍵不會被轉成字串，與 string 簽名完全不重疊
+interface SymbolAndString {
+  [key: string]: number;
+  [key: symbol]: string;   // 互不干涉
+}
+
+// ✅ number 鍵與 on 開頭的字串鍵不會重疊（沒有 string 簽名把它們串起來）
+interface NoOverlap {
+  [index: number]: number;
+  [key: `on${string}`]: () => void;
+}
+```
+
+**第六步：這條規則跟「誰是 string 簽名」無關**
+
+只要範圍有重疊就會檢查，即使兩邊都是樣板字面值也一樣：
+
+```typescript
+// ❌ "data-id-1" 同時符合兩個樣式 → 兩個承諾打架
+interface OverlapPatterns {
+  [key: `data-${string}`]: number;    // 母集
+  [key: `data-id-${string}`]: string; // 子集
+  // TS2413: '`data-id-${string}`' index type 'string' is not assignable to
+  //         '`data-${string}`' index type 'number'.
+}
+
+// ❌ 這次是 number 簽名當母集，樣板字面值當子集
+interface NumPattern {
+  [index: number]: number;      // 母集（數字鍵）
+  [key: `${number}`]: string;   // 子集（"0"、"1"…這類數字字串）
+  // TS2413: '`${number}`' index type 'string' is not assignable to
+  //         'number' index type 'number'.
+}
+```
+
+> ⚠️ 記住一句話就夠：**子集簽名的值型別，必須能指派給母集簽名的值型別。**下一小節的 TS2411（固定屬性衝突）其實就是同一條規則 —— 固定屬性是「只管一個鍵」的最小子集。
+
+#### 讀取時，最精確的簽名優先
+
+多個簽名並存時，TypeScript 會挑**最符合該鍵**的那一個來決定型別。
+
+```typescript
+interface Mixed {
+  [key: string]: string | number;
+  [index: number]: number;
+}
+
+declare const m: Mixed;
+
+const v1 = m[0];      // number          ← 命中 number 簽名
+const v2 = m["0"];    // number          ← 數字字串也命中 number 簽名
+const v3 = m["x"];    // string | number ← 只能命中 string 簽名
+
+interface EventMap2 {
+  [key: `on${string}`]: () => void;
+  [key: string]: unknown;
+}
+
+declare const e: EventMap2;
+
+const h1 = e["onClick"];  // () => void  ← 命中樣板字面值簽名
+const h2 = e["foo"];      // unknown     ← 退回 string 簽名
+```
+
+| 型別的簽名組合 | `obj[0]` | `obj["0"]` | `obj["abc"]` |
+| -------------- | -------- | ---------- | ------------ |
+| 只有 `[k: string]: T` | `T` | `T` | `T` |
+| 只有 `[k: number]: T` | `T` | `T` | ❌ TS7015 |
+| `[k: string]: A` ＋ `[k: number]: B` | `B` | `B` | `A` |
+| 只有 `[k: \`data-${string}\`]: T` | ❌ | ❌ | ❌ TS7053（鍵不符合樣式） |
+
+### 混合固定屬性與索引簽名
+
+```typescript
 interface UserProfile {
   name: string;
   email: string;
@@ -288,15 +597,150 @@ const profile: UserProfile = {
 };
 ```
 
-> ⚠️ 固定屬性的型別必須能指派給索引簽名的值型別，否則會出現 TS2411 錯誤：
+固定屬性就是**只管一個鍵的最小子集簽名**，所以套用的是上面那條規則二：它的型別必須能指派給覆蓋它的索引簽名的值型別，否則出現 TS2411。
+
+```typescript
+interface Invalid {
+  name: string;
+  age: number;          // ❌ TS2411：number 不能指派給索引簽名的 string
+  [key: string]: string;
+}
+// 問 obj.age：走固定屬性 → number；走索引簽名 → string。矛盾。
+
+interface InvalidMethod {
+  greet(): string;      // ❌ TS2411：方法也算屬性，() => string 不是 string
+  [key: string]: string;
+}
+
+// 同樣的規則也適用於樣板字面值簽名 —— 只看「有沒有覆蓋到這個鍵」
+interface InvalidPattern {
+  "data-id": number;    // ❌ TS2411：這個鍵符合 `data-${string}`，值型別必須是 string
+  [key: `data-${string}`]: string;
+}
+
+// 沒被覆蓋到的固定屬性完全不受影響
+interface Fine {
+  name: number;         // ✅ symbol 簽名管不到字串鍵 name
+  [key: symbol]: string;
+}
+```
+
+三種解法，依需求選一種：
+
+```typescript
+// 解法 1：放寬索引簽名的值型別為聯合（最直接）
+interface Union {
+  name: string;
+  age: number;
+  [key: string]: string | number;
+}
+
+// 解法 2：把動態部分收進獨立屬性（推薦，型別最乾淨）
+interface Nested {
+  name: string;
+  age: number;
+  extra: Record<string, string>;
+}
+
+// 解法 3：用交集型別繞過（固定屬性維持原型別）
+type Intersect = {
+  name: string;
+  age: number;
+} & {
+  [key: string]: string | number;
+};
+```
+
+> ⚠️ 解法 1 的代價是**讀取時型別變寬**。固定屬性仍保有自己的窄型別，但動態鍵只能拿到聯合型別，用之前必須先窄化：
 >
 > ```typescript
-> interface Invalid {
+> interface Union2 {
 >   name: string;
->   age: number;          // ❌ TS2411：number 不能指派給索引簽名的 string
->   [key: string]: string;
+>   age: number;
+>   [key: string]: string | number;
+> }
+>
+> declare const u: Union2;
+>
+> u.name.length;                          // ✅ 固定屬性保有 string
+> // u.city.length;                       // ❌ TS2339：string | number 沒有 length
+> if (typeof u.city === "string") {
+>   u.city.length;                        // ✅ 窄化後可用
 > }
 > ```
+
+### 兩個容易踩到的行為
+
+**1. 索引簽名會關閉多餘屬性檢查**
+
+```typescript
+interface Strict {
+  name: string;
+}
+// const a: Strict = { name: "G", extra: "x" };  // ❌ 多餘屬性檢查會攔下來
+
+interface Loose {
+  name: string;
+  [key: string]: string;
+}
+const b: Loose = { name: "G", extra: "x" };      // ✅ 任何字串鍵都放行（打錯字也不會被抓到）
+```
+
+**2. 讀不存在的鍵不會報錯**
+
+索引簽名承諾「任何鍵都有值」，但執行時當然可能是 `undefined`。開啟 `noUncheckedIndexedAccess` 讓 TypeScript 幫你把 `undefined` 加進來：
+
+```typescript
+interface Dict {
+  [key: string]: string;
+}
+
+const dict: Dict = {};
+
+const value = dict.missing;
+// 預設：              string           → dict.missing.length 可通過編譯，執行時炸掉
+// noUncheckedIndexedAccess：string | undefined → 強制你先檢查
+```
+
+> 💡 `keyof` 遇到索引簽名時會展開成鍵型別本身，而不是實際宣告的屬性名：
+>
+> ```typescript
+> interface StringIdx { [key: string]: string }
+> interface NumberIdx { [index: number]: string }
+>
+> type K1 = keyof StringIdx;              // string | number（字串鍵涵蓋數字鍵）
+> type K2 = keyof NumberIdx;              // number
+> type K3 = keyof Record<string, string>; // string（映射型別不會多出 number）
+> ```
+>
+> 想拿到「只有實際宣告的那幾個鍵」，就不要用索引簽名，改用 `Record<具體聯合, T>`。
+
+### interface 沒有隱式索引簽名
+
+這是實務上最常見的困惑：**型別別名可以指派給 `Record`，interface 不行。**
+
+```typescript
+interface PointInterface {
+  x: number;
+  y: number;
+}
+type PointAlias = {
+  x: number;
+  y: number;
+};
+
+const p1: PointInterface = { x: 1, y: 2 };
+const p2: PointAlias = { x: 1, y: 2 };
+
+// const r1: Record<string, number> = p1;
+// ❌ TS2322: Index signature for type 'string' is missing in type 'PointInterface'.
+
+const r2: Record<string, number> = p2;  // ✅ 型別別名有「隱式索引簽名」
+```
+
+原因是 interface 可以被**宣告合併**或被其他 interface 繼承後加上新屬性（見 4.2），TypeScript 無法保證它的屬性型別未來仍然全部符合 `Record<string, number>`；型別別名封閉、不可再擴充，所以能安全推出隱式索引簽名。
+
+> 💡 遇到這個錯誤時的處理方式：把 `interface` 改成 `type`、明確加上索引簽名，或在傳入處用 `{ ...p1 }` 展開成物件字面值。
 
 ### Record 工具型別（替代方案）
 

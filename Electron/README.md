@@ -20,6 +20,14 @@
 | 10 | [10-debugging-testing-cicd.md](./10-debugging-testing-cicd.md) | 除錯、測試與 CI/CD 發佈流程 |
 | 11 | [11-steam-release-workflow.md](./11-steam-release-workflow.md) | Steam 發行實戰（上傳、迭代、測試、排錯） |
 
+## 實戰專案
+
+除了章節教材，[projects/](./projects/) 資料夾另收錄**可直接執行**的完整小專案，把各章的片段組成一個能用的產品：
+
+| 專案 | 說明 | 主要涵蓋章節 |
+|------|------|--------------|
+| [projects/notepad-app](./projects/notepad-app/) | 本機記事本：左側清單 + 右側撰寫區，內容可貼上文字與圖片，全部離線儲存 | 03 / 04 / 06 / 09 |
+
 ---
 
 ## 課程特色

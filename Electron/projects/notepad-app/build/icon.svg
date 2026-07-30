@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>橘白肥貓捧著一支筆</title>
+
+  <!--
+    macOS 的 App 圖示有固定留白：1024×1024 的畫布裡，圓角方塊只佔中間 824×824
+    （四邊各留 100），圓角半徑 185。整張填滿的話在 dock 上會比旁邊的 App 大一圈。
+    所以底下把圖案畫在 0..1024 的座標系，再整組縮到那塊 824 的方塊裡。
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff7ec" />
+      <stop offset="1" stop-color="#ffe0b8" />
+    </linearGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffb15c" />
+      <stop offset="1" stop-color="#ef8b2c" />
+    </linearGradient>
+    <clipPath id="plate">
+      <rect x="100" y="100" width="824" height="824" rx="185" />
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#plate)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#bg)" />
+
+    <g transform="translate(100 100) scale(0.8047)">
+      <!-- 尾巴（左側，畫在身體後面）；白尾巴尖從橘色的終點接下去 -->
+      <path d="M356 846 C 188 858 136 704 178 622" fill="none" stroke="#ef8b2c"
+        stroke-width="64" stroke-linecap="round" />
+      <path d="M178 622 C 168 594 168 566 180 544" fill="none" stroke="#fffaf3"
+        stroke-width="64" stroke-linecap="round" />
+
+      <!-- 身體：肥貓，但比頭小一點，比例才可愛 -->
+      <ellipse cx="512" cy="768" rx="228" ry="196" fill="url(#fur)" />
+      <ellipse cx="512" cy="796" rx="148" ry="126" fill="#fffaf3" />
+
+      <!-- 後腳：白的踩在白肚子上會糊成一塊，加一圈淺色外框才分得出來 -->
+      <ellipse cx="402" cy="932" rx="66" ry="42" fill="#fffaf3" stroke="#f0c48a"
+        stroke-width="8" />
+      <ellipse cx="622" cy="932" rx="66" ry="42" fill="#fffaf3" stroke="#f0c48a"
+        stroke-width="8" />
+
+      <!-- 耳朵（用 stroke-linejoin 把三角形的角磨圓） -->
+      <path d="M326 258 L306 96 L472 186 Z" fill="url(#fur)" stroke="#ef8b2c"
+        stroke-width="48" stroke-linejoin="round" />
+      <path d="M698 258 L718 96 L552 186 Z" fill="url(#fur)" stroke="#ef8b2c"
+        stroke-width="48" stroke-linejoin="round" />
+      <path d="M358 246 L344 152 L436 200 Z" fill="#ffc4c4" stroke="#ffc4c4"
+        stroke-width="28" stroke-linejoin="round" />
+      <path d="M666 246 L680 152 L588 200 Z" fill="#ffc4c4" stroke="#ffc4c4"
+        stroke-width="28" stroke-linejoin="round" />
+
+      <!-- 頭：刻意畫大，配上低而寬的眼睛 -->
+      <ellipse cx="512" cy="404" rx="262" ry="234" fill="url(#fur)" />
+
+      <!-- 額頭虎斑 -->
+      <g stroke="#dd7a1c" stroke-width="24" stroke-linecap="round" fill="none">
+        <path d="M372 250 L 356 314" />
+        <path d="M430 226 L 422 292" />
+        <path d="M652 250 L 668 314" />
+        <path d="M594 226 L 602 292" />
+      </g>
+
+      <!-- 白鼻樑 + 白嘴口 -->
+      <path d="M512 210 Q 570 330 566 424 Q 562 476 512 476 Q 462 476 458 424 Q 454 330 512 210 Z"
+        fill="#fffaf3" />
+      <ellipse cx="512" cy="530" rx="140" ry="104" fill="#fffaf3" />
+
+      <!-- 眼睛：大、亮點兩顆 -->
+      <ellipse cx="392" cy="428" rx="48" ry="56" fill="#39312a" />
+      <ellipse cx="632" cy="428" rx="48" ry="56" fill="#39312a" />
+      <circle cx="408" cy="408" r="17" fill="#ffffff" />
+      <circle cx="648" cy="408" r="17" fill="#ffffff" />
+      <circle cx="379" cy="448" r="8" fill="#ffffff" opacity="0.85" />
+      <circle cx="619" cy="448" r="8" fill="#ffffff" opacity="0.85" />
+
+      <!-- 腮紅 -->
+      <ellipse cx="330" cy="498" rx="48" ry="28" fill="#ff9d9d" opacity="0.55" />
+      <ellipse cx="694" cy="498" rx="48" ry="28" fill="#ff9d9d" opacity="0.55" />
+
+      <!-- 鼻子與嘴 -->
+      <path d="M478 490 Q 512 474 546 490 Q 512 534 478 490 Z" fill="#ff92a8" />
+      <g fill="none" stroke="#9a6534" stroke-width="15" stroke-linecap="round">
+        <path d="M512 530 q -6 36 -42 36 q -22 0 -32 -18" />
+        <path d="M512 530 q 6 36 42 36 q 22 0 32 -18" />
+      </g>
+
+      <!-- 鬍鬚：短一點比較可愛 -->
+      <g stroke="#fffaf3" stroke-width="14" stroke-linecap="round" opacity="0.95">
+        <path d="M368 502 L 268 484" />
+        <path d="M364 536 L 258 540" />
+        <path d="M368 570 L 270 596" />
+        <path d="M656 502 L 756 484" />
+        <path d="M660 536 L 766 540" />
+        <path d="M656 570 L 754 596" />
+      </g>
+
+      <!-- 筆與前掌：先水平畫好再整組轉 -30°。
+           筆桿加一圈米色外框，壓在橘色身體上才跳得出來；
+           筆尖刻意伸出身體輪廓外，一眼就看得到這是一支筆。 -->
+      <g transform="rotate(-30 500 770)">
+        <!-- 筆桿到筆尖是「同一條 path」：分成兩塊各自描邊的話，交界處會出現一道
+             米色接縫，看起來就像兩個零件拼起來的火箭。外框只描這一條輪廓。 -->
+        <path d="M356 714 L700 714 L860 770 L700 826 L356 826 C300 826 300 714 356 714 Z"
+          fill="#4f46e5" stroke="#fff3e2" stroke-width="14" stroke-linejoin="round" />
+        <!-- 筆尖與筆尾畫在輪廓「裡面」，不描邊，所以外框仍然是連續的一圈 -->
+        <path d="M700 714 L860 770 L700 826 Z" fill="#ffd166" />
+        <path d="M800 749 L860 770 L800 791 Z" fill="#39312a" />
+        <path d="M356 826 C300 826 300 714 356 714 L382 714 L382 826 Z" fill="#3a32ad" />
+
+        <!-- 前掌：橘掌壓在橘身體上會看不出來，一律加深橘外框 -->
+        <g fill="url(#fur)" stroke="#dd7a1c" stroke-width="10">
+          <ellipse cx="440" cy="770" rx="84" ry="72" />
+          <ellipse cx="660" cy="770" rx="84" ry="72" />
+        </g>
+        <g stroke="#dd7a1c" stroke-width="11" stroke-linecap="round" fill="none">
+          <path d="M422 722 L 422 756" />
+          <path d="M458 722 L 458 756" />
+          <path d="M642 722 L 642 756" />
+          <path d="M678 722 L 678 756" />
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>
