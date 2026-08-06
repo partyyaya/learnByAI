@@ -395,6 +395,29 @@
   // 更新用 DTO — 所有欄位可選
   type UpdateUserDto = Partial<Pick<User, "name" | "email">>;
 
+  // --- 拆開來看：CreateUserDto ---
+  // 步驟 1：Omit 拿掉三個自動生成的欄位 → { name: string; email: string }
+  // 步驟 2：用 & 接上前端真的會傳的 password
+  // 最終等同於手寫這個：
+  type CreateUserDtoExpanded = {
+    name: string;
+    email: string;
+    password: string; // 明文，後端收到才加密成 passwordHash
+  };
+
+  // --- 拆開來看：UpdateUserDto（巢狀工具型別由內往外讀）---
+  // 步驟 1（內層 Pick）：只挑出 name 和 email → { name: string; email: string }
+  // 步驟 2（外層 Partial）：全部加上 ?
+  // 最終等同於手寫這個：
+  type UpdateUserDtoExpanded = {
+    name?: string;
+    email?: string;
+  };
+
+  // 兩邊互相可指派 → 證明衍生寫法與手寫版本等價
+  const proveCreate: CreateUserDtoExpanded = {} as CreateUserDto;
+  const proveUpdate: UpdateUserDtoExpanded = {} as UpdateUserDto;
+
   // 使用示範
   const createDto: CreateUserDto = {
     name: "Gary",
@@ -402,7 +425,14 @@
     password: "secret",
   };
   const updateDto: UpdateUserDto = { name: "Gary Cai" };
-  console.log(createDto, updateDto);
+  const patchNothing: UpdateUserDto = {}; // ✅ 什麼都不改也合法
+  console.log(createDto, updateDto, patchNothing, proveCreate, proveUpdate);
+
+  // ❌ id 是資料庫自動生成的，CreateUserDto 裡根本沒有這個欄位
+  // const badCreate: CreateUserDto = { ...createDto, id: 1 };
+
+  // ❌ passwordHash 沒被 Pick 進來，不能透過更新 DTO 改
+  // const badUpdate: UpdateUserDto = { passwordHash: "..." };
 }
 
 // ===== 練習題 1：定義介面（練習參考解答）=====

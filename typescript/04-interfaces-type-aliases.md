@@ -840,6 +840,22 @@ type UserDetailResponse = ApiResponse<User>;
 
 ### DTO（Data Transfer Object）模式
 
+`User` 是**資料庫裡的完整樣子**：有 id、有加密後的密碼、有建立時間。但 API 進出時傳的東西跟它不一樣：
+
+- **註冊時**：前端不會傳 `id`（資料庫自動給）、不會傳 `passwordHash`（後端才算得出來）、不會傳 `createdAt`（資料庫自動填）；但會傳**明文 `password`**。
+- **更新個資時**：只准改 `name` / `email`，而且可能只改其中一個。
+
+DTO（Data Transfer Object，資料傳輸物件）就是為這兩種場合各做一個型別。做法是從 `User` **衍生**出來，而不是重新手寫。
+
+> 下面會用到 `Omit`、`Pick`、`Partial` 這三個內建工具型別。它們的完整原理見 [第 6 章：泛型](./06-generics.md) 與 [第 7 章：進階型別](./07-advanced-types.md)，這裡先記住用途即可：
+
+| 寫法 | 白話 |
+| ---- | ---- |
+| `Omit<T, K>` | 從 T **拿掉** K 這幾個欄位 |
+| `Pick<T, K>` | 從 T **只挑** K 這幾個欄位 |
+| `Partial<T>` | 把 T 的欄位**全變成可選**（都加上 `?`） |
+| `A & B` | 交集型別：**同時具備** A 和 B 的欄位 |
+
 ```typescript
 interface User {
   id: number;
@@ -857,6 +873,68 @@ type CreateUserDto = Omit<User, "id" | "passwordHash" | "createdAt"> & {
 // 更新用 DTO — 所有欄位可選
 type UpdateUserDto = Partial<Pick<User, "name" | "email">>;
 ```
+
+#### 拆開來看：`CreateUserDto`
+
+```typescript
+// 步驟 1：Omit 拿掉三個自動生成的欄位，剩下
+// { name: string; email: string }
+
+// 步驟 2：用 & 接上前端真的會傳的 password
+// { name: string; email: string } & { password: string }
+
+// 最終等同於手寫這個：
+type CreateUserDtoExpanded = {
+  name: string;
+  email: string;
+  password: string; // 明文，後端收到才加密成 passwordHash
+};
+
+const createDto: CreateUserDto = {
+  name: "Gary",
+  email: "gary@example.com",
+  password: "secret",
+};
+
+// ❌ id 是資料庫自動生成的，DTO 裡根本沒有這個欄位
+// const bad: CreateUserDto = { ...createDto, id: 1 };
+```
+
+#### 拆開來看：`UpdateUserDto`
+
+巢狀的工具型別**由內往外**讀：
+
+```typescript
+// 步驟 1（內層 Pick）：只挑出 name 和 email
+// { name: string; email: string }
+
+// 步驟 2（外層 Partial）：全部加上 ?
+// { name?: string; email?: string }
+
+// 最終等同於手寫這個：
+type UpdateUserDtoExpanded = {
+  name?: string;
+  email?: string;
+};
+
+const patchName: UpdateUserDto = { name: "Gary Cai" }; // ✅ 只改名字
+const patchEmail: UpdateUserDto = { email: "new@example.com" }; // ✅ 只改信箱
+const patchNothing: UpdateUserDto = {}; // ✅ 什麼都不改也合法
+
+// ❌ email 沒被 Pick 進來的欄位不能改
+// const bad: UpdateUserDto = { passwordHash: "..." };
+```
+
+這正是 `PATCH` 部分更新要的行為：欄位全可選，前端傳什麼就改什麼。
+
+#### 為什麼不直接手寫三個 interface？
+
+因為衍生型別會**跟著 `User` 走**。哪天 `User` 把 `name` 改名成 `username`：
+
+- `Pick<User, "name">` 會立刻編譯錯誤（`"name"` 不是 `User` 的鍵），逼你去修 DTO。
+- 手寫的三份型別則會默默不同步，等到 runtime 才炸。
+
+一份來源（`User`）、多個視角（各種 DTO），這是 TypeScript 型別設計最常用的思路。
 
 ---
 

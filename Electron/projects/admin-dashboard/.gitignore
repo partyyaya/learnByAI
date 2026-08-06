@@ -1,0 +1,13 @@
+# 相依套件
+node_modules
+.DS_Store
+
+# renderer 的建置產物（npm run build 產生）
+dist-renderer
+
+# electron-builder 的打包產物
+release
+
+# 編輯器
+.vscode/*
+.idea

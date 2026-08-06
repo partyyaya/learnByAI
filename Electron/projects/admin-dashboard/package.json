@@ -1,0 +1,58 @@
+{
+  "name": "electron-admin-dashboard",
+  "productName": "後台管理",
+  "version": "1.0.0",
+  "description": "Electron 課程實戰專案：React 後台管理系統（登入 + 側邊欄 + 導航欄 + mock API）",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "vite build",
+    "preview": "vite build && electron .",
+    "pack": "vite build && electron-builder --dir",
+    "dist": "vite build && electron-builder"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "admin",
+    "dashboard",
+    "mock-api"
+  ],
+  "author": "learnbyai",
+  "license": "MIT",
+  "build": {
+    "appId": "com.learnbyai.admin",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "dist-renderer/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.business",
+      "identity": null
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Office"
+    }
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.0",
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "vite": "^8.2.0"
+  }
+}

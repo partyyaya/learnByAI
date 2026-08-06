@@ -402,6 +402,8 @@ console.log(MathUtils.factorial(5)); // 120
 
 ### Singleton 模式
 
+Singleton（單例）＝ **整個程式生命週期內只允許存在一個實例**，而且大家拿到的都是同一個。
+
 ```typescript
 class Database {
   private static instance: Database;
@@ -423,6 +425,94 @@ const db1 = Database.getInstance();
 const db2 = Database.getInstance();
 console.log(db1 === db2); // true — 同一個實例
 ```
+
+#### 三個關鍵機制
+
+| 寫法 | 作用 |
+| ---- | ---- |
+| `private constructor` | 外部**不能** `new Database()`，唯一入口只剩 `getInstance()` |
+| `private static instance` | 實例存在**類別身上**（全域唯一位置），不是掛在某個物件上 |
+| `if (!Database.instance)` | 延遲（lazy）建立：第一次被呼叫時才真的連線，沒人用就不浪費資源 |
+
+```typescript
+// ❌ private constructor 擋住直接 new
+// const db = new Database("mongodb://...");
+```
+
+#### 何時會用到？
+
+適用情境有個共同點：**這個資源建立成本高，而且本來就該全系統共用一份**。
+
+- **資料庫 / Redis 連線池** — 每次 `new` 都開一組新連線會直接打爆連線數上限。
+- **設定物件（AppConfig）** — 讀 `.env`、解析設定檔只該做一次，之後全程式讀同一份。
+- **Logger** — 要共用同一個輸出檔控制代碼、同一組緩衝區。
+- **快取 / 全域狀態** — 例如記憶體快取、事件匯流排（EventBus），分散成多份就失去意義了。
+
+反過來說，**每個請求／每個使用者狀態不同**的東西（購物車、request context）就絕不該做成 Singleton —— 資料會互相污染。
+
+#### 陷阱：這個範例的連線字串寫死了
+
+上面的 `getInstance()` 把 `"mongodb://localhost:27017"` 寫死在裡面，實務上設定要從外部來。常見解法是**兩段式初始化**：
+
+```typescript
+class Database {
+  private static instance: Database | null = null;
+  private constructor(private connectionString: string) {}
+
+  // 進入點（例如 main.ts）啟動時呼叫一次
+  static init(connectionString: string): Database {
+    if (Database.instance) {
+      throw new Error("Database 已經初始化過了");
+    }
+    Database.instance = new Database(connectionString);
+    return Database.instance;
+  }
+
+  // 之後任何地方取用
+  static getInstance(): Database {
+    if (!Database.instance) {
+      throw new Error("請先呼叫 Database.init()");
+    }
+    return Database.instance;
+  }
+
+  // 測試用：讓每個測試案例回到乾淨狀態
+  static reset(): void {
+    Database.instance = null;
+  }
+}
+
+Database.init(process.env.DB_URL ?? "mongodb://localhost:27017");
+Database.getInstance().query("SELECT 1");
+```
+
+#### 其他缺點與現代替代做法
+
+Singleton 是**被討論最多的爭議模式**，主要缺點有二：
+
+1. **難測試** —— 狀態跨測試案例殘留，也不好抽換成 mock（所以上面要補 `reset()`）。
+2. **隱藏相依** —— 任何檔案都能 `Database.getInstance()`，相依關係不會出現在建構子簽名上，讀程式時看不出這個 class 用了資料庫。
+
+在 TypeScript / Node.js 實務上，通常有更簡單的做法：
+
+```typescript
+// 方案 A：ES module 本身就是單例 —— 模組只會被求值一次，之後 import 都拿快取
+// db.ts
+export const db = new Database(process.env.DB_URL!);
+
+// 其他檔案
+import { db } from "./db";
+```
+
+```typescript
+// 方案 B：依賴注入（DI）—— 相依關係寫在建構子上，測試時直接傳假的進去
+class UserService {
+  constructor(private db: Database) {}
+}
+// NestJS 的 @Injectable() 預設就是 singleton scope，由框架的容器保證唯一
+```
+
+> ⚠️ 另外要注意：「唯一」的範圍只在**單一 process 內**。Node.js cluster、PM2 多實例、Serverless 冷啟動各自都有自己的 Singleton，別把它當成跨機器的全域鎖。
 
 ### ES2022 static 初始化區塊（`static { }`）
 
@@ -567,7 +657,7 @@ abstract class PaymentMethod {
 <details>
 <summary>參考解答</summary>
 
-`PaymentMethod` 是抽象類別，只規定「所有付款方式都必須有 `process` 與 `refund`」但不提供實作。三個子類別各自 `extends` 它並補上具體邏輯；有需要建構參數的（信用卡卡號、轉帳帳號）就在建構子用參數屬性接收，並記得呼叫 `super()`。最後就能用同一個 `PaymentMethod[]` 型別統一操作，不必在意實際型別——這就是多型。
+`PaymentMethod` 是抽象類別，只規定「所有付款方式都必須有 `process` 與 `refund`」但不提供實作。三個子類別各自 `extends` 它並補上具體邏輯；有需要建構參數的（信用卡卡號、轉帳帳號）就在建構子用參數屬性接收，並記得呼叫 `super()`（原因見下方說明）。最後就能用同一個 `PaymentMethod[]` 型別統一操作，不必在意實際型別——這就是多型。
 
 ```typescript
 abstract class PaymentMethod {
@@ -628,6 +718,70 @@ const methods: PaymentMethod[] = [
 methods.forEach((m) => {
   m.process(100);
 });
+```
+
+**為什麼 `CreditCard` / `BankTransfer` 要呼叫 `super()`，`LinePay` 卻不用？**
+
+這是 **JavaScript 的語言規則，不是 TypeScript 額外加的**：只要 class 用了 `extends`，而且**自己寫了 `constructor`**，就必須在裡面呼叫 `super()`。漏掉會直接編譯錯誤：
+
+```
+error TS2377: Constructors for derived classes must contain a 'super' call.
+```
+
+`LinePay` 之所以不用寫，是因為它**根本沒寫 `constructor`**。這種情況 JS 會自動補一個隱含的建構子：
+
+```typescript
+// LinePay 實際上等同於有這個：
+// constructor(...args) { super(...args); }
+```
+
+所以規則是：**要嘛完全不寫 constructor，要嘛寫了就得呼叫 `super()`**。`CreditCard` 和 `BankTransfer` 因為要接收卡號 / 帳號，被迫要寫 constructor，也就被迫要補 `super()`。
+
+**為什麼一定要？**
+
+因為在 ES6 class 裡，**子類別的 `this` 是由父類別的建構鏈「生出來」的**。`super()` 回來之前 `this` 根本還不存在（處於暫時性死區）：
+
+```typescript
+class CreditCard extends PaymentMethod {
+  constructor(cardNumber: string) {
+    // ❌ TS17009: 'super' must be called before accessing 'this' in the constructor of a derived class
+    // this.cardNumber = cardNumber;
+    super();
+  }
+}
+```
+
+把 `CreditCard` 編譯出來就能看到這件事 —— `private cardNumber` 這個參數屬性的賦值，被編譯器**自動排在 `super()` 之後**，因為在那之前寫不了 `this`：
+
+```javascript
+class CreditCard extends PaymentMethod {
+    cardNumber;
+    constructor(cardNumber) {
+        super();                      // ← 先呼叫父類別建構子，this 才誕生
+        this.cardNumber = cardNumber; // ← 參數屬性的賦值被插在這裡
+    }
+}
+```
+
+**父類別是 `abstract`，又不能被 `new`，為什麼還要 `super()`？**
+
+`abstract` 只代表「不能直接 `new PaymentMethod()`」，但它**仍然是建構鏈的一環，仍然有建構子**。子類別被建立時，父類別的建構子照樣會執行 —— 這正是抽象類別能放共用初始化邏輯的原因，也是它跟 `interface` 的關鍵差別。
+
+這裡 `PaymentMethod` 沒宣告 constructor，用的是隱含的無參數建構子，所以 `super()` 是空的。如果父類別有參數，就得往上傳：
+
+```typescript
+abstract class PaymentMethod {
+  constructor(protected merchantId: string) {}
+  abstract process(amount: number): Promise<boolean>;
+  abstract refund(transactionId: string): Promise<boolean>;
+}
+
+class CreditCard extends PaymentMethod {
+  constructor(merchantId: string, private cardNumber: string) {
+    super(merchantId); // ← 參數要往上傳
+  }
+  // ...實作 process 與 refund
+}
 ```
 
 重點：抽象類別定義「契約 + 共用行為」，子類別負責填實作；把它們裝進 `PaymentMethod[]` 就能寫出對所有付款方式一視同仁的程式碼（多型）。

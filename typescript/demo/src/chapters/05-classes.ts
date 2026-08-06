@@ -429,12 +429,18 @@
 }
 
 // --- 5.7（範例二）Singleton 模式 ---
+// Singleton＝整個程式生命週期只允許一個實例，大家拿到的都是同一個。
+// 何時用：資料庫/Redis 連線池、AppConfig、Logger、快取或 EventBus —— 共同點是
+//         「建立成本高，而且本來就該全系統共用一份」。
+// 何時別用：每個請求／每個使用者狀態不同的東西（購物車、request context），
+//           做成 Singleton 資料會互相污染。
 {
   class Database {
-    private static instance: Database;
-    private constructor(private connectionString: string) {}
+    private static instance: Database; // 實例掛在類別身上（全域唯一位置）
+    private constructor(private connectionString: string) {} // 擋住外部 new
 
     static getInstance(): Database {
+      // 延遲建立：第一次呼叫時才真的連線，沒人用就不浪費資源
       if (!Database.instance) {
         Database.instance = new Database("mongodb://localhost:27017");
       }
@@ -449,6 +455,57 @@
   const db1 = Database.getInstance();
   const db2 = Database.getInstance();
   console.log(db1 === db2); // true — 同一個實例
+
+  // ❌ private constructor 擋住直接 new
+  // const bad = new Database("mongodb://localhost:27017");
+}
+
+// --- 5.7（範例二之二）Singleton：兩段式初始化（實務寫法）---
+// 上面的範例把連線字串寫死在 getInstance() 裡，實務上設定要從外部來。
+{
+  class Database {
+    private static instance: Database | null = null;
+    private constructor(private connectionString: string) {}
+
+    // 進入點（例如 main.ts）啟動時呼叫一次
+    static init(connectionString: string): Database {
+      if (Database.instance) {
+        throw new Error("Database 已經初始化過了");
+      }
+      Database.instance = new Database(connectionString);
+      return Database.instance;
+    }
+
+    // 之後任何地方取用
+    static getInstance(): Database {
+      if (!Database.instance) {
+        throw new Error("請先呼叫 Database.init()");
+      }
+      return Database.instance;
+    }
+
+    // 測試用：讓每個測試案例回到乾淨狀態
+    // （Singleton 最大的缺點就是狀態跨測試殘留，所以要補這個逃生門）
+    static reset(): void {
+      Database.instance = null;
+    }
+
+    query(sql: string): void {
+      console.log(`Executing: ${sql} (${this.connectionString})`);
+    }
+  }
+
+  Database.init(process.env.DB_URL ?? "mongodb://localhost:27017");
+  Database.getInstance().query("SELECT 1");
+  Database.reset();
+
+  // 實務替代方案：
+  // A. ES module 本身就是單例 —— `export const db = new Database(...)`，
+  //    模組只會被求值一次，之後 import 都拿快取。
+  // B. 依賴注入（DI）—— 相依寫在建構子上，測試時直接傳假的進去；
+  //    NestJS 的 @Injectable() 預設就是 singleton scope。
+  // ⚠️「唯一」只在單一 process 內：cluster / PM2 多實例 / Serverless 冷啟動
+  //    各自都有自己的 Singleton，別當成跨機器的全域鎖。
 }
 
 // --- 5.7（範例三）ES2022 static 初始化區塊 ---
@@ -566,6 +623,14 @@
 
   // 實作 CreditCard、BankTransfer、LinePay
   class CreditCard extends PaymentMethod {
+    // 為什麼要呼叫 super()？這是 JS 語言規則：class 用了 extends，
+    // 而且「自己寫了 constructor」，就必須呼叫 super()，否則 TS2377。
+    // 原因：子類別的 this 是由父類別建構鏈生出來的，super() 回來前 this 還不存在
+    // （在 super() 之前碰 this 會得到 TS17009）。
+    // 證據：private cardNumber 這個參數屬性的賦值，編譯後被自動排在 super() 之後：
+    //   constructor(cardNumber) { super(); this.cardNumber = cardNumber; }
+    // 父類別是 abstract 也一樣要呼叫 —— abstract 只是不能直接 new，
+    // 它仍然是建構鏈的一環、仍然有建構子（這正是它跟 interface 的關鍵差別）。
     constructor(private cardNumber: string) {
       super();
     }
@@ -597,6 +662,9 @@
     }
   }
 
+  // LinePay 沒寫 super()，是因為它「根本沒寫 constructor」——
+  // 這種情況 JS 會自動補一個隱含建構子：constructor(...args) { super(...args); }
+  // 所以規則是：要嘛完全不寫 constructor，要嘛寫了就得呼叫 super()。
   class LinePay extends PaymentMethod {
     async process(amount: number): Promise<boolean> {
       console.log(`LinePay 付款 ${amount}`);
@@ -617,6 +685,29 @@
   methods.forEach((m) => {
     m.process(100);
   });
+}
+
+// --- 練習 2 補充：父類別的建構子有參數時，super() 就要往上傳 ---
+{
+  abstract class PaymentMethod {
+    constructor(protected merchantId: string) {}
+    abstract process(amount: number): Promise<boolean>;
+  }
+
+  class CreditCard extends PaymentMethod {
+    constructor(merchantId: string, private cardNumber: string) {
+      super(merchantId); // ← 參數要往上傳，不能只寫 super()
+    }
+
+    async process(amount: number): Promise<boolean> {
+      console.log(
+        `商店 ${this.merchantId} 收款 ${amount}（卡號末四碼 ${this.cardNumber.slice(-4)}）`,
+      );
+      return true;
+    }
+  }
+
+  new CreditCard("shop-001", "1234567812345678").process(100);
 }
 
 // --- 練習 3：設計模式（Observer 觀察者模式）---
