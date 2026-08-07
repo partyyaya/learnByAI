@@ -71,7 +71,7 @@ let sum: i32 = numbers.iter().filter(|&&x| x > 0).sum();
 
 - 後端服務、API（本課主軸，效能好、部署成 single binary 很方便）。
 - 系統程式、CLI 工具、網路服務、資料庫、遊戲引擎。
-- WebAssembly（Rust 是 WASM 生態的一等公民）。
+- WebAssembly（Rust 是 WASM 生態的一等公民——第 18 章會用 `wasm-pack` 實作）。
 - 對延遲、資源、穩定性要求高的場景。
 
 **不一定划算：**
@@ -108,6 +108,7 @@ let sum: i32 = numbers.iter().filter(|&&x| x > 0).sum();
 第 6 篇 成品專題（13）        ← 需求 4
 第 7 篇 生產強化（14）        ← 高併發、背壓、限流、斷路器、觀測性
 第 8 篇 GPU / AI（15~17）     ← wgpu → GPU Compute → AI 推論服務（選修進階）
+第 9 篇 WebAssembly（18）     ← wasm-pack 把 Rust 送進瀏覽器（選修進階，與第 8 篇平行）
 ```
 
 **本章屬於第 0 篇（暖身）**，先把環境與心態準備好。這章之後，01～08 都在打語言基礎，是後面能做出成品的前提。

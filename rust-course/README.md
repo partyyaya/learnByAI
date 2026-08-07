@@ -105,6 +105,15 @@
 | 16 | [16-gpu-compute-parallel-algorithms.md](./16-gpu-compute-parallel-algorithms.md) | GPU Compute 平行運算：workgroup 執行模型、記憶體階層、向量加法、平行歸約、矩陣乘法與效能心法 |
 | 17 | [17-gpu-ai-inference.md](./17-gpu-ai-inference.md) | 用 GPU 跑 AI：推論 = matmul+激活+歸約、手刻 MLP、Rust AI 生態（candle/burn/tract/ort）、包成 Axum 推論服務 |
 
+### 第 9 篇：WebAssembly（前端交付路線）
+
+> 另一條獨立的加碼路線：把 Rust 編譯成 `.wasm`，交付到**使用者的瀏覽器**而不是伺服器。
+> 只要讀完第 01~06 章（尤其是 04 錯誤處理與 06 Cargo/測試）就能上手；第 08 章（async）在講 `wasm-bindgen-futures` 時會回扣。
+
+| 章節 | 檔案 | 主題 |
+|------|------|------|
+| 18 | [18-webassembly-wasm-pack.md](./18-webassembly-wasm-pack.md) | WebAssembly：wasm-pack 工具鏈、wasm-bindgen 型別跨界、瀏覽器影像處理實戰、web-sys/js-sys、瀏覽器內測試、體積最佳化與 WASM 環境限制 |
+
 ---
 
 ## 本課教學方式
@@ -141,11 +150,14 @@
   -> 15 wgpu 入門（GPU 路線，進階加碼）
   -> 16 GPU Compute 平行運算
   -> 17 用 GPU 跑 AI
+  -> 18 WebAssembly（前端交付路線，進階加碼；與 15~17 平行，可先後互換）
 ```
 
 如果你已經熟悉 Rust 語法，可以直接從第 09 章的架構設計開始，但建議先確認自己已掌握第 03～08 章的 trait、錯誤處理、workspace、`Arc` 與 async/Tokio。再往 10、11、12 走，做完第 13 章成品後，再用第 14 章把它強化成能扛流量尖峰、擋得住故障的生產級服務。
 
 **GPU / AI 路線（第 15~17 章）** 是一條相對獨立的進階加碼路線，主軸是 `wgpu → GPU Compute → AI`：先用 wgpu 跑通第一支 GPU 程式（15），再寫向量加法、歸約、矩陣乘法等平行演算法並理解效能（16），最後看清「AI 推論就是一連串矩陣運算」，用框架跑推論並包成後端服務（17）。建議至少先讀完第 08 章（async），因為第 17 章把 AI 推論包成 API 時會回扣 `spawn_blocking`、`Arc` 共享狀態（第 07、08、11 章）與高併發保護（第 14 章）。想直接學 GPU/AI 的人，也可先讀 01~08 打底後跳到 15。
+
+**WebAssembly 路線（第 18 章）** 是另一條與 GPU 路線平行的加碼路線，換的是**交付對象**：前面所有章節的 Rust 都跑在伺服器上，第 18 章教你用 `wasm-pack` 把 Rust 編成 `.wasm`，跑在使用者的瀏覽器裡。內容涵蓋工具鏈分工、`wasm-bindgen` 的型別跨界與複製成本、瀏覽器影像處理實戰（含零複製寫法）、`web-sys` / `js-sys`、瀏覽器內測試、`.wasm` 體積最佳化，以及 WASM 環境用不了哪些標準庫。門檻只需要第 01~06 章，讀完第 08 章會更順（async 那節會回扣）。它最實際的價值是**前後端共用一份核心邏輯**：同一個 crate，後端直接依賴、前端編成 `.wasm`。
 
 ---
 

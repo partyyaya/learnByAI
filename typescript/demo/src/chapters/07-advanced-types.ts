@@ -70,6 +70,84 @@
   console.log("satisfies:", configA.kind, configB.kind, configC.radius);
 }
 
+// ===== 7.1 satisfies 場景 1：設定表 / 常數表（最常見）=====
+// satisfies 解決的是「有型別檢查」與「保留精確型別」二選一的困境：
+//   : T          → 有檢查，但型別被拓寬
+//   as T         → 檢查寬鬆（多打的欄位會溜過去），型別也變成 T，不安全
+//   satisfies T  → 有檢查（含多餘屬性檢查），同時保留精確型別
+{
+  type RouteConfig = { path: string; auth: boolean };
+
+  // ❌ 一般標註：型別被拓寬成 Record<string, RouteConfig>
+  const routesA: Record<string, RouteConfig> = {
+    home: { path: "/", auth: false },
+    admin: { path: "/admin", auth: true },
+  };
+  // routesA.hoem 打錯 key 完全不報錯！索引簽章等於宣告「任何字串鍵都合法」
+  // keyof typeof routesA 是 string —— 具體有哪些路由的資訊全丟了
+
+  // ✅ satisfies：既檢查每個值符合 RouteConfig，又保留 key 的字面量
+  const routesB = {
+    home: { path: "/", auth: false },
+    admin: { path: "/admin", auth: true },
+  } satisfies Record<string, RouteConfig>;
+
+  // routesB.hoem;
+  // ❌ Property 'hoem' does not exist on type '{ home: ...; admin: ... }'
+
+  type RouteName = keyof typeof routesB; // "home" | "admin"，可以拿去當參數型別
+  function go(name: RouteName): string {
+    return routesB[name].path;
+  }
+  // go("other"); // ❌ 編譯期就擋下來
+
+  console.log("7.1 satisfies 設定表:", Object.keys(routesA), go("admin"));
+  // 路由表、i18n 語系檔、權限表、選單設定、API endpoint 對照表都是這個形狀
+}
+
+// ===== 7.1 satisfies 場景 2：值的精確型別後續還要拿來用 =====
+{
+  type Colors = Record<string, string | [number, number, number]>;
+
+  const palette = {
+    red: [255, 0, 0],
+    green: "#00ff00",
+  } satisfies Colors;
+
+  // 若寫成 const palette: Colors = {...}，每個值都會變成聯合型別，
+  // 使用前還得先 typeof 判斷一輪
+  const doubled = palette.red.map((n) => n * 2); // ✅ 知道是陣列
+  const upper = palette.green.toUpperCase(); // ✅ 知道是字串
+
+  // 字面量的保留也是同理
+  const config = {
+    port: 3000,
+    env: "production",
+  } satisfies { port: number; env: "development" | "production" };
+
+  if (config.env === "production") {
+    // ✅ env 的型別是 "production" 字面量，縮窄有效
+    console.log("7.1 satisfies 精確型別:", doubled, upper, config.port);
+  }
+}
+
+// ===== 7.1 satisfies 場景 3：搭配 as const =====
+{
+  // as const 負責凍結成字面量，satisfies 負責驗證形狀
+  const ROLES = ["admin", "user"] as const satisfies readonly string[];
+  type Role = (typeof ROLES)[number]; // "admin" | "user"
+
+  const current: Role = "admin";
+  // const bad: Role = "guest"; // ❌ 不在 ROLES 之中
+
+  console.log("7.1 satisfies as const:", ROLES, current);
+
+  // 判斷準則：
+  //   值之後只當「某個型別」用，不在乎具體內容            → 用 : T 標註
+  //   值本身的內容還要拿來推導（keyof typeof、縮窄、字面量）→ 用 satisfies
+  //   想用 as T 繞過檢查時                               → 先想想是不是該用 satisfies
+}
+
 // ===== 7.2 交集型別（Intersection Types） =====
 {
   type WithId = { id: number };
@@ -130,9 +208,35 @@
 
 // --- instanceof Guard ---
 {
+  // 建構子參數的 public 是「參數屬性（Parameter Properties）」語法糖（第 5 章），
+  // 跟 instanceof 無關，這裡只是用它把類別定義壓成一行。
+  // 加了存取修飾符後，TypeScript 會自動建立同名屬性並在建構子裡指派。
   class ApiError {
     constructor(public statusCode: number, public message: string) {}
   }
+
+  // 上面那段完全等價於這種完整寫法：
+  class ApiErrorVerbose {
+    public statusCode: number; // 1. 宣告欄位
+    public message: string;
+
+    constructor(statusCode: number, message: string) {
+      // 2. 接收參數
+      this.statusCode = statusCode; // 3. 手動指派
+      this.message = message;
+    }
+  }
+
+  // 修飾符不是可有可無的裝飾，而是「請幫我建立這個屬性」的開關。
+  // 沒寫修飾符時參數只是用完就丟，之後存取 error.statusCode 會編譯錯誤。
+  class NoModifier {
+    constructor(statusCode: number, message: string) {
+      void statusCode;
+      void message;
+    }
+  }
+  // new NoModifier(404, "x").statusCode;
+  // ❌ Property 'statusCode' does not exist on type 'NoModifier'
 
   class NetworkError {
     constructor(public message: string) {}
@@ -140,13 +244,17 @@
 
   function handleError(error: ApiError | NetworkError): string {
     if (error instanceof ApiError) {
+      // 縮窄成 ApiError，才存取得到只有它才有的 statusCode
       return `API Error ${error.statusCode}: ${error.message}`;
     }
+    // 走到這裡 error 已自動縮窄成 NetworkError
     return `Network Error: ${error.message}`;
   }
 
   console.log(handleError(new ApiError(404, "Not Found")));
   console.log(handleError(new NetworkError("timeout")));
+  console.log("參數屬性完整寫法:", new ApiErrorVerbose(500, "Server Error").statusCode);
+  void NoModifier;
 }
 
 // --- in 運算子 ---
@@ -178,7 +286,8 @@
     bark(): void;
   }
 
-  // 自定義型別守衛
+  // 自定義型別守衛：animal is Cat 叫「型別謂詞」，
+  // 意思是「這個函式回傳 true 時，請把參數 animal 縮窄成 Cat」
   function isCat(animal: Cat | Dog): animal is Cat {
     return animal.type === "cat";
   }
@@ -193,6 +302,42 @@
 
   handleAnimal({ type: "cat", meow: () => console.log("喵") });
   handleAnimal({ type: "dog", bark: () => console.log("汪") });
+
+  // 對照組：只回傳 boolean 的話，TypeScript 不會拿來做型別縮窄
+  function isCatPlain(animal: Cat | Dog): boolean {
+    return animal.type === "cat";
+  }
+  function useA(animal: Cat | Dog): void {
+    if (isCatPlain(animal)) {
+      // animal.meow();
+      // ❌ Property 'meow' does not exist on type 'Cat | Dog'
+      console.log("是貓，但型別沒被縮窄:", animal.type);
+    }
+  }
+  useA({ type: "cat", meow: () => console.log("喵") });
+
+  // ⚠️ 陷阱：TypeScript 不會驗證謂詞的本體邏輯，寫反了也不報錯
+  function isCatWrong(animal: Cat | Dog): animal is Cat {
+    return animal.type === "dog"; // 邏輯整個相反，編譯器完全不管
+  }
+  void isCatWrong;
+
+  // TS 5.5+：函式夠簡單時，不寫 is 也會自動推斷出型別謂詞
+  function isCatInferred(animal: Cat | Dog) {
+    return animal.type === "cat";
+  }
+  function useB(animal: Cat | Dog): void {
+    if (isCatInferred(animal)) {
+      animal.meow(); // ✅ 通過，TS 自動推斷成 animal is Cat
+    }
+  }
+  useB({ type: "cat", meow: () => console.log("推斷謂詞也能縮窄") });
+
+  // 最有感的是 filter：TS 5.4 以前 filtered 會是 (string | null)[]
+  const names: (string | null)[] = ["a", null, "b"];
+  const filtered = names.filter((n) => n !== null);
+  const upper: string[] = filtered; // ✅ TS 5.5+ 直接通過
+  console.log("filter 推斷謂詞:", upper);
 }
 
 // --- Assertion Functions ---
@@ -210,6 +355,31 @@
   }
 
   console.log(processInput("hello"));
+
+  // 謂詞 vs 斷言：
+  //   value is T          → 回傳 boolean，放在 if 裡分流，兩種情況都要處理
+  //   asserts value is T  → 不回傳值，不符合就 throw，過了才繼續往下走
+
+  // ⚠️ 限制：斷言函式必須是 function 宣告，或是有明確型別標註的變數
+  // ❌ 箭頭函式指派給 const、變數本身沒有型別標註：
+  //   const assertIsNumber = (value: unknown): asserts value is number => { ... };
+  //   assertIsNumber(input);
+  //   ❌ TS2775: Assertions require every name in the call target
+  //              to be declared with an explicit type annotation.
+
+  // ✅ 解法：把型別標註在變數上
+  type Asserter = (value: unknown) => asserts value is number;
+  const assertIsNum: Asserter = (value) => {
+    if (typeof value !== "number") {
+      throw new Error("Expected number");
+    }
+  };
+
+  function double(input: unknown): number {
+    assertIsNum(input);
+    return input * 2; // ✅ input 已縮窄成 number
+  }
+  console.log("斷言函式（變數標註版）:", double(21));
 }
 
 // ===== 7.4 條件型別（Conditional Types） =====

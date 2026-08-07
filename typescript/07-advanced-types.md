@@ -65,6 +65,92 @@ configC.radius; // ✅ 型別仍是 { kind: "circle"; radius: number }，可以�
 // ❌ 物件字面值有多餘屬性 extraFlag，satisfies 會抓出來
 ```
 
+#### 什麼時候會需要 satisfies？
+
+`satisfies` 解決的是一個「二選一」的困境 —— 在它出現之前，你只能在「有型別檢查」和「保留精確型別」之間挑一個：
+
+| 寫法 | 有做結構檢查嗎 | 保留精確型別嗎 |
+| --- | --- | --- |
+| `const x: T = {...}` | ✅ 有 | ❌ 被拓寬成 `T` |
+| `const x = {...} as T` | ⚠️ 只做寬鬆檢查，多打的欄位會溜過去 | ❌ 也變成 `T`，而且不安全 |
+| `const x = {...}` | ❌ 沒有 | ✅ 有 |
+| `const x = {...} satisfies T` | ✅ 有（含多餘屬性檢查） | ✅ 有 |
+
+**場景 1：設定表 / 常數表（最常見，也最有感）**
+
+```typescript
+type RouteConfig = { path: string; auth: boolean };
+
+// ❌ 一般標註：型別被拓寬成 Record<string, RouteConfig>
+const routesA: Record<string, RouteConfig> = {
+  home: { path: "/", auth: false },
+  admin: { path: "/admin", auth: true },
+};
+
+routesA.hoem; // ⚠️ 打錯 key 完全不報錯！索引簽章等於宣告「任何字串鍵都合法」
+type NameA = keyof typeof routesA; // string —— 具體有哪些路由的資訊全丟了
+
+// ✅ satisfies：既檢查每個值符合 RouteConfig，又保留 key 的字面量
+const routesB = {
+  home: { path: "/", auth: false },
+  admin: { path: "/admin", auth: true },
+} satisfies Record<string, RouteConfig>;
+
+// routesB.hoem;
+// ❌ Property 'hoem' does not exist on type '{ home: ...; admin: ... }'
+
+type NameB = keyof typeof routesB; // "home" | "admin" —— 可以拿去當參數型別
+function go(name: NameB) {
+  console.log(routesB[name].path);
+}
+go("admin"); // ✅ 有自動完成
+// go("other"); // ❌ 編譯期就擋下來
+```
+
+這是 `satisfies` 最大的價值：`Record<string, T>` 這類約束天生會把鍵拓寬成 `string`，用 `satisfies` 才能同時保住「每個值都合格」和「鍵到底有哪些」。**路由表、i18n 語系檔、權限表、選單設定、API endpoint 對照表都是這個形狀。**
+
+**場景 2：值的精確型別後續還要拿來用**
+
+```typescript
+type Colors = Record<string, string | [number, number, number]>;
+
+const palette = {
+  red: [255, 0, 0],
+  green: "#00ff00",
+} satisfies Colors;
+
+palette.red.map((n) => n * 2); // ✅ 知道是陣列，能直接用陣列方法
+palette.green.toUpperCase();   // ✅ 知道是字串，能直接用字串方法
+```
+
+若寫成 `const palette: Colors = {...}`，每個值的型別都會變成 `string | [number, number, number]` 這個聯合，使用前還得先 `typeof` 判斷一輪。字面量的保留也是同理：
+
+```typescript
+const config = {
+  port: 3000,
+  env: "production",
+} satisfies { port: number; env: "development" | "production" };
+
+if (config.env === "production") {
+  // ✅ env 的型別是 "production" 字面量，縮窄有效
+}
+```
+
+**場景 3：搭配 `as const`**
+
+```typescript
+const ROLES = ["admin", "user"] as const satisfies readonly string[];
+type Role = (typeof ROLES)[number]; // "admin" | "user"
+```
+
+`as const` 負責凍結成字面量，`satisfies` 負責驗證形狀，兩者常一起出現。
+
+**判斷準則**
+
+- 這個值之後只當「某個型別」用，不在乎具體內容 → 用 `: T` 標註就好
+- **這個值本身的內容還要拿來推導**（`keyof typeof`、型別縮窄、取字面量）→ 用 `satisfies`
+- 想用 `as T` 繞過檢查時 → 先想想是不是該用 `satisfies`，多數情況它才是你真正要的
+
 ---
 
 ## 7.2 交集型別（Intersection Types）
@@ -122,11 +208,66 @@ class NetworkError {
 
 function handleError(error: ApiError | NetworkError): string {
   if (error instanceof ApiError) {
+    // 縮窄成 ApiError，才存取得到只有它才有的 statusCode
     return `API Error ${error.statusCode}: ${error.message}`;
   }
+  // 走到這裡 error 已自動縮窄成 NetworkError
   return `Network Error: ${error.message}`;
 }
 ```
+
+`error` 進來時的型別是 `ApiError | NetworkError`，經過 `instanceof ApiError` 判斷後，TypeScript 就知道 `if` 區塊內一定是 `ApiError`，因此允許存取只有它才有的 `statusCode`；`if` 之外則自動縮窄成 `NetworkError`。
+
+#### 順帶一提：建構子參數的 `public` 是什麼？
+
+上面 `constructor(public statusCode: number, ...)` 的 `public` 跟 `instanceof` 無關，它是 [第 5 章](./05-classes.md)介紹過的**參數屬性（Parameter Properties）** 語法糖，這裡只是用它把類別定義壓成一行。加了存取修飾符後，TypeScript 會**自動建立同名的類別屬性並在建構子裡指派**，所以這兩段完全等價：
+
+```typescript
+// 簡寫（參數屬性）
+class ApiError {
+  constructor(public statusCode: number, public message: string) {}
+}
+
+// 完整寫法 —— 上面那段實際上等於這段
+class ApiError {
+  public statusCode: number; // 1. 宣告欄位
+  public message: string;
+
+  constructor(statusCode: number, message: string) {
+    // 2. 接收參數
+    this.statusCode = statusCode; // 3. 手動指派
+    this.message = message;
+  }
+}
+```
+
+省掉的就是「同一個名字要寫三次」的重複。**注意修飾符不是可有可無的裝飾，它就是「請幫我建立這個屬性」的開關** —— 看編譯出來的 JS 最清楚：
+
+```javascript
+// class ApiError { constructor(public statusCode: number, ...) {} } 編譯後
+class ApiError {
+    statusCode;
+    message;
+    constructor(statusCode, message) {
+        this.statusCode = statusCode;   // ← TypeScript 自動補上的
+        this.message = message;
+    }
+}
+
+// 若把修飾符拿掉：constructor(statusCode: number, ...) {}
+class NoModifier {
+    constructor(statusCode, message) { }   // ← 什麼都沒有，屬性根本沒建立
+}
+```
+
+沒寫修飾符的話，`statusCode` 只是個用完就丟的普通參數，之後寫 `error.statusCode` 會直接編譯錯誤。四種修飾符的差別：
+
+| 寫法 | 效果 |
+| --- | --- |
+| `public x: T` | 建立屬性，外部可讀可寫（`public` 雖是預設值，但參數屬性**一定要明寫**才會生效） |
+| `private x: T` | 建立屬性，只有類別內部能存取 |
+| `protected x: T` | 建立屬性，類別內部與子類別能存取 |
+| `readonly x: T` | 建立屬性，建構後不可修改（可與上面三者組合，如 `public readonly`） |
 
 ### in 運算子
 
@@ -170,6 +311,69 @@ function handleAnimal(animal: Cat | Dog): void {
 }
 ```
 
+#### `animal is Cat` 的 `is` 到底做了什麼？
+
+這叫**型別謂詞（Type Predicate）**，TypeScript 1.6 就有的老語法。它要解決的問題是：**光是回傳 `boolean` 的函式，TypeScript 不會拿來做型別縮窄。**
+
+```typescript
+// 回傳型別寫成 boolean
+function isCatPlain(animal: Cat | Dog): boolean {
+  return animal.type === "cat";
+}
+
+function useA(animal: Cat | Dog) {
+  if (isCatPlain(animal)) {
+    animal.meow();
+    // ❌ Property 'meow' does not exist on type 'Cat | Dog'.
+    //      Property 'meow' does not exist on type 'Dog'.
+  }
+}
+```
+
+從編譯器的角度，`isCatPlain` 只是「一個回傳 true/false 的函式」，它不知道那個 `true` 代表什麼意思。把回傳型別改成 `animal is Cat`，等於明確告訴編譯器：**「這個函式回傳 `true` 時，請把參數 `animal` 縮窄成 `Cat`」**。
+
+所以 `is` 的價值是**把縮窄邏輯抽成可重複使用的函式** —— 否則每個用到的地方都得原地重寫一次 `if (animal.type === "cat")`。
+
+**⚠️ 重點陷阱：TypeScript 不會驗證你的謂詞寫得對不對**
+
+```typescript
+function isCatWrong(animal: Cat | Dog): animal is Cat {
+  return animal.type === "dog"; // ⚠️ 邏輯整個相反，但編譯器完全不報錯
+}
+```
+
+`animal is Cat` 是**你對編譯器的單方面承諾**，編譯器選擇相信你、不去檢查函式本體。承諾寫錯的話型別系統會跟著錯下去，最後在執行期爆炸 —— 這一點的風險性質跟 `as` 斷言相同。**寫型別守衛時，函式本體的邏輯要自己看仔細。**
+
+**TS 5.5+：很多情況已經不用手寫了**
+
+從 TypeScript 5.5 起，函式夠簡單時**不寫 `is` 也會自動推斷出型別謂詞**：
+
+```typescript
+// 沒有標註回傳型別
+function isCatInferred(animal: Cat | Dog) {
+  return animal.type === "cat";
+}
+
+function useB(animal: Cat | Dog) {
+  if (isCatInferred(animal)) {
+    animal.meow(); // ✅ 通過，TS 自動推斷成 animal is Cat
+  }
+}
+```
+
+最有感的是 `filter`，這是以前每個人都會撞到的痛點：
+
+```typescript
+const names: (string | null)[] = ["a", null, "b"];
+const filtered = names.filter((n) => n !== null);
+
+const upper: string[] = filtered; // ✅ TS 5.5+ 直接通過
+// TS 5.4 以前 filtered 的型別是 (string | null)[]，這行會報錯，
+// 必須手動寫成 names.filter((n): n is string => n !== null)
+```
+
+**那什麼時候還是要手寫？** 自動推斷只在函式簡單、能直接從回傳運算式推導時生效。邏輯複雜、跨多個條件、或要處理 `unknown`（例如驗證 API 回傳的資料）時，仍然得自己標註。
+
 ### Assertion Functions
 
 ```typescript
@@ -184,6 +388,52 @@ function processInput(input: unknown): string {
   // 這之後 input 的型別是 string
   return input.toUpperCase();
 }
+```
+
+`asserts value is string` 跟上一節的 `value is string` 長得很像，但用法完全不同：
+
+| | 型別謂詞 `value is T` | 斷言函式 `asserts value is T` |
+| --- | --- | --- |
+| 函式回傳 | `boolean` | 不回傳值，不符合就 `throw` |
+| 呼叫方式 | 放在 `if` 條件裡 | 直接呼叫一行，之後型別就變了 |
+| 不符合時 | 走 `else` 分支，程式繼續 | 直接中斷程式 |
+| 適合的情境 | 兩種情況**都要處理**（分流） | 不符合就是**錯誤**，沒有備案 |
+
+```typescript
+// 謂詞：分流，兩邊都有事做
+if (isCat(animal)) {
+  animal.meow();
+} else {
+  animal.bark();
+}
+
+// 斷言：不是就炸，過了才繼續往下走
+assertIsString(input);
+return input.toUpperCase();
+```
+
+⚠️ 跟型別謂詞一樣，**TypeScript 不會驗證斷言函式的本體邏輯**，寫錯一樣是靜默出錯。此外斷言函式還有一個容易踩到的限制：**它必須是 `function` 宣告，或是有明確型別標註的變數**，否則 TypeScript 會拒絕套用斷言效果：
+
+```typescript
+// ❌ 箭頭函式指派給 const，但變數本身沒有型別標註
+const assertIsNumber = (value: unknown): asserts value is number => {
+  if (typeof value !== "number") throw new Error("Expected number");
+};
+
+function useB(input: unknown): number {
+  assertIsNumber(input);
+  // ❌ TS2775: Assertions require every name in the call target
+  //            to be declared with an explicit type annotation.
+  return input + 1; // ❌ input 仍然是 unknown
+}
+
+// ✅ 解法一：改用 function 宣告（就是本節開頭的寫法）
+
+// ✅ 解法二：把型別標註在變數上
+type Asserter = (value: unknown) => asserts value is number;
+const assertIsNum: Asserter = (value) => {
+  if (typeof value !== "number") throw new Error("Expected number");
+};
 ```
 
 ---
