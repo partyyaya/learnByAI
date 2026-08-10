@@ -17,3 +17,6 @@ dist
 # misc
 .DS_Store
 *.log
+
+# @nuxt/test-utils 自動產生
+.nuxtrc

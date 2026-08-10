@@ -19,6 +19,7 @@
 | 本地狀態 | Zustand v5（`persist`、selector 最小訂閱） | 11、12 |
 | HTTP | Axios（統一實例、攔截器） | 07 |
 | Mock | axios-mock-adapter（攔截 axios 請求回傳假資料） | — |
+| 測試 | Vitest + React Testing Library（jsdom） | 14 |
 
 ---
 
@@ -48,8 +49,38 @@ npm run dev
 | `npm run dev` | 啟動開發伺服器（熱更新） |
 | `npm run build` | 打包到 `dist/` |
 | `npm run preview` | 本機預覽打包結果 |
+| `npm run test` | Vitest watch 模式（開發時開著） |
+| `npm run test:run` | 跑完一輪就結束，CI 與部署前用這個 |
 | `npm run lint` | ESLint 檢查 |
 | `npm run format` | Prettier 格式化 |
+
+---
+
+## 測試（第 14 章）
+
+```bash
+npm run test:run
+```
+
+測試檔與被測程式放在一起（`Xxx.jsx` 旁邊就是 `Xxx.test.jsx`），共用工具放 `src/test/`：
+
+| 檔案 | 示範什麼 |
+|------|----------|
+| `src/test/setup.js` | 共用前置：jest-dom 斷言、每個測試前重設 Zustand 與 localStorage |
+| `src/test/renderWithProviders.jsx` | 把元件包進 `QueryClientProvider` + `MemoryRouter` 再 render |
+| `src/utils/format.test.js` | 純函式與邊界情況 |
+| `src/stores/courseFilter.store.test.js` | Zustand store 測試，不需要 render 任何元件 |
+| `src/pages/LoginPage.test.jsx` | 表單驗證、mutation 成功/失敗、登入態寫入 store |
+| `src/pages/courses/CourseListPage.test.jsx` | 篩選條件 → `queryKey` → API 參數，樂觀更新的刪除與上下架 |
+| `src/pages/courses/CourseDetailPage.test.jsx` | 動態路由參數、載入與錯誤狀態 |
+
+三個貫穿全部測試檔的原則：
+
+1. **測行為，不測實作細節**——查詢一律用使用者視角（`getByRole` / `getByLabelText`）。
+2. **攔截 API 模組而非 axios**——測試驗的是元件對成功/失敗的反應，換掉最靠近元件的那一層最省事。
+3. **每個測試都從乾淨狀態開始**——全新的 `QueryClient`、重設過的 store，避免順序一換結果就變。
+
+每支測試檔開頭都有註解說明它在示範什麼，可以直接當第 14 章的延伸閱讀。
 
 ---
 
@@ -84,6 +115,7 @@ src/
 ├── hooks/            封裝 TanStack Query 的自訂 hooks
 ├── services/         axios 實例 + 各 domain api 模組
 ├── mock/             axios-mock-adapter 設定 + 假資料
+├── test/             測試共用設定與 renderWithProviders
 ├── utils/            純函式工具
 └── styles/           全域樣式（主題變數、layout、components）
 ```

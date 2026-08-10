@@ -46,6 +46,7 @@ npm run dev
 | 首頁列表（SSR 抓取） | [app/pages/index.vue](./app/pages/index.vue) | 6 |
 | 文章詳情（動態路由 + 動態 SEO + 404） | [app/pages/posts/[id].vue](./app/pages/posts/[id].vue) | 2、3、12 |
 | 自動匯入元件 | [app/components/PostCard.vue](./app/components/PostCard.vue) | 4 |
+| 自動匯入工具函式（純函式，好測） | [app/utils/format.js](./app/utils/format.js) | 4、15 |
 | 登入 / 註冊 | [app/pages/login.vue](./app/pages/login.vue) | 11 |
 | 後台發文 / 刪除（樂觀更新） | [app/pages/admin/index.vue](./app/pages/admin/index.vue) | 9、10、11 |
 | 路由守衛 | [app/middleware/auth.js](./app/middleware/auth.js) | 9 |
@@ -53,6 +54,8 @@ npm run dev
 | 認證 API（含伺服器端守衛） | [server/api/auth/](./server/api/auth/) | 11 |
 | Prisma 單例 | [server/utils/prisma.js](./server/utils/prisma.js) | 10 |
 | 資料模型 | [prisma/schema.prisma](./prisma/schema.prisma) | 10、11 |
+| 單元測試（純函式 + 元件） | [tests/unit/](./tests/unit/) | 15 |
+| E2E 測試（真的跑 SSR 與 API） | [tests/e2e/blog.spec.js](./tests/e2e/blog.spec.js) | 15 |
 
 ---
 
@@ -61,7 +64,13 @@ npm run dev
 ```text
 blog-demo/
 ├─ nuxt.config.ts          # 模組（nuxt-auth-utils）、CSS、head
+├─ vitest.config.ts        # 測試設定（environment: 'nuxt'）
 ├─ .env                    # DATABASE_URL、NUXT_SESSION_PASSWORD
+├─ tests/
+│  ├─ unit/                # 純函式與元件測試（跑得快，天天跑）
+│  │  ├─ format.spec.js
+│  │  └─ PostCard.spec.js
+│  └─ e2e/blog.spec.js     # 真的啟動 Nuxt，測 SSR 與 API
 ├─ prisma/
 │  ├─ schema.prisma        # User / Post 模型
 │  └─ seed.js              # 示範文章
@@ -80,6 +89,7 @@ blog-demo/
    ├─ layouts/             # default / admin
    ├─ middleware/auth.js
    ├─ components/PostCard.vue
+   ├─ utils/format.js      # excerpt / formatDate / authorName（自動匯入）
    └─ pages/               # index / login / posts/[id] / admin/index
 ```
 
@@ -96,12 +106,40 @@ blog-demo/
 
 ---
 
+## 測試（第 15 章）
+
+```bash
+npm run test        # 單元測試：純函式 + 元件（約 1 秒）
+npm run test:watch  # 單元測試 watch 模式（開發時開著）
+npm run test:e2e    # E2E：真的啟動 Nuxt，測 SSR 與 API
+```
+
+分兩層，對應兩種問題：
+
+| 測試 | 檔案 | 測什麼 | 需要什麼 |
+|---|---|---|---|
+| 單元 | [tests/unit/format.spec.js](./tests/unit/format.spec.js) | `excerpt` / `formatDate` / `authorName` 三個純函式的正常值、邊界、空值 | 無 |
+| 單元 | [tests/unit/PostCard.spec.js](./tests/unit/PostCard.spec.js) | 用 `mountSuspended` 掛元件：標題、摘要截斷、草稿標籤、連結、無作者時掛站長 | 無 |
+| E2E | [tests/e2e/blog.spec.js](./tests/e2e/blog.spec.js) | 首頁 SSR 出得來、`/api/posts` 只回已發佈、未登入拿全部／發文會被擋、不存在的文章回 404 | 先 `npx prisma migrate dev --name init` 建好資料表 |
+
+幾個實作重點：
+
+- [vitest.config.ts](./vitest.config.ts) 用 `defineVitestConfig({ test: { environment: 'nuxt' } })`，測試裡才有自動匯入與 `~` 別名。
+- E2E 那支檔案開頭有 `// @vitest-environment node`——它要跑真的伺服器，不能用模擬的 Nuxt 瀏覽器環境。
+- E2E 用 `setup({ dev: true })` 起 dev 伺服器：啟動快，而且會自動讀 `.env`。
+- E2E 執行時終端機可能出現 `vite:define` 或 `WebSocket port 24678` 的警告，那是 Nuxt dev server 的雜訊，不影響測試結果。
+- 那三個「未登入會被擋」的 E2E 測試，測的正是下面〈安全重點〉講的事——**伺服器端真的擋得住**，不是只有前端藏按鈕。
+
+---
+
 ## 常用指令
 
 ```bash
 npm run dev         # 開發
 npm run build       # 打包（prisma generate + nuxt build）
 npm run preview     # 本機預覽 build 結果
+npm run test        # 單元測試
+npm run test:e2e    # E2E 測試
 npm run db:seed     # 重新塞示範文章
 npm run db:studio   # 用 GUI 看資料庫
 ```

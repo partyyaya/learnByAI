@@ -138,15 +138,19 @@ export default defineVitestConfig({
 })
 ```
 
-在 `package.json` 加指令：
+在 `package.json` 加指令。把**單元測試**和 **E2E** 分開跑很重要——前者一秒內跑完可以天天跑，後者要起伺服器、慢得多：
 
 ```json
 {
   "scripts": {
-    "test": "vitest"
+    "test": "vitest run tests/unit",
+    "test:watch": "vitest tests/unit",
+    "test:e2e": "vitest run tests/e2e"
   }
 }
 ```
+
+> 上面的 `environment: 'nuxt'` 是模擬出來的瀏覽器環境（底層是 happy-dom），適合單元／元件測試。**E2E 要跑真的 Node 伺服器**，所以那些檔案要在開頭加一行註解豁免掉：`// @vitest-environment node`（見第 8 節）。少了這行，E2E 會在錯誤的環境下啟動而失敗。
 
 ---
 
@@ -194,12 +198,14 @@ E2E 會真的啟動一個 Nuxt 伺服器，測整條路徑。用 `@nuxt/test-uti
 
 ```js
 // tests/e2e/home.spec.js
+// E2E 要跑真的 Node 伺服器，不用 vitest.config.ts 設的 nuxt 環境：
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { setup, $fetch } from '@nuxt/test-utils/e2e'
 
 describe('首頁 (E2E)', async () => {
-  // 啟動一個測試用的 Nuxt 實例
-  await setup({ /* 可指定 rootDir、build 選項 */ })
+  // 啟動一個測試用的 Nuxt 實例（dev 模式起得快，而且會自動讀 .env）
+  await setup({ dev: true })
 
   it('首頁 HTML 含站名', async () => {
     const html = await $fetch('/')       // 打真的伺服器，拿 SSR 後的 HTML
@@ -210,10 +216,35 @@ describe('首頁 (E2E)', async () => {
     const posts = await $fetch('/api/posts')
     expect(Array.isArray(posts)).toBe(true)
   })
+
+  it('未登入拿不到需要權限的資料', async () => {
+    // requireUserSession 會丟 401，$fetch 收到非 2xx 就 reject
+    await expect($fetch('/api/posts?all=true')).rejects.toThrow()
+  })
 })
 ```
 
-> 分工：**單元測試**跑得快，測邏輯與單一元件；**E2E** 較慢，測「SSR 是否真的輸出正確、API 是否真的通」。日常多寫單元、關鍵路徑補 E2E。
+三個常見卡點：
+
+1. **少了 `// @vitest-environment node`**：這支檔案會用到第 6 節設定的模擬瀏覽器環境，伺服器起不來。
+2. **`setup()` vs `setup({ dev: true })`**：預設會先完整打包再啟動（慢，而且**不會自動讀 `.env`**，環境變數要自己 export）。`dev: true` 起 dev 伺服器，快又會讀 `.env`，本機開發最順手；想驗「正式打包後也 OK」再用預設。
+3. **資料庫沒建**：測到會查 DB 的 API 之前，要先 `npx prisma migrate dev`（第 10 章）。
+
+> 分工：**單元測試**跑得快，測邏輯與單一元件；**E2E** 較慢，測「SSR 是否真的輸出正確、API 是否真的通、權限是否真的擋得住」。日常多寫單元、關鍵路徑補 E2E。
+
+### 特別值得寫 E2E 的：安全性
+
+第 11 章講過「前端藏按鈕不是安全」。這件事用 E2E 測最直接——**不帶 cookie 打 API，伺服器就該回 401/403**：
+
+```js
+it('未登入發文會被伺服器擋下來', async () => {
+  await expect(
+    $fetch('/api/posts', { method: 'POST', body: { title: '偷發的', content: 'x' } })
+  ).rejects.toThrow()
+})
+```
+
+這種測試的價值很高：它保證的是「有人拿掉前端限制也進不來」，而這正是手動測試最容易漏掉的一類 bug。
 
 ---
 
@@ -283,11 +314,12 @@ export default defineVitestConfig({
 ### `tests/e2e/stats.spec.js`
 
 ```js
+// @vitest-environment node
 import { describe, it, expect } from 'vitest'
 import { setup, $fetch } from '@nuxt/test-utils/e2e'
 
 describe('stats API', async () => {
-  await setup()
+  await setup({ dev: true })
 
   it('回傳含 sum 與 computedAt', async () => {
     const data = await $fetch('/api/stats')
@@ -306,7 +338,29 @@ describe('stats API', async () => {
 跑起來後：
 
 - 首頁連按「重新抓取」，`computedAt` 在 10 秒內不變（Nitro 快取命中）。
-- `npm run test` → 兩個 E2E 測試通過，證明 API 正常且快取生效。
+- `npm run test:e2e` → 兩個 E2E 測試通過，證明 API 正常且快取生效。
+
+---
+
+## 期末專題已經附好測試了
+
+期末專題 [blog-demo/](./blog-demo/) 裡有一組**可以直接跑的測試**，就是照本章的做法寫的，拿來當範本最快：
+
+```bash
+cd blog-demo
+npm install
+npx prisma migrate dev --name init   # E2E 要查資料庫，先建表
+npm run test        # 單元測試：16 個，約 1 秒
+npm run test:e2e    # E2E：6 個，會真的起一個 Nuxt
+```
+
+| 檔案 | 測什麼 | 對應本章 |
+|---|---|---|
+| [tests/unit/format.spec.js](./blog-demo/tests/unit/format.spec.js) | `app/utils/format.js` 三個純函式：正常值、邊界（剛好 60 字）、空值不爆 | 第 7 節 |
+| [tests/unit/PostCard.spec.js](./blog-demo/tests/unit/PostCard.spec.js) | `mountSuspended` 掛元件：標題、摘要截斷、草稿標籤、`NuxtLink` 的 href、無作者掛「站長」 | 第 7 節 |
+| [tests/e2e/blog.spec.js](./blog-demo/tests/e2e/blog.spec.js) | 首頁 SSR、`/api/posts` 只回已發佈、未登入拿全部／發文被擋、不存在的文章 404 | 第 8 節 |
+
+注意那支 `format.spec.js` 對應的原始碼——**`PostCard` 裡「摘要截斷」「日期格式化」的邏輯被抽成 `app/utils/format.js` 的純函式**，才變得這麼好測（不用掛元件、不用 mock、一個 `expect` 一行）。這是實務上很划算的一個習慣：**把邏輯從元件裡擠出來，測試成本立刻降一個量級**。
 
 ---
 

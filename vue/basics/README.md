@@ -12,11 +12,12 @@
 - 熟練組合式 API：`ref` / `reactive` / `computed` / `watch`。
 - 寫得出可維護的元件與元件間溝通（props / emit / v-model / slots / provide-inject）。
 - 能獨立用 Vite 建專案、拆元件、做出一個帶路由與狀態管理的小應用。
+- 能用 Vitest + Vue Test Utils 幫元件、composable、store 與路由守衛補上自動化測試。
 - 學完後能看懂 vue-source 的原始碼寫法、也能直接進 Nuxt 學全端。
 
 ---
 
-## 章節總覽（共 7 章）
+## 章節總覽（共 8 章）
 
 | 章節 | 檔案 | 主題 | 你會學到 | 狀態 |
 |------|------|------|----------|------|
@@ -27,8 +28,9 @@
 | 05 | [05-lifecycle-and-composables.md](./05-lifecycle-and-composables.md) | 生命週期與 Composables | lifecycle hooks、組合式 vs 選項式、抽 `useXxx`、template refs、`nextTick` | ✅ 已完成 |
 | 06 | [06-forms-and-validation.md](./06-forms-and-validation.md) | 表單與驗證 | `v-model` 全套與修飾符（`.number`/`.trim`/`.lazy`）、表單驗證、送出 | ✅ 已完成 |
 | 07 | [07-router-and-pinia.md](./07-router-and-pinia.md) | Vue Router 與 Pinia | 路由、導航守衛、Pinia store、串 API 小專案收尾 | ✅ 已完成 |
+| 08 | [08-testing-with-vitest.md](./08-testing-with-vitest.md) | 用 Vitest 測試 Vue | Vitest + Vue Test Utils 環境、測純函式／composable、`mount` 與 `emitted`、`v-model`、mock `fetch`、測 Pinia 與路由守衛、覆蓋率 | ✅ 已完成 |
 
-> 第 01～04 章為本課核心（響應式、模板、元件），第 05～07 章補上生命週期、表單與工程化收尾。
+> 第 01～04 章為本課核心（響應式、模板、元件），第 05～07 章補上生命週期、表單與工程化收尾，第 08 章把前面寫的東西用自動化測試保護起來。
 
 ---
 
@@ -48,6 +50,7 @@
 3. **每章做完「練習作業」再進下一章**，卡住時回頭看該章的「常見陷阱」。
 4. **有 React 背景的人**：留意心態切換——Vue 是「直接改資料」，不用 `setState`；副作用**自動追蹤依賴**，沒有依賴陣列。
 5. 前 4 章別急著裝 Router / Pinia / TypeScript，先把核心練熟；到第 7 章再補工程化。
+6. 第 8 章的測試不必等到最後才學——寫完第 5、6 章的 composable 後就可以回頭補測試，感受「改壞立刻紅燈」的價值。
 
 ---
 
@@ -84,6 +87,7 @@ npm run dev
 | 想看懂 Vue 這些 API「背後怎麼實作」 | [Vue 源碼解析課](../vue-source/README.md) |
 | 想把 Vue 用在「可上線的全端框架」（SSR、路由、API、資料庫） | [Nuxt 全端課](../nuxt/README.md) |
 | 想深入「直接操作 DOM」的自訂指令 | [製作 Vue 自訂指令](../01-custom-directives.md) |
+| 想把測試學成一門手藝（策略、E2E、CI、舊專案補測） | [Frontend Testing 課程](../../frontend-testing-course/README.md) |
 | 有 React 背景想兩邊對照 | [React 完整課程](../../react/README.md) |
 
 > 本課與 Nuxt 課共用同一套 `<script setup>` 元件寫法，學完本課直接進 Nuxt 幾乎零摩擦。

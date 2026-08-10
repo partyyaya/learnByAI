@@ -168,10 +168,15 @@ function CourseListPage() {
 
       <Card>
         <div className="toolbar">
+          {/* 工具列的控制項沒有可見的文字標籤（版面考量），
+              因此用 aria-label 補上可及名稱：讀螢幕的使用者才知道這格是做什麼的，
+              測試也才能用 getByLabelText 這種使用者視角的方式定位。
+              placeholder 不能取代 label——它一開始打字就消失了。 */}
           <div className="search-box">
             <Icon name="search" size={16} />
             <input
               value={search}
+              aria-label="搜尋課程名稱"
               placeholder="搜尋課程名稱"
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -179,6 +184,7 @@ function CourseListPage() {
 
           <select
             className="input"
+            aria-label="難度篩選"
             value={level}
             onChange={(e) => setLevel(e.target.value)}
           >
@@ -190,6 +196,7 @@ function CourseListPage() {
 
           <select
             className="input"
+            aria-label="排序方式"
             value={sort}
             onChange={(e) => setSort(e.target.value)}
           >

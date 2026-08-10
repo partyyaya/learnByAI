@@ -5,7 +5,7 @@
 - **Vue Router**——讓網址對應到不同畫面，做出多頁的單頁應用（SPA）。
 - **Pinia**——集中管理跨元件、跨頁面的共享狀態。
 
-這是本課最後一章。學完後，我們會把前六章的所有能力整合成一個「文章列表 + 詳情 + 登入狀態 + 後台守衛」的迷你 SPA，並在結尾銜接到本 repo 的《源碼課》與《Nuxt 全端課》。
+學完後，我們會把前六章的所有能力整合成一個「文章列表 + 詳情 + 登入狀態 + 後台守衛」的迷你 SPA——它就是最後一章（[第 8 章：用 Vitest 測試 Vue](./08-testing-with-vitest.md)）要拿來寫測試的對象。
 
 ## 本章目標
 
@@ -654,43 +654,15 @@ const auth = useAuthStore()
 
 ---
 
-## 結業與下一步
+## 銜接下一章
 
-恭喜你完成這門 Vue 3 精華橋接課！回顧你已經具備的能力：
+到這裡，你已經有一個「路由分頁 + 資料抓取 + 全域狀態 + 存取控制」的完整 SPA 骨架。但注意一件事：**要確認它沒壞，你只能自己開瀏覽器點**——點文章、切換文章、登入、登出、直開 `/admin` 看有沒有被擋⋯⋯每改一次程式碼都要重來一遍。
 
-- SFC + Vite 開發環境（01）
-- `ref`/`reactive`/`computed`/`watch` 響應式（02）
-- 模板語法與指令（03）
-- 元件溝通 `props`/`emit`/`v-model`/`slots`/`provide-inject`（04）
-- 生命週期與把邏輯抽成 composable（05）
-- 表單與可重用的驗證（06）
-- Vue Router 多頁 + Pinia 全域狀態，並整合成一個迷你 SPA（07）
-
-這正是「能無縫進入本 repo 兩門進階課」所需的全部基礎。兩條路任選（或都走）：
-
-### 想搞懂「Vue 為什麼這樣運作」→ 走[《Vue 3 源碼解析課》](../vue-source/README.md)
-
-你這門課用到的 `ref` 為什麼改了畫面就會動、`computed` 為什麼只在依賴變時重算、`watchEffect` 怎麼自動追蹤依賴、`<script setup>` 怎麼被編譯——源碼課會帶你從 `reactivity` 的 `track`/`trigger`/`effect` 一路追到 renderer 與編譯器，把「魔法」變成「你看得懂、追得動、改得準」的機制。你在本課建立的組合式 API 心智模型，正是讀源碼的最佳起點。
-
-### 想把 SPA 升級成可上線的全端產品 → 走[《Nuxt 全端課》](../nuxt/README.md)
-
-你在第 7 章手動拼的那些東西——路由設定、資料抓取、跨頁狀態、登入守衛——**Nuxt 全都內建好了**：
-
-| 本課手動做的 | Nuxt 幫你內建 |
-|-------------|--------------|
-| `vue-router` 手寫 routes 表 | 檔案式路由（`pages/` 放檔案自動生成路由） |
-| `useFetch` composable 自己寫 | 內建 `useFetch`／`useAsyncData`，還自動在伺服器就抓好（SSR） |
-| `beforeEach` 全域守衛 | 路由中介層 `middleware/` + 伺服器端 `requireUserSession` 真正的權限 |
-| 純前端 SPA | SSR / SSG / 混合渲染，SEO 友善、首屏更快 |
-| 只能打別人的 API | Nitro 伺服器引擎，在 `server/api/` 寫自己的後端 |
-
-換句話說，Nuxt 就是把「這一章你手動組的那套」升級成一個生產級全端框架。定位上，Nuxt 之於 Vue，就像 Next.js 之於 React。你現在的 Vue 基礎已經足夠，直接開《Nuxt 全端課》的第 1 章即可。
-
-祝學習順利，我們在進階課再會。
+這正是下一章要解決的問題。第 8 章會用 Vitest + Vue Test Utils，把你剛剛手動點的那些情境（包含本章的 `useFetch` 自動重抓、Pinia 登入狀態、`beforeEach` 守衛把未登入者導去登入頁）變成一秒跑完的自動化測試——之後再怎麼重構，紅燈都會第一時間告訴你哪裡壞了。
 
 ---
 
 ## 上一章 / 下一章
 
 - 上一章：[第 6 章：表單與驗證](./06-forms-and-validation.md)
-- 課程結束 → [Vue 源碼解析課](../vue-source/README.md) ｜ [Nuxt 全端課](../nuxt/README.md)
+- 下一章：[第 8 章：用 Vitest 測試 Vue](./08-testing-with-vitest.md)

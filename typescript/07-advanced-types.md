@@ -462,49 +462,331 @@ type Deep = DeepUnwrap<Promise<Promise<Promise<string>>>>; // string
 
 ### infer 關鍵字
 
+`infer` 的作用是在條件型別做比對的過程中，**宣告一個暫時的型別變數，讓 TypeScript 自己把答案填進去**，你再從 true 分支把它拿出來用。它只能出現在條件型別 `extends` 子句的**右側**。
+
+最好的類比是正規表示式的捕獲群組：`extends` 右邊寫的是一個「樣板」，`infer R` 就是樣板上挖空的格子。比對成功時 TypeScript 會把實際對應到的型別填進 `R`：
+
+| 樣板（`extends` 右側） | `infer` 挖出來的東西 | 對不上時 |
+| --- | --- | --- |
+| `(...args: any[]) => infer R` | 函式的回傳型別 | 走 false 分支 |
+| `(...args: infer P) => any` | 整包參數列（一個元組） | 走 false 分支 |
+| `(infer E)[]` | 陣列的元素型別 | 走 false 分支 |
+| `Promise<infer U>` | Promise 包住的值型別 | 走 false 分支（即 7.4 開頭的 `UnwrapPromise`） |
+
 ```typescript
 // 提取函式回傳型別
+// 讀法：「T 是不是一個吃任意參數的函式？是 → 把它的回傳型別記成 R，然後回傳 R」
+type ReturnTypeOf<T> = T extends (...args: any[]) => infer R ? R : never;
+
+type Fn = (x: number) => string;
+type Result = ReturnTypeOf<Fn>;    // string（R 被填成 string）
+type NotFn = ReturnTypeOf<number>; // never（number 不是函式，比對失敗走 false 分支）
+
+// 提取函式參數型別
+// infer P 抓的是「整包參數列」，所以結果是一個元組，不是單一型別
+type ParametersOf<T> = T extends (...args: infer P) => any ? P : never;
+
+type Params = ParametersOf<(a: string, b: number) => void>; // [string, number]
+type First = Params[0];                                     // string（元組可以用索引取）
+
+// 提取陣列元素型別
+// 括號位置有意義：(infer E)[] 讀作「元素型別是 E 的陣列」
+// 也可以寫成等價的 T extends Array<infer E> ? E : never
+type ElementOf<T> = T extends (infer E)[] ? E : never;
+
+type Item = ElementOf<string[]>;    // string
+type Nested = ElementOf<number[][]>; // number[]（一次只剝一層）
+type NotArr = ElementOf<string>;     // never（string 不是陣列）
+```
+
+#### 為什麼 `R` 會被填成 `string`？
+
+拆解第一個例子：
+
+```typescript
 type ReturnTypeOf<T> = T extends (...args: any[]) => infer R ? R : never;
 
 type Fn = (x: number) => string;
 type Result = ReturnTypeOf<Fn>; // string
+```
 
-// 提取函式參數型別
-type ParametersOf<T> = T extends (...args: infer P) => any ? P : never;
+TypeScript 在算 `ReturnTypeOf<Fn>` 時，會把 `T`（也就是 `Fn`）跟樣板**上下對齊**，一個位置一個位置比：
 
-type Params = ParametersOf<(a: string, b: number) => void>; // [string, number]
+```text
+              參數的位置              回傳的位置
+Fn      →   (x: number)        =>     string
+樣板    →   (...args: any[])   =>     infer R
+                  ↓                     ↓
+            any[] 什麼參數都        這格是空的
+            吃得下 → 對上了 ✅      → 填入對齊到的 string
+```
 
-// 提取陣列元素型別
+三個步驟：
+
+1. **對齊**：兩邊都是函式型別，所以參數對參數、回傳對回傳。
+2. **樣板上寫死的部分只負責檢查「對不對得上」**。這裡寫 `(...args: any[])` 的意思是「參數我不在乎，任何函式都算通過」——因為這個工具只想拿回傳型別。
+3. **樣板上唯一挖空的格子是 `infer R`**，它對齊到的是 `Fn` 的回傳型別 `string`，於是 `R = string`。比對成功 → 走 true 分支 → 結果就是 `R`，也就是 `string`。
+
+反過來看 `ReturnTypeOf<number>`：`number` 連「是個函式」這一步都對不上，比對直接失敗，`R` 從頭到尾沒被填過，所以走 false 分支得到 `never`。
+
+**關鍵在於推論的方向跟你平常寫泛型是相反的：**
+
+| | 型別由誰決定 | 例子 |
+| --- | --- | --- |
+| 一般泛型參數 | **你**在使用端明講 | `Array<string>` —— string 是你寫的 |
+| `infer` | **TypeScript** 從實際型別反推 | `ReturnTypeOf<Fn>` —— 你只給了 `Fn`，string 是 TS 自己挖出來的 |
+
+如果覺得還是抽象，可以對照 JavaScript 的解構賦值——`infer` 做的事幾乎一樣，只是發生在型別層而不是值層：
+
+```javascript
+// JS（值層）：照著左邊的樣板，從 response 裡拆出想要的部分
+const { data: d } = response; // d 拿到 response.data 的「值」
+```
+
+```typescript
+// TS（型別層）：照著 extends 右邊的樣板，從 T 裡拆出想要的部分
+type DataOf<T> = T extends { data: infer D } ? D : never;
+
+type Res = { status: number; data: { id: string } };
+type D = DataOf<Res>; // { id: string } —— D 拿到 T["data"] 的「型別」
+```
+
+一個樣板上也可以同時挖好幾格，TypeScript 會一次全部填好：
+
+```typescript
+type Split<T> = T extends (...args: infer P) => infer R ? { args: P; ret: R } : never;
+
+type S = Split<(a: string, b: number) => boolean>;
+// { args: [string, number]; ret: boolean }
+```
+
+⚠️ 幾個實務上常踩到的細節：
+
+**1. `readonly` 陣列不符合 `(infer E)[]`**
+
+```typescript
 type ElementOf<T> = T extends (infer E)[] ? E : never;
+type A = ElementOf<readonly string[]>; // never ❌ readonly string[] 不能賦值給 string[]
 
-type Item = ElementOf<string[]>; // string
+// 解法：樣板也加上 readonly，這樣可變與唯讀陣列都吃得下
+type ElementOfSafe<T> = T extends readonly (infer E)[] ? E : never;
+type B = ElementOfSafe<readonly string[]>; // string ✅
+type C = ElementOfSafe<string[]>;          // string ✅
+```
+
+**2. 同一個 `infer` 名稱出現多次時，出現位置決定合併方式**
+
+```typescript
+// 屬性位置（協變）→ 推論結果取聯集
+type BothProps<T> = T extends { a: infer U; b: infer U } ? U : never;
+type U1 = BothProps<{ a: string; b: number }>; // string | number
+
+// 參數位置（逆變）→ 推論結果取交集
+type BothArgs<T> = T extends (a: infer U, b: infer U) => any ? U : never;
+type U2 = BothArgs<(a: string, b: number) => void>; // string & number，也就是 never
+```
+
+**3. 可以用 `infer X extends Y` 加上約束（TS 4.7+）**
+
+```typescript
+// 只在推論出來的型別符合約束時才成立，否則走 false 分支
+type FirstIfString<T> = T extends [infer H extends string, ...unknown[]] ? H : never;
+
+type S1 = FirstIfString<["hello", 1, 2]>; // "hello"
+type S2 = FirstIfString<[1, 2, 3]>;       // never（第一個元素不是 string）
+```
+
+**4. 上面這些其實標準庫都有內建**，實務直接用 `ReturnType<T>`、`Parameters<T>`、`Awaited<T>` 就好，手寫一遍的目的是理解原理。要注意 `ReturnType` 遇到**重載函式只會取最後一個簽章**：
+
+```typescript
+declare function pick(x: string): string;
+declare function pick(x: number): number;
+
+type P = ReturnType<typeof pick>; // number（只看最後一個重載，不是 string | number）
 ```
 
 ### 分佈式條件型別（Distributive Conditional Types）
 
-當條件型別檢查的對象是一個「裸露」的型別參數（naked type parameter），且傳入聯合型別時，TypeScript 會把條件型別分別套用到每個成員上再組合回聯合型別，這稱為分佈式（distributive）；用 `[T] extends [U]` 把 `T` 包進元組，就能關閉分佈行為：
+前面的條件型別都是傳入單一型別。但如果傳進去的是**聯合型別**，會發生一件很反直覺的事：TypeScript 不會把整包聯合型別丟進去比對，而是**把聯合型別拆開，每個成員各跑一次條件型別，最後再把結果組回聯合型別**。這個行為叫**分佈（distributive）**。
+
+觸發條件只有一個：`extends` **左側**必須是一個「裸露的型別參數」（naked type parameter）——也就是單獨一個 `T`，沒有被任何東西包住。
 
 ```typescript
-// T 是裸露的型別參數 → 對聯合型別會分佈
 type ToArray<T> = T extends any ? T[] : never;
 
-type StrOrNumArray = ToArray<string | number>;
-// 分佈後等於 ToArray<string> | ToArray<number>，也就是 string[] | number[]
-// 而不是 (string | number)[]
+type StrOrNumArray = ToArray<string | number>; // string[] | number[]
+```
 
-// [T] extends [U]：把 T 包進元組，關閉分佈行為
+#### 展開來看發生了什麼
+
+`ToArray<string | number>` 的計算過程，就像數學把乘法分配到括號裡的每一項：
+
+```text
+ToArray<string | number>
+  ↓ ① T 是裸露的型別參數，傳入的是聯合型別 → 拆開
+ToArray<string>  |  ToArray<number>
+  ↓ ② 各自代入 T extends any ? T[] : never
+   string[]      |      number[]
+  ↓ ③ 結果組回聯合型別
+string[] | number[]
+```
+
+所以結果是 `string[] | number[]`（「要嘛整個是字串陣列，要嘛整個是數字陣列」），**不是** `(string | number)[]`（「可以字串數字混裝的陣列」）：
+
+```typescript
+type ToArray<T> = T extends any ? T[] : never;
+type StrOrNumArray = ToArray<string | number>; // string[] | number[]
+
+const ok1: StrOrNumArray = ["x", "y"]; // ✅ 純 string[]
+const ok2: StrOrNumArray = [1, 2];     // ✅ 純 number[]
+const bad: StrOrNumArray = ["x", 1];   // ❌ TS2322: Type '(string | number)[]' is not
+                                       //    assignable to type 'string[]'（不能混裝）
+```
+
+#### 為什麼要寫 `T extends any` 這種看起來廢話的條件？
+
+`T extends any` 永遠成立，條件本身確實沒做任何判斷——**它的目的不是判斷，而是「讓 `T` 出現在 `extends` 左側」以觸發分佈**。這是型別層常見的慣用手法（也常寫成 `T extends unknown`）。真正做事的是拆解與重組的過程，不是那個條件。
+
+想確認分佈真的存在，可以對照「把聯合型別寫死」與「透過型別參數傳入」的差別：
+
+```typescript
+// 直接寫死聯合型別 → 沒有型別參數，不會分佈，整包拿去比對
+type Literal = string | number extends string ? true : false;
+// false（string | number 整體並不能賦值給 string）
+
+// 透過裸露的型別參數傳入 → 會分佈
+type ViaParam<T> = T extends string ? true : false;
+type Result = ViaParam<string | number>;
+// 分佈成 ViaParam<string> | ViaParam<number> = true | false，也就是 boolean ⚠️
+```
+
+同一個條件、同一個聯合型別，答案卻從 `false` 變成 `boolean`——差別只在有沒有經過型別參數。
+
+#### 關掉分佈：`[T] extends [U]`
+
+把 `T` 用元組包起來，它就不再「裸露」，分佈也就不會發生，整個聯合型別會被當成單一整體處理：
+
+```typescript
+// [T] 已經不是裸露的型別參數 → 關閉分佈
 type ToArrayNonDist<T> = [T] extends [any] ? T[] : never;
 
 type CombinedArray = ToArrayNonDist<string | number>;
-// (string | number)[]，整個聯合型別被當成單一整體處理
+// (string | number)[]，聯合型別完整地代進 T[]
 
-const a: StrOrNumArray = ["x", "y"]; // ✅ 只能是 string[] 或 number[] 其中一種
-const b: CombinedArray = ["x", 1];   // ✅ 混合陣列也可以
+const mixed: CombinedArray = ["x", 1]; // ✅ 混裝陣列沒問題
 ```
+
+元組只是最常見的包法（左右兩側要一起包），任何「讓 `T` 不再單獨出現」的寫法都有同樣效果。
+
+#### 這件事的實用價值：`Exclude` 全靠分佈
+
+分佈不是冷知識——7.6 會用到的 `Exclude` 和 `NonNullable`，整個實作原理就是它：
+
+```typescript
+// 標準庫的 Exclude 就是這一行
+type MyExclude<T, U> = T extends U ? never : T;
+
+type Roles = "admin" | "editor" | "user";
+type NonAdmin = MyExclude<Roles, "admin">; // "editor" | "user"
+// 分佈後：("admin" extends "admin" ? never : "admin")   → never
+//       | ("editor" extends "admin" ? never : "editor") → "editor"
+//       | ("user" extends "admin" ? never : "user")     → "user"
+// 組回來：never | "editor" | "user" = "editor" | "user"（never 在聯合型別中會被吸收掉）
+
+// 對照組：關掉分佈就整個壞掉
+type BadExclude<T, U> = [T] extends [U] ? never : T;
+type Oops = BadExclude<Roles, "admin">; // "admin" | "editor" | "user" ❌ 一個都沒排掉
+// 因為整包 Roles 並不能賦值給 "admin" → 條件為 false → 原封不動回傳 T
+```
+
+**「逐一過濾聯合型別成員」這件事之所以做得到，就是因為分佈幫你把成員一個個拆出來比對。**
+
+⚠️ 兩個由分佈衍生的經典陷阱：
+
+**1. `never` 是「空的聯合型別」，分佈時等於沒有成員可跑，結果直接是 `never`**
+
+```typescript
+type ToArray<T> = T extends any ? T[] : never;
+type A = ToArray<never>; // never ⚠️ 不是 never[]（沒有成員可以拆，迴圈跑了 0 次）
+
+// 所以「判斷 T 是不是 never」一定要關掉分佈
+type IsNeverWrong<T> = T extends never ? "yes" : "no";
+type W = IsNeverWrong<never>; // never ⚠️ 連 "yes" 或 "no" 都拿不到
+
+type IsNever<T> = [T] extends [never] ? "yes" : "no";
+type R = IsNever<never>; // "yes" ✅
+```
+
+**2. `boolean` 其實是 `true | false`，所以它也會被拆開**
+
+```typescript
+type ToArray<T> = T extends any ? T[] : never;
+type B = ToArray<boolean>; // false[] | true[] ⚠️ 不是 boolean[]
+```
+
+> 📌 分佈的進階應用（判斷是否為聯合型別的 `IsUnion`、把聯合型別轉成交集的 `UnionToIntersection`）見第 13 章 13.7。
 
 ---
 
 ## 7.5 映射型別（Mapped Types）
+
+映射型別的語法是 `[K in ...]`，作用是**走訪一個聯合型別，為其中每個成員各產生一個屬性**——相當於型別層的 `for...of`。
+
+### `keyof` / `extends keyof` / `in keyof` 到底差在哪？
+
+這三種寫法長得很像，但角色完全不同。用同一個 `User` 走一遍就清楚了：
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+```
+
+| 寫法 | 它是什麼 | 做的事 | 結果 |
+| --- | --- | --- | --- |
+| `keyof T` | 型別**運算子** | 取出所有鍵名 | `"id" \| "name"` |
+| `K extends keyof T` | 泛型**約束** | 從鍵名裡挑**一個**，並記住是哪個 | `K` = `"id"` 或 `"name"` |
+| `[K in keyof T]` | 映射型別的**走訪** | 把鍵名**每一個都跑一遍** | 產生 `{ id: ...; name: ... }` |
+
+用一句話記：**`keyof` 拿到一整包鍵、`extends keyof` 從那包裡挑一個、`in keyof` 把那包逐一跑完。**
+
+```typescript
+// ① keyof T — 產生一個聯合型別（就只是一包鍵名而已）
+type Keys = keyof User; // "id" | "name"
+
+// ② K extends keyof T — 約束型別參數，用在「挑其中一個」的場合（函式、泛型）
+function get<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+get({ id: 1, name: "Gary" }, "name"); // K 被推論成 "name"，回傳 string
+
+// ③ [K in keyof T] — 走訪每一個鍵，逐一產生新屬性（只能用在物件型別的 { } 裡面）
+type AllBoolean<T> = { [K in keyof T]: boolean };
+type Flags = AllBoolean<User>; // { id: boolean; name: boolean }
+```
+
+兩個常見誤解要澄清：
+
+**`in` 和 `keyof` 是可以拆開的**。`in` 右邊只要是「鍵名的聯合型別」就行，`keyof T` 只是最常見的來源：
+
+```typescript
+// 直接給聯合型別，不經過 keyof
+type Axis = { [K in "x" | "y"]: number }; // { x: number; y: number }
+
+// 給一個型別別名也可以
+type Keys = keyof User;
+type AsStrings = { [K in Keys]: string }; // { id: string; name: string }
+```
+
+**位置決定用法，不能互換**。`[K in keyof T]` 只能出現在物件型別的大括號內當屬性位置；`K extends keyof T` 只能出現在型別參數列表（`<>`）或條件型別裡：
+
+```typescript
+// ❌ type Wrong1<T> = K in keyof T;              // in 不能單獨用
+// ❌ type Wrong2<T> = { [K extends keyof T]: T[K] }; // 屬性位置要用 in，不是 extends
+```
+
+理解了 `in` 是「走訪」之後，下面所有映射型別的寫法就只是在走訪的過程中對每個屬性動手腳（加 `readonly`、加 `?`、改鍵名、換值型別）。
 
 ```typescript
 // 基本映射型別

@@ -85,6 +85,7 @@ function UserListPage() {
             <Icon name="search" size={16} />
             <input
               value={search}
+              aria-label="搜尋使用者"
               placeholder="搜尋姓名 / 帳號 / Email"
               onChange={(e) => {
                 setSearch(e.target.value)
@@ -95,6 +96,7 @@ function UserListPage() {
 
           <select
             className="input"
+            aria-label="角色篩選"
             value={role}
             onChange={(e) => {
               setRole(e.target.value)

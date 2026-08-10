@@ -227,18 +227,90 @@ import { createUser, type User } from "./user";
 
 ## 8.3 型別宣告檔案（.d.ts）
 
+### declare 關鍵字：「這東西存在，但實作不在這裡」
+
+在讀 `.d.ts` 之前得先搞懂 `declare`，因為整套型別宣告檔都建立在它上面。
+
+TypeScript 裡的宣告可以分成兩類：一類會編譯成真正的 JavaScript（`const`、`function`、`class`…），一類只活在型別層、編譯後完全消失（`interface`、`type`）。**`declare` 的作用就是把第一類變成第二類**：
+
+> `declare X` 的意思是：「我保證 `X` 在執行期一定存在，但它**不是由這份 TypeScript 檔案產生的**（而是來自 `<script>`、打包工具、瀏覽器環境或某個 JS 套件）。你只要記住它的型別、拿去做檢查就好，不要幫我產生任何程式碼。」
+
+這種「只描述型別、不產生實作」的宣告，官方術語叫**環境宣告（ambient declaration）**。
+
+```typescript
+// app.ts
+declare const __APP_VERSION__: string;                            // 由打包工具在建置時注入（Vite 的 define / webpack 的 DefinePlugin）
+declare function gtag(command: string, ...args: unknown[]): void; // 由 HTML 裡的 <script> 載入的全域函式
+
+console.log(`版本：${__APP_VERSION__}`); // ✅ 有型別，也不會報「找不到名稱 __APP_VERSION__」
+gtag("event", "page_view");              // ✅ 參數會被檢查
+```
+
+編譯後的 `app.js`——兩行 `declare` 蒸發了，只剩下使用它們的程式碼：
+
+```javascript
+"use strict";
+console.log(`版本：${__APP_VERSION__}`);
+gtag("event", "page_view");
+```
+
+**沒有 `declare` 的話你只有兩個選擇**：忍受 `Cannot find name '__APP_VERSION__'` 的錯誤，或是寫個假的 `const __APP_VERSION__ = ""` ——但後者會真的編譯出一行 JS，把建置時注入的值蓋掉。`declare` 就是為了填這個缺口：**告知型別，但不干涉執行期**。
+
+#### 三條規則
+
+**1. 不能有實作，也不能有初始值**——因為實作本來就在別的地方：
+
+```typescript
+declare function f(): void {}   // ❌ TS1183: An implementation cannot be declared in ambient contexts.
+declare const x: number = 5;    // ❌ TS1039: Initializers are not allowed in ambient contexts.
+
+declare function g(): void;      // ✅ 只有簽章
+declare const y: number;         // ✅ 只有型別
+```
+
+**2. TypeScript 不會驗證你講的是不是真的**——`declare` 跟 `as` 斷言一樣屬於「你自己負責」的承諾。如果那個東西執行期其實不存在，編譯期一片綠燈，執行期直接 `ReferenceError`：
+
+```typescript
+declare const totallyFake: string; // 編譯器照單全收
+console.log(totallyFake);          // 💥 執行期 ReferenceError: totallyFake is not defined
+```
+
+**3. 純型別的東西不需要 `declare`**——`interface` 和 `type` 本來就不產生 JavaScript，加了也沒有任何效果：
+
+```typescript
+declare interface A { x: number } // ⚠️ declare 是多餘的
+interface A2 { x: number }        // ✅ 一樣的效果
+```
+
+反過來說，在 `.d.ts` 檔案裡，頂層的 `const` / `function` / `class` **一定**要加 `declare`（或 `export`），否則會報 `TS1046: Top-level declarations in .d.ts files must start with either a 'declare' or 'export' modifier.`
+
+#### `declare` 的常見形態
+
+| 寫法 | 用來做什麼 | 說明位置 |
+| --- | --- | --- |
+| `declare const` / `declare function` / `declare class` | 描述由 `<script>`、CDN、打包工具注入的全域變數與函式 | 本節上方 |
+| `declare module "套件名"` | 為沒有型別定義的 JS 套件補上型別 | 本節下方「為第三方函式庫新增型別」 |
+| `declare global { ... }` | 在模組檔案裡擴充全域型別（`Window`、`Express.Request`…） | 第 4 章 4.4 宣告合併 |
+| `declare namespace` | 描述舊式的全域命名空間（常見於 UMD 套件） | 8.4 命名空間 |
+
+> 💡 課程後面的章節（例如第 7 章的 `declare function pick(x: string): string;`）還會看到另一種用途：**只想示範型別、不想寫沒意義的函式本體**時，用 `declare` 就能省掉實作。
+>
+> ⚠️ 反過來提醒：如果套件已經自帶型別、或裝了對應的 `@types/xxx`，就**不要**再自己 `declare` 一份，否則容易蓋掉正確的型別或造成衝突。
+
 ### 什麼是 .d.ts 檔案？
 
-`.d.ts` 檔案只包含型別資訊，不包含實作。用來為 JavaScript 函式庫提供型別定義。
+`.d.ts` 檔案只包含型別資訊，不包含實作——換句話說，它整個檔案就是一堆環境宣告的集合。用來為 JavaScript 函式庫提供型別定義。
 
 ```typescript
 // types.d.ts
-declare interface AppConfig {
+interface AppConfig {
+  // interface 是純型別，不需要 declare（寫了也只是多餘）
   apiUrl: string;
   port: number;
   debug: boolean;
 }
 
+// const 與 function 會對應到執行期的實體，在 .d.ts 頂層一定要加 declare（或 export）
 declare function initialize(config: AppConfig): void;
 
 declare const VERSION: string;

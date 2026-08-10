@@ -74,11 +74,13 @@ function PerformanceLabPage() {
           <input
             className="input"
             value={keyword}
+            aria-label="搜尋關鍵字"
             placeholder="搜尋（會觸發昂貴計算）"
             onChange={(e) => setKeyword(e.target.value)}
           />
           <select
             className="input"
+            aria-label="難度篩選"
             value={level}
             onChange={(e) => setLevel(e.target.value)}
           >

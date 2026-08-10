@@ -130,18 +130,74 @@ const user = findById(users, 1); // 型別為 { id: number; name: string } | und
 
 ### keyof 約束
 
+#### 先搞懂 `keyof` 本身
+
+`keyof` 是一個**型別運算子**：吃一個物件型別，吐出「它所有鍵名組成的聯合型別」。
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+type UserKeys = keyof User; // "id" | "name" | "email"
+
+const k1: UserKeys = "name";  // ✅
+// const k2: UserKeys = "phone"; // ❌ User 沒有 phone 這個鍵
+```
+
+它是**型別層的操作**，跟執行期的 `Object.keys()` 只是概念相似——`Object.keys(user)` 回傳的是值（一個 `string[]` 陣列），`keyof User` 產生的是型別（三個字串字面值的聯合）。
+
+搭配**索引存取型別** `T[K]`（用鍵名取出對應的值型別），就能組出各種工具：
+
+```typescript
+type NameType = User["name"];       // string，用鍵名取值型別
+type AllValues = User[keyof User];  // number | string，把所有鍵一次代進去 = 所有值型別的聯合
+```
+
+#### `keyof T` 與 `K extends keyof T` 差在哪？
+
+這是最容易混淆的一點：兩種寫法都能擋掉不存在的鍵，但**只有後者記得住「你傳的是哪一個鍵」**。
+
+```typescript
+// 寫法 A：keyof T 直接當參數型別
+function getA<T>(obj: T, key: keyof T) {
+  return obj[key]; // 回傳型別是 T[keyof T]：所有值型別的聯合
+}
+
+// 寫法 B：把鍵綁成獨立的型別參數 K
+function getB<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+
+const user = { name: "Gary", age: 30 };
+
+const a = getA(user, "name"); // string | number ⚠️ 精度掉了
+const b = getB(user, "name"); // string ✅ 剛好就是 name 的型別
+```
+
+差別在於 `K` 是一個**型別參數**，呼叫 `getB(user, "name")` 時 TypeScript 會把 `K` 推論成 `"name"` 這個具體的字面值型別，所以 `T[K]` 算出來就是 `string`。而寫法 A 的 `key` 型別永遠是「所有鍵的聯合」，函式內部無從得知你到底傳了哪一個，只能回傳「所有值型別的聯合」。
+
+| 寫法 | 擋掉不存在的鍵 | 記得是哪一個鍵 | 適用時機 |
+| --- | --- | --- | --- |
+| `key: keyof T` | ✅ | ❌ | 只需要驗證鍵名合法，不在乎回傳型別（如下方場景 1 的 `Column<T>`） |
+| `K extends keyof T` | ✅ | ✅ | 回傳型別或其他參數要跟著鍵變（場景 2、3） |
+
 ```typescript
 // T 是物件，K 是 T 的鍵
 function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
   return obj[key];
 }
 
-const user = { name: "Gary", age: 30, email: "gary@example.com" };
+const profile = { name: "Gary", age: 30, email: "gary@example.com" };
 
-getProperty(user, "name");  // 回傳型別為 string
-getProperty(user, "age");   // 回傳型別為 number
-// getProperty(user, "phone"); // ❌ "phone" 不是 user 的鍵
+getProperty(profile, "name");  // 回傳型別為 string
+getProperty(profile, "age");   // 回傳型別為 number
+// getProperty(profile, "phone"); // ❌ "phone" 不是 profile 的鍵
 ```
+
+> 📌 還有第三種長得很像的寫法 `[K in keyof T]`（映射型別），它做的事完全不同——是「走訪每一個鍵」。三者的對照見第 7 章 7.5。
 
 #### 什麼時候真的需要 keyof 約束？
 

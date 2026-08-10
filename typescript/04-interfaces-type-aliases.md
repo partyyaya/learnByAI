@@ -294,6 +294,14 @@ declare global {
 export {}; // declare global 只能出現在「模組」裡；沒有任何 import/export 的檔案會被當成純指令碼，需要這行把它變成模組
 ```
 
+這裡的 `declare` 是在告訴 TypeScript：**「以下的型別不是我這份檔案生出來的，它們屬於別的地方（這裡是全域範圍），我只是來補充內容，請不要為它產生任何 JavaScript。」** 這種只描述型別、不含實作的宣告叫**環境宣告（ambient declaration）**：
+
+- `declare global { ... }` = 「打開全域範圍，把裡面的宣告合併進去」。Express 的 `Request` 介面在型別上位於全域的 `Express` 命名空間下，所以要先 `declare global` 才進得去。
+- 上面整段編譯後會**完全消失**，不會產生任何一行 JavaScript——它純粹是給型別檢查器看的。
+- 型別是補上了，但**執行期真的把 `req.user` 塞進去仍然要你自己寫**（通常在驗證登入的 middleware 裡）。TypeScript 不會驗證這個承諾；宣告了卻沒實際賦值，`req.user` 執行期就是 `undefined`。
+
+> 📌 `declare` 的完整說明（各種形態、限制、以及 `.d.ts` 檔案）見第 8 章 8.3。
+
 > 💡 這才是宣告合併存在的主因：讓你在不修改套件原始碼的情況下，為既有型別「補洞」。
 
 ### 何時使用哪個？

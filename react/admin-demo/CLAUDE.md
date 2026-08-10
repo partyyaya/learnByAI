@@ -17,6 +17,9 @@
 - 一律用函式元件 + Hooks，不使用 class 元件。
 - 匯入路徑使用 `@/` 別名（指向 `src/`），避免 `../../..`。
 - 顯示文字用繁體中文；程式碼識別字用英文。
+- 表單控制項一定要有可及名稱：有可見標籤的用 `Field` 包起來；
+  工具列這類沒有可見標籤的（搜尋框、篩選下拉）一律加 `aria-label`。
+  placeholder 不算標籤——它一打字就消失。
 - 縮排 2 空白、不加分號、單引號（見 `.prettierrc.json`）。
 
 ## 目錄結構與職責
@@ -33,6 +36,7 @@ src/
 ├── hooks/             # 自訂 hooks，主要封裝 TanStack Query（useXxxQuery / useXxxMutation）
 ├── services/          # HTTP 層：axios 實例 + 各 domain 的 api 模組（xxx.api.js）
 ├── mock/              # 前端 mock：axios-mock-adapter 設定 + 假資料 + 各 domain 攔截
+├── test/              # 測試共用：setup.js（前置清理）+ renderWithProviders.jsx
 ├── utils/             # 純函式工具
 └── styles/            # 全域樣式（變數/主題、layout、components）
 ```
@@ -45,6 +49,7 @@ src/
 - Query hook：`useXxxQuery.js` / `useXxxMutation.js`。
 - API 模組：`xxx.api.js`，依 domain 分檔。
 - Mock：`xxx.mock.js`，依 domain 分檔。
+- 測試：`Xxx.test.jsx` / `xxx.test.js`，與被測檔案放在同一層。
 
 ## 狀態分工（重要）
 
@@ -68,6 +73,19 @@ src/
 - Mock 只在 `src/mock` 內攔截；`services` 與 `pages` 感覺不到差異——這樣未來換真後端幾乎零改動。
 - 假資料放 `src/mock/db.js`，各 domain 攔截放對應 `xxx.mock.js`。
 
+## 測試（對應課程第 14 章）
+
+- Vitest + React Testing Library，設定寫在 `vite.config.js` 的 `test` 區塊。
+- 元件測試一律用 `src/test/renderWithProviders.jsx`，不要在測試檔裡各自手刻
+  `QueryClientProvider` / `MemoryRouter`；測動態路由時傳 `route` 與 `path` 兩個選項。
+- 每次 render 都要新的 `QueryClient`（`createTestQueryClient` 已處理），且務必
+  `retry: false`——沿用正式設定的 retry 會讓錯誤狀態的測試變慢又不穩。
+- 攔截 `services/api/xxx.api.js` 這一層（`vi.mock`），不要去攔 axios 或 mock adapter。
+- Zustand 與 localStorage 的重設由 `src/test/setup.js` 統一處理；新增 store 時記得
+  把它加進該檔的 `initialStoreStates`，否則測試會跨檔互相污染。
+- 查詢元素用使用者視角：`getByRole` / `getByLabelText` 優先，`getByTestId` 是最後手段。
+- 等待非同步結果用 `findBy*` 或 `waitFor`，不要用固定秒數的 sleep。
+
 ## 對應課程章節（維護時可對照）
 
 | 功能 / 檔案 | 課程章節 |
@@ -80,6 +98,7 @@ src/
 | Zustand + persist `stores/ui.store.js` | 11 Zustand |
 | Zustand 篩選 + Query queryKey `pages/courses` | 12 Zustand + Query 整合 |
 | `memo` / `useMemo` / `useCallback` `pages/PerformanceLabPage.jsx` | 13 效能優化 |
+| 測試設定與 Provider 包裝 `src/test/`、各 `*.test.jsx` | 14 測試與部署 |
 
 ## 不要做
 

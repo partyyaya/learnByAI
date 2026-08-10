@@ -100,13 +100,13 @@ npm create vue@latest my-vue-course
 ✔ Add JSX Support?                        › No    （Vue 主用 template，不需要）
 ✔ Add Vue Router for SPA?                 › No    （第 7 章才學，先不裝）
 ✔ Add Pinia for state management?         › No    （第 7 章才學，先不裝）
-✔ Add Vitest for unit testing?           › No
+✔ Add Vitest for unit testing?           › No    （第 8 章才學；先選 Yes 也行，只是現在用不到）
 ✔ Add an End-to-End Testing Solution?    › No
 ✔ Add ESLint for code quality?           › Yes   （幫你抓錯，建議裝）
 ✔ Add Prettier for formatting?           › Yes   （自動排版，建議裝）
 ```
 
-> 為什麼先都不裝 Router / Pinia / TS？因為前 6 章要專心把「響應式、模板、元件」這些**核心**練熟。等第 7 章要做路由與狀態管理時再裝，你會更清楚它們各自補了什麼。
+> 為什麼先都不裝 Router / Pinia / TS？因為前 6 章要專心把「響應式、模板、元件」這些**核心**練熟。等第 7 章要做路由與狀態管理、第 8 章要寫測試時再裝，你會更清楚它們各自補了什麼。
 
 ### 4.2 替代：`npm create vite@latest`（更精簡）
 
