@@ -479,6 +479,117 @@ const config2 = {
 
 換句話說：**因為 `as const` 承諾了「不會再改」，TypeScript 才敢把型別收到最窄。** 這也是為什麼它很適合用來定義設定檔、常數表，或搭配前面的字串聯合型別使用。
 
+### typeof 型別查詢：從「值」取出「型別」
+
+`as const` 把值凍結成最窄的字面值型別後，下一步通常是**把這些型別拿出來用**——這需要 `typeof`。
+
+#### `typeof` 有兩種身分
+
+同一個關鍵字，靠**出現的位置**決定意義：
+
+| 位置 | 身分 | 什麼時候執行 |
+| --- | --- | --- |
+| 運算式中（`if`、賦值右側…） | JavaScript 的運算子，回傳型別名稱的字串 | 執行期 |
+| 型別位置（`:` 之後、`type X =` 右側…） | TypeScript 的**型別查詢**，取出某個值的型別 | 編譯期 |
+
+```typescript
+const value = "hello";
+
+const isStr = typeof value === "string"; // 運算式位置：執行期得到字串 "string"
+type ValueType = typeof value;           // 型別位置：編譯期得到型別 "hello"
+```
+
+兩者只是共用了關鍵字，**做的事情完全不同**，不會互相影響。
+
+#### 用途一：不必手寫型別，直接從值推導
+
+平常我們是「先定義型別，再寫符合型別的值」。`typeof` 讓你反過來：**先寫值，型別自動生出來**。
+
+```typescript
+const config = {
+  url: "https://api.example.com",
+  timeout: 5000,
+  retry: true,
+};
+
+// 不用手寫 interface Config { url: string; timeout: number; retry: boolean }
+type Config = typeof config;
+
+// 之後其他變數就能沿用這個型別
+const backupConfig: Config = { url: "/api/backup", timeout: 100, retry: false };
+```
+
+好處是**只有一份來源**：`config` 加一個欄位，`Config` 自動跟著長出來，不會出現「改了值卻忘記改型別」的情形。
+
+> ⚠️ `typeof` 後面只能放**值**（變數、函式、類別），不能放型別：
+>
+> ```typescript
+> interface Foo { a: number }
+> // type T = typeof Foo;
+> // ❌ TS2693: 'Foo' only refers to a type, but is being used as a value here.
+> ```
+
+#### 用途二：搭配 `keyof` 取出所有鍵
+
+`keyof` 吃的是型別，所以要先用 `typeof` 把值轉成型別，才能接 `keyof`——`keyof typeof x` 這個組合在實務上非常常見：
+
+```typescript
+const THEME = {
+  primary: "#007bff",
+  danger: "#dc3545",
+} as const;
+
+type ThemeName = keyof typeof THEME; // "primary" | "danger"
+
+function getColor(name: ThemeName): string {
+  return THEME[name];
+}
+
+getColor("primary"); // ✅ 有自動完成
+// getColor("warning"); // ❌ THEME 裡沒有這個鍵，編譯期就擋下來
+```
+
+#### 用途三：把常數陣列變成聯合型別
+
+陣列版本要多一個步驟 `[number]`：
+
+```typescript
+const ROLES = ["admin", "editor", "user"] as const;
+
+type Role = (typeof ROLES)[number]; // "admin" | "editor" | "user"
+```
+
+`[number]` 的意思是「**索引是任意數字時，可能取到的型別**」——既然每個位置都有可能，結果就是所有元素型別的聯合。（不是「第 number 個元素」。）
+
+這個三段組合是實務上極常用的樣板：
+
+```text
+as const            typeof              [number]
+凍結成字面值   →   從值進到型別   →   把元組攤成聯合型別
+```
+
+**`as const` 不能省**，否則第一步字面值就丟掉了：
+
+```typescript
+const LOOSE = ["admin", "editor", "user"]; // 沒有 as const → string[]
+type Bad = (typeof LOOSE)[number];         // string ⚠️ 整個技巧失效
+```
+
+最大的價值是**執行期與編譯期共用同一份來源**：
+
+```typescript
+const ROLES = ["admin", "editor", "user"] as const;
+type Role = (typeof ROLES)[number];
+
+function isRole(value: string): value is Role {
+  return ROLES.includes(value as Role); // 執行期檢查用同一個陣列
+}
+
+// 之後要新增角色，只改 ROLES 一個地方，型別與執行期檢查都自動跟上
+```
+
+> 📌 `keyof` 的完整說明見第 6 章 6.3，索引存取型別（`T[K]`）與更多應用見第 7 章 7.6。
+
 ---
 
 ## 練習題

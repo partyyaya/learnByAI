@@ -145,6 +145,8 @@ type Role = (typeof ROLES)[number]; // "admin" | "user"
 
 `as const` 負責凍結成字面量，`satisfies` 負責驗證形狀，兩者常一起出現。
 
+第二行 `(typeof ROLES)[number]` 是「**把常數陣列轉成聯合型別**」的慣用寫法：`typeof ROLES` 取出 `ROLES` 這個值的型別（`readonly ["admin", "user"]`），再用 `[number]` 取出「任意索引位置的元素型別」，也就是所有元素的聯合。基礎說明見第 2 章 2.8〈typeof 型別查詢〉，完整拆解見本章 7.6 末尾。
+
 **判斷準則**
 
 - 這個值之後只當「某個型別」用，不在乎具體內容 → 用 `: T` 標註就好
@@ -779,7 +781,9 @@ type Keys = keyof User;
 type AsStrings = { [K in Keys]: string }; // { id: string; name: string }
 ```
 
-**位置決定用法，不能互換**。`[K in keyof T]` 只能出現在物件型別的大括號內當屬性位置；`K extends keyof T` 只能出現在型別參數列表（`<>`）或條件型別裡：
+**位置決定用法，不能互換**。
+`[K in keyof T]` 只能出現在物件型別的大括號內當屬性位置；
+`K extends keyof T` 只能出現在型別參數列表（`<>`）或條件型別裡：
 
 ```typescript
 // ❌ type Wrong1<T> = K in keyof T;              // in 不能單獨用
@@ -843,6 +847,44 @@ const cp: ConcretePoint = { x: 1, y: 2 }; // ✅ 已移除 ?，兩個屬性都�
 
 ### 鍵值重新映射（Key Remapping）
 
+前面的映射型別走訪每個鍵時，**鍵名都原封不動**，只改了值或修飾詞。加上 `as` 子句後，就能在走訪的過程中**順便把鍵名也換掉**：
+
+```typescript
+// 語法：[K in 來源聯合 as 新的鍵名]: 值的型別
+interface Point {
+  x: number;
+  y: number;
+}
+
+type PointFields = {
+  [K in keyof Point as `${K}Field`]: Point[K];
+};
+// { xField: number; yField: number }
+```
+
+上面直接對具體的 `Point` 操作，`keyof Point` 就是 `"x" | "y"`，已經確定是字串，可以直接拼接。但**改寫成泛型版本後，就必須多寫一個 `string & K`**：
+
+```typescript
+type Renamed<T> = {
+  [K in keyof T as `${string & K}Field`]: T[K];
+};
+
+type PointFields2 = Renamed<Point>; // { xField: number; yField: number }
+```
+
+`string & K` 是**交集型別**，意思是「取 `K` 之中同時也是字串的部分」。之所以突然需要它，是因為泛型的 `T` 還沒被代入具體型別，`keyof T` 有可能包含數字或 symbol 鍵，而那些不能直接拼進字串。詳細原因見下方〈為什麼要寫 `string & K`〉。
+
+> 💡 **交集沒有順序性**，`string & K` 和 `K & string` 是完全一樣的型別，實務程式碼裡兩種寫法都會看到。這跟數學上 A ∩ B = B ∩ A 是同一件事——`&` 描述的是「同時滿足兩邊」，跟先寫哪個無關。（`|` 聯合型別也一樣沒有順序性。）
+
+⚠️ **這個 `as` 跟型別斷言的 `as` 完全無關**——同一個關鍵字在不同位置是兩件事：
+
+| 出現位置 | 意義 |
+| --- | --- |
+| `value as Type`（運算式中） | 型別斷言：「相信我，這個值是這個型別」 |
+| `[K in ... as NewKey]`（映射型別中） | 鍵值重新映射：「走訪時把鍵名換成 NewKey」 |
+
+#### 拆解課程範例
+
 ```typescript
 interface User {
   id: number;
@@ -867,9 +909,96 @@ type UserGetters = Getters<User>;
 // { getId: () => number; getName: () => string; getEmail: () => string }
 ```
 
+以 `Getters<User>` 為例，逐個鍵展開：
+
+```text
+[K in keyof User as `get${Capitalize<string & K>}`]: () => User[K]
+
+K = "id"    → 鍵名 `get${Capitalize<"id">}`    = "getId"    ，值 () => User["id"]    = () => number
+K = "name"  → 鍵名 `get${Capitalize<"name">}`  = "getName"  ，值 () => User["name"]  = () => string
+K = "email" → 鍵名 `get${Capitalize<"email">}` = "getEmail" ，值 () => User["email"] = () => string
+
+組合結果：{ getId: () => number; getName: () => string; getEmail: () => string }
+```
+
+這裡用到兩個還沒介紹的東西，先簡單說明，兩者的完整介紹都在下一節 7.6：
+
+**1. 反引號的模板字面值型別**：`` `get${...}` `` 是在**型別層**做字串拼接，跟 JavaScript 的樣板字串長得一樣，但操作的是型別而不是值。
+
+**2. `Capitalize<S>`**：TypeScript 內建的字串工具型別，把字串型別的首字母轉成大寫（`Capitalize<"name">` → `"Name"`）。
+
+#### 為什麼要寫 `string & K`，不能直接寫 `Capitalize<K>`？
+
+因為 `Capitalize<S>` 要求 `S` 必須是字串，但**物件的鍵不保證是字串**——JavaScript 的鍵可以是 `string`、`number` 或 `symbol`。在泛型 `T` 還沒被代入具體型別時，TypeScript 只知道 `keyof T` 的上限是 `string | number | symbol`，所以直接寫會被擋下來：
+
+```typescript
+type Bad<T> = {
+  [K in keyof T as `get${Capitalize<K>}`]: () => T[K];
+};
+// ❌ TS2344: Type 'K' does not satisfy the constraint 'string'.
+//      Type 'keyof T' is not assignable to type 'string'.
+//        Type 'string | number | symbol' is not assignable to type 'string'.
+//          Type 'number' is not assignable to type 'string'.
+```
+
+`string & K` 用的是 7.2 介紹過的**交集型別**（`&`）。交集的定義是「同時滿足兩邊的型別」，套在這裡的效果就是「**只留下 `K` 之中屬於字串的部分**」——等於幫編譯器把非字串的鍵過濾掉：
+
+```typescript
+type S1 = string & "name"; // "name"（本來就是字串，交集後原封不動）
+type S2 = string & 1;      // never（數字：沒有東西能同時是 string 又是 1 → 空集合）
+type S3 = string & symbol; // never（symbol 同理）
+```
+
+把它想成集合運算會很直覺：`K` 是「所有可能的鍵」這個集合，跟「所有字串」取交集後，剩下的必然都是字串，於是 `Capitalize` 就收得下了。（如前面提過的，寫成 `K & string` 完全等價。）
+
+而鍵名算出 `never` 的屬性會被直接丟掉，所以數字鍵不會出現在結果裡：
+
+```typescript
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+
+interface Mixed {
+  a: number;
+  1: string; // 數字鍵
+}
+
+type G = Getters<Mixed>; // { getA: () => number }，數字鍵 1 被濾掉了
+```
+
+#### 順帶學到的技巧：映射到 `never` 就是「刪掉這個鍵」
+
+上面那個副作用其實是 key remapping 最實用的用法之一——`as` 後面接條件型別，想保留的鍵回傳 `K`、想刪掉的回傳 `never`：
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+// 依「鍵名」過濾：刪掉 id
+type RemoveId<T> = {
+  [K in keyof T as K extends "id" ? never : K]: T[K];
+};
+
+type WithoutId = RemoveId<User>; // { name: string; email: string }
+
+// 依「值型別」過濾：只留下值是 string 的欄位（這是 Omit / Pick 做不到的）
+type StringKeysOnly<T> = {
+  [K in keyof T as T[K] extends string ? K : never]: T[K];
+};
+
+type OnlyStrings = StringKeysOnly<User>; // { name: string; email: string }
+```
+
+**「依值的型別來挑欄位」只有 key remapping 做得到**，7.7 的 `Pick` / `Omit` 都只能依鍵名操作。
+
 ---
 
 ## 7.6 模板字面值型別（Template Literal Types）
+
+模板字面值型別借用了 JavaScript 樣板字串的語法（反引號 + `${}`），但**操作的對象是型別而不是值**：拿型別去拼接，產生新的字串字面值型別。
 
 ```typescript
 // 基本模板字面值
@@ -896,6 +1025,170 @@ type ClickEvent = EventName<"click">; // "onClick"
 type ChangeEvent = EventName<"change">; // "onChange"
 ```
 
+`ColorSize` 那個例子值得注意：**插入聯合型別時會產生所有組合**（3 × 3 = 9 種），這是模板字面值型別最實用的性質之一。
+
+### 內建字串工具型別
+
+TypeScript 內建四個專門處理字串型別大小寫的工具型別，上面的 `EventName` 就用到了 `Capitalize`：
+
+| 工具型別 | 作用 | 範例 |
+| --- | --- | --- |
+| `Uppercase<S>` | 全部轉大寫 | `Uppercase<"hello">` → `"HELLO"` |
+| `Lowercase<S>` | 全部轉小寫 | `Lowercase<"HELLO">` → `"hello"` |
+| `Capitalize<S>` | **只有**首字母轉大寫 | `Capitalize<"hello world">` → `"Hello world"` |
+| `Uncapitalize<S>` | **只有**首字母轉小寫 | `Uncapitalize<"HELLO">` → `"hELLO"` |
+
+```typescript
+type A = Uppercase<"hello">;          // "HELLO"
+type B = Lowercase<"HELLO">;          // "hello"
+type C = Capitalize<"hello world">;   // "Hello world"（注意 world 沒被動到）
+type D = Uncapitalize<"HELLO">;       // "hELLO"
+
+// 可以互相巢狀組合
+type E = Uppercase<Capitalize<"abc">>; // "ABC"
+```
+
+這四個是**編譯器內建（intrinsic）的型別**——它們在標準庫裡的定義長這樣，沒有實作內容，因為字串處理邏輯直接寫在編譯器裡，用 TypeScript 的型別語法根本寫不出來：
+
+```typescript
+// lib.es5.d.ts 裡的定義
+type Uppercase<S extends string> = intrinsic;
+type Capitalize<S extends string> = intrinsic;
+```
+
+#### 三個實用性質
+
+**1. 會對聯合型別分佈**——傳入聯合型別時，每個成員各自處理再組回聯合型別（就是 7.4 講的分佈行為）：
+
+```typescript
+type Events = Capitalize<"click" | "change" | "focus">;
+// "Click" | "Change" | "Focus"
+
+// 所以搭配映射型別能一次產生一整組屬性
+type Handlers = {
+  [K in "save" | "delete" as `on${Capitalize<K>}`]: () => void;
+};
+// { onSave: () => void; onDelete: () => void }
+```
+
+**2. 泛型參數必須先約束成 `string`**——這四個工具型別的參數都宣告成 `S extends string`：
+
+```typescript
+type Bad<T> = Capitalize<T>;
+// ❌ TS2344: Type 'T' does not satisfy the constraint 'string'.
+
+type Good<T extends string> = Capitalize<T>; // ✅
+```
+
+> 這正是 7.5 那個 `Capitalize<string & K>` 的由來——`K` 來自 `keyof T`，可能包含數字或 symbol 鍵，得先用 `string & K` 濾出字串的部分才能餵給 `Capitalize`。
+
+**3. 遇到寬泛的 `string` 不會算出結果，但仍保有意義**——`Capitalize<string>` 沒辦法算出具體字串，TypeScript 會把它原封不動留著，當成「所有首字母大寫的字串」這個子型別：
+
+```typescript
+declare const cap: Capitalize<string>;
+
+const s1: string = cap; // ✅ Capitalize<string> 是 string 的子型別，可以放寬
+// const s2: Capitalize<string> = "hello"; // ❌ 反過來不行，string 不見得首字母大寫
+```
+
+#### 實務案例：從常數陣列自動生成型別
+
+模板字面值型別 + 字串工具型別 + 映射型別三者串起來，就能從一份「唯一真實來源」推導出一整組型別：
+
+```typescript
+// 唯一真實來源：只要維護這個陣列
+const ACTIONS = ["save", "delete", "publish"] as const;
+
+type Action = (typeof ACTIONS)[number]; // "save" | "delete" | "publish"
+
+// 自動產生對應的 handler 介面
+type ActionHandlers = {
+  [K in Action as `on${Capitalize<K>}`]: () => void;
+};
+// {
+//   onSave: () => void;
+//   onDelete: () => void;
+//   onPublish: () => void;
+// }
+
+const handlers: ActionHandlers = {
+  onSave: () => console.log("saved"),
+  onDelete: () => console.log("deleted"),
+  onPublish: () => console.log("published"),
+  // 少寫一個或多寫一個都會編譯錯誤，之後在 ACTIONS 新增項目，
+  // 這裡就會立刻報錯提醒你補上對應的 handler
+};
+```
+
+##### 拆解 `(typeof ACTIONS)[number]`
+
+這一行是把「執行期的陣列」轉成「型別層的聯合型別」的慣用寫法，它其實是三個獨立動作串起來的，一層層拆開看：
+
+```typescript
+// 起點：一個普通的值（不是型別）
+const ACTIONS = ["save", "delete", "publish"] as const;
+
+// 步驟 ①  as const —— 凍結成最窄的唯讀元組（第 2 章介紹過）
+//   沒有 as const 會被推論成 string[]，字面值資訊全丟掉
+type Step1 = typeof ACTIONS; // readonly ["save", "delete", "publish"]
+
+// 步驟 ②  typeof —— 把「值」搬到型別世界
+// 步驟 ③  [number] —— 用索引存取型別取出元素
+type Step3 = (typeof ACTIONS)[number]; // "save" | "delete" | "publish"
+```
+
+**步驟 ②：型別位置的 `typeof`**
+
+`typeof` 有兩種完全不同的身分，靠**出現的位置**區分：
+
+| 位置 | 身分 | 例子 |
+| --- | --- | --- |
+| 運算式中 | JavaScript 的運算子，執行期回傳字串 | `if (typeof x === "string")`（7.3 的 typeof Guard） |
+| 型別位置 | TypeScript 的**型別查詢**，取出某個值的型別 | `type T = typeof ACTIONS` |
+
+`ACTIONS` 是一個**值**，不能直接寫在型別的位置；`typeof ACTIONS` 就是那道橋，意思是「`ACTIONS` 這個變數推論出來的型別」。這讓你不必手寫一份型別去對應已經存在的值——**值改了，型別自動跟著改**。（型別查詢的基礎介紹見第 2 章 2.8。）
+
+**步驟 ③：`[number]` 是索引存取型別**
+
+`T[K]` 這個語法（第 6 章 `T[K]` 用過）也能用在陣列與元組上。差別在於索引可以是具體數字，也可以是 `number` 這個型別：
+
+```typescript
+type Actions = readonly ["save", "delete", "publish"];
+
+type First = Actions[0];      // "save"    ——「第 0 個元素的型別」
+type Second = Actions[1];     // "delete"
+type Any = Actions[number];   // "save" | "delete" | "publish"
+```
+
+關鍵在最後一行：`[number]` 不是「第 number 個」，而是「**索引是任意數字時可能拿到的型別**」。既然每個位置都有可能，結果自然就是所有元素型別的聯合。
+
+不限於 `typeof`，任何陣列或元組型別都適用：
+
+```typescript
+type A = string[][number];      // string
+type B = [number, boolean][number]; // number | boolean
+```
+
+**為什麼 `as const` 不能省？** 少了它，陣列會被推論成 `string[]`，元素的字面值資訊在第一步就消失了：
+
+```typescript
+const LOOSE = ["save", "delete", "publish"]; // 沒有 as const
+type Bad = (typeof LOOSE)[number];           // string ⚠️ 拿不到具體字面值，整個技巧失效
+```
+
+> 💡 括號可以省略——`typeof ACTIONS[number]` 與 `(typeof ACTIONS)[number]` 結果相同（TypeScript 會先取 `typeof ACTIONS` 再做索引）。但加上括號讀起來清楚得多，一般都建議保留。
+
+**物件版的對應寫法**，實務上一樣常見：
+
+```typescript
+const CONFIG = { host: "localhost", port: 3000 } as const;
+
+type ConfigKeys = keyof typeof CONFIG;                  // "host" | "port"
+type ConfigValues = (typeof CONFIG)[keyof typeof CONFIG]; // "localhost" | 3000
+```
+
+一句話總結這個慣用寫法：**`as const` 保住字面值 → `typeof` 從值進到型別 → `[number]` 把元組攤成聯合型別。** 之後只要維護 `ACTIONS` 一個地方，`Action`、`ActionHandlers` 全部自動更新。
+
 ---
 
 ## 7.7 內建工具型別（Utility Types）
@@ -913,12 +1206,30 @@ interface User {
 
 // Partial<T> — 所有屬性變成可選
 type UpdateUser = Partial<User>;
+// {
+//   id?: number | undefined;
+//   name?: string | undefined;
+//   email?: string | undefined;
+//   age?: number | undefined;
+//   role?: "admin" | "user" | undefined;
+// }
 
-// Required<T> — 所有屬性變成必要
+// Required<T> — 所有屬性變成必要（同時移除 ? 與 | undefined）
 type StrictUser = Required<User>;
+// { id: number; name: string; email: string; age: number; role: "admin" | "user" }
+// ⚠️ 與 User 完全相同 —— 因為 User 本來就沒有可選屬性，這裡看不出效果。
+//    Required 要作用在含 ? 的型別上才有意義：
+//      Required<{ id?: number; title?: string }> → { id: number; title: string }
 
-// Readonly<T> — 所有屬性變成唯讀
+// Readonly<T> — 所有屬性變成唯讀（只有一層，巢狀物件內部仍可改）
 type FrozenUser = Readonly<User>;
+// {
+//   readonly id: number;
+//   readonly name: string;
+//   readonly email: string;
+//   readonly age: number;
+//   readonly role: "admin" | "user";
+// }
 
 // Pick<T, K> — 選取部分屬性
 type UserPreview = Pick<User, "id" | "name">;
@@ -930,6 +1241,10 @@ type UserWithoutId = Omit<User, "id">;
 
 // Record<K, V> — 建立鍵值對型別
 type UserMap = Record<string, User>;
+// { [x: string]: User }（鍵是 string → 產生索引簽章，任何字串鍵都合法）
+
+type UsersByRole = Record<"admin" | "user", User[]>;
+// { admin: User[]; user: User[] }（鍵是聯合型別 → 產生具名屬性，且必須全部提供）
 
 // Exclude<T, U> — 從聯合型別中排除
 type NonAdmin = Exclude<User["role"], "admin">; // "user"
@@ -948,8 +1263,17 @@ function createUser() {
 type UserReturn = ReturnType<typeof createUser>;
 // { id: number; name: string }
 
-// Parameters<T> — 取得函式參數型別
-type CreateParams = Parameters<typeof createUser>; // []
+// Parameters<T> — 取得函式「整包參數列」，結果是一個元組
+function updateUser(id: number, data: { name?: string }, notify?: boolean) {
+  return { id, ...data, notify };
+}
+type UpdateParams = Parameters<typeof updateUser>;
+// [id: number, data: { name?: string | undefined; }, notify?: boolean | undefined]
+//  ↑ 參數名稱會被保留下來（標籤化元組），可選參數也保留 ?
+
+type SecondParam = UpdateParams[1]; // { name?: string | undefined }（用索引取單一參數）
+
+type CreateParams = Parameters<typeof createUser>; // []（沒有參數 → 空元組）
 
 // Awaited<T> — 攤平 Promise（含巢狀 Promise），取得最終解析出的值型別
 interface ApiResponse<T> {
@@ -982,6 +1306,149 @@ type FetchedUser = Awaited<ReturnType<typeof fetchApi<User>>>;
 > const bad: BadOmit = {}; // ✅ 型別上完全合法，但已經失去 x / y 的資訊
 > ```
 
+### 補充：為什麼 `ReturnType<typeof createUser>` 需要 `typeof`？
+
+因為 **`createUser` 是一個「值」，而 `ReturnType<T>` 要的是「型別」**。
+
+TypeScript 裡有兩個彼此獨立的命名空間——**值的世界**（變數、函式、類別實例，執行期真的存在）和**型別的世界**（`interface`、`type`、型別參數，編譯後就消失）。`function createUser() {...}` 建立的是一個值，寫在型別的位置上編譯器會直接拒絕：
+
+```typescript
+function createUser() {
+  return { id: 1, name: "Gary" };
+}
+
+// type R = ReturnType<createUser>;
+// ❌ TS2749: 'createUser' refers to a value, but is being used as a type here.
+//            Did you mean 'typeof createUser'?
+```
+
+錯誤訊息連解法都寫出來了。`typeof` 就是那道橋：它把值的世界的 `createUser`，換成它在型別世界的對應物 `() => { id: number; name: string }`，`ReturnType` 才有東西可以拆。
+
+**反過來說，如果手上已經是型別，就不需要 `typeof`：**
+
+```typescript
+// 函式型別別名 —— 本來就住在型別世界
+type CreateUser = () => { id: number; name: string };
+type R1 = ReturnType<CreateUser>; // ✅ 不用 typeof
+
+// 函式宣告 —— 住在值的世界，要 typeof 搭橋
+function createUser() {
+  return { id: 1, name: "Gary" };
+}
+type R2 = ReturnType<typeof createUser>; // ✅ 需要 typeof
+```
+
+判斷方式很簡單：**問自己「這個名字是我用 `const`/`function`/`class` 建立的嗎？」** 是 → 它是值，需要 `typeof`；如果是 `type`/`interface` 建立的 → 它已經是型別，不要加。
+
+加錯方向也會報錯——`interface` 只存在於型別世界，對它用 `typeof` 沒有意義：
+
+```typescript
+interface Foo {
+  a: number;
+}
+// type T = typeof Foo;
+// ❌ TS2693: 'Foo' only refers to a type, but is being used as a value here.
+```
+
+#### 類別是特例：它同時存在於兩個世界
+
+`class` 比較特別，一個名字會同時在兩邊各建立一個東西，所以加不加 `typeof` **都合法但意義完全不同**：
+
+```typescript
+class Repo {
+  constructor(public url: string) {}
+  find() {
+    return this.url;
+  }
+}
+
+type A = Repo;         // 實例的型別 → { url: string; find(): string }
+type B = typeof Repo;  // 建構子本身的型別 → new (url: string) => Repo
+
+type Args = ConstructorParameters<typeof Repo>; // [url: string]（取建構子參數要用 typeof）
+type Inst = InstanceType<typeof Repo>;          // Repo（從建構子拿回實例型別）
+```
+
+這也解釋了為什麼取建構子參數要用 `ConstructorParameters<typeof Repo>` 而不是 `Parameters`：
+
+```typescript
+// type X = ReturnType<typeof Repo>;
+// ❌ TS2344: Type 'typeof Repo' does not satisfy the constraint '(...args: any) => any'.
+//      Type 'typeof Repo' provides no match for the signature '(...args: any): any'.
+```
+
+`typeof Repo` 只有 `new` 簽章、沒有普通呼叫簽章，所以 `ReturnType` / `Parameters` 都吃不下它，必須改用 `InstanceType` / `ConstructorParameters`。
+
+> 📌 `typeof` 型別查詢的基礎介紹見第 2 章 2.8。
+
+### 補充：`Parameters<T>` 為什麼是元組？
+
+`Parameters` 回傳的**不是**「參數型別的列表」，而是一個**元組型別**——因為函式參數本來就是「有順序、有固定長度」的一串值，元組正好是描述這件事的型別。（它的實作就是 7.4 的 `T extends (...args: infer P) => any ? P : never`，`infer P` 抓到的是整包參數列。）
+
+既然是元組，就能用元組的方式操作：
+
+```typescript
+function updateUser(id: number, data: { name?: string }, notify?: boolean) {
+  return { id, ...data, notify };
+}
+
+type P = Parameters<typeof updateUser>;
+// [id: number, data: { name?: string | undefined; }, notify?: boolean | undefined]
+
+type First = P[0];      // number
+type Second = P[1];     // { name?: string | undefined }
+type Any = P[number];   // number | { name?: string | undefined } | boolean | undefined
+```
+
+幾個要知道的行為：
+
+```typescript
+// 沒有參數 → 空元組（不是 never、也不是 void）
+function noArgs() {}
+type A = Parameters<typeof noArgs>; // []
+
+// 剩餘參數 → 得到陣列型別，而不是固定長度的元組
+function log(...messages: string[]) {}
+type B = Parameters<typeof log>; // string[]
+
+// 類別的建構子要用 ConstructorParameters
+class Repo {
+  constructor(public url: string, public timeout: number) {}
+}
+type C = ConstructorParameters<typeof Repo>; // [url: string, timeout: number]
+
+// 只吃函式型別
+// type D = Parameters<string>;
+// ❌ TS2344: Type 'string' does not satisfy the constraint '(...args: any) => any'.
+```
+
+> ⚠️ 跟 `ReturnType` 一樣，`Parameters` 遇到**重載函式只會取最後一個簽章**（原因見 7.4〈infer 關鍵字〉）。
+
+#### 實務用途：包裝函式時自動沿用原簽章
+
+這是 `Parameters` 最常見的用法——用 `...args: Parameters<typeof fn>` 接收參數，再用 spread 原封不動傳下去。日後原函式改了簽章，包裝層自動跟著改，不必手動同步：
+
+```typescript
+function updateUser(id: number, data: { name?: string }, notify?: boolean) {
+  return { id, ...data, notify };
+}
+
+// 加一層記錄，但不重複寫一次參數型別
+function withLog(
+  ...args: Parameters<typeof updateUser>
+): ReturnType<typeof updateUser> {
+  console.log("calling updateUser with", args);
+  return updateUser(...args);
+}
+
+withLog(1, { name: "Gary" });       // ✅ 可選參數照樣可以省略
+withLog(1, { name: "Gary" }, true); // ✅
+// withLog("1", { name: "Gary" });
+// ❌ 第一個參數必須是 number —— 型別完全跟著原函式
+```
+
+裝飾器、middleware、快取包裝、重試邏輯都是這個形狀：**`Parameters` 負責入口、`ReturnType` 負責出口，中間夾自己的邏輯。**
+
 ### 組合工具型別
 
 ```typescript
@@ -997,15 +1464,19 @@ interface User {
 
 // 建立用 DTO
 type CreateUserDto = Pick<User, "name" | "email"> & { password: string };
+// { name: string; email: string; password: string }
 
 // 更新用 DTO（部分可選）
 type UpdateUserDto = Partial<Pick<User, "name" | "email">>;
+// { name?: string | undefined; email?: string | undefined }
 
 // 回傳用 DTO（排除敏感資料）
 type UserResponse = Omit<User, "passwordHash">;
+// { id: number; name: string; email: string; createdAt: Date; updatedAt: Date }
 
 // 列表用 DTO
 type UserListItem = Pick<User, "id" | "name" | "email">;
+// { id: number; name: string; email: string }
 ```
 
 ---
@@ -1041,6 +1512,12 @@ interface SearchParams {
 
 type ValidSearch = RequireAtLeastOne<SearchParams>;
 // 至少要提供 name、email、id 的其中一個
+
+const ok1: ValidSearch = { name: "Gary" };            // ✅ 提供一個就夠
+const ok2: ValidSearch = { id: 1, email: "a@b.c" };   // ✅ 提供多個也可以
+// const bad: ValidSearch = {};
+// ❌ TS2322: Type '{}' is not assignable to type 'ValidSearch'.
+//    這正是 Partial<SearchParams> 做不到的 —— 它會允許空物件通過
 ```
 
 ---

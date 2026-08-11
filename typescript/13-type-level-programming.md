@@ -561,9 +561,31 @@ type ShouldFail = StrictGet<{ a: 1 }, "b">;
 
 ## 13.10 測試你的型別
 
-複雜型別也需要測試。社群常用兩個工具型別來斷言型別是否符合預期，這也是 [type-challenges](https://github.com/type-challenges/type-challenges) 使用的標準寫法。
+複雜型別也需要測試。本節先介紹社群標準的斷言寫法，再說明幾種**看得到輸出**的驗證方式（測試報告、傾印推論結果），最後整理該用哪一種。
 
-為什麼 `Equal` 要寫成這種「雙重條件式函式」比較，而不是直接寫 `X extends Y ? Y extends X ? true : false : false`？因為 `any` 這個型別對 `extends` 來說是特例：**任何型別 `extends any` 都成立，`any extends 任何型別` 也都成立**，所以簡單版本會誤判 `Equal<any, string>` 為 `true`（`any` 混進去卻沒被抓出來）。把 `X`、`Y` 分別包進兩個函式型別的回傳位置再互相比較，能利用 TypeScript 對函式型別比較的實作細節，讓 `any` 和其他型別不再被視為互相相容，藉此正確區分出 `any`。
+### 方法一：`Expect` + `Equal` 型別斷言
+
+這是 [type-challenges](https://github.com/type-challenges/type-challenges) 使用的標準寫法，不需要安裝任何東西。
+
+為什麼 `Equal` 要寫成這種「雙重條件式函式」比較，而不是直接寫 `X extends Y ? Y extends X ? true : false : false`？因為 `any` 對 `extends` 來說是特例：**任何型別 `extends any` 都成立，`any extends 任何型別` 也都成立**，導致簡單版本在兩種情況下會出錯：
+
+```typescript
+type Expect<T extends true> = T;
+type Simple<X, Y> = X extends Y ? (Y extends X ? true : false) : false;
+
+// 缺陷 1：把「含 any 的不同型別」誤判為相等 —— 靜默假通過，最危險
+type Wrong1 = Expect<Simple<{ a: any }, { a: string }>>; // ✅ 通過，但兩者根本不是同一型別
+
+// 缺陷 2：遇到聯合型別會分佈，連「自己等於自己」都答不出 true
+type Wrong2 = Simple<"a" | "b", "a" | "b">; // boolean（不是 true）
+// type Check = Expect<Wrong2>;
+// ❌ Type 'boolean' does not satisfy the constraint 'true'
+
+// 缺陷 3：檢查對象是 any 時，條件型別會回傳兩個分支的聯合
+type Wrong3 = Simple<any, string>; // boolean（不是 true 也不是 false）
+```
+
+把 `X`、`Y` 分別包進兩個函式型別的回傳位置再互相比較，能利用 TypeScript 對函式型別比較的實作細節，讓 `any` 和其他型別不再被視為互相相容，上面三種情況就都能正確判斷。
 
 ```typescript
 // Equal：嚴格比較兩個型別是否完全相等
@@ -623,6 +645,232 @@ type Cases = [
 ```
 
 把整段複製進同一個 `.ts` 檔即可完整驗證。
+
+用 `tsc` 直接檢查（不產生任何 JS）：
+
+```bash
+npx tsc --noEmit --strict types.test.ts
+```
+
+**沒有輸出就是全部通過**——這是型別斷言的特性：正確時完全安靜，錯誤時才出現 `TS2344: Type 'false' does not satisfy the constraint 'true'`。
+
+⚠️ 使用 `Equal` 時要知道一件事：它比的是「**是不是同一個型別**」，不是「結構長得一樣」。交集型別和攤平後的物件會被判為不相等：
+
+```typescript
+type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y
+  ? 1
+  : 2
+  ? true
+  : false;
+type Expect<T extends true> = T;
+
+// type Check = Expect<Equal<{ a: 1 } & { b: 2 }, { a: 1; b: 2 }>>;
+// ❌ false —— 結構相同，但一個是交集、一個是物件字面值，不是同一型別
+
+// 想比結構，先用 13.9 的 Expand 攤平
+type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
+type Ok = Expect<Equal<Expand<{ a: 1 } & { b: 2 }>, { a: 1; b: 2 }>>; // ✅ true
+```
+
+### 方法二：`@ts-expect-error` 斷言「這裡必須報錯」
+
+方法一驗證「算出來的型別對不對」，但另一半同樣重要：**該被擋下來的有沒有真的被擋下來**。
+
+```typescript
+type Role = "admin" | "user";
+
+// @ts-expect-error 這行必須報錯，否則 directive 自己會報錯
+const bad: Role = "guest";
+
+// @ts-expect-error 這行其實合法 → 反而被抓出來
+const good: Role = "admin";
+// ❌ TS2578: Unused '@ts-expect-error' directive.
+```
+
+關鍵在於它是**雙向**的：預期的錯誤消失時，它會主動告訴你。這是它比 `@ts-ignore` 好的地方——`@ts-ignore` 在錯誤消失後只會靜默失效，變成沒人發現的死程式碼。
+
+> 📌 用在型別層級時有個陷阱：像 13.8 的 `Get` 對錯誤路徑是回傳 `never` 而不是報錯，`@ts-expect-error` 就抓不到東西。詳見 13.9 除錯技巧的技巧三。
+
+### 方法三：用 `vitest --typecheck` 取得測試報告
+
+前兩種方法都是「安靜就是通過」，看不到跑了幾項、哪一項失敗。想要真正的測試報告（綠燈紅燈、失敗清單），可以用 Vitest 的型別檢查模式搭配 `expectTypeOf`。
+
+安裝：
+
+```bash
+npm i -D vitest typescript @types/node
+```
+
+`vitest.config.ts`：
+
+```typescript
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    typecheck: { enabled: true },
+  },
+});
+```
+
+`package.json`：
+
+```json
+{
+  "scripts": {
+    "test:types": "vitest run --typecheck"
+  }
+}
+```
+
+型別測試檔要用 `*.test-d.ts` 命名（Vitest 預設只把這個樣式當成型別測試）：
+
+```typescript
+// types.test-d.ts
+import { expectTypeOf, describe, it } from "vitest";
+
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+
+interface User {
+  id: number;
+  name: string;
+}
+
+const ROLES = ["admin", "editor", "user"] as const;
+type Role = (typeof ROLES)[number];
+
+describe("工具型別", () => {
+  it("Getters 產生 getXxx 方法", () => {
+    expectTypeOf<Getters<User>>().toEqualTypeOf<{
+      getId: () => number;
+      getName: () => string;
+    }>();
+  });
+
+  it("(typeof ROLES)[number] 攤成聯合型別", () => {
+    expectTypeOf<Role>().toEqualTypeOf<"admin" | "editor" | "user">();
+  });
+});
+```
+
+執行 `npm run test:types`：
+
+```text
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+Type Errors  no errors
+```
+
+把其中一個斷言改錯，輸出會明確指出是哪一個測試、錯在哪：
+
+```text
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  types.test-d.ts > 故意寫錯
+TypeCheckError: Type '"admin" | "guest"' does not satisfy the constraint
+  '"Expected literal string admin, Actual literal string editor" | ...'
+
+      Tests  1 failed | 2 passed (3)
+Type Errors  1 failed
+```
+
+比手寫 `Expect<Equal<...>>` 的優勢：**錯誤訊息直接寫 Expected / Actual**，不用自己推敲哪裡不一樣。`expectTypeOf` 還有 `toBeString()`、`toMatchTypeOf()`、`parameter(0)`、`returns` 等斷言，也能直接對值使用：
+
+```typescript
+declare function pick<T, K extends keyof T>(obj: T, key: K): T[K];
+
+expectTypeOf(pick({ name: "Gary", age: 30 }, "name")).toBeString();
+```
+
+> 💡 不想引入 Vitest 的話，`expect-type` 是同一套 API 的獨立套件（Vitest 的 `expectTypeOf` 就是它），只裝它再用 `tsc --noEmit` 跑也可以。
+
+### 方法四：把推論結果傾印成 `.d.ts`
+
+想一次看清「編譯器到底推論出什麼」，可以請它把答案寫成檔案：
+
+```bash
+npx tsc --emitDeclarationOnly --declaration --strict --outDir dts types.ts
+```
+
+原始檔完全不寫型別標註，全交給推論：
+
+```typescript
+// types.ts
+export const ACTIONS = ["save", "delete", "publish"] as const;
+export type Action = (typeof ACTIONS)[number];
+
+export function pick<T, K extends keyof T>(obj: T, key: K) {
+  return obj[key];
+}
+
+export const picked = pick({ name: "Gary", age: 30 }, "name");
+```
+
+產出的 `dts/types.d.ts`：
+
+```typescript
+export declare const ACTIONS: readonly ["save", "delete", "publish"];
+export type Action = (typeof ACTIONS)[number];
+export declare function pick<T, K extends keyof T>(obj: T, key: K): T[K];
+export declare const picked: string;
+```
+
+這是唯一能「一覽整份檔案推論結果」的方式，很適合檢查對外 API 的型別是否如預期（也是函式庫發佈前該做的檢查）。
+
+### 方法五：逼編譯器把型別印在錯誤訊息裡
+
+臨時想知道某個型別算出什麼，又不想開 IDE hover 時：故意指派給一個不可能的型別，答案就出現在錯誤訊息中。
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+
+declare const probe: Getters<User>;
+const reveal: 1 = probe;
+// ❌ TS2322: Type 'Getters<User>' is not assignable to type '1'.
+//    ⚠️ 只印出別名，沒展開
+```
+
+只印別名時，套一層 13.9 的 `Expand` 強迫攤平：
+
+```typescript
+type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
+
+declare const probe2: Expand<Getters<User>>;
+const reveal2: 1 = probe2;
+// ❌ TS2322: Type '{ getId: () => number; getName: () => string; }'
+//            is not assignable to type '1'.   ← 攤開了
+```
+
+### 該用哪一個？
+
+| 方法 | 有輸出嗎 | 適合場合 |
+| --- | --- | --- |
+| `Expect` + `Equal` | ❌ 安靜通過 | 零依賴，隨手驗一個型別；type-challenges 解題 |
+| `@ts-expect-error` | ❌ 安靜通過 | 驗證「該報錯的有報錯」 |
+| `vitest --typecheck` | ✅ 測試報告 | 專案長期維護、接 CI；工具型別較多時首選 |
+| `--emitDeclarationOnly` | ✅ `.d.ts` 檔 | 檢視整份檔案的推論結果、發佈函式庫前檢查 |
+| 逼編譯器印出型別 | ✅ 錯誤訊息 | 開發途中臨時查看某個型別 |
+
+**實務建議**：日常開發靠 IDE hover 加上 `tsc --noEmit`；只要你寫的型別會被別人（或未來的自己）依賴，就補一份型別測試檔進 CI：
+
+```json
+{
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "test:types": "vitest run --typecheck"
+  }
+}
+```
+
+型別出錯不會讓測試變紅、也不會讓程式壞掉——它只會讓自動完成默默失效、讓錯誤在幾個月後才浮現。**這正是型別需要測試的理由。**
 
 ---
 
