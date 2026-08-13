@@ -1424,7 +1424,7 @@ type C = ConstructorParameters<typeof Repo>; // [url: string, timeout: number]
 
 > ⚠️ 跟 `ReturnType` 一樣，`Parameters` 遇到**重載函式只會取最後一個簽章**（原因見 7.4〈infer 關鍵字〉）。
 
-#### 實務用途：包裝函式時自動沿用原簽章
+#### 實務用途：包裝函式時自動沿用原簽章（`Parameters`）
 
 這是 `Parameters` 最常見的用法——用 `...args: Parameters<typeof fn>` 接收參數，再用 spread 原封不動傳下去。日後原函式改了簽章，包裝層自動跟著改，不必手動同步：
 
@@ -1448,6 +1448,156 @@ withLog(1, { name: "Gary" }, true); // ✅
 ```
 
 裝飾器、middleware、快取包裝、重試邏輯都是這個形狀：**`Parameters` 負責入口、`ReturnType` 負責出口，中間夾自己的邏輯。**
+
+### 補充：拆解 `Awaited<ReturnType<typeof fetchApi<User>>>`
+
+這一行套了四層，看起來很嚇人，但它解決的是一個很具體的問題：**我想知道「呼叫這個 API 函式、await 之後，手上會拿到什麼型別」，而且不想自己手寫一份。**
+
+要從內往外讀，一層剝一層：
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+}
+interface ApiResponse<T> {
+  data: T;
+  status: number;
+}
+
+async function fetchApi<T>(url: string): Promise<ApiResponse<T>> {
+  const response = await fetch(url);
+  return response.json();
+}
+
+// ① typeof fetchApi —— 把值搬到型別世界，但 T 還沒決定
+type S1 = typeof fetchApi;
+// <T>(url: string) => Promise<ApiResponse<T>>
+
+// ② typeof fetchApi<User> —— 把 T 代成 User（實體化運算式，TS 4.7+）
+type S2 = typeof fetchApi<User>;
+// (url: string) => Promise<ApiResponse<User>>
+
+// ③ ReturnType<...> —— 取回傳型別。因為是 async 函式，這裡拿到的是 Promise
+type S3 = ReturnType<typeof fetchApi<User>>;
+// Promise<ApiResponse<User>>
+
+// ④ Awaited<...> —— 把 Promise 剝掉，得到 await 之後真正的型別
+type S4 = Awaited<S3>;
+// { data: User; status: number }
+```
+
+| 層 | 做的事 | 這一步的結果 |
+| --- | --- | --- |
+| `typeof fetchApi` | 值 → 型別 | `<T>(url: string) => Promise<ApiResponse<T>>` |
+| `<User>` | 代入型別參數 | `(url: string) => Promise<ApiResponse<User>>` |
+| `ReturnType<...>` | 取回傳型別 | `Promise<ApiResponse<User>>` |
+| `Awaited<...>` | 剝掉 Promise | `ApiResponse<User>` |
+
+#### 為什麼每一層都省不掉？
+
+**少了 `Awaited`**，型別會停在 Promise 上，拿到的不是你要的東西：
+
+```typescript
+type Wrong = ReturnType<typeof fetchApi<User>>;
+// Promise<ApiResponse<User>> ⚠️ 這是「未來會給你資料的容器」，不是資料本身
+
+// declare const r: Wrong;
+// r.data; // ❌ Promise 上沒有 data 屬性
+```
+
+只要來源是 `async` 函式（或任何回傳 Promise 的函式），`ReturnType` 就一定會停在 `Promise<...>`，需要 `Awaited` 再剝一層。
+
+**少了 `<User>`**，泛型參數沒有著落，`T` 會退化成 `unknown`：
+
+```typescript
+type Loose = Awaited<ReturnType<typeof fetchApi>>;
+// ApiResponse<unknown> ⚠️ data 變成 unknown，用之前還得先做型別縮窄
+```
+
+`typeof fetchApi<User>` 這個寫法叫**實體化運算式（Instantiation Expression，TS 4.7+）**，作用是「先把泛型函式的型別參數填好，再取它的型別」。在 4.7 之前只能繞路寫：
+
+```typescript
+// 舊寫法：先宣告一個已具體化的變數，再對它做 typeof
+declare const fetchUser: (url: string) => Promise<ApiResponse<User>>;
+type Old = Awaited<ReturnType<typeof fetchUser>>; // { data: User; status: number }
+```
+
+#### 為什麼順序是先 `ReturnType` 再 `Awaited`，不能顛倒？
+
+因為兩個工具型別各自只吃特定形狀的輸入：
+
+| 工具型別 | 它要吃什麼 | 它吐出什麼 |
+| --- | --- | --- |
+| `ReturnType<T>` | **函式型別** | 該函式的回傳型別 |
+| `Awaited<T>` | **Promise（或任何 thenable）** | 解析後的值型別 |
+
+起點 `typeof fetchApi<User>` 是一個**函式型別**，這時候手上根本還沒有 Promise——Promise 藏在函式的回傳位置裡。所以必須先用 `ReturnType` 把它取出來，才有東西給 `Awaited` 剝。
+
+顛倒過來寫**不會報錯，但會靜默給你錯的型別**，這才是危險的地方：
+
+```typescript
+type F = typeof fetchApi<User>; // (url: string) => Promise<ApiResponse<User>>
+
+// ❌ 顛倒：先 Awaited
+type Inner = Awaited<F>;
+// 還是 (url: string) => Promise<ApiResponse<User>> —— 完全沒有作用！
+
+type Wrong = ReturnType<Awaited<F>>;
+// Promise<ApiResponse<User>> ⚠️ 卡在 Promise，等於 Awaited 白寫了
+```
+
+`Awaited<F>` 之所以毫無作用，看它在標準庫的定義就懂了——它只認得「有 `then` 方法的物件」，其他一律原封不動傳回：
+
+```typescript
+// lib.es5.d.ts（簡化）
+type Awaited<T> = T extends object & { then(onfulfilled: infer F, ...): any }
+  ? /* 遞迴剝開 */
+  : T; // ← 不是 thenable 就原樣返回
+```
+
+函式型別沒有 `then` 方法，所以直接走最後一行，原樣返回。
+
+💡 記憶方式：**型別層的巢狀順序，跟執行期的運算順序完全一致。**
+
+```typescript
+const res = await fetchApi<User>(url);
+//          ~~~~~ ②再 await   ~~~~~~ ①先呼叫拿到 Promise
+
+type Res = Awaited<ReturnType<typeof fetchApi<User>>>;
+//         ~~~~~~~ ②再 await ~~~~~~~~~~ ①先取回傳型別
+```
+
+`await` 雖然寫在左邊，但實際上是**先呼叫、後 await**；型別層的 `Awaited<...>` 寫在最外層，也是**最後才套用**。兩者是同一個順序，只是型別要由內往外讀。
+
+#### 為什麼用 `Awaited` 而不自己寫？
+
+自己寫的單層版本剝不掉巢狀 Promise：
+
+```typescript
+type Unwrap1<T> = T extends Promise<infer U> ? U : T;
+
+type A = Unwrap1<Promise<Promise<string>>>; // Promise<string> ⚠️ 只剝一層
+type B = Awaited<Promise<Promise<string>>>; // string ✅ 遞迴剝到底
+
+type C = Awaited<string>; // string（不是 Promise 就原樣返回）
+```
+
+`Awaited` 除了遞迴處理巢狀 Promise，也能處理 thenable 物件，這正是 `await` 在執行期的真實行為。
+
+#### 這樣做的價值：型別跟著實作走
+
+如果手寫一份 `type FetchedUser = { data: User; status: number }`，等 `fetchApi` 的回傳結構改了（例如多一個 `timestamp`），這份手寫型別不會有任何反應，直到某天出現對不上的 bug。
+
+用 `Awaited<ReturnType<typeof ...>>` 推導出來的話，**API 函式改簽章，所有依賴它的型別自動跟著改**。這在實務上非常常見，尤其是包了一層的 API 層：
+
+```typescript
+type FetchedUser = Awaited<ReturnType<typeof fetchApi<User>>>;
+
+function render(res: FetchedUser) {
+  console.log(res.data.name, res.status); // ✅ 兩層都有型別
+}
+```
 
 ### 組合工具型別
 
@@ -1519,6 +1669,98 @@ const ok2: ValidSearch = { id: 1, email: "a@b.c" };   // ✅ 提供多個也可�
 // ❌ TS2322: Type '{}' is not assignable to type 'ValidSearch'.
 //    這正是 Partial<SearchParams> 做不到的 —— 它會允許空物件通過
 ```
+
+### 拆解 `RequireAtLeastOne`
+
+這是本章最複雜的型別，值得逐段拆開。它要解的問題是：**每個欄位都可選，但不能全部都不填**——搜尋條件、聯絡方式、篩選參數都是這個形狀，而 `Partial<T>` 做不到（它會放行空物件）。
+
+整個定義是**兩半用 `&` 接起來**：
+
+```typescript
+type RequireAtLeastOne<T, Keys extends keyof T = keyof T> =
+  Pick<T, Exclude<keyof T, Keys>>          // 左半：不參與規則的鍵，原樣保留
+  & { [K in Keys]-?: /* ... */ }[Keys];    // 右半：產生「至少一個」的聯合型別
+```
+
+#### 左半：`Pick<T, Exclude<keyof T, Keys>>`
+
+`Keys` 是「要套用『至少一個』規則的鍵」，預設是全部（`= keyof T`）。左半把**不在 `Keys` 裡的鍵**原封不動保留下來。
+
+用預設值時 `Exclude<keyof T, keyof T>` 是 `never`，所以左半是 `Pick<T, never>`，也就是 `{}`——什麼都沒加。這一半是為了支援「只讓部分欄位套用規則」的情形，稍後會示範。
+
+#### 右半：先建一張表，再用聯合型別索引它
+
+這是整段的核心技巧。先看那張表：
+
+```typescript
+{
+  [K in Keys]-?: Required<Pick<T, K>> & Partial<Pick<T, Exclude<Keys, K>>>;
+}
+```
+
+它對每個鍵 `K` 產生一個**條目**，內容是「**K 這個欄位必填，其餘欄位可選**」：
+
+- `Required<Pick<T, K>>` —— 只挑出 `K`，並把它變成必填
+- `Partial<Pick<T, Exclude<Keys, K>>>` —— 其餘的鍵，全部可選
+
+以 `SearchParams` 代入，這張表實際長這樣：
+
+```text
+{
+  name:  { name: string }  & { email?: string; id?: number }
+  email: { email: string } & { name?: string;  id?: number }
+  id:    { id: number }    & { name?: string;  email?: string }
+}
+```
+
+然後關鍵的最後一步 `[Keys]`——**用聯合型別去索引這張表，就會得到所有條目的聯合**（這就是 7.6 講過的 `[number]` 同一招，只是索引換成了鍵的聯合）：
+
+```typescript
+type ValidSearch = RequireAtLeastOne<SearchParams>;
+// 展開後等於：
+//   { name: string;  email?: string; id?: number }
+// | { email: string; name?: string;  id?: number }
+// | { id: number;    name?: string;  email?: string }
+```
+
+看到這個聯合型別，行為就一目了然了：**你的物件只要符合其中任一個分支就合法**，而每個分支都至少強制一個欄位——所以空物件三個分支都不符合，被擋下來。
+
+> 💡 **「建表 → 用聯合型別索引 → 得到聯合型別」是型別層很通用的技巧**：當你想「對聯合型別的每個成員各產生一種結果，再把結果組成聯合」時就會用到它。
+
+#### `-?` 在做什麼？
+
+`-?` 移除映射過程中**從 `T` 繼承下來的可選修飾詞**。`SearchParams` 的欄位都是可選的（`name?`），若不寫 `-?`，表上的條目也會變成可選，索引出來的聯合就會混進 `undefined`：
+
+```typescript
+// 有 -?
+type A = { [K in Keys]-?: V<K> }[Keys];
+// V<"name"> | V<"email">
+
+// 沒有 -?
+type B = { [K in Keys]: V<K> }[Keys];
+// V<"name"> | V<"email"> | undefined   ⚠️ 多了 undefined
+```
+
+#### `Keys` 參數：只讓部分欄位套用規則
+
+這時左半就派上用場了——沒被列進 `Keys` 的鍵維持原本的樣子：
+
+```typescript
+interface Contact {
+  id: number; // 必填，不參與「至少一個」的規則
+  email?: string;
+  phone?: string;
+}
+
+// 只要求 email / phone 至少一個
+type NeedContact = RequireAtLeastOne<Contact, "email" | "phone">;
+
+const c1: NeedContact = { id: 1, email: "a@b.c" }; // ✅
+// const c2: NeedContact = { email: "a@b.c" };     // ❌ id 是必填，不能省
+// const c3: NeedContact = { id: 1 };              // ❌ email / phone 至少要一個
+```
+
+左半 `Pick<Contact, Exclude<keyof Contact, "email" | "phone">>` 算出來是 `{ id: number }`，用 `&` 接在每個分支上，所以 `id` 在任何情況下都必填。
 
 ---
 

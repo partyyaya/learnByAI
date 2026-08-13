@@ -221,7 +221,20 @@ import { createUser, type User } from "./user";
 }
 ```
 
-> 📌 `verbatimModuleSyntax` 完整說明（含它取代的舊選項）見第 9 章 9.9。
+這個選項在做什麼？**預設情況下，TypeScript 會自作聰明**：發現某個匯入只被當型別用，就把整行 import 從輸出中「消除」掉（稱為 import elision）。方便，但有兩個問題——如果那個模組帶有副作用（polyfill、CSS、註冊全域元件），副作用會跟著消失；而 esbuild、swc 這類逐檔轉譯的工具也無法判斷哪些該刪。
+
+開啟 `verbatimModuleSyntax` 後，**你寫什麼就輸出什麼**：`import type` 一定被移除、普通 `import` 一定保留，同時強制你把型別匯入寫成 `import type`，否則報 `TS1484`。
+
+```typescript
+// verbatimModuleSyntax: true
+import { User } from "./types.js";
+// ❌ TS1484: 'User' is a type and must be imported using a type-only import
+//            when 'verbatimModuleSyntax' is enabled.
+
+import type { User } from "./types.js"; // ✅
+```
+
+> 📌 完整說明（含編譯前後的實際輸出對照、四種情況的行為差異、以及它取代的舊選項）見第 9 章 9.9。
 
 ---
 
@@ -300,6 +313,408 @@ interface A2 { x: number }        // ✅ 一樣的效果
 ### 什麼是 .d.ts 檔案？
 
 `.d.ts` 檔案只包含型別資訊，不包含實作——換句話說，它整個檔案就是一堆環境宣告的集合。用來為 JavaScript 函式庫提供型別定義。
+
+#### 什麼時候才需要自己寫 .d.ts？
+
+先講最重要的一件事，因為這是最常見的誤解：
+
+> ⚠️ **你自己寫的 TypeScript 程式碼，完全不需要手寫 `.d.ts`。**
+
+編譯器會自己產生。開啟 `declaration` 選項後，`.ts` 檔的型別宣告是自動輸出的：
+
+```typescript
+// mine.ts —— 你只要寫這個
+export function double(x: number) {
+  return x * 2;
+}
+```
+
+```bash
+npx tsc mine.ts --declaration --outDir out
+```
+
+```typescript
+// out/mine.d.ts —— 編譯器自動生成，不用你動手
+export declare function double(x: number): number;
+```
+
+手寫 `.d.ts` 只發生在一種情況：**有個東西在執行期存在，但 TypeScript 看不到它的原始碼**。以下是實務上會遇到的幾種，依「該不該自己動手」排序。
+
+**情況 1：套件沒有型別（先別急著自己寫）**
+
+匯入沒有型別的套件時，會看到這個錯誤——注意編譯器已經把兩個解法都寫在訊息裡了：
+
+```text
+error TS7016: Could not find a declaration file for module 'no-types'.
+  '.../node_modules/no-types/index.js' implicitly has an 'any' type.
+  Try `npm i --save-dev @types/no-types` if it exists
+  or add a new declaration (.d.ts) file containing `declare module 'no-types';`
+```
+
+依序試這三步，**自己寫是最後手段**：
+
+| 順序 | 做法 | 怎麼確認 |
+| --- | --- | --- |
+| 1️⃣ | 套件是不是**自帶**型別？ | 看 `node_modules/套件名/package.json` 有沒有 `types` / `typings` 欄位（例如 typescript 自己是 `"types": "./lib/typescript.d.ts"`）。有的話什麼都不用做 |
+| 2️⃣ | DefinitelyTyped 上有沒有？ | 執行 `npm i -D @types/套件名`，裝得起來就結束了 |
+| 3️⃣ | 兩者皆無 | 才輪到自己寫 |
+
+真的要自己寫時，也**不必一次寫完整**——依你用到多少來決定：
+
+```typescript
+// typings/legacy-lib.d.ts
+
+// 寫法 A：只想讓編譯過（整個模組變成 any，最省事但失去型別保護）
+declare module "legacy-lib";
+
+// 寫法 B：只宣告你實際用到的 API（最推薦，成本低又有型別）
+declare module "legacy-lib" {
+  export function format(value: string): string;
+}
+```
+
+> 💡 寫法 A 只是把 `any` 合法化——用得到的地方沒有任何自動完成與檢查。適合暫時擋著，但別忘了留 TODO。
+
+##### 檔名要跟模組同名嗎？TypeScript 怎麼找到它？
+
+**檔名完全不重要。** 決定配對的是 `declare module "..."` 引號裡的字串，跟檔案叫什麼毫無關係——把上面那份存成 `zzz-random-name.d.ts` 一樣會生效：
+
+```typescript
+// typings/zzz-random-name.d.ts ← 檔名隨便取
+declare module "legacy-lib" {
+  //            ^^^^^^^^^^ 這個字串才是關鍵，要跟 import 的路徑逐字相符
+  export function format(value: string): string;
+}
+```
+
+```typescript
+import { format } from "legacy-lib"; // ✅ 配對成功
+```
+
+真正決定「找不找得到」的是下面三件事：
+
+**1. 這個檔案必須被納入編譯範圍**
+
+這是最常見的失敗原因。`.d.ts` 不會因為放在專案裡就自動生效，它必須被 `tsconfig.json` 的 `include`（或 `files`）涵蓋到：
+
+```json
+{
+  "compilerOptions": { "strict": true },
+  "include": ["src", "typings"]
+}
+```
+
+漏掉 `typings` 的話，錯誤訊息看起來會像「宣告根本不存在」，很難聯想到是設定問題：
+
+```text
+error TS7016: Could not find a declaration file for module 'legacy-lib'.
+```
+
+> ⚠️ **別用 `typeRoots` 來放這種檔案。** `typeRoots` 是控制「`@types/*` 這類全域型別包要自動載入哪些」的選項，跟「去哪裡找 `.d.ts`」是兩回事。它底下的每個項目都必須是**資料夾**（各自帶 `index.d.ts`），直接丟一個 `legacy-lib.d.ts` 進去完全不會生效。單一檔案一律用 `include` 收。詳見第 9 章 9.5。
+
+**2. 這個檔案必須是「環境宣告檔」，不能是模組**
+
+只要檔案裡出現**頂層**的 `import` 或 `export`，它就變成一個模組，此時 `declare module "legacy-lib"` 的意義會從「定義一個新模組」變成「**擴充一個既有模組**」，對無型別的套件反而會報錯：
+
+```typescript
+// ❌ 多了這一行，整個檔案變成模組
+export {};
+
+declare module "legacy-lib" {
+  export function format(value: string): string;
+}
+// error TS2665: Invalid module name in augmentation. Module 'legacy-lib'
+//               resolves to an untyped module ..., which cannot be augmented.
+```
+
+注意 `declare module` **區塊內部**的 `export` 不算頂層，是正常且必要的寫法。
+
+（反過來說，第 4 章的 `declare global` 就**必須**寫在模組裡，所以那裡才要刻意加 `export {};`——兩者的要求剛好相反。）
+
+**3. 模組名要「逐字相符」，而且子路徑要另外宣告**
+
+大小寫不同、少一個字都配不上。子路徑（`legacy-lib/sub`）也被視為不同的模組，父模組的宣告不會涵蓋它：
+
+```typescript
+import { format } from "legacy-lib";
+import { deep } from "legacy-lib/sub"; // ❌ 上面的宣告救不到這一行
+```
+
+兩種解法：
+
+```typescript
+// 解法一：子路徑各自宣告（有完整型別，推薦）
+declare module "legacy-lib" {
+  export function format(value: string): string;
+}
+
+declare module "legacy-lib/sub" {
+  export const deep: number;
+}
+```
+
+```typescript
+// 解法二：用萬用字元一次涵蓋所有子路徑（內容是 any）
+declare module "legacy-lib" {
+  export function format(value: string): string;
+}
+
+declare module "legacy-lib/*";
+```
+
+> 💡 慣例上還是會把檔名取成 `legacy-lib.d.ts` 並放在 `typings/`——那是為了**你自己好找**，不是編譯器的要求。
+
+**情況 2：非 JavaScript 的資源模組（前端專案最常見）**
+
+`import logo from "./logo.svg"` 這種寫法能運作是打包工具的功勞，TypeScript 並不知道 `.svg` 是什麼，所以會直接報錯：
+
+```text
+error TS2307: Cannot find module './logo.svg' or its corresponding type declarations.
+```
+
+解法是宣告這些「模組」的型別：
+
+```typescript
+// typings/assets.d.ts
+declare module "*.svg" {
+  const content: string;
+  export default content;
+}
+
+declare module "*.module.css" {
+  const classes: Record<string, string>;
+  export default classes;
+}
+```
+
+```typescript
+import logo from "./logo.svg";        // ✅ string
+import styles from "./app.module.css"; // ✅ Record<string, string>
+```
+
+##### 用 Vite / webpack 的話，需要自己補嗎？
+
+**取決於工具**——差別很大，而且 Vite 需要一行設定才會生效：
+
+| 工具 | 有附資源模組型別嗎 | 你要做什麼 |
+| --- | --- | --- |
+| **Vite** | ✅ 有，非常完整 | 只要**啟用** `vite/client`（見下方），不用自己寫 |
+| **Nuxt** | ✅ 有（自動接上 `vite/client`） | 完全不用管，`nuxt prepare` 會處理 |
+| **Astro** | ✅ 有，涵蓋範圍最廣（連 `*.md`、`*.mdx` 都有） | 不用管，但要跑過 `astro sync` |
+| **Next.js** | ✅ 有（圖片類） | 自動產生 `next-env.d.ts`，不用管 |
+| **CRA / react-scripts** | ✅ 有 | 樣板已含 `react-app.d.ts`，不用管 |
+| **webpack**（自行配置） | ❌ 完全沒有 | 得自己寫 `assets.d.ts` |
+
+**Vite：型別已經在套件裡，但要「啟用」**
+
+Vite 的 `client.d.ts` 涵蓋了約 60 種模組樣式——圖片、影音、字型、CSS（含 CSS Modules）、`?raw`、`?url`、`?worker` 等 query 後綴，以及 `import.meta.env`：
+
+```typescript
+// node_modules/vite/client.d.ts（節錄）
+declare module '*.svg' {
+  const src: string
+  export default src
+}
+```
+
+但它**不會自動生效**，必須用下面任一種方式引入。兩種都試過，效果相同：
+
+```json
+// 方式一：tsconfig.json（較新的做法，推薦）
+{
+  "compilerOptions": {
+    "types": ["vite/client"]
+  }
+}
+```
+
+```typescript
+// 方式二：src/vite-env.d.ts —— create-vite 產生的樣板就是這樣
+/// <reference types="vite/client" />
+```
+
+> ⚠️ 如果你用了方式一，記得 `types` 是**白名單**——一旦設定，其他 `@types/*` 就不再自動載入了，需要的要一起列進去（如 `"types": ["vite/client", "node"]`）。原因見第 9 章 9.5。
+
+沒有引入時，以下四種寫法全部會報錯（實測）：
+
+```typescript
+import logo from "./logo.svg";         // ❌ TS2307
+import styles from "./app.module.css"; // ❌ TS2307
+import raw from "./data.txt?raw";      // ❌ TS2307
+import.meta.env.MODE;                  // ❌ TS2339 Property 'env' does not exist
+```
+
+引入之後，四種全部有型別，**不需要自己寫任何宣告**。
+
+**Nuxt：完全不用管，它幫你接好了**
+
+Nuxt 底層就是 Vite，而且它會**自動把 `vite/client` 接進來**——不需要像純 Vite 專案那樣自己設定。`nuxt prepare`（或 `nuxt dev`）會產生 `.nuxt/` 目錄，引用鏈是這樣：
+
+```text
+.nuxt/tsconfig.app.json    include: ["./nuxt.d.ts", ...]
+  └─ .nuxt/nuxt.d.ts       /// <reference path="types/builder-env.d.ts" />
+       └─ .nuxt/types/builder-env.d.ts
+            └─ import "vite/client";   ← 資源模組型別從這裡進來
+```
+
+```typescript
+// .nuxt/types/builder-env.d.ts —— Nuxt 自動產生的內容就只有這一行
+import "vite/client";
+```
+
+所以在 Nuxt 專案裡 `import logo from "~/assets/logo.svg"` 直接就有型別（`string`），不必自己寫任何宣告。
+
+值得注意的是 Nuxt 產生的 tsconfig 裡 `"types": []`——它刻意關掉自動載入，改成用明確的 `/// <reference>` 逐一引入。這正好印證上面那個 ⚠️：`types` 是白名單，Nuxt 選擇完全自己掌控要載入什麼。
+
+> 💡 因為型別檔在 `.nuxt/` 裡，**剛 clone 下來或刪掉 `.nuxt/` 後會突然一堆型別錯誤**。解法是跑 `npx nuxi prepare`（Nuxt 樣板通常已經放進 `postinstall`）。型別檢查則用 `npx nuxi typecheck`，它會用 `.nuxt/` 底下的 tsconfig，而不是專案根目錄的（Nuxt 專案通常根本沒有根目錄 tsconfig）。
+
+**Astro：涵蓋最廣，但一定要先跑 `astro sync`**
+
+Astro 的 `client.d.ts` 是這幾個工具裡涵蓋最完整的——除了圖片、影音、字型、CSS、`?raw` / `?url` / `?worker` 之外，連 **Markdown（`*.md`、`*.mdx`）和 `*.html`** 都有宣告。
+
+啟用方式跟 Nuxt 類似，靠建置流程產生的檔案接上：
+
+```text
+tsconfig.json          { "extends": "astro/tsconfigs/strict" }
+  └─ base.json         include: ["${configDir}/.astro/types.d.ts", ...]
+       └─ .astro/types.d.ts        ← astro sync 產生
+            └─ /// <reference types="astro/client" />
+```
+
+```typescript
+// .astro/types.d.ts —— astro sync 產生的內容
+/// <reference types="astro/client" />
+/// <reference path="content.d.ts" />
+```
+
+所以只要 `tsconfig.json` 繼承官方樣板（`astro/tsconfigs/base` / `strict` / `strictest`），資源模組就都有型別了。**但 `.astro/` 是產生出來的**，剛 clone 或清掉之後會一次冒出一堆錯誤：
+
+```text
+error TS2307: Cannot find module './assets/logo.svg' or its corresponding type declarations.
+error TS2307: Cannot find module './assets/data.txt?raw' or its corresponding type declarations.
+error TS2339: Property 'env' does not exist on type 'ImportMeta'.
+```
+
+解法是 `npx astro sync`（`astro dev` / `astro build` 也會自動跑）。型別檢查用 `npx astro check`，它額外處理 `.astro` 檔案——注意 **`.astro` 檔沒有 `declare module "*.astro"` 這種宣告**，是由 Astro 的語言伺服器處理的，所以純 `tsc` 檢查不到 `.astro` 檔內部。
+
+> ⚠️ **Astro 的 `*.svg` 型別跟 Vite 不一樣**，遷移或參考別人程式碼時容易踩到：
+>
+> ```typescript
+> // Vite：SVG 是 URL 字串
+> declare module '*.svg' {
+>   const src: string
+>   export default src
+> }
+>
+> // Astro 6：SVG 是可以直接渲染的元件（同時帶 ImageMetadata 的 width / height 等欄位）
+> declare module '*.svg' {
+>   const Component: import('./types').SvgComponent & ImageMetadata;
+>   export default Component;
+> }
+> ```
+>
+> 所以在 Astro 裡 `import Logo from "./logo.svg"` 之後可以直接 `<Logo />`，也可以讀 `Logo.width`；把 Vite 專案的程式碼複製過來（假設它是 `string`）就會型別錯誤。
+
+> 💡 順帶一提，Astro 官方 tsconfig 樣板預設就開了 `verbatimModuleSyntax` 和 `isolatedModules`（見 9.9 與 9.6）——這也印證了前面說的：用 esbuild／單檔轉譯的工具鏈幾乎都會要求這兩個選項。
+
+**webpack：真的要自己寫**
+
+webpack 的 `types.d.ts` 只有它自己的 API 型別（`Configuration`、`Compiler` 等），**沒有任何資源模組宣告**。常被誤以為能解決的 `@types/webpack-env` 也不行——它涵蓋的是 `__webpack_require__`、`module.hot`、`require.context` 這類 webpack 執行期 API，同樣沒有 `*.svg`：
+
+```bash
+# 這個不會幫你解決資源模組的型別
+npm i -D @types/webpack-env
+```
+
+所以用 webpack（或 Rollup、esbuild 直接配置）時，上面那份 `typings/assets.d.ts` 就得自己維護。
+
+**Next.js：完全不用管**
+
+`next dev` 會自動產生 / 維護 `next-env.d.ts`，裡面參照了 Next 內建的宣告。值得一提的是它對 `svg` 的處理方式：
+
+```typescript
+// node_modules/next/image-types/global.d.ts（節錄）
+declare module '*.svg' {
+  /**
+   * Use `any` to avoid conflicts with
+   * `@svgr/webpack` plugin or
+   * `babel-plugin-inline-react-svg` plugin.
+   */
+  const content: any
+  export default content
+}
+```
+
+刻意用 `any`，是為了不跟 SVGR 這類「把 SVG 變成 React 元件」的外掛衝突——這也提示了一個常見情況：**如果你裝了 SVGR，`*.svg` 的型別就不該是 `string` 而是元件**，這時即使用 Vite 也需要自己覆寫宣告：
+
+```typescript
+// typings/svgr.d.ts —— 搭配 vite-plugin-svgr 時
+declare module "*.svg?react" {
+  import type { FunctionComponent, SVGProps } from "react";
+  const ReactComponent: FunctionComponent<SVGProps<SVGSVGElement>>;
+  export default ReactComponent;
+}
+```
+
+##### 小結
+
+**先看你的工具有沒有附**——`node_modules/<工具>/` 底下找找 `client.d.ts`、`*-env.d.ts` 這類檔案，或直接看框架的建置流程產生了什麼（Nuxt 是 `.nuxt/`、Astro 是 `.astro/`、Next.js 是 `next-env.d.ts`）。有就啟用它，沒有才自己寫。
+
+真正**一定得自己寫**的只有兩種情況：
+
+1. 工具沒附（自行配置的 webpack、Rollup、esbuild）
+2. 你用外掛改變了資源的匯入形式（SVGR、`?react`、自訂 loader）——這時工具附的宣告反而是錯的，要自己覆寫
+
+框架（Nuxt / Astro / Next.js / CRA）幾乎都幫你處理好了，這也是用框架樣板的好處之一。但要記住**「產生型」框架的共同陷阱**：Nuxt 的 `.nuxt/`、Astro 的 `.astro/` 都是**建置時產生**的，不會進版控。剛 clone 專案或清過快取後看到一堆 `TS2307`，第一件事是跑對應的 prepare 指令，而不是懷疑自己的程式碼：
+
+| 框架 | 產生型別的指令 | 型別檢查指令 |
+| --- | --- | --- |
+| Nuxt | `npx nuxi prepare` | `npx nuxi typecheck` |
+| Astro | `npx astro sync` | `npx astro check` |
+| Next.js | `next dev` / `next build`（自動維護 `next-env.d.ts`） | `npx tsc --noEmit` |
+
+**情況 3：全域變數與環境變數**
+
+由 `<script>`、CDN、打包工具注入的東西，只存在於執行期，得自己告訴 TypeScript：
+
+```typescript
+// typings/env.d.ts
+export {}; // 讓這個檔案成為模組，declare global 才能使用
+
+declare global {
+  // 掛在 window 上的東西
+  interface Window {
+    __APP_VERSION__: string;
+  }
+
+  // 專案自訂的環境變數（需要 @types/node）
+  namespace NodeJS {
+    interface ProcessEnv {
+      API_URL: string;
+      NODE_ENV: "development" | "production";
+    }
+  }
+}
+```
+
+```typescript
+const v: string = window.__APP_VERSION__;               // ✅ 有型別
+const env: "development" | "production" = process.env.NODE_ENV; // ✅ 不再是 string | undefined
+```
+
+**情況 4：替既有型別補東西**
+
+第三方套件的型別存在、但缺了你需要的欄位（例如替 Express 的 `Request` 加上 `user`）。這是模組擴充，見第 4 章 4.4 的宣告合併。
+
+#### 一句話判斷
+
+**問自己：「這個東西的原始碼，TypeScript 讀得到嗎？」**
+
+- 讀得到（你自己的 `.ts`）→ 不用寫，編譯器自動產生
+- 讀不到，但別人已經描述過了（套件自帶型別、`@types/*`）→ 裝起來就好
+- 讀不到，也沒人描述過（無型別套件、`.svg`、全域變數）→ 這時才自己寫
+
+> ⚠️ 再次提醒：不要對「已經有型別」的套件自己寫一份，會蓋掉正確的型別或造成衝突。
 
 ```typescript
 // types.d.ts
@@ -697,7 +1112,7 @@ const total: number = new Calculator(10).add(5).subtract(3).result();
 console.log(sum, rounded, PI, total);
 ```
 
-重點提醒：這是**多檔案**示範——`declare module` 一定要放在「沒有頂層 `import` / `export` 的環境宣告檔（.d.ts）」裡，它才會被當成「為某個模組補型別」；如果把它寫進一個本身已經是模組的檔案（檔案內有其他 import/export），`declare module "simple-math"` 反而會被解讀成「模組擴增（augmentation）」而報 `module ... cannot be found`。另外要確保這個 `typings/simple-math.d.ts` 有被 `tsconfig.json` 的 `include`（或 `files`）涵蓋到。（不要用 `typeRoots`——它預期底下每個子資料夾都是一個「套件式」型別包、各自帶 `index.d.ts`，並不是拿來收單一 `.d.ts` 檔的機制。）
+重點提醒：這是**多檔案**示範——`declare module` 一定要放在「沒有頂層 `import` / `export` 的環境宣告檔（.d.ts）」裡，它才會被當成「為某個模組補型別」；如果把它寫進一個本身已經是模組的檔案（檔案內有其他 import/export），`declare module "simple-math"` 反而會被解讀成「模組擴增（augmentation）」而報 `module ... cannot be found`。另外要確保這個 `typings/simple-math.d.ts` 有被 `tsconfig.json` 的 `include`（或 `files`）涵蓋到——這一點與上面 8.3〈檔名要跟模組同名嗎〉說明的規則相同（不要改用 `typeRoots`，原因見 8.3 的提醒與第 9 章 9.5）。
 
 </details>
 

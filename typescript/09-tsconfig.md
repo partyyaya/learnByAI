@@ -209,6 +209,86 @@ const first = scores[0]; // 沒開啟時型別是 number；開啟後型別是 nu
 }
 ```
 
+### typeRoots 與 types
+
+這兩個選項只管一件事：**哪些「全域型別包」要被自動載入**。它們常被誤解成「TypeScript 去哪裡找型別檔」，其實不是——那是 `include` / `files` 的工作。
+
+先看它們解決什麼問題。當你 `npm i -D @types/node` 之後，不必在任何檔案寫 `import`，`process`、`Buffer` 這些全域名稱就直接可用了。這個「自動注入全域型別」的行為就是 `typeRoots` 在控制的：
+
+| 選項 | 作用 | 預設值 |
+| --- | --- | --- |
+| `typeRoots` | 到**哪些資料夾**去找型別包 | 從目前目錄逐層往上找所有的 `node_modules/@types` |
+| `types` | 這些資料夾裡，**只載入哪幾個**（白名單） | 不設定 = 全部載入 |
+
+```json
+{
+  "compilerOptions": {
+    "typeRoots": ["./node_modules/@types", "./src/types"],
+    "types": ["node", "jest"]
+  }
+}
+```
+
+上面這組設定的意思是：「去 `node_modules/@types` 和 `src/types` 這兩個資料夾找型別包，但只自動載入 `node` 和 `jest` 這兩個。」
+
+#### `types: []` 的實際用途
+
+不設 `types` 時，`node_modules/@types` 底下**所有**套件都會被自動載入——包含你根本沒用到的。這在大型專案會拖慢編譯，也可能讓不該出現的全域型別汙染進來（例如前端專案不小心吃到 `@types/node` 的 `process`）。用白名單就能收斂：
+
+```json
+{
+  "compilerOptions": {
+    "types": [] // 完全關閉自動載入，只靠明確的 import
+  }
+}
+```
+
+#### ⚠️ 關鍵限制：`typeRoots` 底下必須是「資料夾」
+
+這是最容易踩的坑。`typeRoots` 指向的目錄底下，**每個項目都必須是一個「套件式」的資料夾**（各自帶 `index.d.ts`，或用 `package.json` 的 `types` 欄位指路），跟 `node_modules/@types` 的結構一樣。直接丟一個 `.d.ts` 檔進去**不會有任何作用**：
+
+```text
+src/types/
+├── my-globals/
+│   └── index.d.ts     ✅ 資料夾形式 → 會被自動載入
+└── loose.d.ts         ❌ 裸檔案 → typeRoots 完全看不到它
+```
+
+```typescript
+// src/types/my-globals/index.d.ts
+declare const __BUILD_ID__: string;
+```
+
+```typescript
+// src/types/loose.d.ts
+declare const __LOOSE_VAR__: string;
+```
+
+```typescript
+console.log(__BUILD_ID__);  // ✅ 透過 typeRoots 自動載入
+console.log(__LOOSE_VAR__); // ❌ error TS2304: Cannot find name '__LOOSE_VAR__'.
+```
+
+**單一 `.d.ts` 檔要靠 `include` 涵蓋**，不是靠 `typeRoots`：
+
+```json
+{
+  "compilerOptions": {
+    "typeRoots": ["./src/types"]
+  },
+  "include": ["src"] // ← 改成涵蓋整個 src，loose.d.ts 才會被納入編譯
+}
+```
+
+#### 一句話區分
+
+| 你想做的事 | 該用哪個 |
+| --- | --- |
+| 「我專案裡有一份 `.d.ts`，想讓它生效」 | `include` / `files` |
+| 「我想控制 `@types/*` 這類全域型別包自動載入哪些」 | `typeRoots` / `types` |
+
+> 📌 這也是第 8 章 8.3 那句警告的由來——自己寫的 `legacy-lib.d.ts`、`assets.d.ts` 都是「單一檔案」，要用 `include` 收，放進 `typeRoots` 是無效的。
+
 ### include / exclude / files
 
 ```json
@@ -440,6 +520,119 @@ TypeScript 5.0 之後新增了幾個與模組語法／宣告檔輸出有關的�
 - 型別匯入／匯出**必須**明確寫 `import type` / `export type`，混合匯入要加上 `type` 修飾字（如 `import { createUser, type User } from "./user"`），否則會編譯錯誤。
 - 匯入的程式碼會「逐字（verbatim）」保留到輸出檔案——TypeScript 不會自動幫你判斷某個匯入只用到型別而悄悄把它移除；你寫什麼就輸出什麼。
 - 取代了舊版的 `importsNotUsedAsValues` 與 `preserveValueImports` 兩個選項，效果上也和 `isolatedModules` 大致相容，是目前推薦的統一設定（見第 8 章 8.2）。
+
+#### 有加跟沒加，輸出差在哪？
+
+這個選項的名字不太直覺，直接看編譯結果最清楚。假設有這兩個檔案：
+
+```typescript
+// types.ts
+console.log("[types.ts] 這個模組被載入了"); // 模組層級的副作用
+
+export interface User {
+  id: number;
+  name: string;
+}
+
+export const DEFAULT_USER: User = { id: 0, name: "guest" };
+```
+
+```typescript
+// app.ts —— 注意這裡是普通的 import，沒有 type 關鍵字
+import { User } from "./types.js";
+
+export function greet(user: User): string {
+  return `Hello, ${user.name}`;
+}
+
+console.log("[app.ts] " + greet({ id: 1, name: "Gary" }));
+```
+
+**沒開 `verbatimModuleSyntax`（預設行為）**——TypeScript 發現 `User` 只被當型別用，就把整行 import「消除」掉了：
+
+```javascript
+// 編譯後的 app.js —— import 那一行整個不見了
+export function greet(user) {
+    return `Hello, ${user.name}`;
+}
+console.log("[app.ts] " + greet({ id: 1, name: "Gary" }));
+```
+
+執行結果：
+
+```text
+[app.ts] Hello, Gary
+```
+
+⚠️ **`types.ts` 的 `console.log` 沒有印出來**——因為那行 import 被移除，`types.js` 從頭到尾沒有被載入，模組的副作用完全消失了。這個行為叫**匯入消除（import elision）**。
+
+**開啟 `verbatimModuleSyntax`**——同一份 `app.ts` 直接編譯失敗，要求你講清楚：
+
+```text
+error TS1484: 'User' is a type and must be imported using a type-only import
+              when 'verbatimModuleSyntax' is enabled.
+```
+
+改成明確的寫法後：
+
+```typescript
+import type { User } from "./types.js";      // 純型別 → 明確表示「這行會被移除」
+import { DEFAULT_USER } from "./types.js";   // 值 → 明確表示「這行會保留」
+
+export function greet(user: User): string {
+  return `Hello, ${user.name}`;
+}
+
+console.log("[app.ts] " + greet(DEFAULT_USER));
+```
+
+```javascript
+// 編譯後：import type 消失、值的 import 保留
+import { DEFAULT_USER } from "./types.js";
+export function greet(user) {
+    return `Hello, ${user.name}`;
+}
+console.log("[app.ts] " + greet(DEFAULT_USER));
+```
+
+執行結果——副作用正常執行：
+
+```text
+[types.ts] 這個模組被載入了
+[app.ts] Hello, guest
+```
+
+#### 四種情況對照
+
+| 你寫的 | 沒開（預設） | 開啟後 |
+| --- | --- | --- |
+| `import { User }`，只當型別用 | ⚠️ 整行被消除（副作用一起消失） | ❌ 編譯錯誤 TS1484，強迫你改寫 |
+| `import type { User }` | 整行被移除 | 整行被移除（結果相同，但意圖明確） |
+| `import { fn }`，有用到 | 保留 | 保留 |
+| `import { fn }`，完全沒用到 | ⚠️ 整行被消除 | ✅ **逐字保留**（副作用照樣執行） |
+
+最後一列是「verbatim（逐字）」這個名字的由來：**開啟後，普通的 `import` 一定會出現在輸出裡，就算你完全沒用到它。** 要不要移除由你決定（寫不寫 `type`），而不是編譯器替你猜。
+
+#### 為什麼需要這個選項？
+
+**1. 副作用不會莫名消失**（上面示範的情況）
+
+某些模組是靠「被載入」本身產生效果的——polyfill、CSS 匯入、註冊全域元件、Reflect metadata。這類 import 一旦被消除，程式在編譯期完全正常、執行期才出問題，而且很難查。
+
+**2. 讓 esbuild / swc / Babel 這類工具能正確處理**
+
+這些工具為了速度是**逐檔轉譯**的，看到 `import { User } from "./types"` 時，它們**無法知道** `User` 是型別還是值——那個資訊在另一個檔案裡，而它們不做跨檔案型別分析。所以它們只能選一邊：
+
+- 全部保留 → 型別匯入殘留在輸出中，執行期會因為找不到匯出而爆掉
+- 全部移除 → 值的匯入被誤刪
+
+`verbatimModuleSyntax` 要求你在**每一行 import 上就把答案寫清楚**，逐檔轉譯的工具就不需要猜了。這也是為什麼用 Vite、esbuild 的專案（例如 Vue / React 的新專案樣板）幾乎都預設開啟它。
+
+**3. 意圖明確，程式碼可讀**
+
+`import type` 一眼就能看出「這個匯入編譯後會消失」，不必反查該符號是型別還是值。
+
+> 💡 **實務建議**：新專案直接開啟。它唯一的成本是要多打 `type` 這幾個字，換來的是輸出可預測——而且多數 IDE 都能自動加上（VS Code 的 quick fix、或 ESLint 的 `@typescript-eslint/consistent-type-imports` 規則可以自動修正整個專案）。
 
 ### moduleDetection
 
