@@ -79,8 +79,20 @@
 | 章節 | 檔案 | 主題 |
 |------|------|------|
 | 08 | [08-scaling-replication-partition-sharding.md](./08-scaling-replication-partition-sharding.md) | 架構擴展：讀寫分離、Replication、Partition、Sharding |
-| 09 | [09-backup-recovery-security.md](./09-backup-recovery-security.md) | 備份、恢復、安全與權限：PITR、最小權限、SQL Injection 防護、加密與審計 |
+| 09 | [09-backup-recovery-security.md](./09-backup-recovery-security.md) | 備份、恢復、安全與權限：PITR、RPO/RTO、最小權限、SQL Injection 防護、加密與審計 |
 | 10 | [10-capstone-ticketing-platform.md](./10-capstone-ticketing-platform.md) | Capstone：設計一個演唱會搶票平台 |
+
+---
+
+## 延伸課程
+
+本課的第 05 章只介紹 Redis 在「快取」這個用途上的設計。如果你想把 Redis 當成一個完整的資料系統來掌握，可以接著上這門獨立課程：
+
+| 課程 | 內容 |
+|------|------|
+| [Redis 完整課程](./redis-course/README.md) | 15 章，涵蓋資料結構選型、單執行緒模型與效能、記憶體與驅逐、持久化、Lua 原子操作、Stream 訊息流、Cluster 架構、監控排錯與生產實踐 |
+
+建議讀完本課第 05 章、建立快取的基本心智模型之後再進入。
 
 ---
 
