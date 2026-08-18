@@ -1,0 +1,161 @@
+# Java 後端工程師完整學習路線
+
+> 這不是一門「Java 語法課」，而是一條**從語言基礎到可上線後端服務**的完整路線。
+> 依照 `Java → Spring Boot → REST API → Controller → Service → Repository → MySQL → JPA / MyBatis → Spring Security` 的技能鏈設計，
+> 每一站都是獨立子課程，可以單獨讀，也可以照順序一路走到期末專題。
+
+---
+
+## 課程目標
+
+完成整條路線後，你應該可以：
+
+- 用現代 Java（17 / 21 LTS）寫出結構清楚、有測試的程式。
+- 說明 Spring Boot 的 IoC、DI、自動組態到底做了什麼，而不是只會貼註解。
+- 設計一組別人看得懂、改得動、不會一改就破壞相容的 REST API。
+- 正確切分 Controller / Service / Repository 三層職責，知道每種邏輯該放哪一層。
+- 設計 MySQL schema、看懂 `EXPLAIN`、處理交易與鎖。
+- 在 JPA 與 MyBatis 之間做出有理由的選擇，並解決 N+1、延遲載入等經典問題。
+- 用 Spring Security 實作登入、權限控管與 JWT，並知道常見漏洞怎麼防。
+- 獨立完成一個可部署、有測試、有監控的後端服務。
+
+## 適合對象
+
+- 會其他語言（JS / Python / PHP），要轉 Java 後端的工程師。
+- 學過 Java 語法，但一碰 Spring Boot 就只會複製貼上的人。
+- 前端 / 全端工程師想補齊後端與資料庫這一段。
+- 準備面試，需要能講清楚分層架構、交易、ORM、權限設計的人。
+
+## 前置知識
+
+- 會用基本命令列與 Git。
+- 知道 HTTP 請求 / 回應大致長什麼樣。
+- 有任一程式語言基礎即可，不需要先會 Java。
+
+---
+
+## 技能鏈與課程地圖
+
+```
+Java                 語言與 JVM 基礎（01-java-core）
+  ↓
+Spring Boot          IoC / DI / 自動組態（02-spring-boot）
+  ↓
+REST API             介面設計原則，與框架無關（03-rest-api）
+  ↓
+Controller           Web 層：接請求、驗參數、回錯誤（04-controller）
+  ↓
+Service              商業邏輯層：交易、快取、外部呼叫（05-service）
+  ↓
+Repository           資料存取層：連線池、查詢抽象（06-repository）
+  ↓
+MySQL                資料庫本體：建模、索引、交易、鎖（07-mysql）
+  ↓
+JPA / MyBatis        兩種存取實作：ORM vs SQL Mapper（08-jpa-mybatis）
+  ↓
+Spring Security      認證與授權：登入、權限、JWT（09-spring-security）
+  ↓
+Capstone             整合成一個可上線的服務（10-capstone）
+```
+
+> **04 → 05 → 06 是同一件事的三個切面**：一個請求進來，會依序穿過 Controller、Service、Repository。
+> 拆成三個子課程是為了把「哪些程式碼該放哪一層」講透，實務上它們一起出現在同一個專案裡。
+
+---
+
+## 子課程目錄
+
+| # | 資料夾 | 主題 | 章節數 | 你會得到什麼 |
+|---|--------|------|--------|--------------|
+| 01 | [01-java-core/](./01-java-core/) | Java 語言核心與 JVM | 13 | 語法、OOP、集合、Stream、併發、JVM 記憶體、Maven / Gradle、JUnit |
+| 02 | [02-spring-boot/](./02-spring-boot/) | Spring Boot 框架原理 | 10 | IoC 容器、DI、自動組態、設定檔與 Profile、AOP、Actuator、打包部署 |
+| 03 | [03-rest-api/](./03-rest-api/) | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
+| 04 | [04-controller/](./04-controller/) | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、MockMvc |
+| 05 | [05-service/](./05-service/) | 商業邏輯層 | 8 | 交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
+| 06 | [06-repository/](./06-repository/) | 資料存取層 | 7 | DataSource 與連線池、JdbcTemplate、Spring Data 抽象、交易邊界、測試 |
+| 07 | [07-mysql/](./07-mysql/) | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢、Flyway |
+| 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) | JPA / Hibernate 與 MyBatis | 10 | Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL |
+| 09 | [09-spring-security/](./09-spring-security/) | 認證與授權 | 9 | Filter Chain、UserDetails、方法層權限、Session vs Token、JWT、OAuth2 |
+| 10 | [10-capstone/](./10-capstone/) | 期末專題：訂單系統 | 8 | 把上面全部串成一個可部署、有測試、有監控的服務 |
+
+合計 **91 個章節**。
+
+---
+
+## 三種讀法
+
+**路線 A：零基礎轉 Java 後端（建議 3～4 個月）**
+
+```
+01 Java 核心 → 02 Spring Boot → 03 REST API → 04/05/06 三層
+→ 07 MySQL → 08 JPA → 09 Security → 10 期末專題
+```
+
+**路線 B：已會其他語言後端，只想快速上手 Java 生態（建議 4～6 週）**
+
+```
+01（只讀 02、05、06、10、11 章）→ 02 Spring Boot → 04/05/06 三層
+→ 08 JPA → 09 Security → 10 期末專題
+```
+
+**路線 C：已在寫 Spring Boot，想補洞**
+
+依症狀挑章節：
+
+| 你的症狀 | 直接讀 |
+|----------|--------|
+| 註解會用但不知道為什麼會生效 | [02-spring-boot/](./02-spring-boot/) 01～02 |
+| API 改版就炸掉前端 | [03-rest-api/](./03-rest-api/) 06 |
+| 商業邏輯全塞在 Controller | [04-controller/](./04-controller/) 00、[05-service/](./05-service/) 00 |
+| `@Transactional` 沒生效 | [05-service/](./05-service/) 02 |
+| 查詢很慢、log 一堆 SQL | [08-jpa-mybatis/](./08-jpa-mybatis/) 04、[07-mysql/](./07-mysql/) 03 |
+| 不知道 JWT 該怎麼做才安全 | [09-spring-security/](./09-spring-security/) 05 |
+
+---
+
+## 環境需求
+
+| 項目 | 版本 / 建議 |
+|------|-------------|
+| JDK | 21 LTS（最低 17，課程會標註版本差異） |
+| 建置工具 | Maven 3.9+ 或 Gradle 8+ |
+| Spring Boot | 3.x（Jakarta EE 命名空間） |
+| 資料庫 | MySQL 8.0+（建議用 Docker 跑） |
+| IDE | IntelliJ IDEA（推薦）/ VS Code + Extension Pack for Java |
+| 其他 | Docker Desktop、Postman 或 VS Code REST Client |
+
+### 快速開始
+
+```bash
+# 1. 安裝 JDK（macOS 建議用 SDKMAN 管多版本）
+curl -s "https://get.sdkman.io" | bash
+sdk install java 21.0.5-tem
+java -version
+
+# 2. 用 Docker 起一個 MySQL
+docker run -d --name mysql-learn \
+  -e MYSQL_ROOT_PASSWORD=root \
+  -e MYSQL_DATABASE=learnjava \
+  -p 3306:3306 \
+  mysql:8.0
+
+# 3. 建立第一個 Spring Boot 專案
+curl https://start.spring.io/starter.zip \
+  -d dependencies=web,data-jpa,mysql,validation \
+  -d javaVersion=21 \
+  -d type=maven-project \
+  -o demo.zip
+unzip demo.zip -d demo
+```
+
+---
+
+## 與其他課程的關係
+
+- [../database-course/](../database-course/) — 資料庫**通論**（選型、建模、高併發、Redis、NoSQL）。本課的 07-mysql 聚焦「Java 專案怎麼用 MySQL」，兩者互補。
+- [../docker/](../docker/) — 10-capstone 的部署章節會用到。
+- [../security-course/](../security-course/) — 攻擊者視角。09-spring-security 是防守方視角，可對照閱讀。
+
+---
+
+> 準備好了嗎？從 [01-java-core/](./01-java-core/) 開始吧。
