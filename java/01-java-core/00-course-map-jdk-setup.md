@@ -18,6 +18,7 @@
 - 從 `.java` → `.class` → 執行，完整說出編譯與執行流程，並用 `javap` 看到 bytecode。
 - 建立一個 Maven 專案骨架，這個骨架會用到整門課結束。
 - 看到 `UnsupportedClassVersionError`、中文亂碼、`JAVA_HOME is not set` 時，知道原因在哪。
+- **用除錯器設中斷點、條件式中斷點與例外中斷點**，並知道什麼時候它會騙你、什麼時候該改用日誌或傾印。
 
 ---
 
@@ -575,6 +576,30 @@ java Hello           # 注意：沒有 .class 副檔名
 # 輸出：Hello, Java 21!
 ```
 
+`java` 吃的是**類別名稱**，不是檔案路徑。`Hello` 在當前目錄時，JVM 預設從 `.` 找 `Hello.class`。若 class 在子資料夾裡（這支還沒寫 `package`）：
+
+```
+專案根目錄/
+  demo/
+    Hello.java
+    Hello.class
+```
+
+```bash
+java -cp demo Hello     # 人在專案根目錄：把 demo/ 當成 classpath 根
+cd demo && java Hello   # 先進子資料夾，效果相同
+```
+
+`-cp demo` 的意思是「到 `demo/` 裡找類別」。類別名稱仍是 `Hello`，所以後面寫 `Hello`，不要寫 `demo.Hello`。
+
+| 指令 | 結果 |
+|---|---|
+| `java demo/Hello` | 被當成 package `demo`、類別 `Hello`，沒寫 package 就找不到 |
+| `java demo.Hello` | 同上 |
+| `java demo/Hello.class` | 更不行，`java` 不吃檔案路徑 |
+
+> **有 package 時**（真實專案常見）要用全名，而且 classpath 要指到 package 的**根**目錄，見 0.11 錯誤 4。現在這支還沒寫 package，記住 `java -cp 子資料夾 類別名` 就夠。
+
 逐字拆解 `public static void main(String[] args)`：
 
 | 部分 | 意思 | 拿掉會怎樣 |
@@ -613,6 +638,7 @@ java Greet             # 用法: java Greet <名字>
 
 ```bash
 java Hello.java        # 直接跑，class 檔留在記憶體裡不落地
+java demo/Hello.java   # 原始檔可以用路徑；這跟 `java Hello` 吃類別名稱不同
 ```
 
 寫小實驗、驗證一個語法時很方便。本課很多小範例你都可以這樣跑。
@@ -692,8 +718,13 @@ Hello.class  ←── 這就是「跨平台的 artifact」
 
 ### 親眼看看 bytecode
 
+`javap` 是 JDK 內建的**反組譯器**（class file disassembler）：讀 `.class`，把裡面的結構印成人看得懂的文字。它不執行程式，只是打開編譯器產物給你看。
+
+`-c` 是 `--disassemble`：把每個方法的 **bytecode 指令**（`Code:` 那段）印出來。不加 `-c` 時，`javap Hello.class` 只會列出方法簽章，看不到 `getstatic`、`invokevirtual` 這些指令。
+
 ```bash
-javap -c Hello.class
+javap Hello.class      # 只看公開成員與方法簽章
+javap -c Hello.class   # 再加上每條 bytecode
 ```
 
 ```
@@ -738,7 +769,7 @@ JVM 啟動時用解譯器執行（啟動快、執行慢）；當某段程式碼�
 ### 手動建立（推薦，比背 archetype 指令實在）
 
 ```bash
-mkdir -p demo/src/main/java/com/example/todo
+mkdir -p demo/src/main/java/com/example/todo   # -p：中間目錄不存在就一併建立，已存在也不報錯
 mkdir -p demo/src/test/java/com/example/todo
 cd demo
 ```
@@ -748,6 +779,7 @@ Maven 的目錄慣例（**約定優於設定**，記住就好）：
 ```
 demo/
 ├── pom.xml                      ← 專案描述：座標、依賴、外掛
+├── .gitignore                   ← 跟 pom.xml 同層（專案根目錄）
 ├── src/
 │   ├── main/
 │   │   ├── java/                ← 產品程式碼
@@ -874,7 +906,7 @@ mvn clean             # 清掉 target/
 mvn -q exec:java -Dexec.mainClass=com.example.todo.App   # 需要 exec 外掛，第 10 章講
 ```
 
-`.gitignore`：
+`demo/.gitignore`（專案根目錄，跟 `pom.xml` 同一層；你前面已經 `cd demo`，所以在這裡建檔即可）：
 
 ```gitignore
 target/
@@ -884,6 +916,8 @@ target/
 .vscode/
 .DS_Store
 ```
+
+放錯位置（例如放到 `src/` 或課程 repo 最外層）Git 就不會忽略這個 Maven 專案的 `target/`。Git 從檔案所在目錄往上找 `.gitignore`，規則對該目錄及其子目錄生效。
 
 > **注意 `package` 與目錄要一致**：`package com.example.todo;` 的檔案必須放在 `src/main/java/com/example/todo/`。不一致的話 Maven 編譯會直接失敗。第 02 章會講 package 的設計。
 
@@ -954,11 +988,15 @@ Maven / Gradle 讀 `JAVA_HOME`，不是讀 `PATH` 裡的 `java`。回到 0.6 設
 
 ### 錯誤 4：`錯誤: 找不到或無法載入主要類別 Hello`
 
-三種常見原因：
+四種常見原因：
 
 ```bash
 java Hello.class     # ❌ 不要加 .class
 java Hello           # ✅
+
+# ❌ class 在子資料夾、又沒寫 package：路徑不是類別名稱
+java demo/Hello      # ❌ 被當成 package demo
+java -cp demo Hello  # ✅ 見 0.8
 
 # ❌ 有 package 的類別，要用全名，而且要從 package 的根目錄執行
 cd src/main/java
@@ -980,7 +1018,209 @@ IDE 和 Maven 用不同 JDK / 不同語言等級。修法在 0.7：把版本寫�
 
 ---
 
-## 0.12 本章練習
+## 0.12 用除錯器：比 `println` 快十倍的那個按鈕
+
+上一節的錯誤都有明確的錯誤訊息。但更多時候，程式**沒有報錯，只是答案不對**——
+迴圈少跑一圈、某個欄位莫名其妙變成 `null`、金額算出來差了一塊錢。
+
+大部分人這時候的做法是：
+
+```
+加一行 println → 重新編譯 → 再跑一次 → 猜錯地方 → 再加三行 println
+→ 重新編譯 → 再跑一次 → ⋯⋯ → 修好之後忘記刪，把 println 一起 commit 進去
+```
+
+**每一輪至少 30 秒，而且你只看得到你「事先想到要印」的那些變數。**
+
+除錯器（debugger）做的是同一件事，但：一次就能看到**當下所有變數**、
+不用重新編譯、可以往前往後走、還可以當場改變數的值試試看。
+
+> 🔑 **這一節放在第 00 章，是因為它是「投資報酬率最高、卻最常被跳過」的一節。**
+> 現在花 20 分鐘學會，接下來 12 章的每一次「咦，怎麼會這樣」都會省你幾十分鐘。
+
+---
+
+### 0.12.1 三個核心動作
+
+用第 0.10 節建好的專案，隨便找一個方法試：
+
+| 動作 | IntelliJ | VS Code | 做什麼 |
+|---|---|---|---|
+| **設中斷點** | 點行號左邊的空白 | 同左 | 程式跑到這一行就停住 |
+| **啟動除錯** | `main` 旁邊的綠色蟲圖示 → Debug | `F5` | 用除錯模式跑 |
+| **看變數** | 下方 Variables 面板 | 左側 VARIABLES | **當下所有變數的值，不用事先想好要印哪個** |
+
+停住之後，四個按鈕決定你往哪走：
+
+| 按鈕 | 快捷鍵（IntelliJ / VS Code） | 意思 | 什麼時候用 |
+|---|---|---|---|
+| **Step Over** | `F8` / `F10` | 執行這一行，**不進去**方法內部 | 預設就用這個 |
+| **Step Into** | `F7` / `F11` | **進入**這一行呼叫的方法 | 懷疑問題在被呼叫的方法裡 |
+| **Step Out** | `Shift+F8` / `Shift+F11` | 執行完目前方法，回到呼叫端 | 進錯地方了，想退出來 |
+| **Resume** | `F9` / `F5` | 繼續跑到下一個中斷點 | 這一段看完了 |
+
+> 💡 **最常見的挫折**：按 Step Into 結果進到 `ArrayList.add()` 或 `String.valueOf()` 裡面。
+> 解法是設定 **step filter**，讓除錯器跳過標準函式庫：
+>
+> - IntelliJ：`Settings → Build, Execution, Deployment → Debugger → Stepping`，
+>   勾選 `Do not step into classes`，預設已含 `java.*`、`javax.*`、`jdk.*`。
+> - VS Code：`launch.json` 加 `"stepFilters": { "skipClasses": ["$JDK", "junit.*"] }`。
+
+---
+
+### 0.12.2 條件式中斷點：只在你要的那一圈停
+
+```java
+for (int i = 0; i < 100_000; i++) {
+    process(items.get(i));          // 第 87_432 圈才出錯
+}
+```
+
+在中斷點上**按右鍵 → Condition**，填一個布林運算式：
+
+```java
+i == 87432
+// 或者更實用的：不知道第幾圈，但知道特徵
+items.get(i).getAmount() < 0
+```
+
+程式只會在條件成立時停下來。
+
+> ⚠️ **代價**：條件式中斷點是「每一圈都停下來、算一次運算式、不成立就繼續」。
+> 放在跑一百萬次的熱迴圈裡，程式會慢到幾乎不能動。
+> 如果條件很複雜，改用「先在程式裡寫 `if (條件) { int x = 0; }` 再對那一行設普通中斷點」會快很多。
+
+---
+
+### 0.12.3 ★ 例外中斷點：本節最被低估的功能
+
+情境：log 裡有一個 `NullPointerException`，但堆疊追蹤指向的是第 04 章那種
+「已經被 catch 過又重新包裝」的地方，看不出原始的那個 `null` 是誰。
+
+**例外中斷點會在例外「被丟出的那一瞬間」停住**——
+不是在 `catch` 停，是在 `throw` 停。這時候整個現場都還在。
+
+| IDE | 設定位置 |
+|---|---|
+| IntelliJ | `Run → View Breakpoints`（`Ctrl/Cmd+Shift+F8`）→ `+` → `Java Exception Breakpoints` → 輸入 `NullPointerException` |
+| VS Code | 左側 BREAKPOINTS 面板 → 勾 `Uncaught Exceptions` / `Caught Exceptions` |
+
+> 🔑 **「Caught」和「Uncaught」要分清楚**：
+> - 勾 **Uncaught**：只在沒人接的例外停。安全，但漏掉「被吞掉」的那些。
+> - 勾 **Caught**：連被 `catch` 的也停。**這才是查「例外被吞掉」的正確工具**
+>   （第 04 章 4.12 的反模式一），但在 Spring 這種框架裡會停個不停——
+>   所以要**指定例外型別**，不要對 `Exception` 開。
+
+### 0.12.4 欄位監看點：「到底是誰改了這個值」
+
+`config.timeout` 在某個時刻變成 `0`，但全專案有 20 個地方寫它。
+
+**在欄位宣告的行號上設中斷點**（IntelliJ 會自動變成 field watchpoint，
+圖示是一隻眼睛），選 `Field modification`——
+任何人寫入這個欄位時就會停住，而堆疊追蹤直接告訴你是誰。
+
+> 這是查「莫名其妙被改掉的狀態」最快的路。
+> 第 02 章 2.9 講不可變物件時你會理解：**需要用到欄位監看點，通常就是該用不可變物件的訊號。**
+
+---
+
+### 0.12.5 Evaluate Expression：在現場試跑
+
+停在中斷點時，按 `Alt+F8`（IntelliJ）/ 在 DEBUG CONSOLE 輸入（VS Code），
+可以執行任意運算式：
+
+```java
+items.stream().filter(i -> i.getAmount() < 0).count()    // 現場算一下有幾筆
+new BigDecimal("4.35").multiply(new BigDecimal("100"))   // 驗證第 01 章 1.5 的金額問題
+order.getCustomer().getAddress()                          // 一路點下去看哪一層是 null
+```
+
+**也可以直接改變數的值**（Variables 面板 → 右鍵 → `Set Value`）：
+想測「如果這裡是 `-1` 會怎樣」，不用改程式再跑一次。
+
+> ⚠️ **Evaluate 會真的執行程式碼**。如果那個方法會寫資料庫、送 email、扣庫存——
+> 它就真的做了。**在正式資料上除錯時特別注意。**
+
+### 0.12.6 Drop Frame：時光倒流
+
+「啊，剛剛那個方法我按太快 Step Over 過去了。」
+
+不用重跑：IntelliJ 的 `Drop Frame`（VS Code 的 `Restart Frame`）會把目前的方法
+**退回到還沒進入的狀態**，讓你重新 Step Into 一次。
+
+> ⚠️ 它只能還原**堆疊**，還原不了**副作用**——
+> 剛才那個方法已經寫進去的資料庫紀錄、已經改掉的靜態變數，不會跟著倒退。
+
+---
+
+### 0.12.7 除錯器會騙你的四個地方
+
+| # | 陷阱 | 說明 |
+|---|---|---|
+| 1 | **`toString()` 有副作用** | Variables 面板會對每個變數呼叫 `toString()`。如果它會觸發延遲載入（08-jpa-mybatis 的 JPA）或計數器，你「看一眼」就改變了程式的行為 |
+| 2 | **停住的時候，世界沒有停** | 資料庫交易在逾時、HTTP 連線在逾時、K8s 的存活探針在倒數。**「debug 時一切正常，放開就失敗」通常就是這個** |
+| 3 | **多執行緒的暫停策略** | 預設 `Suspend: All` 會停住所有執行緒，這會讓併發問題**消失**（第 08 章 8.4 的競態條件靠 debug 幾乎抓不到）。改成 `Suspend: Thread` 只停一條，但要小心製造出人為的死鎖 |
+| 4 | **最佳化過的程式碼** | JIT 內聯之後，某些區域變數可能顯示為「不可用」。這是正常的，不是 IDE 壞了 |
+
+> 🔑 **第 2、3 點合起來就是一條原則：**
+> **除錯器適合「邏輯錯」，不適合「時間錯」。**
+> 併發、逾時、效能問題要用第 08 章的 `jstack`、第 09 章的 heap dump 與 JFR。
+
+---
+
+### 0.12.8 遠端除錯：連進容器裡的那個 JVM
+
+程式在 Docker 裡跑、在測試機上跑，但你想用本機的 IDE 除錯。
+
+啟動 JVM 時加上這一串（**JDK 9 之後的正確寫法**）：
+
+```bash
+java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005 -jar app.jar
+```
+
+| 參數 | 意思 | 常踩的坑 |
+|---|---|---|
+| `transport=dt_socket` | 用 TCP 連線 | — |
+| `server=y` | JVM 當伺服器，等 IDE 連進來 | — |
+| `suspend=n` | **不要**等 IDE 連上才啟動 | 設成 `y` 時容器會卡在啟動中，健康檢查直接判定失敗 |
+| `address=*:5005` | 監聽所有網卡的 5005 埠 | ★ **JDK 9 起預設只綁 localhost**，只寫 `address=5005` 從容器外連不進去 |
+
+```bash
+# Docker 要把埠對映出來
+docker run -p 8080:8080 -p 5005:5005 \
+  -e JAVA_TOOL_OPTIONS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005" \
+  myapp:latest
+```
+
+然後在 IDE 建一個 `Remote JVM Debug` 設定，填 `localhost:5005`。
+
+> ⚠️ **JDWP 埠等於一個完全沒有認證的遠端程式碼執行入口。**
+> 任何連得上 5005 的人都能讀你的記憶體、改你的變數、呼叫任何方法。
+>
+> **絕對不要開在正式環境**，也不要讓它出現在對外的安全群組 / Ingress 上。
+> 需要在正式環境查問題時，用第 09 章的 `jcmd` / heap dump / JFR——
+> **它們是唯讀的，JDWP 不是。**
+
+---
+
+### 0.12.9 什麼時候不該用除錯器
+
+| 症狀 | 用什麼 | 章節 |
+|---|---|---|
+| 邏輯不對、值不如預期 | **除錯器** | 本節 |
+| 只在正式環境發生 | 結構化日誌 + traceId | 02-spring-boot 第 05 章 |
+| 只在高併發下發生 | `jstack`、執行緒傾印 | 第 08 章 8.17 |
+| 記憶體一直漲 / OOM | heap dump + MAT | 第 09 章 9.11 |
+| 「有時候慢」但不知道慢在哪 | JFR、火焰圖 | 第 09 章 9.12 |
+| 要看「一萬次呼叫的分佈」 | 指標（Micrometer） | 02-spring-boot 第 05 章 5.14 |
+
+> 🔑 **除錯器一次只能看一條執行緒的一個瞬間。**
+> 「跨時間」（趨勢）和「跨請求」（分佈）的問題，它幫不上忙——
+> 那是日誌與指標的工作。這條分界線在後面每一站都會再出現。
+
+---
+
+## 0.13 本章練習
 
 ### 練習 1：環境自檢
 
@@ -1159,7 +1399,7 @@ find . -name "*.java" -o -name "pom.xml" | grep -v target
 
 ---
 
-## 0.13 驗收清單
+## 0.14 驗收清單
 
 - [ ] 我能說明 JDK / JRE / JVM 的差別，以及跨平台是誰提供的。
 - [ ] 我知道 Java 每 6 個月發一版，每 2 年一個 LTS，也知道 21 和 25 都是 LTS。
@@ -1171,6 +1411,14 @@ find . -name "*.java" -o -name "pom.xml" | grep -v target
 - [ ] 我有一個能 `mvn test` 綠燈的 Maven 專案骨架。
 - [ ] 我看到 `UnsupportedClassVersionError` 時，知道要對比編譯版本和執行版本。
 - [ ] 我知道 `maven.compiler.release` 比 `source`/`target` 安全，也說得出為什麼。
+- [ ] 我會設中斷點、單步執行，也設定過 step filter 讓除錯器不要進到 JDK 內部。
+- [ ] 我會用**條件式中斷點**只在特定那一圈停住，也知道它在熱迴圈裡的代價。
+- [ ] **我會用例外中斷點在 `throw` 的瞬間停住，也知道 Caught 和 Uncaught 的差別。**
+- [ ] 我知道 Variables 面板會呼叫 `toString()`，而它可能有副作用。
+- [ ] **我知道「debug 時停住，但資料庫交易與 HTTP 連線的逾時不會停」。**
+- [ ] 我知道併發問題用除錯器幾乎抓不到，要改用執行緒傾印。
+- [ ] 我會用 `-agentlib:jdwp=...,address=*:5005` 遠端除錯容器裡的 JVM。
+- [ ] **我知道 JDWP 埠等於無認證的遠端程式碼執行，絕不能開在正式環境。**
 
 ---
 

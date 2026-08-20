@@ -11,6 +11,7 @@
 完成整條路線後，你應該可以：
 
 - 用現代 Java（17 / 21 LTS）寫出結構清楚、有測試的程式。
+- 用現代 Java 的反射、註解與動態代理**讀懂框架**，而不是把它當黑箱。
 - 說明 Spring Boot 的 IoC、DI、自動組態到底做了什麼，而不是只會貼註解。
 - 設計一組別人看得懂、改得動、不會一改就破壞相容的 REST API。
 - 正確切分 Controller / Service / Repository 三層職責，知道每種邏輯該放哪一層。
@@ -67,9 +68,9 @@ Capstone             整合成一個可上線的服務（10-capstone）
 
 | # | 資料夾 | 主題 | 章節數 | 你會得到什麼 |
 |---|--------|------|--------|--------------|
-| 01 | [01-java-core/](./01-java-core/) | Java 語言核心與 JVM | 13 | 語法、OOP、集合、Stream、併發、JVM 記憶體、Maven / Gradle、JUnit |
-| 02 | [02-spring-boot/](./02-spring-boot/) | Spring Boot 框架原理 | 10 | IoC 容器、DI、自動組態、設定檔與 Profile、AOP、Actuator、打包部署 |
-| 03 | [03-rest-api/](./03-rest-api/) | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
+| 01 | [01-java-core/](./01-java-core/) ✅ | Java 語言核心與 JVM | 14 | 語法、OOP、集合、Stream、併發、JVM 記憶體、Maven / Gradle、JUnit、**反射與動態代理** |
+| 02 | [02-spring-boot/](./02-spring-boot/) ✅ | Spring Boot 框架原理 | 10 | IoC 容器、DI、自動組態、設定檔與 Profile、AOP、Actuator、打包部署 |
+| 03 | [03-rest-api/](./03-rest-api/) ✅ | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
 | 04 | [04-controller/](./04-controller/) | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、MockMvc |
 | 05 | [05-service/](./05-service/) | 商業邏輯層 | 8 | 交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
 | 06 | [06-repository/](./06-repository/) | 資料存取層 | 7 | DataSource 與連線池、JdbcTemplate、Spring Data 抽象、交易邊界、測試 |
@@ -78,7 +79,16 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 09 | [09-spring-security/](./09-spring-security/) | 認證與授權 | 9 | Filter Chain、UserDetails、方法層權限、Session vs Token、JWT、OAuth2 |
 | 10 | [10-capstone/](./10-capstone/) | 期末專題：訂單系統 | 8 | 把上面全部串成一個可部署、有測試、有監控的服務 |
 
-合計 **91 個章節**。
+合計 **92 個章節**。✅ 表示該子課程已完成。
+
+### 目前進度
+
+| 子課程 | 狀態 |
+|--------|------|
+| 01-java-core | ✅ 已結業（14 章，約 54,200 行） |
+| 02-spring-boot | ✅ 已結業（10 章，約 29,100 行） |
+| 03-rest-api | ✅ 已結業（10 章，約 33,700 行） |
+| 04～10 | ⏳ 撰寫中 |
 
 ---
 
@@ -94,7 +104,7 @@ Capstone             整合成一個可上線的服務（10-capstone）
 **路線 B：已會其他語言後端，只想快速上手 Java 生態（建議 4～6 週）**
 
 ```
-01（只讀 02、05、06、10、11 章）→ 02 Spring Boot → 04/05/06 三層
+01（只讀 02、05、06、10、11、13 章）→ 02 Spring Boot → 04/05/06 三層
 → 08 JPA → 09 Security → 10 期末專題
 ```
 
@@ -104,7 +114,8 @@ Capstone             整合成一個可上線的服務（10-capstone）
 
 | 你的症狀 | 直接讀 |
 |----------|--------|
-| 註解會用但不知道為什麼會生效 | [02-spring-boot/](./02-spring-boot/) 01～02 |
+| 註解會用但不知道為什麼會生效 | [01-java-core/](./01-java-core/) 13、[02-spring-boot/](./02-spring-boot/) 01～02 |
+| 上線後一變慢就整個服務停止回應 | [02-spring-boot/](./02-spring-boot/) 08 |
 | API 改版就炸掉前端 | [03-rest-api/](./03-rest-api/) 06 |
 | 商業邏輯全塞在 Controller | [04-controller/](./04-controller/) 00、[05-service/](./05-service/) 00 |
 | `@Transactional` 沒生效 | [05-service/](./05-service/) 02 |
@@ -117,7 +128,7 @@ Capstone             整合成一個可上線的服務（10-capstone）
 
 | 項目 | 版本 / 建議 |
 |------|-------------|
-| JDK | 21 LTS（最低 17，課程會標註版本差異） |
+| JDK | **21 LTS**（最低 17；Java 25 也是 LTS，課程會標註版本差異） |
 | 建置工具 | Maven 3.9+ 或 Gradle 8+ |
 | Spring Boot | 3.x（Jakarta EE 命名空間） |
 | 資料庫 | MySQL 8.0+（建議用 Docker 跑） |
@@ -129,7 +140,7 @@ Capstone             整合成一個可上線的服務（10-capstone）
 ```bash
 # 1. 安裝 JDK（macOS 建議用 SDKMAN 管多版本）
 curl -s "https://get.sdkman.io" | bash
-sdk install java 21.0.5-tem
+sdk install java 21.0.5-tem   # 課程基準；Java 25 LTS 也可以，差異都會標註
 java -version
 
 # 2. 用 Docker 起一個 MySQL

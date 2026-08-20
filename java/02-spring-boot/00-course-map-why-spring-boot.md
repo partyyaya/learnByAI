@@ -19,6 +19,7 @@
 - 把 `@SpringBootApplication` 拆成三個註解，說出各自負責什麼。
 - 逐行讀懂 Spring Boot 的啟動日誌，並說出 `SpringApplication.run()` 的主要階段。
 - 寫出第一個 REST 端點，用 `curl` 驗證，並用 Actuator 看到服務狀態。
+- **畫出一個 HTTP 請求從 Tomcat 到你的方法之間經過的每一格**，並說出 Filter / Interceptor / AOP 各住在哪一層。
 - 遇到「port 被佔用」「找不到主類」「啟動變超慢」時知道從哪查起。
 
 ---
@@ -988,7 +989,196 @@ GET http://localhost:8080/actuator/health
 
 ---
 
-## 0.13 開發體驗：DevTools 與 Actuator 初體驗
+## 0.13 一個請求的完整旅程
+
+你在 0.12 寫了這個：
+
+```java
+@GetMapping("/orders/{id}")
+public OrderResponse findOne(@PathVariable long id) { ... }
+```
+
+**沒有任何一行程式碼呼叫 `findOne()`。** 那它是怎麼被執行的？
+`{id}` 裡的字串又是怎麼變成 `long` 的？
+
+這一節不寫程式，只回答這一個問題。**它是這一站所有除錯的地圖。**
+
+---
+
+### 0.13.1 全圖
+
+```
+瀏覽器 / curl
+    │  HTTP 請求
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ 內嵌 Tomcat                                                      │
+│   Connector（接 TCP、解析 HTTP）                                  │
+│   → 從執行緒池借一條 worker 執行緒，之後全程都在這條上跑 ★         │
+└───────────────────────────┬─────────────────────────────────────┘
+                            ▼
+              ┌──────────────────────────┐
+              │ Servlet Filter 鏈         │  ← 09-spring-security 整條都住這裡
+              │  例：CharacterEncoding、  │
+              │      CORS、SecurityFilter │
+              └────────────┬─────────────┘
+                           ▼
+     ╔═════════════════════════════════════════════════════╗
+     ║ DispatcherServlet（前端控制器）                       ║
+     ║                                                     ║
+     ║  ① HandlerMapping   「這個 URL 該給誰處理？」          ║
+     ║       └→ 找不到 → 404                                ║
+     ║                                                     ║
+     ║  ② HandlerInterceptor.preHandle                     ║
+     ║       └→ 回 false 就直接結束                          ║
+     ║                                                     ║
+     ║  ③ HandlerAdapter   「找到了，那要怎麼呼叫它？」        ║
+     ║     ├─ ArgumentResolver：解析每一個參數                ║
+     ║     │    @PathVariable → 型別轉換                    ║
+     ║     │    @RequestParam → 型別轉換                    ║
+     ║     │    @RequestBody  → HttpMessageConverter        ║
+     ║     │                    （Jackson 反序列化）★        ║
+     ║     │    @Valid        → Bean Validation             ║
+     ║     │    └→ 任何一步失敗 → 400，★ 你的方法根本沒被呼叫  ║
+     ║     │                                               ║
+     ║     ├─ ★★ 呼叫你的 Controller 方法 ★★                ║
+     ║     │      （如果被 AOP 代理過，先經過切面）            ║
+     ║     │                                               ║
+     ║     └─ ReturnValueHandler：處理回傳值                 ║
+     ║          └→ HttpMessageConverter（Jackson 序列化）    ║
+     ║                                                     ║
+     ║  ④ HandlerInterceptor.postHandle / afterCompletion  ║
+     ║                                                     ║
+     ║  ⑤ 有例外？ → HandlerExceptionResolver                ║
+     ║       └→ @RestControllerAdvice / @ExceptionHandler   ║
+     ╚═════════════════════════════════════════════════════╝
+                           │
+                           ▼  Filter 鏈以相反順序返回
+                      HTTP 回應
+```
+
+> 🔑 **`DispatcherServlet` 是整個 Spring MVC 唯一的 Servlet。**
+> 不管你寫了 50 支 API 還是 500 支，`web.xml` 時代那種「一支 API 一個 Servlet」
+> 已經不存在了——**全部的請求都先進到這一個物件，再由它分派**。
+>
+> 這個模式叫 **Front Controller**（前端控制器）。
+> 它存在的理由就是：讓「路由、參數解析、序列化、例外處理」這些**每支 API 都要做的事**
+> 只寫一次。這正是 0.3 節那支「沒有 Spring 的 API」裡，你手寫了 60 行的那一坨。
+
+---
+
+### 0.13.2 五個角色，各自壞掉時的症狀
+
+| 角色 | 負責什麼 | 壞掉時你看到 | 怎麼查 |
+|---|---|---|---|
+| **HandlerMapping** | URL + 方法 → 哪個 Controller 方法 | `404`，而且你的中斷點沒被打到 | `/actuator/mappings` 看路由表 |
+| **ArgumentResolver** | 把 HTTP 的東西變成方法參數 | `400`，**方法完全沒被呼叫** | `logging.level.org.springframework.web=DEBUG` |
+| **HttpMessageConverter** | JSON ↔ 物件（Jackson） | `415`（Content-Type 不對）、`400`（JSON 格式錯） | 看請求的 `Content-Type` header |
+| **你的 Controller** | 商業邏輯的入口 | `500` | 這才是你該設中斷點的地方 |
+| **HandlerExceptionResolver** | 例外 → HTTP 回應 | 錯誤格式不是你想要的 | 04-controller 的 `@RestControllerAdvice` |
+
+> 🔑 **「我的中斷點沒被打到」有兩個完全不同的原因**，而它們的查法不一樣：
+>
+> - **`404`** → 路由沒對上，問題在 `HandlerMapping`（URL、`@RequestMapping` 前綴、context-path）。
+> - **`400`** → 路由對上了，但**參數解析在你的方法之前就失敗了**。
+>   `@PathVariable long id` 收到 `"abc"`、`@RequestBody` 收到壞掉的 JSON、`@Valid` 沒過——
+>   這三種都會在你的第一行程式碼執行之前就回應。
+>
+> 這個區分能省掉非常多「我明明寫了啊」的時間。
+
+---
+
+### 0.13.3 ★ Filter、Interceptor、AOP：三層的分界
+
+這是實務上最常搞混的一組概念。它們看起來都是「在方法前後做事」，
+但**住在完全不同的層**：
+
+```
+Filter        ─────┐  Servlet 規格（跟 Spring 無關）
+                   │  在 DispatcherServlet 之外
+Interceptor   ──┐  │  Spring MVC 的機制
+                │  │  在 DispatcherServlet 之內，但在方法之外
+AOP 切面      ─┐│  │  Spring AOP 的機制
+               ││  │  在方法之內（代理）
+             你的方法
+```
+
+| | **Filter** | **Interceptor** | **AOP 切面** |
+|---|---|---|---|
+| 屬於 | Servlet 規格 | Spring MVC | Spring AOP |
+| 位置 | `DispatcherServlet` **之外** | `DispatcherServlet` **之內** | 進到方法**之前**（代理） |
+| 拿得到 | `ServletRequest` / `Response` | 上述 + **`HandlerMethod`**（知道要打哪支方法） | **方法參數的真實物件** |
+| 拿不到 | 不知道會打到哪支方法 | 拿不到已解析的參數物件 | 拿不到 HTTP 的東西 |
+| 能改回應 body 嗎 | ✅（可包 wrapper） | ⚠️ 困難 | ❌ |
+| 適合做 | 認證、CORS、壓縮、請求記錄、traceId | 權限檢查、把資訊放進 `HandlerMethod` 的情境 | 交易、快取、稽核、重試 |
+| 章節 | 04-controller、09-spring-security | 04-controller | **本站第 04 章** |
+
+**★ 一個會咬人的後果**：
+
+```
+Filter 裡丟出的例外  →  DispatcherServlet 根本還沒接手
+                     →  @RestControllerAdvice 接不到 ★
+                     →  前端收到的是 Tomcat 的預設錯誤頁（HTML，不是你的 JSON 格式）
+```
+
+> 這是「為什麼 JWT 驗證失敗時回的錯誤格式跟其他 API 都不一樣」的標準答案——
+> 因為 Spring Security 整條 filter chain 都在 `DispatcherServlet` 之外
+> （09-spring-security 會處理這個問題）。
+>
+> 🔑 **記住這一句：`@RestControllerAdvice` 只保護得了 `DispatcherServlet` 裡面發生的事。**
+
+---
+
+### 0.13.4 親眼看到這條鏈
+
+在 `application.yml` 加一行，然後打一次 API：
+
+```yaml
+logging:
+  level:
+    org.springframework.web: DEBUG        # 路由與參數解析
+    # org.springframework.web.servlet.mvc.method.annotation: TRACE   # 更細，但很吵
+```
+
+你會看到：
+
+```
+DEBUG o.s.web.servlet.DispatcherServlet  : GET "/orders/1001", parameters={}
+DEBUG o.s.w.s.m.m.a.RequestMappingHandlerMapping : Mapped to
+        com.example.shop.web.OrderController#findOne(long)          ← ① HandlerMapping
+DEBUG o.s.w.s.m.m.a.HttpEntityMethodProcessor : Using 'application/json',
+        given [*/*] and supported [application/json]                ← ③ MessageConverter
+DEBUG o.s.w.s.m.m.a.HttpEntityMethodProcessor : Writing [OrderResponse[id=1001, ...]]
+DEBUG o.s.web.servlet.DispatcherServlet  : Completed 200 OK
+```
+
+**打一次成功的請求、再打一次會 404 的請求、再打一次參數型別錯的請求**，
+對照三份 log——十分鐘就能把上面那張圖變成你自己的東西。
+
+> 💡 這一行 DEBUG 設定值得記住。它是「路由到底有沒有對上」最快的答案，
+> 比 `/actuator/mappings` 還快（因為它告訴你**這一次**打到了誰）。
+
+---
+
+### 0.13.5 這一站與下一站的分工
+
+| 主題 | 在哪學 |
+|---|---|
+| **這條鏈長什麼樣**（本節） | 本章 |
+| 為什麼你的 Controller 物件是**代理** | 本站第 01 章、第 04 章 |
+| 切面怎麼插進「呼叫你的方法」那一格 | 本站第 04 章 |
+| 參數綁定、`@Valid`、`@RestControllerAdvice` 怎麼寫 | **04-controller** |
+| Filter / Interceptor 實作 | **04-controller** |
+| Filter chain 的認證授權 | **09-spring-security** |
+| Tomcat 那條 worker 執行緒是誰、有幾條 | **本站第 08 章** |
+
+> 🔑 **這一節只給地圖，不給實作。**
+> 但從現在開始，每次看到「Bean」「代理」「切面」「攔截器」，
+> 你都應該能指出它在上面那張圖的哪一格——**這就是這一站要建立的直覺。**
+
+---
+
+## 0.14 開發體驗：DevTools 與 Actuator 初體驗
 
 ### DevTools：改完自動重啟
 
@@ -1073,7 +1263,7 @@ $ curl -s localhost:8080/actuator/mappings | jq -r \
 
 ---
 
-## 0.14 常見錯誤與排查
+## 0.15 常見錯誤與排查
 
 ### ① `Web server failed to start. Port 8080 was already in use.`
 
@@ -1222,7 +1412,7 @@ curl -s -X POST localhost:8080/actuator/startup | jq \
 
 ---
 
-## 0.15 本章練習
+## 0.16 本章練習
 
 ### 練習 1：判斷名詞關係
 
@@ -1368,7 +1558,7 @@ K8s 的 readiness 探針要打 `/actuator/health/readiness`（Boot 有內建的 
 
 ---
 
-## 0.16 驗收清單
+## 0.17 驗收清單
 
 - [ ] 我能說出「沒有 Spring 的 Servlet + JDBC」版本至少五個實際會出事的地方。
 - [ ] 我能區分 Spring Framework / Spring Boot / Spring MVC / Spring Cloud，不會再說「Boot 取代了 Spring」。
@@ -1382,6 +1572,12 @@ K8s 的 readiness 探針要打 `/actuator/health/readiness`（Boot 有內建的 
 - [ ] 我能從啟動日誌讀出 JDK 版本、PID、profile、Actuator 端點數量，並指出其中的風險。
 - [ ] 我遇到 port 佔用、no main manifest attribute、全部 404 時，知道各自的排查步驟。
 - [ ] 我知道 `/actuator/beans`、`/actuator/mappings`、`/actuator/conditions` 是後面幾章最重要的除錯工具。
+- [ ] **我能畫出一個請求從 Tomcat → Filter → `DispatcherServlet` → 你的方法的完整路徑。**
+- [ ] 我知道 `DispatcherServlet` 是整個 Spring MVC 唯一的 Servlet（Front Controller 模式）。
+- [ ] **我能區分「`404`＝路由沒對上」和「`400`＝參數解析失敗，方法根本沒被呼叫」。**
+- [ ] 我能說出 Filter / Interceptor / AOP 各住在哪一層，以及各自拿得到什麼。
+- [ ] **我知道 Filter 裡丟出的例外 `@RestControllerAdvice` 接不到，因為它在 `DispatcherServlet` 之外。**
+- [ ] 我會用 `logging.level.org.springframework.web=DEBUG` 看到這條鏈的每一步。
 
 ---
 

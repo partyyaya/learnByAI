@@ -356,6 +356,12 @@ console.log(__LOOSE_VAR__); // ❌ error TS2304: Cannot find name '__LOOSE_VAR__
 
 ### 前端專案（搭配 Vite）
 
+Vite 專案的共通點：TypeScript 只做型別檢查（`noEmit: true`），打包與轉譯交給 Vite。因此 React 與 Vue 都會開 `moduleResolution: "bundler"`、`isolatedModules: true`，`lib` 也要含 `DOM`。真正分叉的是 **JSX / `.vue` 檔案怎麼處理**，以及 **用哪個指令做型別檢查**。
+
+官方 `create-vite` / `create-vue` 樣板會再拆成 `tsconfig.app.json`（應用程式）與 `tsconfig.node.json`（Vite 設定檔），細節見 [第十章](./10-framework-integration.md)。這裡先給「單一 tsconfig」的可複製範本。
+
+#### React + Vite
+
 ```json
 {
   "compilerOptions": {
@@ -380,6 +386,66 @@ console.log(__LOOSE_VAR__); // ❌ error TS2304: Cannot find name '__LOOSE_VAR__
   "exclude": ["node_modules"]
 }
 ```
+
+> 關鍵：`"jsx": "react-jsx"` 啟用 React 17+ 的新版 JSX transform，元件檔不必再手動 `import React`；含 JSX 的元件用 `.tsx`。型別檢查：`npx tsc --noEmit`。
+
+#### Vue + Vite
+
+`.vue` 單檔元件不是標準 TypeScript，`tsc` 看不懂它們，必須改用 `vue-tsc`。`include` 要涵蓋 `.vue`，並準備一份 `env.d.ts` 讓編譯器認識 Vite 客戶端型別。
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "jsxImportSource": "vue",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "exclude": ["node_modules"]
+}
+```
+
+```typescript
+// env.d.ts — 讓 TypeScript 認識 Vite 的 import.meta.env 等客戶端型別
+/// <reference types="vite/client" />
+```
+
+> 💡 `"jsx": "preserve"` 是給 **Vue JSX**（`.tsx` 裡寫 Vue 元件）用的：TypeScript 不轉譯 JSX，交給 Vue 的編譯器。若專案只用 `.vue` SFC、完全不寫 Vue JSX，這兩行 `jsx` / `jsxImportSource` 可以省略。型別檢查：`npx vue-tsc --noEmit`。
+
+> 實務上不必把 DOM / bundler / isolatedModules 全部手寫，官方樣板會繼承 `@vue/tsconfig`（需 `npm install -D vue-tsc @vue/tsconfig`）：
+
+```json
+{
+  "extends": "@vue/tsconfig/tsconfig.dom.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["env.d.ts", "src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"]
+}
+```
+
+| 差異 | React + Vite | Vue + Vite |
+|------|--------------|------------|
+| `jsx` | `"react-jsx"` | `"preserve"` + `"jsxImportSource": "vue"`（純 SFC 可省略） |
+| `include` | `.ts` / `.tsx` | 再加上 `.vue` 與 `env.d.ts` |
+| 型別檢查 | `tsc --noEmit` | `vue-tsc --noEmit`（`tsc` 無法檢查 `.vue`） |
 
 ### 函式庫（Library）專案
 
@@ -455,34 +521,80 @@ npm install --save-dev @tsconfig/strictest
 
 ## 9.8 Project References（多專案設定）
 
-適用於 monorepo 或大型專案。
+9.7 的 `extends` 是**複製設定**（子專案繼承一份 JSON）；這一節的 `references` 是**宣告建置相依**（先編完 A，B 才能用 A 的產出）。兩者常一起出現在 monorepo，但做的事完全不同。
+
+適用情境：倉庫裡有多個套件（例如 `packages/core`、`packages/ui`、`packages/api`），彼此會互相 import。若仍用「根目錄一份 tsconfig 涵蓋全部原始碼」，TypeScript 會把整個倉庫當成**一個編譯單位**——任何一個檔案改動都可能牽動全庫重查，套件邊界也不清楚。Project References 的做法是：每個套件自己一份 tsconfig，再用 `references` 把「誰依賴誰」畫成建置圖，讓 `tsc --build` 依拓撲順序編譯，且只重建過期的專案。
+
+### composite：讓這個專案成為「可被引用的建置單元」
+
+`composite: true` 不是另一種嚴格模式，而是在跟編譯器說：**這份 tsconfig 是拼圖的一塊，它的產出要給其他專案當相依項。** 沒開它，別的專案就不得在 `references` 裡指向你，否則會得到 `TS6306`（Referenced project must have setting `"composite": true`）。
+
+開啟後，TypeScript 會自動套上幾條「可被引用」的契約：
+
+| 自動生效的行為 | 用意 |
+|----------------|------|
+| 視為開啟 `declaration: true`，編譯時產出 `.d.ts` | 下游專案讀你的**宣告檔**來做型別檢查，而不是每次都深入掃描你的 `.ts` 原始碼 |
+| 視為開啟 `incremental: true`，寫入 `.tsbuildinfo` | `tsc --build` 才能判斷「這個專案上次編完之後有沒有過期」，沒改就跳過 |
+| 所有實作檔必須被 `include` 或 `files` 涵蓋 | 避免漏編某個檔，導致下游看到不完整的公開型別 |
+| 未指定時，`rootDir` 預設為 **tsconfig 所在目錄**（與一般專案「所有輸入檔的最長共同路徑」不同） | 輸出結構變嚴謹。原始碼若在 `src/`，實務上仍應明確寫 `"rootDir": "./src"`，否則 `dist/` 裡會多一層 `src/` |
+
+可以這樣記：
+
+- `incremental`：只加速**這一個專案自己**的重編譯。
+- `composite`：包含增量編譯的效果，再加上「我可以當別人的相依項」——因此才強制產出 `.d.ts`。
+
+沒有 `.d.ts`，下游在 `tsc --build` 時就沒有一份穩定、過期可偵測的型別契約可讀。這也是為什麼「只做型別檢查、不輸出」的 `noEmit: true` **不能**用在「還要被其他套件 `references`」的專案上（會得到 `TS6310` Referenced project may not disable emit）。Vite 把同一個 app 拆成 `tsconfig.app.json` / `tsconfig.node.json` 也用 `references`，那是為了分開檢查瀏覽器程式與 Vite 設定檔，**不是**套件互依；那種拆法見 [第十章](./10-framework-integration.md)。若前後端要抽共用型別套件，做法見本章練習 3。
+
+> 💡 建議順手開 `"declarationMap": true`。有了 `.d.ts.map`，編輯器對下游專案「跳到定義」時可以連回上游的 `.ts` 原始碼，而不是停在產生出來的 `.d.ts`。
+
+### 設定怎麼串起來
+
+假設倉庫長這樣：`ui` 依賴 `core`，`api` 也依賴 `core`，三個套件彼此獨立編譯：
+
+```
+my-monorepo/
+├── tsconfig.json              # 根：只當建置入口，不含原始碼
+├── packages/
+│   ├── core/
+│   │   ├── tsconfig.json      # 被依賴的底層，必須 composite
+│   │   └── src/index.ts
+│   ├── ui/
+│   │   ├── tsconfig.json      # references → core
+│   │   └── src/index.ts
+│   └── api/
+│       ├── tsconfig.json      # references → core
+│       └── src/index.ts
+```
 
 ```json
 // tsconfig.json（根目錄）
 {
+  "files": [],
   "references": [
     { "path": "./packages/core" },
     { "path": "./packages/ui" },
     { "path": "./packages/api" }
-  ],
-  "files": []
+  ]
 }
 
-// packages/core/tsconfig.json
+// packages/core/tsconfig.json — 沒有再依賴別人，是圖上的葉子
 {
   "compilerOptions": {
     "composite": true,
+    "declarationMap": true,
     "outDir": "./dist",
     "rootDir": "./src"
   },
   "include": ["src"]
 }
 
-// packages/ui/tsconfig.json
+// packages/ui/tsconfig.json — 宣告「先建 core，再用它的 .d.ts」
 {
   "compilerOptions": {
     "composite": true,
-    "outDir": "./dist"
+    "declarationMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
   },
   "references": [
     { "path": "../core" }
@@ -491,11 +603,32 @@ npm install --save-dev @tsconfig/strictest
 }
 ```
 
+`api` 的寫法與 `ui` 相同，同樣 `references` 指向 `../core`。根目錄那份 `"files": []` 是慣例：它本身不編譯任何檔案，只作為 `tsc --build` 的入口，依 `references` 把子專案串起來。若漏寫 `files` / `include`，編譯器可能會在根目錄意外撿到檔案，把「統籌用的 tsconfig」變成又一個編譯單位。
+
+建置時發生的事：
+
+1. `tsc --build` 讀根目錄，依 `references` 排出順序：先 `core`，再 `ui` / `api`。
+2. `core` 編完後，`dist/` 裡會有 `.js`、`.d.ts` 與 `.tsbuildinfo`。
+3. `ui` 做型別檢查時讀的是 `core` 的 `.d.ts`（建置產物），不是每次重跑 `core` 的全部原始碼。
+4. 之後若只改 `ui`，再跑一次 `tsc --build` 會跳過仍是最新的 `core`；若改了 `core`，它與所有依賴它的專案都會被重建。
+
+> ⚠️ `references` **不會**幫你改寫 import 路徑。套件之間要怎麼 `import`，仍靠相對路徑、`paths` 別名，或 workspace 的套件名稱（`package.json` 的 `name` / `exports`）。Project References 管的是**建置順序**與**型別從哪份產出讀取**。
+
+### 建置指令
+
+一般的 `npx tsc`（沒有 `--build`）**不會**去編譯 `references` 裡的專案；它頂多在型別檢查時假設那些產出已經存在。多專案請一律用 `--build`（可簡寫 `-b`）：
+
 ```bash
-# 建置所有 references
+# 依相依順序，只重建過期的專案
 npx tsc --build
 
-# 清除建置結果
+# 看哪些專案被跳過、哪些被重建（除錯時很好用）
+npx tsc --build --verbose
+
+# 忽略時間戳，全部重編
+npx tsc --build --force
+
+# 清除各專案的 dist 與 .tsbuildinfo
 npx tsc --build --clean
 ```
 

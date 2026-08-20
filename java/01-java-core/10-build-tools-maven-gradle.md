@@ -21,6 +21,7 @@
 - 用 `mvn dependency:tree` 找出依賴衝突，並用三種方式解掉它。
 - 用 `dependencyManagement` 與 BOM 統一版本，說明它與 `dependencies` 的差別。
 - 設定 compiler / surefire / failsafe / shade / enforcer / versions 六個必備外掛。
+- **用 Error Prone / Checkstyle / SpotBugs 在編譯期與建置期擋掉測試抓不到的問題**，並用「棘輪」策略導入既有專案。
 - 用 profile 處理環境差異，並知道 `activeByDefault` 的陷阱。
 - 拆出一個多模組專案，說明 reactor 的建置順序怎麼決定。
 - **把 Todo CLI 打包成 `java -jar` 就能跑的可執行 jar**，並比較四種打包做法。
@@ -2130,6 +2131,206 @@ mvn versions:commit
 > **實務做法**：不要手動跑這個然後手動改。用 **Dependabot**（GitHub）或
 > **Renovate**，讓它自動開 PR，CI 跑完測試你再 merge。
 > `versions` 外掛的價值在於**臨時檢查**和**發版時改版號**。
+
+---
+
+### ⑦ 靜態檢查三兄弟：Checkstyle、SpotBugs、Error Prone
+
+第 11 章會用測試抓「行為錯了」。但有一整類問題**測試抓不到**：
+
+```java
+// ① 風格問題：測試會過，但每次 code review 都要吵一次
+public void doStuff(){int x=1;if(x==1){System.out.println("hi");}}
+
+// ② 明顯的 bug，但編譯得過、測試也可能剛好沒覆蓋到
+if (name == "admin") { ... }                  // 第 01 章 1.9 的字串 == 大坑
+new BigDecimal(0.1);                          // 第 01 章 1.5 的金額陷阱
+Optional<String> o = ...; if (o != null) {}    // Optional 永遠不是 null
+list.remove(1);                               // 移除索引 1 還是移除物件 1？
+String s = String.format("%d", "abc");        // 格式字串與參數型別不符
+```
+
+**這三個工具的定位完全不同，不要只裝一個。**
+
+| 工具 | 看什麼 | 什麼時候跑 | 誤報率 | 抓到上面哪幾個 |
+|---|---|---|---|---|
+| **Checkstyle** | 原始碼的**格式與命名** | `validate` | 低（規則明確） | ① |
+| **SpotBugs** | **位元碼**的可疑模式 | `verify`（要先編譯） | 中 | ②的 `==`、null 相關 |
+| **Error Prone** | 編譯期的 **AST**，是編譯器外掛 | **編譯時**（最快） | **極低**（Google 刻意調成低誤報） | ②幾乎全部 |
+
+> 🔑 **優先序：Error Prone > Checkstyle > SpotBugs。**
+>
+> - **Error Prone** 的投報率最高：它在**編譯期**就把 `String.format("%d", "abc")`
+>   這種東西變成編譯錯誤，而且它的預設規則集幾乎沒有誤報。
+> - **Checkstyle** 的價值不是「抓 bug」，是**停止爭論**——
+>   格式由工具決定，code review 就能專心看邏輯。
+> - **SpotBugs** 最容易產生「明明沒問題卻被擋」的挫折，
+>   所以**先當警告跑一陣子，再決定要不要讓它失敗**。
+
+#### Error Prone：加進 compiler plugin
+
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-compiler-plugin</artifactId>
+  <version>3.13.0</version>
+  <configuration>
+    <release>21</release>
+    <compilerArgs>
+      <arg>-XDcompilePolicy=simple</arg>
+      <arg>--should-stop=ifError=FLOW</arg>
+      <arg>-Xplugin:ErrorProne</arg>
+      <!-- 把特定檢查提升成錯誤 -->
+      <arg>-Xep:StringCaseLocaleUsage:ERROR</arg>
+      <arg>-Xep:MissingOverride:ERROR</arg>
+      <!-- 太吵的關掉，但要寫理由 -->
+      <arg>-Xep:UnusedVariable:WARN</arg>
+      <arg>-parameters</arg>              <!-- 第 13 章 13.14：給反射用 -->
+    </compilerArgs>
+    <annotationProcessorPaths>
+      <path>
+        <groupId>com.google.errorprone</groupId>
+        <artifactId>error_prone_core</artifactId>
+        <version>2.28.0</version>
+      </path>
+    </annotationProcessorPaths>
+  </configuration>
+</plugin>
+```
+
+> ⚠️ **Error Prone 在新 JDK 上常需要 `--add-exports` 一串旗標**
+> （它要讀 javac 的內部 API，第 13 章 13.6 的強封裝）。
+> 每次升 JDK 時，它通常是**第一個壞掉的東西**——
+> 這是第 00 章 0.11「升 JDK 卡住」清單裡的常見主角。
+> 升級前先看它的 release notes 支援到哪一版。
+
+#### Checkstyle：重點是「不要自己發明規則」
+
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-checkstyle-plugin</artifactId>
+  <version>3.4.0</version>
+  <configuration>
+    <!-- 直接用 Google 或 Sun 的內建規則集，不要自己從零寫 -->
+    <configLocation>google_checks.xml</configLocation>
+    <consoleOutput>true</consoleOutput>
+    <failsOnError>true</failsOnError>
+    <violationSeverity>warning</violationSeverity>
+    <includeTestSourceDirectory>true</includeTestSourceDirectory>
+  </configuration>
+  <dependencies>
+    <dependency>
+      <groupId>com.puppycrawl.tools</groupId>
+      <artifactId>checkstyle</artifactId>
+      <version>10.17.0</version>       <!-- ★ 一定要覆寫，外掛內建的版本通常很舊 -->
+    </dependency>
+  </dependencies>
+  <executions>
+    <execution>
+      <id>validate</id>
+      <phase>validate</phase>          <!-- 在編譯之前就失敗，回饋最快 -->
+      <goals><goal>check</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+```
+
+> 💡 **更務實的替代方案：用格式化工具取代 Checkstyle 的格式規則。**
+> `spotless-maven-plugin` 搭配 `google-java-format` 可以**自動改好**，
+> 而不是「告訴你哪裡錯了要你自己改」：
+>
+> ```bash
+> mvn spotless:apply     # 自動格式化
+> mvn spotless:check     # CI 上檢查（有差異就失敗）
+> ```
+>
+> **「能自動修的問題，不要用檢查工具去擋。」** 這條原則能省掉大量摩擦。
+
+#### SpotBugs：加上 `find-sec-bugs` 才有安全價值
+
+```xml
+<plugin>
+  <groupId>com.github.spotbugs</groupId>
+  <artifactId>spotbugs-maven-plugin</artifactId>
+  <version>4.8.6.2</version>
+  <configuration>
+    <effort>Max</effort>
+    <threshold>Medium</threshold>
+    <excludeFilterFile>spotbugs-exclude.xml</excludeFilterFile>
+    <plugins>
+      <plugin>
+        <groupId>com.h3xstream.findsecbugs</groupId>
+        <artifactId>findsecbugs-plugin</artifactId>
+        <version>1.13.0</version>       <!-- SQL injection、弱加密、路徑穿越 -->
+      </plugin>
+    </plugins>
+  </configuration>
+  <executions>
+    <execution>
+      <phase>verify</phase>
+      <goals><goal>check</goal></goals>
+    </execution>
+  </executions>
+</plugin>
+```
+
+抑制誤報要**寫在檔案裡並附理由**，不要用 `@SuppressWarnings` 到處撒：
+
+```xml
+<!-- spotbugs-exclude.xml -->
+<FindBugsFilter>
+  <!-- 產生的程式碼不檢查 -->
+  <Match><Class name="~.*\$\$.*"/></Match>
+  <!-- record 的 equals 會被誤判 -->
+  <Match>
+    <Bug pattern="EQ_UNUSUAL"/>
+    <Class name="~com\.example\.todo\.model\..*"/>
+  </Match>
+</FindBugsFilter>
+```
+
+#### ★ 導入策略：不要一次全部打開
+
+這是本節最重要的一段。**在既有專案上一次打開三個工具，你會得到 4,000 個違規，
+然後團隊會把它全部關掉。**
+
+```
+第 1 週  三個工具全部設成「只警告、不失敗」，把數字記下來
+            └→ 目的：知道現況，並讓大家看到輸出長什麼樣
+
+第 2 週  用「棘輪（ratchet）」：新增/修改的檔案必須零違規，舊檔案不管
+            └→ spotless 支援 <ratchetFrom>origin/master</ratchetFrom>
+            └→ 這是唯一在既有專案上行得通的做法
+
+第 3 週  挑「絕對不能有」的 5～10 條規則升級成 ERROR
+            └→ 例：字串 ==、new BigDecimal(double)、忽略回傳值、SQL 字串拼接
+
+之後     每次修檔案順手清乾淨（第 12 章 12.17 的遷移策略，同一個哲學）
+```
+
+> 🔑 **和第 11 章 11.16 的覆蓋率門檻是同一個原則：**
+> **門檻要設在「現況」，然後只允許往好的方向動。**
+> 設一個達不到的目標，結果一定是把檢查關掉。
+
+#### 這一節在整條「防線」上的位置
+
+第 11 章會說「讓錯誤在最早的階段被發現」。加上這一節之後，防線變成五層：
+
+```
+執行期發現（客訴）          ←  最糟
+    ↑
+測試期發現                  ←  第 11 章（JUnit、突變測試）
+    ↑
+建置期發現                  ←  本章（enforcer、dependencyConvergence、SpotBugs）
+    ↑
+編譯期發現（工具）           ←  本節（Error Prone）★ 秒級回饋
+    ↑
+編譯期發現（語言）           ←  第 12 章（sealed、窮盡性檢查）  ←  最好
+```
+
+> 🔑 **Error Prone 之所以值得優先，就是因為它在這條線上的位置最靠上、回饋最快**——
+> 你在 IDE 裡按下編譯就知道了，不用等 CI。
 
 ---
 
@@ -5910,6 +6111,14 @@ strategy:
 - [ ] 我知道 CI 上的四條紀律（`-B`、`-ntp`、`verify`、`clean`）。
 - [ ] 我知道可重現建置的意義，也會用 `project.build.outputTimestamp` 並驗證它。
 - [ ] 我能產生 SBOM，並說出它除了掃漏洞之外的兩個用途。
+- [ ] **我能說出 Checkstyle / SpotBugs / Error Prone 各自看什麼、什麼時候跑、誤報率如何。**
+- [ ] 我知道優先序是 Error Prone > Checkstyle > SpotBugs，也說得出為什麼。
+- [ ] 我知道 Checkstyle 的價值是「停止爭論」，而能自動修的格式問題該用 spotless。
+- [ ] 我知道 SpotBugs 要加 `find-sec-bugs` 才有安全掃描價值。
+- [ ] 我知道抑制誤報要寫在 filter 檔並附理由，不要到處撒 `@SuppressWarnings`。
+- [ ] **我知道在既有專案上一次全開三個工具的結果是「大家把它關掉」，該用棘輪（`ratchetFrom`）策略。**
+- [ ] 我知道 Error Prone 在升 JDK 時常是第一個壞掉的東西。
+- [ ] 我能畫出「編譯期（語言）→ 編譯期（工具）→ 建置期 → 測試期 → 執行期」這五層防線。
 - [ ] 我知道 typosquatting 與 dependency confusion 這兩種攻擊，以及防禦方式。
 - [ ] 我知道加一個依賴之前該問的三個問題。
 

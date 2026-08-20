@@ -3102,4 +3102,4 @@ jq -r '.threads[] | select(.threadState=="BLOCKED") |
 
 ---
 
-完成後請前往 `06-scheduling-async-and-events.md`（撰寫中）。
+完成後請前往 [06-scheduling-async-and-events.md](./06-scheduling-async-and-events.md)。
