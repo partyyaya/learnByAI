@@ -10,17 +10,17 @@
 
 ## 11.1 什麼是裝飾器？
 
-裝飾器是一種**語法糖**：寫在宣告正上方的 `@Foo` 或 `@Foo(...)`，編譯後會變成「對該宣告呼叫一個函式」。
+裝飾器是一種**語法糖**：寫在宣告正上方的 `@Foo` 或 `@Foo(...)`，編譯後會變成「對該宣告呼叫一個函式」。它在 **class 宣告被求值時**就跑完，不是每次 `new`。之後 `new User()` 不會再執行 `@Sealed` 或 `@Log`。
 
 四種附加位置如下（名稱只是地圖，實作見後面對應小節）：
 
 ```typescript
-@Sealed                            // 類別 → 11.3
+@Sealed                            // 類別 → 11.3（最後才套）
 class User {
   @Required                        // 屬性 → 11.5
   name!: string;
 
-  constructor(@Validate id: number) {} // 參數 → 11.6
+  constructor(@Validate id: number) {} // 參數 → 11.6（比成員晚、比類別早）
 
   @Log                             // 方法 → 11.4
   save() {}
@@ -35,6 +35,56 @@ class User {
 | 方法 | `target, propertyKey, descriptor` | 該方法宣告時 |
 | 屬性 | `target, propertyKey`（沒有 descriptor） | 該欄位宣告時 |
 | 參數 | `target, propertyKey, parameterIndex` | 該參數宣告時 |
+
+### 同一個 class 裡誰先跑？
+
+舊版的套用順序是固定的（與建構子寫在原始碼哪一行無關）：
+
+1. 每個**實例成員**（由上到下）：先該成員的參數裝飾器，再方法／屬性裝飾器
+2. 每個**靜態成員**（同樣先參數、再方法／屬性）
+3. **建構子參數**裝飾器
+4. **類別**裝飾器
+
+所以上面地圖實際順序是：`@Required` → `@Log` → `@Validate` → `@Sealed`。`constructor` 雖然寫在 `save` 前面，建構子參數仍比方法晚、只比類別裝飾器早。
+
+### 同一個宣告上有多個 `@`
+
+兩件事要分開記：
+
+| | 方向 | 意思 |
+|---|---|---|
+| Factory 被呼叫（`@A()` 裡的 `A()`） | **由上往下** | 先算外層傳進去的參數 |
+| 裝飾器函式真正套上 | **由下往上** | 最靠近宣告的先包，等價於函數合成 `A(B(x))` |
+
+```typescript
+function A() {
+  console.log("A(): evaluated");
+  return function (..._args: any[]) {
+    console.log("A(): applied");
+  };
+}
+function B() {
+  console.log("B(): evaluated");
+  return function (..._args: any[]) {
+    console.log("B(): applied");
+  };
+}
+
+class Demo {
+  @A()
+  @B()
+  save() {}
+}
+
+// A(): evaluated
+// B(): evaluated
+// B(): applied
+// A(): applied
+```
+
+`@A() @B() save()` 等價於 `A(B(save))`：先套內層 `B`，再套外層 `A`。11.4 的 `@Catch` 在上、`@Measure` 在下，就是先測時間再攔錯。同一方法若有多個參數裝飾器，套用時由**右到左**（最後一個參數先）。
+
+標準裝飾器（11.7）堆疊同樣是由內而外；整份 class 的求值細節與舊版不完全相同，兩套仍不要混用。
 
 ---
 
@@ -285,7 +335,7 @@ class SearchService {
 }
 ```
 
-多個方法裝飾器由下往上包：最靠近方法的先套。上面是先 `Measure` 再 `Catch`，所以計時包在 try/catch 裡。
+多個 `@` 的順序見 11.1：這裡 `@Catch` 在上、`@Measure` 在下，所以先套 `Measure` 再套 `Catch`，計時包在 try/catch 裡。
 
 ---
 

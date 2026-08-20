@@ -22,6 +22,28 @@ import { Controller, Get, Post, Body, Param } from "@nestjs/common";
 import { Entity, Column, PrimaryGeneratedColumn } from "typeorm";
 import { Component, Input, Output, EventEmitter } from "@angular/core";
 
+// ===== 11.1 多個 @ 的求值 vs 套用順序 =====
+{
+  function A() {
+    console.log("A(): evaluated");
+    return function (..._args: any[]) {
+      console.log("A(): applied");
+    };
+  }
+  function B() {
+    console.log("B(): evaluated");
+    return function (..._args: any[]) {
+      console.log("B(): applied");
+    };
+  }
+
+  class Demo {
+    @A()
+    @B()
+    save() {}
+  }
+}
+
 // ===== 11.3 類別裝飾器（Class Decorator）=====
 {
   // 基本類別裝飾器
