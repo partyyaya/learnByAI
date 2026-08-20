@@ -71,7 +71,7 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 01 | [01-java-core/](./01-java-core/) ✅ | Java 語言核心與 JVM | 14 | 語法、OOP、集合、Stream、併發、JVM 記憶體、Maven / Gradle、JUnit、**反射與動態代理** |
 | 02 | [02-spring-boot/](./02-spring-boot/) ✅ | Spring Boot 框架原理 | 10 | IoC 容器、DI、自動組態、設定檔與 Profile、AOP、Actuator、打包部署 |
 | 03 | [03-rest-api/](./03-rest-api/) ✅ | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
-| 04 | [04-controller/](./04-controller/) | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、MockMvc |
+| 04 | [04-controller/](./04-controller/) 🚧 | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、MockMvc |
 | 05 | [05-service/](./05-service/) | 商業邏輯層 | 8 | 交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
 | 06 | [06-repository/](./06-repository/) | 資料存取層 | 7 | DataSource 與連線池、JdbcTemplate、Spring Data 抽象、交易邊界、測試 |
 | 07 | [07-mysql/](./07-mysql/) | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢、Flyway |
@@ -88,7 +88,8 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 01-java-core | ✅ 已結業（14 章，約 54,200 行） |
 | 02-spring-boot | ✅ 已結業（10 章，約 29,100 行） |
 | 03-rest-api | ✅ 已結業（10 章，約 33,700 行） |
-| 04～10 | ⏳ 撰寫中 |
+| 04-controller | 🚧 撰寫中（00～02 章完成，約 10,700 行） |
+| 05～10 | ⏳ 未開始 |
 
 ---
 

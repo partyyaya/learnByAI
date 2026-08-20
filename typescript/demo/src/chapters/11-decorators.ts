@@ -22,7 +22,7 @@ import { Controller, Get, Post, Body, Param } from "@nestjs/common";
 import { Entity, Column, PrimaryGeneratedColumn } from "typeorm";
 import { Component, Input, Output, EventEmitter } from "@angular/core";
 
-// ===== 11.2 類別裝飾器（Class Decorator）=====
+// ===== 11.3 類別裝飾器（Class Decorator）=====
 {
   // 基本類別裝飾器
   {
@@ -75,7 +75,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.3 方法裝飾器（Method Decorator）=====
+// ===== 11.4 方法裝飾器（Method Decorator）=====
 {
   // 日誌裝飾器
   function Log(
@@ -108,7 +108,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   // add returned: 8
 }
 
-// ===== 11.3 常用方法裝飾器 =====
+// ===== 11.4 常用方法裝飾器 =====
 {
   // 效能測量
   function Measure(
@@ -170,6 +170,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 
   class SearchService {
+    @Catch((err) => console.error(err))
     @Measure
     async fetchResults(query: string): Promise<string[]> {
       // API 請求...
@@ -183,7 +184,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.4 屬性裝飾器（Property Decorator）=====
+// ===== 11.5 屬性裝飾器（Property Decorator）=====
 {
   // 驗證裝飾器
   function MinLength(min: number) {
@@ -236,7 +237,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   form.name = "Gary"; // ✅
 }
 
-// ===== 11.5 參數裝飾器（Parameter Decorator）=====
+// ===== 11.6 參數裝飾器與 reflect-metadata =====
 {
   function Validate(
     target: any,
@@ -249,14 +250,34 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
     Reflect.defineMetadata("validate", existingValidations, target, propertyKey);
   }
 
+  function ValidateArgs(
+    target: any,
+    propertyKey: string,
+    descriptor: PropertyDescriptor,
+  ) {
+    const original = descriptor.value;
+    const indexes: number[] =
+      Reflect.getOwnMetadata("validate", target, propertyKey) || [];
+
+    descriptor.value = function (...args: any[]) {
+      for (const i of indexes) {
+        if (args[i] == null || args[i] === "") {
+          throw new Error(`${propertyKey} 的第 ${i + 1} 個參數不可為空`);
+        }
+      }
+      return original.apply(this, args);
+    };
+  }
+
   class UserService {
+    @ValidateArgs
     createUser(@Validate name: string, @Validate email: string) {
-      // ...
+      return { name, email };
     }
   }
 }
 
-// ===== 11.6 TC39 Stage 3 裝飾器（TypeScript 5.0+）=====
+// ===== 11.7 標準裝飾器（TypeScript 5.0+）=====
 {
   // 新語法的裝飾器
   function logged<This, Args extends any[], Return>(
@@ -286,7 +307,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.6b Accessor 裝飾器與 Decorator Metadata（TypeScript 5.2+）=====
+// ===== 11.7 Accessor 裝飾器與 Decorator Metadata（TypeScript 5.2+）=====
 {
   // 裝飾一個 `accessor` 欄位：讀寫時攔截、並把資訊寫進 context.metadata，
   // 之後可以透過 `類別[Symbol.metadata]` 讀回來（不需要額外的 Map/WeakMap）。
@@ -323,10 +344,12 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   console.log((Settings as any)[(Symbol as any).metadata]?.theme); // "tracked"
 }
 
-// ===== 11.7 裝飾器在框架中的應用 — NestJS =====
+// ===== 11.8 裝飾器在框架中的應用 — NestJS =====
 {
   @Controller("users")
   class UserController {
+    constructor(private readonly userService: UserService) {}
+
     @Get()
     findAll(): User[] {
       return this.userService.findAll();
@@ -344,7 +367,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.7 裝飾器在框架中的應用 — TypeORM =====
+// ===== 11.8 裝飾器在框架中的應用 — TypeORM =====
 {
   @Entity()
   class User {
@@ -362,7 +385,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.7 裝飾器在框架中的應用 — Angular =====
+// ===== 11.8 裝飾器在框架中的應用 — Angular =====
 {
   @Component({
     selector: "app-user-card",

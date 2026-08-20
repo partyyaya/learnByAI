@@ -95,6 +95,12 @@ my-vue-app/
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 
+interface User {
+  id: number
+  name: string
+  email: string
+}
+
 // 定義 props 型別
 interface Props {
   title: string
@@ -131,7 +137,11 @@ const doubled = computed(() => props.count * 2) // ComputedRef<number>
 <template>
   <div>
     <h1>{{ props.title }}</h1>
-    <p>Count: {{ doubled }}</p>
+    <p>{{ message }}</p>
+    <p>Count: {{ doubled }} / local: {{ count }}</p>
+    <p v-if="user">{{ user.name }}</p>
+    <button type="button" @click="emit('update', doubled)">Update</button>
+    <button type="button" @click="emit('close')">Close</button>
   </div>
 </template>
 ```
@@ -184,7 +194,9 @@ echo '/// <reference types="vite/client" />' > src/env.d.ts
 ### Vue + TypeScript 常用型別
 
 ```typescript
-import type { Ref, ComputedRef, PropType } from 'vue'
+import { ref, computed, reactive, provide, inject } from 'vue'
+import type { Ref, ComputedRef, PropType, InjectionKey } from 'vue'
+import MyComponent from './MyComponent.vue'
 
 // 本節範例共用的 User 型別
 interface User {
@@ -196,9 +208,23 @@ interface User {
 // Ref 型別
 const name: Ref<string> = ref('Gary')
 
-// Reactive 物件
-import { reactive } from 'vue'
+// ComputedRef 型別
+const greeting: ComputedRef<string> = computed(() => `Hello, ${name.value}`)
 
+// PropType：runtime props 標註複雜型別（Options API / 物件語法）
+// `<script setup>` 更推薦 defineProps<T>()，見上方 SFC 範例
+defineProps({
+  user: {
+    type: Object as PropType<User>,
+    required: true,
+  },
+  role: {
+    type: String as PropType<'admin' | 'member'>,
+    default: 'member',
+  },
+})
+
+// Reactive 物件
 interface State {
   users: User[]
   loading: boolean
@@ -212,8 +238,6 @@ const state = reactive<State>({
 })
 
 // Provide / Inject 型別
-import type { InjectionKey } from 'vue'
-
 const userKey: InjectionKey<User> = Symbol('user')
 const currentUser: User = { id: 1, name: 'Gary', email: 'gary@example.com' }
 provide(userKey, currentUser)
@@ -223,7 +247,6 @@ const user = inject(userKey) // 型別為 User | undefined
 const inputRef = ref<HTMLInputElement | null>(null)
 
 // Component ref 型別
-import MyComponent from './MyComponent.vue'
 const compRef = ref<InstanceType<typeof MyComponent> | null>(null)
 ```
 
@@ -321,7 +344,8 @@ my-react-app/
 ### React 元件的 TypeScript 寫法
 
 ```tsx
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import type { ReactNode, Ref } from 'react'
 
 // Props 介面
 interface UserCardProps {
@@ -345,7 +369,7 @@ function UserCard({ name, email, avatar, onEdit }: UserCardProps) {
 
 // 帶有 children 的元件
 interface LayoutProps {
-  children: React.ReactNode
+  children: ReactNode
   title: string
 }
 
@@ -356,6 +380,21 @@ function Layout({ children, title }: LayoutProps) {
       <main>{children}</main>
     </div>
   )
+}
+
+// React 19：ref 是一般 prop，不需要 forwardRef
+interface SearchBoxProps {
+  placeholder?: string
+  ref?: Ref<HTMLInputElement>
+}
+
+function SearchBox({ placeholder, ref }: SearchBoxProps) {
+  return <input ref={ref} placeholder={placeholder} />
+}
+
+function SearchPanel() {
+  const inputRef = useRef<HTMLInputElement>(null)
+  return <SearchBox ref={inputRef} placeholder="搜尋…" />
 }
 
 // 使用 useState 搭配型別
@@ -446,23 +485,35 @@ npx tsc --init
 
 ### React 常用 TypeScript 型別
 
-```typescript
-// 事件型別
-const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-  console.log(e.target.value)
-}
+```tsx
+import { useRef, createContext, useContext, useReducer } from 'react'
+import type { ChangeEvent, FormEvent, MouseEvent } from 'react'
 
-const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-  e.preventDefault()
-}
+function UserForm() {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const divRef = useRef<HTMLDivElement>(null)
 
-const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
-  console.log('clicked')
-}
+  const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
+    console.log(e.target.value)
+  }
 
-// Ref 型別
-const inputRef = useRef<HTMLInputElement>(null)
-const divRef = useRef<HTMLDivElement>(null)
+  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+  }
+
+  const handleClick = (e: MouseEvent<HTMLButtonElement>) => {
+    console.log('clicked')
+  }
+
+  return (
+    <div ref={divRef}>
+      <form onSubmit={handleSubmit}>
+        <input ref={inputRef} onChange={handleChange} />
+        <button type="submit" onClick={handleClick}>送出</button>
+      </form>
+    </div>
+  )
+}
 
 // Context 型別
 interface ThemeContext {
@@ -476,6 +527,11 @@ function useTheme(): ThemeContext {
   const ctx = useContext(ThemeCtx)
   if (!ctx) throw new Error('useTheme must be used within ThemeProvider')
   return ctx
+}
+
+function ThemeToggle() {
+  const { theme, toggleTheme } = useTheme()
+  return <button onClick={toggleTheme}>目前主題：{theme}</button>
 }
 
 // Reducer 型別
@@ -497,6 +553,19 @@ function reducer(state: State, action: Action): State {
     case 'SET':
       return { count: action.payload }
   }
+}
+
+function Counter() {
+  const [state, dispatch] = useReducer(reducer, { count: 0 })
+
+  return (
+    <>
+      <button onClick={() => dispatch({ type: 'DECREMENT' })}>-</button>
+      <span>{state.count}</span>
+      <button onClick={() => dispatch({ type: 'INCREMENT' })}>+</button>
+      <button onClick={() => dispatch({ type: 'SET', payload: 0 })}>Reset</button>
+    </>
+  )
 }
 ```
 
@@ -591,8 +660,23 @@ const { data, pending, error } = await useFetch<User[]>('/api/users')
 // data 的型別自動推斷為 Ref<User[] | null>
 
 const route = useRoute()
-// route.params 有完整的型別支援
+const router = useRouter()
+
+watch(data, (users) => {
+  if (users?.length === 0) {
+    router.push('/')
+  }
+})
 </script>
+
+<template>
+  <p>目前路徑：{{ route.path }}</p>
+  <p v-if="pending">載入中…</p>
+  <p v-else-if="error">載入失敗</p>
+  <ul v-else>
+    <li v-for="u in data" :key="u.id">{{ u.name }}</li>
+  </ul>
+</template>
 ```
 
 ### Nuxt 3 TypeScript 實戰
@@ -615,8 +699,19 @@ const userId = computed(() => Number(route.params.id))
 const { data: user, pending, error } = await useFetch<User>(
   `/api/users/${userId.value}`
 )
+</script>
 
-// Server API 路由
+<template>
+  <p v-if="pending">載入中…</p>
+  <p v-else-if="error">載入失敗</p>
+  <div v-else-if="user">
+    <h1>{{ user.name }}</h1>
+    <p>{{ user.email }}（{{ user.role }}）</p>
+  </div>
+</template>
+```
+
+```typescript
 // server/api/users/[id].get.ts
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')
@@ -628,7 +723,6 @@ export default defineEventHandler(async (event) => {
     role: 'admin' as const,
   }
 })
-</script>
 ```
 
 ```typescript
@@ -878,19 +972,19 @@ interface User {
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams
-  const page = searchParams.get('page') ?? '1'
+  const page = Number(searchParams.get('page') ?? '1')
 
   const users: User[] = [
     { id: 1, name: 'Gary', email: 'gary@example.com' },
   ]
 
-  return NextResponse.json(users)
+  return NextResponse.json({ page, users })
 }
 
 export async function POST(request: NextRequest) {
-  const body = await request.json()
-  // 處理建立使用者邏輯
-  return NextResponse.json({ id: 1, ...body }, { status: 201 })
+  const body: Omit<User, 'id'> = await request.json()
+  const created: User = { id: 1, ...body }
+  return NextResponse.json(created, { status: 201 })
 }
 ```
 
@@ -936,8 +1030,11 @@ npm run dev
 
 ### Next.js 常用型別
 
-```typescript
+```tsx
 import type { Metadata } from 'next'
+import type { ReactNode } from 'react'
+import { NextRequest, NextResponse } from 'next/server'
+import type { NextMiddleware } from 'next/server'
 
 // 頁面 Metadata
 export const metadata: Metadata = {
@@ -946,17 +1043,16 @@ export const metadata: Metadata = {
 }
 
 // Middleware 型別
-import { NextRequest, NextResponse } from 'next/server'
-import type { NextMiddleware } from 'next/server'
-
 export const middleware: NextMiddleware = (request: NextRequest) => {
-  // 中介層邏輯
+  if (request.nextUrl.pathname.startsWith('/admin')) {
+    return NextResponse.redirect(new URL('/login', request.url))
+  }
   return NextResponse.next()
 }
 
 // Layout 型別
 interface LayoutProps {
-  children: React.ReactNode
+  children: ReactNode
 }
 
 export default function RootLayout({ children }: LayoutProps) {

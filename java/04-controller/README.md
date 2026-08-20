@@ -24,14 +24,36 @@
 
 | 章節 | 檔案 | 主題 | 重點 |
 |------|------|------|------|
-| 00 | `00-course-map-web-layer-role.md` | 課程地圖與 Web 層職責 | 分層架構總覽、Controller 該做 / 不該做什麼、瘦 Controller 原則 |
-| 01 | `01-request-mapping-and-binding.md` | 路由與參數綁定 | `@RestController`、`@GetMapping` 家族、`@PathVariable` / `@RequestParam` / `@RequestBody` / `@RequestHeader`、`ResponseEntity` |
-| 02 | `02-validation-and-binding-errors.md` | 輸入驗證 | Bean Validation 註解、巢狀與集合驗證、驗證群組、自訂驗證器、`BindingResult` |
+| 00 | [00-course-map-web-layer-role.md](./00-course-map-web-layer-role.md) ✅ | 課程地圖與 Web 層職責 | 分層架構總覽、**Controller 不該做的十件事**、判斷邊界的五個問題、請求完整旅程、800→40 行重構、專案骨架 |
+| 01 | [01-request-mapping-and-binding.md](./01-request-mapping-and-binding.md) ✅ | 路由與參數綁定 | 路由衝突優先順序、**Boot 3 尾斜線 breaking change**、`required`/`defaultValue`/`Optional` 三角關係、14 個查詢參數綁成一個 record、`JsonNullable` 三態、自訂 `Converter`、`ResponseEntity` 決策表 |
+| 02 | [02-validation-and-binding-errors.md](./02-validation-and-binding-errors.md) ✅ | 輸入驗證 | **每個註解對 `null` 的行為**、Spring 6.1 內建方法驗證、ReDoS 防護、`addPropertyNode()`、為什麼不在驗證器裡查 DB、EL 注入、`BindingResult`→`errors[]`、四層 DoS 防護、驗證覆蓋率測試 |
 | 03 | `03-global-exception-handling.md` | 全域例外處理 | `@RestControllerAdvice`、`@ExceptionHandler`、業務例外對應狀態碼、統一錯誤格式落地 |
 | 04 | `04-filter-interceptor-and-lifecycle.md` | 請求生命週期 | Filter vs Interceptor vs AOP 的選擇、`HandlerMethodArgumentResolver`、追蹤 ID、請求日誌 |
 | 05 | `05-file-upload-download-and-sse.md` | 檔案與串流 | multipart 上傳、大小限制與安全檢查、檔案下載、`StreamingResponseBody`、SSE 推播 |
 | 06 | `06-cors-content-negotiation-and-json.md` | 跨來源與序列化 | CORS 設定（與 Security 的關係）、內容協商、Jackson 全域設定、自訂序列化器 |
 | 07 | `07-controller-testing-mockmvc.md` | Web 層測試 | `@WebMvcTest` 切片、MockMvc 語法、驗證測試、錯誤路徑測試、文件產生 |
+
+---
+
+## 目前進度
+
+| 章節 | 狀態 | 篇幅 |
+|------|------|------|
+| 00 課程地圖與 Web 層職責 | ✅ 完成 | 約 2,600 行 |
+| 01 路由與參數綁定 | ✅ 完成 | 約 3,350 行 |
+| 02 輸入驗證與綁定錯誤 | ✅ 完成 | 約 4,700 行 |
+| 03 全域例外處理 | ⏳ 撰寫中 | — |
+| 04 請求生命週期 | ⏳ | — |
+| 05 檔案與串流 | ⏳ | — |
+| 06 跨來源與序列化 | ⏳ | — |
+| 07 Web 層測試 | ⏳ | — |
+
+目前合計約 **10,650 行**（不含 README）。
+
+> ⚠️ 課程中的程式碼、YAML 與設定均經逐行檢閱，但**尚未在本機編譯執行驗證**
+> （這台機器上沒有安裝 JDK 與 Maven）。基準版本是 **Java 21 / Spring Boot 3.2.5 /
+> Spring Framework 6.1 / Hibernate Validator 8.0 / Jackson 2.15+**。
+> 若你的版本不同（尤其是 Boot 3.0/3.1），課程會標註差異，但仍請以你的環境實測為準。
 
 ---
 
