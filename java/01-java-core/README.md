@@ -27,7 +27,7 @@
 
 | 章節 | 檔案 | 主題 | 重點 |
 |------|------|------|------|
-| 00 | [00-course-map-jdk-setup.md](./00-course-map-jdk-setup.md) | 課程地圖、JDK 版本與環境安裝 | LTS 策略、SDKMAN、JAVA_HOME、IDE、第一支程式與編譯流程 |
+| 00 | [00-course-map-jdk-setup.md](./00-course-map-jdk-setup.md) | 課程地圖、JDK 版本與環境安裝 | LTS 策略、SDKMAN（Windows 建議 WSL2）、JAVA_HOME、IDE、第一支程式與編譯流程 |
 | 01 | [01-syntax-variables-control-flow.md](./01-syntax-variables-control-flow.md) | 基本語法與流程控制 | 基本型別 vs 包裝型別、字串池、運算子、switch、迴圈、陣列 |
 | 02 | [02-oop-class-object-encapsulation.md](./02-oop-class-object-encapsulation.md) | 類別、物件與封裝 | 建構子、`this`、static、存取修飾子、package、不可變物件 |
 | 03 | [03-inheritance-polymorphism-interface.md](./03-inheritance-polymorphism-interface.md) | 繼承、多型與介面 | 抽象類別 vs 介面、`default`/`static` 方法、組合優於繼承 |

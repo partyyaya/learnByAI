@@ -13,7 +13,7 @@
 - 說明 JDK、JRE、JVM 的差別，以及為什麼「寫一次到處跑」是 JVM 的功勞。
 - 說出 Java 的發行節奏（每 6 個月一版）與 LTS 策略，並判斷專案該選哪一版。
 - 分辨 Temurin、Oracle JDK、Corretto、Zulu、GraalVM 的差異，避開 Oracle 授權地雷。
-- 用 SDKMAN（macOS / Linux）或 winget（Windows）安裝並**切換多個 JDK 版本**。
+- 用 SDKMAN（macOS / Linux，以及 Windows 上的 **WSL2**）安裝並**切換多個 JDK 版本**；只有無法使用 WSL 時才退回 winget / Scoop。
 - 正確設定 `JAVA_HOME` 與 `PATH`，並解釋 IDE 為什麼可以用跟終端機不同的 JDK。
 - 從 `.java` → `.class` → 執行，完整說出編譯與執行流程，並用 `javap` 看到 bytecode。
 - 建立一個 Maven 專案骨架，這個骨架會用到整門課結束。
@@ -240,11 +240,12 @@ mvn -version
 > ```
 
 > **`echo $JAVA_HOME` 印出空白？**
-> 安裝程式把初始化那兩行寫進了 `~/.zshrc`，但 **`.zshrc` 只在終端機「開啟的那一刻」讀取一次**。
+> 安裝程式把初始化那兩行寫進了 `~/.zshrc`（bash 則是 `~/.bashrc`，WSL2 的 Ubuntu 屬這一種），但 **這些檔只在終端機「開啟的那一刻」讀取一次**。
 > 你如果在安裝前就已經開著的視窗裡驗證，那個視窗永遠讀不到，看起來就像設定失敗。
 >
 > ```bash
-> exec zsh        # 就地重載當前 shell（或直接開一個新的終端機分頁）
+> exec zsh        # macOS 預設；就地重載當前 shell（或直接開一個新的終端機分頁）
+> exec bash       # Linux / WSL2 Ubuntu
 > ```
 >
 > 這也是為什麼第 2 步要 `source`——但 `source` 只救得了「當下那一個」視窗。
@@ -359,40 +360,214 @@ java -version
 
 ### Windows
 
-**方法 A：winget（Windows 10/11 內建）**
+後端的部署目標幾乎都是 Linux。Windows 上學這門課，**預設請走方法 A：WSL2 裡裝 Ubuntu，再用 SDKMAN 裝 JDK**。
+
+這樣你拿到的是跟 macOS / Linux 同學同一套指令、同一套路徑與編碼，也避開本機 Windows 的三個經典坑：classpath 分隔符是 `;`、換行是 CRLF、舊版主控台編碼是 MS950。後面 Docker、腳本、CI 也走這條路。
+
+> 本機 winget / Scoop 不是「錯」，學語法夠用。但路徑、換行、編碼會在第 07、10 章冒出來；Docker 課程最終還是要 WSL2。除非筆電不給開虛擬化，否則不要為了少裝一步而選本機 JDK。
+
+**方法 A（推薦）：WSL2 + SDKMAN**
+
+WSL2（Windows Subsystem for Linux 2）是 Windows 10 / 11 內建的 Linux 環境，跑的是真正的 Linux 核心，不是模擬器。JDK、Maven、Git 都裝在 Ubuntu 裡；Windows 只負責開視窗跟編輯器。
+
+**步驟 1：確認系統與虛擬化**
+
+- Windows 11，或 Windows 10 版本 2004（build 19041）以上。
+- 工作管理員 → 效能 → CPU，確認 **虛擬化（Virtualization）已啟用**。若是停用，要進 BIOS / UEFI 打開 Intel VT-x 或 AMD-V，存檔重開。
+
+**步驟 2：安裝 WSL2 與 Ubuntu**
+
+用**系統管理員**開 PowerShell：
 
 ```powershell
-# 搜尋
+wsl --install
+```
+
+這一行會啟用「適用於 Linux 的 Windows 子系統」、設 WSL 2 為預設、並裝 Ubuntu。裝完**必須重開機**。
+
+重開之後 Ubuntu 會自己跳出來，請你設一個 **Linux 使用者名稱與密碼**。這組帳號跟 Windows 登入無關；使用者名稱用小寫英文、不要空白。
+
+重開後若沒自動跳出，開「Ubuntu」應用程式，或在 PowerShell 打 `wsl`。
+
+確認發行版真的是版本 2：
+
+```powershell
+wsl -l -v
+```
+
+預期類似：
+
+```
+  NAME      STATE           VERSION
+* Ubuntu    Running         2
+```
+
+`VERSION` 若是 `1`：
+
+```powershell
+wsl --set-version Ubuntu 2
+wsl --set-default-version 2
+```
+
+> **`wsl --install` 失敗？**
+>
+> | 訊息 / 代碼 | 原因 | 修法 |
+> |---|---|---|
+> | `0x80370102` / 虛擬機器平台 | BIOS 虛擬化沒開，或 Windows 功能沒啟用 | 先開 VT-x / AMD-V，再以系統管理員執行 `dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart`，重開 |
+> | `0x800701bc` | WSL 核心元件過舊 | [下載 WSL2 Linux 核心更新](https://aka.ms/wsl2kernel) 裝完再 `wsl --update` |
+> | 找不到 `wsl` 指令 | 系統太舊，或選用功能被公司政策關掉 | 設定 → 應用程式 → 選用功能，啟用「適用於 Linux 的 Windows 子系統」與「虛擬機器平台」；公司筆電被鎖就改走方法 B |
+> | 卡在「請稍候」或一直要重開 | 更新沒跑完 | `wsl --update`，再 `wsl --shutdown` 後重開 Ubuntu |
+
+想指定發行版（例如 Ubuntu 22.04 而不是預設那一個）：
+
+```powershell
+wsl --list --online          # 看有哪些
+wsl --install -d Ubuntu-22.04
+```
+
+**步驟 3：更新套件，補上 SDKMAN 依賴**
+
+之後這門課的指令，**一律在 Ubuntu 終端機裡跑**（Windows Terminal 的 Ubuntu 分頁、或 Cursor / VS Code 連上 WSL 之後的整合終端）。不要在 PowerShell 裡打 `sdk` / `javac`。
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y curl zip unzip ca-certificates git
+```
+
+`zip` / `unzip` 沒裝的話，下一步 SDKMAN 安裝腳本會直接失敗，錯誤訊息不一定看得懂。
+
+**步驟 4：在 Ubuntu 裡裝 SDKMAN**
+
+Ubuntu 預設 shell 是 **bash**（不是 macOS 的 zsh）。指令與上面「macOS / Linux」相同，只是設定會寫進 `~/.bashrc`：
+
+```bash
+curl -s "https://get.sdkman.io" | bash
+source "$HOME/.sdkman/bin/sdkman-init.sh"
+```
+
+`source` 只對**當下這個**視窗生效。之後新開的 Ubuntu 終端機會自動讀 `~/.bashrc`，不必每次手動 source。
+
+接著從上面 macOS / Linux 的**第 3 步**繼續（`sdk list java` → 裝 Temurin 21 → 裝 Java 8 → `sdk default` → 裝 Maven → 驗證）。指令一個字都不用改。
+
+`.sdkmanrc` 自動切換也一樣，改的是 `~/.sdkman/etc/config`。bash 使用者若看到課文寫 `exec zsh` / 開新分頁，改成：
+
+```bash
+exec bash        # 就地重載；或關掉這個分頁再開一個
+```
+
+**步驟 5：專案放哪——這一步比裝 JDK 還容易踩雷**
+
+WSL 可以看見 Windows 的磁碟，掛在 `/mnt/c`、`/mnt/d`。**看起來方便，Maven / Git / 測試會慢一個數量級**，因為每次檔案存取都要穿過 Windows 和 Linux 的邊界。
+
+```bash
+# ❌ 專案還在 Desktop / Documents，只是用 WSL 去跑
+cd /mnt/c/Users/you/Desktop/svn-workspace/learnbyai
+
+# ✅ 複製或重新 clone 到 Linux 家目錄
+mkdir -p ~/projects
+cd ~/projects
+git clone <你的 repo URL>
+```
+
+從 Windows 檔案總管要看這些檔，網址列貼：
+
+```
+\\wsl$\Ubuntu\home\<你的 Linux 使用者名稱>\projects
+```
+
+已經在 `C:\` 上的課程檔，用 `cp -a` 拷進 `~/projects` 即可，不要繼續在 `/mnt/c` 裡 `mvn test`。
+
+**步驟 6：讓 IDE 連進 WSL，不要用 Windows 那份 JDK 編 Linux 專案**
+
+PowerShell 裡的 `java` 和 Ubuntu 裡的 `java` 是**兩套互不相干的安裝**。這門課以 WSL 裡 SDKMAN 裝的 Temurin 21 為準。
+
+**Cursor / VS Code**
+
+1. 擴充功能搜尋並安裝 **WSL**（Microsoft 出的 `ms-vscode-remote.remote-wsl`）。
+2. `Ctrl+Shift+P` → `WSL: Connect to WSL`（或 `WSL: Reopen Folder in WSL`）。
+3. 連上之後 `File → Open Folder`，選 `/home/<你>/projects/...`，**不要**選 `C:\Users\...`。
+4. 終端機左下角或分頁標題應出現 `WSL: Ubuntu`。在這個終端機裡跑 `java -version`、`mvn -version`。
+
+第一次連線也可以在 Ubuntu 裡直接開：
+
+```bash
+cd ~/projects/learnbyai
+code .          # VS Code
+cursor .        # Cursor（需已從 IDE 安裝 shell 命令）
+```
+
+`settings.json` 的 JDK 路徑改成 WSL 裡的（不要填 `C:\Program Files\...`）：
+
+```json
+{
+  "java.configuration.runtimes": [
+    {
+      "name": "JavaSE-21",
+      "path": "/home/你的使用者/.sdkman/candidates/java/21.0.5-tem",
+      "default": true
+    }
+  ]
+}
+```
+
+**IntelliJ IDEA**
+
+1. `File → Open`，在路徑列貼 `\\wsl$\Ubuntu\home\<你>\projects\...`，或從 WSL 檔案總管把資料夾拖進去。
+2. `File → Project Structure → Project SDK`：點 `+` 新增 JDK，路徑填 `\\wsl$\Ubuntu\home\<你>\.sdkman\candidates\java\current`（`current` 是 SDKMAN 的符號連結，會跟著 `sdk default` 走）。
+3. Maven importer 的 JDK 同樣選 WSL 那一份（見 0.7）。
+
+> **怎麼知道開對環境了？**
+> 整合終端機裡 `pwd` 應以 `/home/` 開頭，`echo $JAVA_HOME` 應含 `.sdkman/candidates/java`。
+> 若 `pwd` 是 `/mnt/c/...`，或 `java -version` 印出 Oracle / 路徑在 `C:\`，你還在 Windows 本機。
+
+**步驟 7：可選，但建議現在就做**
+
+WSL2 預設可能吃掉很多 RAM。在 **Windows** 使用者目錄（`C:\Users\<你的 Windows 帳號>\.wslconfig`，不是 Ubuntu 的 `~`）建這個檔，限制資源：
+
+```ini
+[wsl2]
+memory=8GB
+processors=4
+swap=2GB
+```
+
+存檔後在 PowerShell 執行 `wsl --shutdown`，再重新打開 Ubuntu 才生效。記憶體小的筆電先設 `4GB`；後面開 Docker 再調高。
+
+Windows Terminal（Microsoft Store 免費）可以把 Ubuntu 設成預設分頁，比內建 `cmd` 好用。
+
+**方法 B：winget（無法使用 WSL 時）**
+
+公司筆電鎖虛擬化、或不准裝 WSL 時才走這條。裝的是 **Windows 本機 JDK**，之後指令在 PowerShell 跑，編碼與路徑規則跟 Linux 不同。
+
+```powershell
 winget search Microsoft.OpenJDK
-
-# 安裝
 winget install EclipseAdoptium.Temurin.21.JDK
-
-# 確認
 java -version
 ```
 
-**方法 B：Scoop（想要類似 SDKMAN 的體驗）**
+Maven 要另外裝，例如 `winget install Apache.Maven`，再重開終端機。本機安裝**不會**自動維護 `JAVA_HOME`，請接著看下面「設定 JAVA_HOME」的 PowerShell 段。
+
+**方法 C：Scoop（本機、想切多個 JDK 時）**
+
+同樣是 Windows 本機，只是切版本比 winget 方便。無法取代 WSL 裡的 SDKMAN。
 
 ```powershell
 scoop bucket add java
 scoop install temurin21-jdk
 scoop install temurin8-jdk
 
-# 切換
 scoop reset temurin8-jdk
 java -version
 ```
-
-**方法 C：WSL2 + SDKMAN**——如果你的部署目標是 Linux（幾乎都是），這是最貼近正式環境的做法，也能避開 Windows 路徑與換行符號的雜事。
 
 ### 設定 JAVA_HOME
 
 很多工具（Maven、Gradle、Tomcat、部分 IDE 外掛）不看 `PATH` 裡的 `java`，而是讀 `JAVA_HOME`。**這是「明明 java -version 是 21，Maven 卻說我是 8」的頭號原因。**
 
-SDKMAN 會自動維護 `JAVA_HOME`，手動安裝則要自己設：
+SDKMAN 會自動維護 `JAVA_HOME`（macOS / Linux / **WSL2 的 Ubuntu** 都是），**不要再手動 `export JAVA_HOME=...`，會跟它打架。**
+只有方法 B / C（Windows 本機 JDK、沒有 SDKMAN）才要自己設。
 
-**macOS / Linux（`~/.zshrc` 或 `~/.bashrc`）：**
+**macOS / Linux / WSL2（沒走 SDKMAN、自己指定路徑時；`~/.zshrc` 或 `~/.bashrc`）：**
 
 ```bash
 # macOS 可以用內建工具查出指定版本的路徑
@@ -407,7 +582,9 @@ export JAVA_HOME=/usr/lib/jvm/temurin-21-jdk-amd64
 export PATH="$JAVA_HOME/bin:$PATH"
 ```
 
-**Windows（PowerShell，設定使用者層級永久變數）：**
+**Windows 本機（方法 B / C；PowerShell，設定使用者層級永久變數）：**
+
+走 WSL2 的人**不要**在這裡設。Windows 的 `JAVA_HOME` 管的是 PowerShell 裡的 `java.exe`，Ubuntu 裡的 SDKMAN 看不到它。
 
 ```powershell
 [Environment]::SetEnvironmentVariable(
@@ -416,14 +593,18 @@ export PATH="$JAVA_HOME/bin:$PATH"
   "User")
 ```
 
+實際路徑以「開始選單 → 搜尋 Eclipse Temurin」或 `dir "C:\Program Files\Eclipse Adoptium"` 為準，版本號每次安裝都會變。設完**重開** PowerShell 才看得到。
+
 **驗證三件事都一致：**
 
 ```bash
 java -version          # 執行時的版本
 javac -version         # 編譯時的版本
-echo $JAVA_HOME        # 工具讀到的版本（Windows: echo %JAVA_HOME%）
+echo $JAVA_HOME        # 工具讀到的版本（WSL2 / macOS / Linux）
 mvn -version           # Maven 實際用哪個 JDK（會印出 Java version 與 JAVA_HOME）
 ```
+
+Windows 本機 PowerShell 把第三行改成 `echo $env:JAVA_HOME`（cmd 則是 `echo %JAVA_HOME%`）。WSL2 使用者請在 **Ubuntu** 裡跑上面四行，不要在 PowerShell 裡跑。
 
 如果這四行講的不是同一個版本，先把它修好，不要往下走。
 
@@ -432,9 +613,12 @@ mvn -version           # Maven 實際用哪個 JDK（會印出 Java version 與 
 | 症狀 | 原因 | 修法 |
 |---|---|---|
 | `mvn: command not found` | 沒裝 Maven（SDKMAN 的 java 和 maven 是兩個獨立 candidate） | `sdk install maven` |
-| `echo $JAVA_HOME` 是空白行 | 這個終端機視窗在設定寫入 `~/.zshrc` **之前**就開了 | `exec zsh` 或開新分頁 |
-| `java: command not found` | 同上，或 `.zshrc` 裡的 SDKMAN 初始化被後面的設定覆蓋掉 | `grep -n sdkman ~/.zshrc` 確認那兩行還在，且沒被更後面的 `export PATH=...` 蓋掉 |
-| 四行版本不一致 | `JAVA_HOME` 是手動設的舊路徑，跟 SDKMAN 打架 | 移除 `.zshrc` 裡自己寫的 `export JAVA_HOME=...`，交給 SDKMAN 管 |
+| `echo $JAVA_HOME` 是空白行 | 這個終端機視窗在設定寫入 `~/.zshrc` / `~/.bashrc` **之前**就開了 | macOS：`exec zsh`；WSL2：`exec bash`；或開新分頁 |
+| `java: command not found` | 同上，或初始化被後面的 `PATH` 蓋掉 | `grep -n sdkman ~/.bashrc ~/.zshrc 2>/dev/null` 確認那兩行還在，且沒被更後面的 `export PATH=...` 蓋掉 |
+| 四行版本不一致 | `JAVA_HOME` 是手動設的舊路徑，跟 SDKMAN 打架 | 移除自己寫的 `export JAVA_HOME=...`，交給 SDKMAN 管 |
+| PowerShell 是 8、Ubuntu 是 21（或其中一邊找不到 `java`） | 開錯終端機；Windows 與 WSL 各有一份 JDK | 這門課的指令一律在 WSL 的 Ubuntu 裡跑 |
+| `sdk: command not found`（明明剛裝完） | 當前視窗還沒 `source`，或你人在 PowerShell | 在 Ubuntu 執行 `source "$HOME/.sdkman/bin/sdkman-init.sh"` |
+| `mvn test` 慢到像當掉 | 專案在 `/mnt/c/...`（Windows 磁碟） | 搬到 `~/projects`，見方法 A 步驟 5 |
 
 ### Maven 版本和 Java 版本怎麼對應
 
@@ -553,6 +737,17 @@ Community Edition 免費，做純 Java + Maven + JUnit 完全夠用（到第 02 
   "files.encoding": "utf8"
 }
 ```
+
+路徑請填**這台機器上真實的 SDKMAN 目錄**：macOS / Linux 常是 `/Users/you/...` 或 `/home/you/...`；Windows + WSL2 一定是 Ubuntu 裡的 `/home/你/.sdkman/candidates/java/...`，不要填 `C:\Program Files\...`。
+
+### Windows + WSL2：先連上 Linux，再選 SDK
+
+走 0.6 方法 A 的人，IDE 必須把專案當成 **WSL 裡的資料夾** 開，否則會出現「編輯器找得到 JDK、整合終端機找不到 `mvn`」或相反。
+
+- **Cursor / VS Code**：裝 WSL 擴充功能 → `WSL: Connect to WSL` → 開啟 `/home/<你>/projects/...`。左下角應顯示 `WSL: Ubuntu`。
+- **IntelliJ**：`File → Open` 走 `\\wsl$\Ubuntu\home\...`，Project SDK 加 **WSL 裡的** Temurin 21，不要選 Windows 本機那一份。
+
+細節與「專案不要放 `/mnt/c`」見 0.6 方法 A 步驟 5、6。
 
 ---
 
@@ -976,7 +1171,8 @@ java -Dfile.encoding=UTF-8 Hello
 ```
 
 > **Java 18 之後**，`file.encoding` 預設就是 UTF-8（JEP 400），這類問題大幅減少。
-> Windows 終端機仍可能需要 `chcp 65001` 把 code page 切成 UTF-8。
+> Windows **本機**終端機仍可能需要 `chcp 65001` 把 code page 切成 UTF-8。
+> 走 WSL2 的 Ubuntu 預設就是 UTF-8，這個主控台編碼的坑你不會碰到——這也是方法 A 的好處之一。
 
 ### 錯誤 3：`JAVA_HOME is not set`
 
@@ -1405,6 +1601,7 @@ find . -name "*.java" -o -name "pom.xml" | grep -v target
 - [ ] 我知道 Java 每 6 個月發一版，每 2 年一個 LTS，也知道 21 和 25 都是 LTS。
 - [ ] 我知道 Oracle JDK 有授權風險，預設該用 Temurin 或 Corretto。
 - [ ] 我的機器上有 JDK 21，`java` / `javac` / `JAVA_HOME` / `mvn` 四者版本一致。
+- [ ] **若我在 Windows：我用 WSL2 + SDKMAN 裝好 JDK，專案在 `~/projects` 而不是 `/mnt/c`，IDE 已連上 WSL。**
 - [ ] 我能在兩個 JDK 版本之間切換，也知道 `.sdkmanrc` 的用途。
 - [ ] 我能解釋 `public static void main(String[] args)` 每一個字的意義。
 - [ ] 我能說出 `.java` → `.class` → JVM 執行的流程，並知道 JIT 為什麼讓 Java「跑久了變快」。
