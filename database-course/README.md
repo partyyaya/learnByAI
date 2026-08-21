@@ -14,7 +14,7 @@
 - 說明「如何取得資料庫」：本機安裝、Docker、雲端託管、自建叢集各自適用的情境。
 - 設計基本 ERD、主鍵、外鍵、一對多、多對多與索引。
 - 寫出常用 SQL，並能用 `EXPLAIN` 觀察查詢是否合理。
-- 理解交易、隔離級別、鎖、死鎖與資料一致性。
+- 理解交易、ACID、四種隔離級別、MVCC、行鎖與間隙鎖、死鎖排查與資料一致性。
 - 處理效能優化：慢查詢、索引、分頁、批次寫入、快取、讀寫分離、分區與分片。
 - 設計高併發場景，例如搶票、秒殺、限量庫存扣減，避免超賣與重複下單。
 
@@ -57,14 +57,14 @@
 | 章節 | 檔案 | 主題 |
 |------|------|------|
 | 01 | [01-relational-modeling-erd-normalization.md](./01-relational-modeling-erd-normalization.md) | 關聯式建模、ERD、主鍵外鍵、正規化與反正規化 |
-| 02 | [02-sql-crud-join-transaction.md](./02-sql-crud-join-transaction.md) | SQL CRUD、JOIN、聚合、交易與一致性 |
+| 02 | [02-sql-crud-join-transaction.md](./02-sql-crud-join-transaction.md) | SQL CRUD、JOIN、聚合、交易、ACID、四種隔離級別、MVCC、UPSERT 與 RETURNING |
 
 ### 第 2 篇：效能與高併發
 
 | 章節 | 檔案 | 主題 |
 |------|------|------|
 | 03 | [03-index-query-performance-optimization.md](./03-index-query-performance-optimization.md) | 索引、慢查詢、分頁、N+1、批次寫入與效能優化 |
-| 04 | [04-high-concurrency-ticketing-inventory.md](./04-high-concurrency-ticketing-inventory.md) | 高併發搶票、秒殺、庫存扣減、Redis、MQ、鎖與最終一致性 |
+| 04 | [04-high-concurrency-ticketing-inventory.md](./04-high-concurrency-ticketing-inventory.md) | 高併發搶票、秒殺、庫存扣減、悲觀鎖/樂觀鎖、間隙鎖與死鎖、Redis、MQ 與最終一致性 |
 
 ### 第 3 篇：多元資料系統
 

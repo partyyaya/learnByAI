@@ -1635,15 +1635,19 @@ spring:
 
   mvc:
     problemdetails:
-      enabled: true                 # 內建例外也回 application/problem+json（03 章）
+      enabled: true                 # 內建例外也回 application/problem+json
+                                    # ⚠️ 03 章會把這一行改成 false —— 它註冊的內部 advice
+                                    #    order=0，會蓋掉我們自己的 advice（03 章 3.7.5）
     throw-exception-if-no-handler-found: true    # 404 走 advice 而不是 /error
     hiddenmethod:
       filter:
         enabled: false              # Boot 3 預設就是 false，明確寫出來
   web:
     resources:
-      add-mappings: false           # ★ 關掉靜態資源對映，純 API 服務不需要
-                                    #   而且它會吃掉「找不到的路徑」讓 404 不進 advice
+      add-mappings: false           # 關掉靜態資源對映，純 API 服務不需要
+                                    # ⚠️ 03 章會改回 true —— 它會讓 Swagger UI 404，
+                                    #    而 Boot 3.2 的 NoResourceFoundException 已經
+                                    #    能讓 404 進 advice（03 章 3.8.2）
 
   jackson:
     default-property-inclusion: non_null      # 06 章會詳談
@@ -1706,6 +1710,10 @@ management:
       exposure:
         include: health,info,mappings,metrics
 ```
+
+> ⚠️ **這份 YAML 有兩行會在 03 章被推翻**（`problemdetails.enabled` 與 `add-mappings`）。
+> 這裡先給「教科書版」的設定，等你在 03 章實作出完整的 advice 之後，
+> 才會知道為什麼那兩行要改。**兩處都有 inline 註解指向 03 章。**
 
 **`spring.web.resources.add-mappings: false` 是一個很容易漏的設定。**
 它的預設值 `true` 會註冊一個「什麼路徑都吃」的 `ResourceHttpRequestHandler`。

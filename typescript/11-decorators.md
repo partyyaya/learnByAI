@@ -190,7 +190,7 @@ Reflect.getMetadata("tableName", User); // "users"
 
 `return` 一個新的 constructor 會**取代**被裝飾的類別，適合每次 `new` 都要多做的事（打 log、單例、代理）。
 
-`T extends new (...args: any[]) => any` 用來保留原本建構子型別。內層必須 `super(...args)`，否則原來的欄位初始化不會跑。
+內層必須 `super(...args)`，否則原來的欄位初始化不會跑。開頭那串 `<T extends new (...args: any[]) => any>` 的意思見下一小節。
 
 ```typescript
 function LogClass(message: string) {
@@ -214,6 +214,84 @@ new UserService("auth");
 ```
 
 和 `Entity` 的差別：`Entity` 只貼資料、不 `return`；`LogClass` 回傳子類別，之後的 `new UserService` 實際 new 到的是那層包裝。
+
+### 讀懂 `<T extends new (...args: any[]) => any>`
+
+這裡的 `extends` 不是繼承，是**型別參數的約束**：
+
+```typescript
+function <T extends new (...args: any[]) => any>(constructor: T)
+//         └┬┘  └──────────────┬─────────────┘   └──────┬─────┘
+//        型別參數          對 T 的約束            實際參數
+```
+
+`<T extends X>` 讀作「T 必須可以指派給 X」。所以這行是說：T 必須是「能被 `new` 呼叫的東西」，也就是一個 class。
+
+**為何 `extends` 後面接 `new`**：TypeScript 的函式型別分兩種簽章。
+
+| 寫法 | 意思 |
+|---|---|
+| `(...args: any[]) => any` | 可以直接呼叫 `f(...)`，call signature |
+| `new (...args: any[]) => any` | 可以用 `new` 呼叫 `new f(...)`，construct signature |
+
+`new (...args: any[]) => any` 可理解成:一個具有 new 能力的函式
+`{ new (...args: any[]): any }` 可理解成:一個具有 new signature 的物件
+而 JavaScript 裡的 class 本身剛好就是一個可以被 new 的函式物件，拿來看它的「constructor side」時，就可以符合這兩種型別
+class 的型別只有 construct signature（`class Foo {}` 不能寫 `Foo()`，只能 `new Foo()`），
+所以要描述「傳進來的是一個 class」只能用 `new` 這個形式。少了 `new`，約束就變成「必須是普通可呼叫的函式」，class 反而不符合。
+
+**為何不能只寫 `constructor: Function`**：上面 `Entity` 用 `Function` 是因為它只貼 metadata，不 `new` 也不繼承。一旦要 `class extends constructor` 就不夠：
+
+```typescript
+function Bad(constructor: Function) {
+  return class extends constructor {};
+  // ❌ TS2507: Type 'Function' is not a constructor function type
+}
+```
+
+`Function` 只保證「是個函式」，沒保證能 `new`，不能當 base class。
+
+**為何要泛型 `T`，不直接把型別寫死在參數上**：把約束搬到參數上，宣告本身是合法的，
+
+```typescript
+function LogClassNoGeneric(ctor: new (...args: any[]) => any) {
+  return class extends ctor {};
+}
+```
+
+但這樣回傳的子類別是以 `new (...args: any[]) => any` 當基底，原 class 的靜態成員和實例型別都被抹掉。舊版裝飾器會檢查「裝飾器的回傳型別必須可以指派給 `void | typeof 原class`」，所以一貼上去就報錯：
+
+```typescript
+@LogClassNoGeneric
+// ❌ TS1270: Decorator function return type 'typeof (Anonymous class)'
+//    is not assignable to type 'void | typeof Config'
+//    Property 'VERSION' is missing in type 'typeof (Anonymous class)'
+class Config {
+  static VERSION = "1.0";
+  reload() {}
+}
+```
+
+改用泛型 `T`，`T` 記住的就是 `typeof Config`，`class extends constructor` 連帶保留靜態成員與實例型別，檢查也就過得去：
+
+```typescript
+@LogClass("DEBUG")
+class Config {
+  static VERSION = "1.0";
+  reload() {}
+}
+
+// 手動呼叫更看得出差別
+const Wrapped = LogClass("DEBUG")(Config);
+Wrapped.VERSION;         // ✅ 靜態成員保留
+new Wrapped().reload();  // ✅ 實例型別保留
+
+const Plain = LogClassNoGeneric(Config);
+Plain.VERSION;           // ❌ TS2339: Property 'VERSION' does not exist
+new Plain();             // 型別是 any，之後全無檢查
+```
+
+一個實務坑：`abstract class` 不能指派給 `new (...args: any[]) => any`（抽象類別不可 `new`），這種裝飾器套在 abstract class 上會報錯，要把約束改成 `abstract new (...args: any[]) => any`。
 
 ---
 
