@@ -71,15 +71,15 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 01 | [01-java-core/](./01-java-core/) ✅ | Java 語言核心與 JVM | 14 | 語法、OOP、集合、Stream、併發、JVM 記憶體、Maven / Gradle、JUnit、**反射與動態代理** |
 | 02 | [02-spring-boot/](./02-spring-boot/) ✅ | Spring Boot 框架原理 | 10 | IoC 容器、DI、自動組態、設定檔與 Profile、AOP、Actuator、打包部署 |
 | 03 | [03-rest-api/](./03-rest-api/) ✅ | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
-| 04 | [04-controller/](./04-controller/) 🚧 | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、MockMvc |
-| 05 | [05-service/](./05-service/) | 商業邏輯層 | 8 | 交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
+| 04 | [04-controller/](./04-controller/) ✅ | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、檔案與串流、SSE、CORS 與序列化、MockMvc 與授權矩陣測試 |
+| 05 | [05-service/](./05-service/) 🚧 | 商業邏輯層 | 8 | 商業邏輯層定位與**不變量**、貧血 vs 充血、Service 設計與**循環依賴**、交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
 | 06 | [06-repository/](./06-repository/) | 資料存取層 | 7 | DataSource 與連線池、JdbcTemplate、Spring Data 抽象、交易邊界、測試 |
 | 07 | [07-mysql/](./07-mysql/) | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢、Flyway |
 | 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) | JPA / Hibernate 與 MyBatis | 10 | Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL |
 | 09 | [09-spring-security/](./09-spring-security/) | 認證與授權 | 9 | Filter Chain、UserDetails、方法層權限、Session vs Token、JWT、OAuth2 |
 | 10 | [10-capstone/](./10-capstone/) | 期末專題：訂單系統 | 8 | 把上面全部串成一個可部署、有測試、有監控的服務 |
 
-合計 **92 個章節**。✅ 表示該子課程已完成。
+合計 **92 個章節**。✅ 表示該子課程已完成，🚧 表示進行中。
 
 ### 目前進度
 
@@ -88,8 +88,9 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 01-java-core | ✅ 已結業（14 章，約 54,200 行） |
 | 02-spring-boot | ✅ 已結業（10 章，約 29,100 行） |
 | 03-rest-api | ✅ 已結業（10 章，約 33,700 行） |
-| 04-controller | 🚧 撰寫中（00～03 章完成，約 16,900 行） |
-| 05～10 | ⏳ 未開始 |
+| 04-controller | ✅ 完成（00～07 章，約 58,300 行） |
+| 05-service | 🚧 進行中（00～03 章可讀，約 22,250 行） |
+| 06～10 | ⏳ 未開始 |
 
 ---
 
@@ -119,7 +120,21 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 上線後一變慢就整個服務停止回應 | [02-spring-boot/](./02-spring-boot/) 08 |
 | API 改版就炸掉前端 | [03-rest-api/](./03-rest-api/) 06 |
 | 商業邏輯全塞在 Controller | [04-controller/](./04-controller/) 00、[05-service/](./05-service/) 00 |
-| `@Transactional` 沒生效 | [05-service/](./05-service/) 02 |
+| 前端說「拿不到後端的錯誤訊息，只看到 Network Error」 | [04-controller/](./04-controller/) 06 |
+| 匯出報表就 OOM，或匯出的資料悄悄少了幾十萬筆 | [04-controller/](./04-controller/) 05 |
+| 新增一個列舉值就讓 App 大量閃退 | [04-controller/](./04-controller/) 06 |
+| 對帳老是差幾分錢或差 8 小時 | [04-controller/](./04-controller/) 06 |
+| 測試全綠，上線後客戶看到別人的資料 | [04-controller/](./04-controller/) 07 |
+| CI 從 4 分鐘變成 47 分鐘，而刪測試沒有用 | [04-controller/](./04-controller/) 07 |
+| `@Transactional` 沒生效 | [05-service/](./05-service/) 02（2.7 的五種情境） |
+| 方法看起來成功卻拋 `UnexpectedRollbackException` | [05-service/](./05-service/) 02（2.8） |
+| 一個外部 API 變慢，整個服務就停止回應 | [05-service/](./05-service/) 02（2.9.3） |
+| 促銷時大量 `Deadlock found when trying to get lock` | [05-service/](./05-service/) 02（2.11.9） |
+| 促銷第一分鐘超賣，而單元測試全綠 | [05-service/](./05-service/) 00（0.8）、02 |
+| 對帳一年差幾千元，查不出是哪幾筆 | [05-service/](./05-service/) 00（0.5.3） |
+| 客戶收到「訂單成立」的信，但點進去 404 | [05-service/](./05-service/) 00（0.3.2） |
+| 升級 Boot 之後啟動失敗，訊息是一個 40 行的框框 | [05-service/](./05-service/) 01（1.6） |
+| 「每個 Service 都要有介面嗎」講不出理由 | [05-service/](./05-service/) 01（1.3） |
 | 查詢很慢、log 一堆 SQL | [08-jpa-mybatis/](./08-jpa-mybatis/) 04、[07-mysql/](./07-mysql/) 03 |
 | 不知道 JWT 該怎麼做才安全 | [09-spring-security/](./09-spring-security/) 05 |
 

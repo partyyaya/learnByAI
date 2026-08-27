@@ -1119,7 +1119,7 @@ Controller 做的事（解析、驗證、翻譯）都是**純函式式的**：�
 1. **Filter 拋的例外不會進 `@RestControllerAdvice`。**
    因為 advice 是 `DispatcherServlet` 內部的機制，而 Filter 在它外面。
    Filter 拋例外 → Tomcat 的錯誤頁（HTML）→ 前端 `res.json()` 爆掉。
-   👉 Filter 裡要**自己**寫 JSON 回應。（04 章 4.3.5 給完整程式碼）
+   👉 Filter 裡要**自己**寫 JSON 回應。（03 章 3.10.1 的 `ProblemWriter` 給完整程式碼）
 
 2. **Spring Security 的 401 / 403 也不會進 advice。**
    它們由 `AuthenticationEntryPoint` / `AccessDeniedHandler` 產生，
@@ -1326,13 +1326,35 @@ Controller 瘦下來的程式碼不會消失，一部分變成 mapper。這是�
 ```java
 package example.shop.order.web;
 
+import example.shop.order.domain.Actor;
 import example.shop.order.service.command.CreateOrderCommand;
 import org.springframework.stereotype.Component;
 
+/**
+ * HTTP DTO 與 Command / Domain 之間的翻譯。
+ *
+ * <p>★ 它是 {@code @Component} 而不是靜態工具，因為
+ * {@code toDetailResponse(...)} 需要 {@code StatusLabelResolver}
+ * 來產生 {@code statusLabel}（06 章 6.5.8）。
+ *
+ * <p>⚠️⚠️ 而 {@code @WebMvcTest} <b>不載入 {@code @Component}</b>（07 章 7.4.2）——
+ * 所以切片測試必須明確 {@code @Import} 它（shop-service 放在
+ * {@code WebSliceInfraConfig} 裡）。
+ * <b>絕對不要 mock 它</b>：mapper 就是「翻譯」本身，
+ * mock 掉它等於把 Controller 測試裡唯一值得測的東西拿掉（07 章 7.6.6）。
+ */
 @Component
 public class OrderWebMapper {
 
-    public CreateOrderCommand toCommand(CreateOrderRequest req, Actor actor, String idempotencyKey) {
+    private final StatusLabelResolver statusLabels;
+
+    public OrderWebMapper(StatusLabelResolver statusLabels) {
+        this.statusLabels = statusLabels;
+    }
+
+    /** ★ 參數順序與 01 章 1.12.5 的 {@code CreateOrderCommand} record 宣告一致。 */
+    public CreateOrderCommand toCommand(CreateOrderRequest req, Actor actor,
+                                        String idempotencyKey) {
         return new CreateOrderCommand(
                 actor,
                 idempotencyKey,

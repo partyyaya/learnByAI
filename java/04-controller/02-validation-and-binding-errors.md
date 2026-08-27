@@ -591,8 +591,8 @@ public class TextLengthValidator implements ConstraintValidator<TextLength, Char
 }
 ```
 
-⚠️ **注意 `@Target` 要包含 `RECORD_COMPONENT`**，否則放在 record 元件上會編譯錯誤。
-（Java 16 起 record 元件是獨立的註解目標；很多教材寫的自訂註解漏了這個。）
+⚠️ **`@Target` 要包含 `RECORD_COMPONENT`** —— 但**理由不是「不然會編譯錯誤」**。
+完整說明見 2.7.1（那是一個很常被講錯的地方）。
 
 ⚠️ 嚴格說 code point 也不是「使用者感知的字元」（grapheme cluster）——
 `"👨‍👩‍👧‍👦"` 是 7 個 code point（4 個人 + 3 個 ZWJ）。
@@ -1055,7 +1055,7 @@ public ... create(@Validated(CreateOrderSequence.class) @RequestBody CreateOrder
 /** 錯誤回應最多列 20 筆，避免 20 MB 的錯誤 JSON。 */
 private static final int MAX_ERRORS = 20;
 
-List<FieldErrorDto> errors = allErrors.stream().limit(MAX_ERRORS).map(this::toDto).toList();
+List<FieldViolation> errors = allErrors.stream().limit(MAX_ERRORS).map(this::toDto).toList();
 int truncated = Math.max(0, allErrors.size() - MAX_ERRORS);
 ```
 
@@ -1316,11 +1316,68 @@ public @interface TaiwanId {
 | `Class<?>[] groups()` | 支援群組 |
 | `Class<? extends Payload>[] payload()` | 規格要求；實務上幾乎不用 |
 
-⚠️ **`@Target` 一定要包含 `RECORD_COMPONENT`**，否則放在 record 元件上會編譯錯誤：
-
-```
-error: annotation type not applicable to this kind of declaration
-```
+> ### ⚠️⚠️ `RECORD_COMPONENT` 的真正理由（一個常被講錯的地方）★★
+>
+> 網路上（以及本課程的早期版本）常說「`@Target` 沒有 `RECORD_COMPONENT`
+> 就不能標在 record 元件上，會編譯錯誤」。**那是錯的。**
+>
+> **證據一：JLS 8.10.1** 明確規定，標在 record 元件上的註解會**自動傳播**到
+> 所有「target 允許」的位置：
+>
+> | 註解的 `@Target` 含 | 那個註解會被複製到 |
+> |---|---|
+> | `FIELD` | 私有的實例欄位 |
+> | `PARAMETER` | 正規建構子的對應參數 |
+> | `METHOD` | 自動產生的 accessor |
+> | `RECORD_COMPONENT` | record 元件本身（保留在 `RecordComponent` 上） |
+>
+> **只要至少命中一個**，宣告就是合法的。
+>
+> **證據二：Jakarta 自己的約束就沒有 `RECORD_COMPONENT`**：
+>
+> ```java
+> // jakarta.validation.constraints.Size
+> @Target({ METHOD, FIELD, ANNOTATION_TYPE, CONSTRUCTOR, PARAMETER, TYPE_USE })
+> public @interface Size { ... }
+> //  ★ 沒有 RECORD_COMPONENT，但 @Size 標在 record 元件上完全正常
+> ```
+>
+> 如果那個說法成立，`record CreateOrderRequest(@Size(max=32) String couponCode)`
+> 就編譯不過了 —— 而我們整章都在這樣寫。
+>
+> **那為什麼還是要加？** 兩個真實的理由：
+>
+> **① 反射式的發現（真正重要的那一個）**
+>
+> 有些程式碼是透過 `RecordComponent` 讀註解的，而它**只看得到
+> target 含 `RECORD_COMPONENT` 的註解**：
+>
+> ```java
+> for (RecordComponent rc : dto.getRecordComponents()) {
+>     Masked masked = rc.getAnnotation(Masked.class);   // ★ 沒有 RECORD_COMPONENT 就是 null
+>     ...
+> }
+> ```
+>
+> 06 章 6.5.5 的 `ReadOnlyFieldInterceptor`、6.6.2 的遮蔽掃描、
+> 07 章 7.8.3 的 `DtoScanner` **全部**是這樣做的。
+> **所以：只要這個註解可能被反射掃描，就一定要加。**
+>
+> **② 「不加會出錯」的那個真實案例**
+>
+> 如果一個註解的 `@Target` 是 `{METHOD}`（只有 METHOD，例如 `@JsonIgnore`），
+> 那它標在 record 元件上**才真的會**編譯錯誤 ——
+> 因為 record 元件的位置只允許傳播到 accessor，
+> 而 `RECORD_COMPONENT` 本身不在允許清單裡。
+>
+> ⚠️ **但 `@JsonIgnore` 的 target 其實含 `FIELD`**，所以它也是合法的 ——
+> 只是它會落在**私有欄位**上，而 Jackson 讀的是 accessor，於是
+> **標了但沒有效果**（03 章 3.6.3 有這個坑的完整版）。
+> **「合法但沒效果」比「編譯錯誤」難查得多。**
+>
+> **shop-service 的規則**：自訂約束的 `@Target` 一律寫
+> `{FIELD, PARAMETER, RECORD_COMPONENT, METHOD, ANNOTATION_TYPE, TYPE_USE}` ——
+> 全部列上去，就不需要每次判斷。
 
 ⚠️ **`ANNOTATION_TYPE`** 是為了讓這個約束可以被「組合」（2.7.6）。
 
@@ -1868,9 +1925,20 @@ public class ValidationConfig {
 ```yaml
 spring:
   messages:
-    basename: messages,validation-messages      # 可以多個檔案
+    # ★★ shop-service 有【三個】訊息檔案，全部要列在這裡：
+    #   messages            —— enum 的顯示文字（06 章 6.5.8 的 orderStatus.*）
+    #   validation-messages —— Bean Validation 的訊息（這一章）
+    #   error-messages      —— ErrorCode 的 title / user（03 章 3.4.4）
+    #
+    # ⚠️ 漏掉任何一個的後果都是【靜默的】：
+    #   ProblemFactory（3.6.3）與 StatusLabelResolver（6.5.8）都有
+    #   防禦性 fallback（回傳 code 名或 enum 名），所以不會拋例外 ——
+    #   前端只會看到 "error.CART_EMPTY.title" 或 "PARTIALLY_SHIPPED"。
+    # ★ 03 章 3.4.5 的 訊息完整() 測試就是為了在啟動時抓到這件事。
+    basename: messages,validation-messages,error-messages
     encoding: UTF-8
     fallback-to-system-locale: false            # ★ 找不到就用預設語言，不看系統語言
+    use-code-as-default-message: false          # ★ 找不到就讓呼叫端的 fallback 決定
 ```
 
 ⚠️ **`fallback-to-system-locale: false` 很重要。**
@@ -2154,36 +2222,70 @@ Failed to convert property value of type 'java.lang.String' to required type
 ### 2.9.3 轉換實作
 
 ```java
-package example.shop.common.web;
+package example.shop.common.error;
 
-/** 單一欄位的驗證錯誤，對應 03-rest-api 第 04 章 4.6 的格式。 */
-public record FieldErrorDto(
+import java.util.Map;
+
+/**
+ * 單一欄位的錯誤，對應 03-rest-api 第 04 章 4.6 的格式。
+ *
+ * <p>★ 為什麼放在 {@code common.error} 而不是 {@code common.web}？
+ * 因為 Service 層也要用它（02 章 2.10.4：階段 2 的驗證失敗要能填進同一個
+ * {@code errors[]}）。放在 {@code common.web} 會讓 Service 依賴 web 套件。
+ *
+ * <p>★ 為什麼沒有 {@code messageKey}？
+ * 因為 {@code FieldError.getDefaultMessage()} 拿到的已經是插值後的字串，
+ * 反推不出原始 key（見下方 {@code ValidationErrorTranslator} 的註解）。
+ * 與其留一個永遠是 {@code null} 的欄位，不如不要它。
+ */
+public record FieldViolation(
     String field,
     String code,
     String message,
-    String messageKey,
     Object rejectedValue,
-    java.util.Map<String, Object> constraint
-) {}
+    Map<String, Object> constraint
+) {
+    public static FieldViolation of(String field, String code, String message) {
+        return new FieldViolation(field, code, message, null, null);
+    }
+
+    public static FieldViolation of(String field, String code, String message,
+                                    Object rejectedValue) {
+        return new FieldViolation(field, code, message, rejectedValue, null);
+    }
+}
 ```
+
+> ⚠️ **03 章會原樣沿用這個 record**（`Problem`、`BusinessException`、
+> `ValidationFailedException` 都用它），所以這裡的欄位順序就是最終契約。
 
 ```java
 package example.shop.common.web;
 
 import jakarta.validation.ConstraintViolation;
 import org.springframework.context.MessageSource;
+import org.springframework.context.MessageSourceResolvable;
 import org.springframework.context.i18n.LocaleContextHolder;
+import org.springframework.core.MethodParameter;
 import org.springframework.stereotype.Component;
 import org.springframework.validation.BindingResult;
+import org.springframework.validation.Errors;
 import org.springframework.validation.FieldError;
 import org.springframework.validation.ObjectError;
+import org.springframework.validation.method.ParameterErrors;
+import org.springframework.validation.method.ParameterValidationResult;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 
 import java.util.*;
 
 /**
- * 把 Spring / Bean Validation 的各種錯誤結構統一轉成 FieldErrorDto。
+ * 把 Spring / Bean Validation 的各種錯誤結構統一轉成 FieldViolation。
  *
- * <p>三種來源（2.3.3）都會走到這裡，確保前端只需要理解一種格式。
+ * <p>2.3.3 的三種例外都會走到這裡，確保前端只需要理解一種格式。
+ *
+ * <p>⚠️ {@code ParameterErrors} / {@code ParameterValidationResult} /
+ * {@code HandlerMethodValidationException} 的套件位置在 Spring 6.1 才穩定下來；
+ * 若你的 IDE 找不到它們，請確認是 Boot 3.2+（2.3.2 的版本表）。
  */
 @Component
 public class ValidationErrorTranslator {
@@ -2208,31 +2310,41 @@ public class ValidationErrorTranslator {
 
     // ── 來源 A / B：MethodArgumentNotValidException、BindException ──────────
 
-    public List<FieldErrorDto> from(BindingResult bindingResult) {
-        return bindingResult.getAllErrors().stream()
+    /**
+     * @param errors ⚠️ 型別是 {@link Errors} 而不是 {@link BindingResult}。
+     *               <p>★★ 這一個字的差別很重要：{@code ParameterErrors}
+     *               （Spring 6.1 方法驗證的結果，見 {@link #fromHandlerMethod}）
+     *               <b>只實作 {@code Errors}，沒有實作 {@code BindingResult}</b>。
+     *               宣告成 {@code BindingResult} 的話，
+     *               {@code from(parameterErrors)} 會編譯不過。
+     *               <p>而我們只用到 {@code getAllErrors()} —— 那是 {@code Errors} 就有的。
+     */
+    public List<FieldViolation> from(Errors errors) {
+        return errors.getAllErrors().stream()
                 .map(this::toDto)
-                .sorted(Comparator.comparing(FieldErrorDto::field,
+                .sorted(Comparator.comparing(FieldViolation::field,
                         Comparator.nullsLast(Comparator.naturalOrder())))
                 .limit(MAX_ERRORS)
                 .toList();
     }
 
-    private FieldErrorDto toDto(ObjectError error) {
+    private FieldViolation toDto(ObjectError error) {
         if (error instanceof FieldError fe) {
-            return new FieldErrorDto(
+            return new FieldViolation(
                     fe.getField(),
                     resolveCode(fe),
                     resolveMessage(fe),
-                    extractMessageKey(fe),
                     maskIfSensitive(fe.getField(), fe.getRejectedValue()),
                     extractConstraint(fe));
         }
-        // 類別層級的錯誤（沒有欄位）—— 用 objectName 當 field
-        return new FieldErrorDto(
-                error.getObjectName(),
+        // 類別層級的錯誤（沒有欄位）
+        // ★ field 給 null 而不是 objectName —— 前端靠 field == null 判斷「這是全域錯誤」
+        //   （2.13.2 的處理方式）
+        return new FieldViolation(
+                null,
                 Objects.requireNonNullElse(error.getCode(), "Invalid"),
                 Objects.requireNonNullElse(error.getDefaultMessage(), "資料不正確"),
-                null, null, null);
+                null, null);
     }
 
     /**
@@ -2257,66 +2369,203 @@ public class ValidationErrorTranslator {
     }
 
     /**
-     * 從 getDefaultMessage() 反推 i18n key 是做不到的（訊息已插值）。
-     * 改成從 arguments 找 DefaultMessageSourceResolvable，或直接省略。
-     * 這裡回傳 null；若需要 messageKey，改成在自訂註解裡帶一個 key 屬性。
+     * 可以回傳給前端的約束屬性名稱（白名單）。
+     *
+     * <p>★ 刻意<b>不含</b>：
+     * <ul>
+     *   <li>{@code regexp} / {@code flags}（{@code @Pattern}）——
+     *       洩漏內部規則，而且對前端沒有用（前端不該重新實作我們的 regex）。</li>
+     *   <li>{@code message} / {@code groups} / {@code payload}（框架內部屬性）。</li>
+     *   <li>自訂約束的屬性 —— 預設不曝光。要曝光就明確加進這個集合。</li>
+     * </ul>
      */
-    private String extractMessageKey(FieldError fe) {
-        return null;
-    }
+    private static final Set<String> EXPOSED_ATTRIBUTES =
+            Set.of("min", "max", "value", "inclusive", "integer", "fraction");
 
     /**
-     * 從 getArguments() 抽出約束參數（{min}、{max}、{value}…）。
-     * Spring 的 arguments[0] 是欄位名的 resolvable，之後才是約束值。
+     * 抽出約束參數（{@code min}、{@code max}、{@code value}…）給前端做客戶端驗證。
+     *
+     * <p>★★ 為什麼<b>不</b>用 {@code fe.getArguments()} 的位置索引 ——
+     * 這是一個很容易寫錯而且沒有任何警告的地方。
+     *
+     * <p>{@code SpringValidatorAdapter.getArgumentsForConstraint()} 的實作是：
+     * <pre>
+     * arguments.add(getResolvableField(objectName, field));   // args[0]
+     * Map&lt;String, Object&gt; attributesToExpose = new TreeMap&lt;&gt;();   // ★ TreeMap
+     * descriptor.getAttributes().forEach((name, value) -&gt; {
+     *     if (!internalAnnotationAttributes.contains(name)) {   // message/groups/payload
+     *         if (value instanceof String) value = new ResolvableAttribute(value.toString());
+     *         attributesToExpose.put(name, value);
+     *     }
+     * });
+     * arguments.addAll(attributesToExpose.values());            // ★ 依【屬性名的字母順序】
+     * </pre>
+     *
+     * <p>⚠️⚠️ <b>「依屬性名的字母順序」</b>就是陷阱所在：
+     *
+     * <table>
+     *   <tr><th>約束</th><th>屬性（宣告順序）</th><th>實際的 args 順序（字母序）</th></tr>
+     *   <tr><td>{@code @Size}</td><td>min, max</td><td>args[1]=<b>max</b>, args[2]=<b>min</b></td></tr>
+     *   <tr><td>{@code @Digits}</td><td>integer, fraction</td>
+     *       <td>args[1]=<b>fraction</b>, args[2]=<b>integer</b> ★ 與直覺相反</td></tr>
+     *   <tr><td>{@code @DecimalMin}</td><td>value, inclusive</td>
+     *       <td>args[1]=<b>inclusive</b>（Boolean！）, args[2]=value</td></tr>
+     * </table>
+     *
+     * <p>寫錯的後果是<b>靜默的</b>：{@code @Digits(integer=12, fraction=2)} 會回傳
+     * {@code {"integer": 2, "fraction": 12}}，而前端照著做客戶端驗證就會擋掉合法的金額。
+     * 而 {@code @DecimalMin} 那一列更糟：{@code args[1]} 是 Boolean，
+     * 型別檢查直接讓整個 constraint map 變成 null。
+     *
+     * <p>★★ <b>所以這裡改成從 {@code ConstraintViolation} 讀屬性 ——「依名字」而不是「依位置」。</b>
+     * {@code SpringValidatorAdapter} 產生的 {@code FieldError} 是
+     * {@code ViolationFieldError}，它支援 {@code unwrap(ConstraintViolation.class)}。
      */
     private Map<String, Object> extractConstraint(FieldError fe) {
-        Object[] args = fe.getArguments();
-        if (args == null || args.length <= 1) return null;
-
-        Map<String, Object> m = new LinkedHashMap<>();
         String code = fe.getCode();
-        if (code == null) return null;
+        if (code == null || fe.isBindingFailure()) return null;
 
-        // Spring 對常見約束的 arguments 順序：[fieldResolvable, max, min]（Size）
-        switch (code) {
-            case "Size", "Length" -> {
-                putIfNumber(m, "max", value(args, 1));
-                putIfNumber(m, "min", value(args, 2));
-            }
-            case "Min", "DecimalMin" -> putIfNumber(m, "min", value(args, 1));
-            case "Max", "DecimalMax" -> putIfNumber(m, "max", value(args, 1));
-            case "Digits" -> {
-                putIfNumber(m, "integer", value(args, 1));
-                putIfNumber(m, "fraction", value(args, 2));
-            }
-            // ⚠️ Pattern 的 regexp 刻意不回傳：洩漏內部規則且對前端沒用
-            default -> { return null; }
+        ConstraintViolation<?> violation;
+        try {
+            violation = fe.unwrap(ConstraintViolation.class);
         }
+        catch (IllegalArgumentException e) {
+            // ★ 不是 Bean Validation 產生的錯誤（例如 rejectValue() 手動加的）→ 沒有約束屬性
+            return null;
+        }
+
+        Map<String, Object> attributes = violation.getConstraintDescriptor().getAttributes();
+        Map<String, Object> m = new LinkedHashMap<>();
+
+        attributes.forEach((name, value) -> {
+            if (!EXPOSED_ATTRIBUTES.contains(name)) return;
+            // ★ @Min/@Max/@DecimalMin/@DecimalMax 的屬性都叫 value ——
+            //   換成前端看得懂的 min / max
+            String key = switch (name) {
+                case "value" -> code.endsWith("Min") ? "min"
+                              : code.endsWith("Max") ? "max"
+                              : "value";
+                default -> name;
+            };
+            putSimple(m, key, value);
+        });
+
+        // ⚠️ inclusive 是 true 時不用回傳（那是預設值，只是噪音）
+        if (Boolean.TRUE.equals(m.get("inclusive"))) m.remove("inclusive");
+
         return m.isEmpty() ? null : m;
     }
 
-    private Object value(Object[] args, int idx) {
-        return (idx < args.length) ? args[idx] : null;
+    /**
+     * 只放「JSON 表達得出來而且對前端有意義」的值。
+     *
+     * <p>⚠️ {@code @DecimalMin("0.01")} 的 {@code value} 是 {@code String}，
+     * 而 {@code @Min(1)} 的是 {@code long} —— 兩種都要接受。
+     */
+    private void putSimple(Map<String, Object> m, String key, Object v) {
+        if (v instanceof Number || v instanceof Boolean || v instanceof CharSequence) {
+            m.put(key, (v instanceof CharSequence cs) ? cs.toString() : v);
+        }
     }
 
-    private void putIfNumber(Map<String, Object> m, String key, Object v) {
-        if (v instanceof Number n) m.put(key, n);
-        else if (v instanceof String s) m.put(key, s);
+    // ── 來源 C：HandlerMethodValidationException（Spring 6.1 內建方法驗證）──
+
+    /**
+     * 處理方法參數上的約束違反（2.3.2 的路徑 C）。
+     *
+     * <p>{@code HandlerMethodValidationException} 的結構和另外兩種完全不同：
+     * 它是「每個方法參數一組錯誤」，而不是「一個 BindingResult」。
+     *
+     * <p>兩種參數要分開處理：
+     * <ul>
+     *   <li>{@code ParameterErrors}（參數本身是 {@code @Valid} 的物件）
+     *       → 它繼承 {@code ParameterValidationResult} 並實作 {@link Errors}
+     *       （⚠️ <b>不是</b> {@link BindingResult}），所以 {@link #from} 的參數
+     *       型別必須宣告成 {@code Errors} 才能直接重用。</li>
+     *   <li>一般參數（{@code @PathVariable @Size(max=64) String}）
+     *       → 沒有 field 名稱，要從 {@code MethodParameter} 取。</li>
+     * </ul>
+     */
+    public List<FieldViolation> fromHandlerMethod(HandlerMethodValidationException ex) {
+        List<FieldViolation> result = new ArrayList<>();
+
+        for (ParameterValidationResult parameterResult : ex.getAllValidationResults()) {
+
+            // 情況 1：參數是 @Valid 的物件 → 有完整的欄位路徑
+            if (parameterResult instanceof ParameterErrors parameterErrors) {
+                result.addAll(from(parameterErrors));
+                continue;
+            }
+
+            // 情況 2：一般參數（@PathVariable / @RequestParam / @RequestHeader 上的約束）
+            String field = resolveParameterName(parameterResult.getMethodParameter());
+            Object rejected = maskIfSensitive(field, parameterResult.getArgument());
+
+            for (MessageSourceResolvable resolvable : parameterResult.getResolvableErrors()) {
+                result.add(new FieldViolation(
+                        field,
+                        constraintCodeOf(resolvable),
+                        resolveMessage(resolvable),
+                        rejected,
+                        null));
+            }
+        }
+
+        return result.stream()
+                .sorted(Comparator.comparing(FieldViolation::field,
+                        Comparator.nullsLast(Comparator.naturalOrder())))
+                .limit(MAX_ERRORS)
+                .toList();
     }
 
-    // ── 來源 C：ConstraintViolationException ────────────────────────────
+    /**
+     * 參數名稱。
+     *
+     * <p>⚠️ 需要 {@code -parameters} 編譯選項（01 章 1.4.1），
+     * 否則 {@code getParameterName()} 是 {@code null} —— 那時退回 {@code argN}，
+     * 前端無法定位，但至少不會 NPE。
+     */
+    private String resolveParameterName(MethodParameter parameter) {
+        String name = parameter.getParameterName();
+        return (name != null) ? name : "arg" + parameter.getParameterIndex();
+    }
 
-    public List<FieldErrorDto> fromViolations(Set<? extends ConstraintViolation<?>> violations) {
+    /**
+     * 從 resolvable 的 codes 取出約束名稱。
+     *
+     * <p>Spring 產生的 code 陣列第一個是最具體的
+     * （例如 {@code Size.orderId}），最後一個是約束名（{@code Size}）——
+     * 我們要的是後者（機器可讀、穩定）。
+     */
+    private String constraintCodeOf(MessageSourceResolvable resolvable) {
+        String[] codes = resolvable.getCodes();
+        if (codes == null || codes.length == 0) return "Invalid";
+        return codes[codes.length - 1];
+    }
+
+    /** 解析 resolvable 的訊息（走 MessageSource，所以會是中文）。 */
+    private String resolveMessage(MessageSourceResolvable resolvable) {
+        try {
+            return messageSource.getMessage(resolvable, LocaleContextHolder.getLocale());
+        } catch (Exception e) {
+            String fallback = resolvable.getDefaultMessage();
+            return (fallback == null || fallback.isBlank()) ? "資料不正確" : fallback;
+        }
+    }
+
+    // ── 來源 D：ConstraintViolationException ────────────────────────────
+
+    public List<FieldViolation> fromViolations(Set<? extends ConstraintViolation<?>> violations) {
         return violations.stream()
-                .map(v -> new FieldErrorDto(
+                .map(v -> new FieldViolation(
                         normalizePath(v.getPropertyPath().toString()),
                         v.getConstraintDescriptor().getAnnotation()
                                 .annotationType().getSimpleName(),
                         v.getMessage(),
-                        null,
                         maskIfSensitive(v.getPropertyPath().toString(), v.getInvalidValue()),
                         null))
-                .sorted(Comparator.comparing(FieldErrorDto::field))
+                .sorted(Comparator.comparing(FieldViolation::field,
+                        Comparator.nullsLast(Comparator.naturalOrder())))
                 .limit(MAX_ERRORS)
                 .toList();
     }
@@ -2549,17 +2798,17 @@ if (!productService.exists(request.items().get(0).productId())) {
 
 ```java
 // Service 裡（05-service 會實作）
-List<FieldErrorDto> errors = new ArrayList<>();
+List<FieldViolation> errors = new ArrayList<>();
 Map<String, Product> products = productRepository.findAllById(productIds);
 
 for (int i = 0; i < cmd.lines().size(); i++) {
     var line = cmd.lines().get(i);
     Product p = products.get(line.productId());
     if (p == null) {
-        errors.add(FieldErrorDto.of("items[" + i + "].productId",
+        errors.add(FieldViolation.of("items[" + i + "].productId",
                 "PRODUCT_NOT_FOUND", "商品不存在", line.productId()));
     } else if (p.isDiscontinued()) {
-        errors.add(FieldErrorDto.of("items[" + i + "].productId",
+        errors.add(FieldViolation.of("items[" + i + "].productId",
                 "PRODUCT_DISCONTINUED", "商品已下架", line.productId()));
     }
 }
@@ -2811,6 +3060,10 @@ public record ApiLimitProperties(
     @Min(1) @Max(500)
     int maxPageSize,
 
+    /** 客戶端沒指定 size 時用的值。★ 04 章 4.8.2 的深分頁計算需要它。 */
+    @Min(1) @Max(500)
+    int defaultPageSize,
+
     @Min(100) @Max(1_000_000)
     int maxOffset,
 
@@ -2832,12 +3085,20 @@ public record ApiLimitProperties(
     public ApiLimitProperties {
         // 提供預設值，讓 application.yml 可以只覆寫部分
         if (maxPageSize == 0)          maxPageSize = 100;
+        if (defaultPageSize == 0)      defaultPageSize = 20;
         if (maxOffset == 0)            maxOffset = 10_000;
         if (maxRequestBodyBytes == 0)  maxRequestBodyBytes = 1024 * 1024;
         if (maxJsonDepth == 0)         maxJsonDepth = 20;
         if (maxOrderItems == 0)        maxOrderItems = 50;
         if (maxValidationErrors == 0)  maxValidationErrors = 20;
         if (maxMultiValueParams == 0)  maxMultiValueParams = 20;
+
+        // ★ 跨欄位一致性：設定檔打錯也要在啟動時失敗，而不是執行時才怪
+        if (defaultPageSize > maxPageSize) {
+            throw new IllegalArgumentException(
+                    "api.limits.default-page-size (%d) 不可大於 max-page-size (%d)"
+                            .formatted(defaultPageSize, maxPageSize));
+        }
     }
 }
 ```
@@ -2846,6 +3107,7 @@ public record ApiLimitProperties(
 api:
   limits:
     max-page-size: 100
+    default-page-size: 20
     max-offset: 10000
     max-request-body-bytes: 1048576      # 1 MB
     max-json-depth: 20
@@ -4614,7 +4876,7 @@ private static JsonNullable<String> normalizeEmptyToNull(JsonNullable<String> v)
 - [ ] 我知道 `@Min` / `@Max` 不支援 `float` / `double`，也知道這是金額不能用 `double` 的另一個理由。
 - [ ] 我知道 `@Digits` 的必要性（沒有它金額精度會靜默不一致）。
 - [ ] 我知道 `@Size` 數的是 UTF-16 code unit，emoji 會被誤判，也知道 `@TextLength` 的做法。
-- [ ] 我知道自訂約束的 `@Target` 必須包含 `RECORD_COMPONENT`。
+- [ ] 我知道自訂約束的 `@Target` 要包含 `RECORD_COMPONENT`，而**理由是「反射掃描讀得到」而不是「不然編譯不過」**（2.7.1）。
 - [ ] 我知道 `@Past` / `@Future` 的時區坑（每天有 8 小時窗口會誤判）。
 - [ ] 我能識別 ReDoS 的危險模式（巢狀量詞），也會寫一個計時測試守住它。
 - [ ] 我知道 `@Size` 和 `@Pattern` 之間**沒有**執行順序保證，要順序得用 `@GroupSequence`。

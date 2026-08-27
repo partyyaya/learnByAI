@@ -175,18 +175,51 @@ OrderEventStreamController      GET /orders/{id}/events （SSE）
 | `method` | **405** + `Allow` header | 路由 |
 | `consumes` | **415** Unsupported Media Type | 比對請求的 `Content-Type` |
 | `produces` | **406** Not Acceptable | 比對請求的 `Accept` |
-| `params` | 404 | 同路徑不同參數分派到不同方法 |
+| `params` | **400** `UnsatisfiedServletRequestParameterException` | 同路徑不同參數分派到不同方法 |
 | `headers` | 404 | header 版本控管（03-rest-api 第 06 章） |
 
-⚠️ **`params` 與 `headers` 不符合時回 404，不是 400。** 這常讓人困惑：
+⚠️ **`params` 與 `headers` 不符合時的行為【不一樣】，而這個差別很少有人知道**：
 
 ```java
 @GetMapping(params = "cursor")     public ... byCursor(...) { }
 @GetMapping(params = "page")       public ... byPage(...) { }
 ```
 
-客戶端送 `GET /orders`（兩個參數都沒帶）→ **404**，而不是「請提供 page 或 cursor」。
-因為對 Spring 來說「沒有任何 handler 能處理這個請求」就是 404。
+客戶端送 `GET /orders`（兩個參數都沒帶）→ **400**，而不是 404，也不是
+「請提供 page 或 cursor」。
+
+**機制**：`RequestMappingInfoHandlerMapping.handleNoMatch()` 會做「部分比對」——
+
+```java
+// RequestMappingInfoHandlerMapping.handleNoMatch()（節錄、簡化）
+PartialMatchHelper helper = new PartialMatchHelper(infos, request);
+if (helper.isEmpty()) return null;                       // → 404
+
+if (helper.hasMethodsMismatch())  throw new HttpRequestMethodNotSupportedException(...);   // 405
+if (helper.hasConsumesMismatch()) throw new HttpMediaTypeNotSupportedException(...);       // 415
+if (helper.hasProducesMismatch()) throw new HttpMediaTypeNotAcceptableException(...);      // 406
+if (helper.hasParamsMismatch()) {
+    throw new UnsatisfiedServletRequestParameterException(                                 // ★ 400
+            helper.getParamConditions(), request.getParameterMap());
+}
+return null;                                             // 其他（含 headers 不符）→ 404
+```
+
+**所以**：
+
+| 只有這一項不符 | 結果 |
+|---|---|
+| `method` | 405 |
+| `consumes` | 415 |
+| `produces` | 406 |
+| **`params`** | **400** ★ `handleNoMatch` 有專門的分支 |
+| **`headers`** | **404** ★ `handleNoMatch` **沒有** headers 的分支，落到 `return null` |
+
+⚠️ **`UnsatisfiedServletRequestParameterException` 是一個很容易漏掉的例外**：
+它是 `ServletRequestBindingException` 的子類別，所以
+`ResponseEntityExceptionHandler` 會處理它（回 400）——
+但**它的預設回應沒有告訴客戶端「缺哪一個參數」**。
+03 章 3.5.2 有它的專屬 handler（會把 `getParamConditions()` 放進 `errors[]`）。
 
 👉 **解法**：一定要有一個「不帶 params 條件」的 fallback 方法，或不要用 `params` 分派。
 shop-service 的選擇是**不用 `params` 分派**，改成一個方法內部判斷（見 1.7.4）。
@@ -676,22 +709,24 @@ OpenAPI 也無法描述。分成兩個方法。
 
 | 宣告 | 客戶端沒送 | 客戶端送 `?x=` （空值） | 客戶端送 `?x=5` |
 |---|---|---|---|
-| `@RequestParam("x") Integer x` | **400** `MissingServletRequestParameterException` | **400**（空字串轉 Integer 失敗） | `5` |
+| `@RequestParam("x") Integer x` | **400** `MissingServletRequestParameterException` | **400** ★ 見下方 ⑤ | `5` |
 | `@RequestParam(name="x", required=false) Integer x` | `null` | `null` ⚠️ | `5` |
-| `@RequestParam(name="x", defaultValue="20") Integer x` | `20` | **`20`** ⚠️ | `5` |
+| `@RequestParam(name="x", defaultValue="20") Integer x` | `20` | **`20`** ★ 見下方 ③ | `5` |
 | `@RequestParam("x") Optional<Integer> x` | `Optional.empty()` | `Optional.empty()` | `Optional.of(5)` |
+| `@RequestParam(name="x", required=false) String x` | `null` | **`""`** ⚠️ 見下方 ③ | `"5"` |
 | `@RequestParam(name="x", required=false) int x` | 💥 **500** | 💥 **500** | `5` |
+| `@RequestParam(name="x", required=false) boolean x` | **`false`** ★ 見下方 ② | 💥 **500** | — |
 | `@RequestParam(name="x", defaultValue="20") int x` | `20` | `20` | `5` |
 
-**四個要記住的點：**
+**六個要記住的點：**
 
 **① `defaultValue` 隱含 `required = false`。** 寫了 `defaultValue` 就不用寫 `required=false`
 （寫了也沒用，`defaultValue` 優先）。
 
-**② `required = false` + 原生型別（`int` / `long` / `boolean`）= 500。** ★
+**② `required = false` + 原生型別 = 500 —— 但 `boolean` 是例外。** ★★
 
 ```java
-@RequestParam(name = "page", required = false) int page      // 💥
+@RequestParam(name = "page", required = false) int page      // 💥 500
 ```
 
 ```
@@ -702,34 +737,131 @@ Consider declaring it as object wrapper for the corresponding primitive type.
 
 **這是 500，不是 400。** 也就是說：客戶端一個很正常的請求（沒帶可選參數）
 會讓你的服務噴 500、進 error log、觸發告警。
-
 而且**它在開發時看不出來** —— 因為你測試時一定會帶 `?page=0`。
 
-👉 **規則：`@RequestParam` 一律用包裝型別（`Integer` / `Long` / `Boolean`），
-或一定給 `defaultValue`。**
+⚠️ **但 `boolean` 不會 500，它會安靜地變成 `false`**：
 
-**③ 空字串會通過 `required` 檢查，但可能在型別轉換時炸。**
-
-```
-GET /orders?size=          ← 空字串
-@RequestParam(name="size", required=false) Integer size
-→ Spring 的 StringToNumberConverterFactory 對空字串回傳 null → size = null ✅
-```
-
-但：
-
-```
-GET /orders?status=        ← 空字串
-@RequestParam(name="status", required=false) OrderStatus status
-→ StringToEnumConverterFactory 對空字串回傳 null → status = null ✅
+```java
+// AbstractNamedValueMethodArgumentResolver.handleNullValue()
+private Object handleNullValue(String name, Object value, Class<?> paramType) {
+    if (value == null) {
+        if (Boolean.TYPE.equals(paramType)) {
+            return Boolean.FALSE;                 // ★★ boolean 有特例
+        }
+        else if (paramType.isPrimitive()) {
+            throw new IllegalStateException("Optional " + paramType.getSimpleName() + ...);
+        }
+    }
+    return value;
+}
 ```
 
-⚠️ **Spring 對空字串的處理是「轉成 null」，這是 `WebDataBinder` 的
-`emptyAsNull` 行為（`ConversionService` 的 converter 各自實作）。**
-大部分內建 converter 都這樣做，所以通常沒事。
-但**自訂 Converter 要自己處理空字串**，否則 `?cursor=` 會拋例外變 500（見 1.9.4）。
+**而「安靜地變成 `false`」比 500 更危險**：
 
-**④ `Optional<T>` 是最安全但最囉唆的寫法。**
+```java
+// 🔴 客戶端沒送 includeCancelled → false → 使用者以為看到全部訂單
+@RequestParam(name = "includeCancelled", required = false) boolean includeCancelled
+```
+
+`false` 是一個**看起來合理的預設值**，所以沒有人會發現「這個參數其實沒生效」。
+這是 4.2.3「靜默篩選」那一類災難的同一個形狀。
+
+⚠️⚠️ **而 `?x=`（空字串）+ `boolean` 反而會 500** ——
+因為那條路徑不經過 `handleNullValue`：`""` 先進 `ConversionService`
+（回 `null`），然後在反射呼叫時因為原始型別不接受 `null` 而拋
+`IllegalStateException`。
+**所以同一個宣告，「沒送」是 `false`、「送空的」是 500。**
+
+👉 **規則：`@RequestParam` 一律用包裝型別（`Integer` / `Long` / `Boolean`）
+並明確給 `defaultValue`。原始型別（含 `boolean`）不要用。**
+
+**③ 空字串的處理有三種結果，取決於「有沒有 `defaultValue`」與「型別」。** ★★
+
+先看解析器的原始碼 —— 這一段解釋了表格裡所有的空字串欄位：
+
+```java
+// AbstractNamedValueMethodArgumentResolver.resolveArgument()（節錄）
+Object arg = resolveName(resolvedName.toString(), nestedParameter, webRequest);
+if (arg == null) {
+    if (namedValueInfo.defaultValue != null) {                     // ① 參數缺席 + 有預設值
+        arg = resolveEmbeddedValuesAndExpressions(namedValueInfo.defaultValue);
+    }
+    else if (namedValueInfo.required && !nestedParameter.isOptional()) {
+        handleMissingValue(namedValueInfo.name, nestedParameter, webRequest);   // → 400
+    }
+    arg = handleNullValue(namedValueInfo.name, arg, nestedParameter.getNestedParameterType());
+}
+else if ("".equals(arg) && namedValueInfo.defaultValue != null) {   // ★★ ② 空字串 + 有預設值
+    arg = resolveEmbeddedValuesAndExpressions(namedValueInfo.defaultValue);
+}
+
+// ── 之後才做型別轉換 ──────────────────────────────────────────
+arg = binder.convertIfNecessary(arg, parameter.getParameterType(), parameter);
+
+// ★ 轉換後【又】檢查一次 required —— 這是「?x= 對 required 參數回 400」的原因
+if (arg == null && namedValueInfo.defaultValue == null
+        && namedValueInfo.required && !nestedParameter.isOptional()) {
+    handleMissingValueAfterConversion(namedValueInfo.name, nestedParameter, webRequest);
+}
+```
+
+**三種結果**：
+
+| 情況 | 結果 | 為什麼 |
+|---|---|---|
+| `?size=` + `defaultValue="20"` | **`20`** | 走上面的分支 ②，**在轉型之前**就被換成 `"20"` |
+| `?size=` + `required=false` `Integer` | `null` | `StringToNumberConverterFactory` 對空字串回 `null` |
+| **`?keyword=` + `required=false` `String`** | **`""`** ⚠️ | **字串不需要轉換，所以 `""` 原封不動地傳進來** |
+
+⚠️⚠️ **最後一列是實務上最常出錯的一個**：
+
+```java
+// 🔴 ?keyword= 會讓 keyword 是 ""，而不是 null
+@RequestParam(name = "keyword", required = false) String keyword
+...
+if (keyword != null) {                       // 🔴 "" != null → 條件成立
+    sql.append(" AND name LIKE '%").append(keyword).append("%'");
+}
+// → WHERE name LIKE '%%' → 全表掃描，而且看起來「有在篩選」
+```
+
+👉 **所以 shop-service 的字串參數一律綁成物件，並在 compact constructor 裡
+`trimToNull()`（1.7.2）** —— 那讓「空字串」與「沒送」在進入業務邏輯前就統一。
+
+**④ 自訂 Converter 必須自己處理空字串。**
+
+內建的 converter（`StringToNumber`、`StringToEnum`…）都對空字串回 `null`，
+所以通常沒事。**但你自己寫的不會自動有這個行為**：
+
+```java
+// 🔴 ?cursor= 會拋例外 → 500
+@Override
+public Cursor convert(String source) {
+    return Cursor.decode(source);            // Base64 解碼空字串 → 例外
+}
+
+// ✅ 第一行就處理
+@Override
+public Cursor convert(String source) {
+    if (source == null || source.isBlank()) return null;
+    return Cursor.decode(source);
+}
+```
+
+見 1.9.4 的完整版。
+
+**⑤ `required = true` 遇到空字串是 400，但錯誤訊息會誤導。**
+
+`?x=` + `@RequestParam("x") Integer x` → 空字串轉成 `null` →
+**轉換後的第二次 `required` 檢查**拋 `MissingServletRequestParameterException` →
+訊息是「**Required parameter 'x' is not present**」。
+
+⚠️ **而客戶端明明送了 `x`。** 這個訊息會讓對方一直檢查「我有沒有送」，
+而真正的問題是「送了空的」。
+👉 03 章 3.5.2 的 handler 會在 `errors[]` 裡補上
+`"rejectedValue": ""`，讓這件事看得出來。
+
+**⑥ `Optional<T>` 是最安全但最囉唆的寫法。**
 
 ```java
 @RequestParam("keyword") Optional<String> keyword
@@ -1257,7 +1389,6 @@ package example.shop.order.web.dto;
 
 import example.shop.common.validation.SortWhitelist;
 import jakarta.validation.constraints.*;
-import org.springframework.format.annotation.DateTimeFormat;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -1292,10 +1423,10 @@ public record OrderFilter(
 
     List<@Size(max = 64) String> customerId,
 
-    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
+    // ⚠️ 刻意【沒有】@DateTimeFormat —— 它對 Instant 完全無效（1.9.3）。
+    //    Instant 的解析由 06 章 6.6.1 的 StringToInstantConverter 負責。
     Instant createdFrom,
 
-    @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
     Instant createdTo,
 
     @DecimalMin(value = "0", message = "金額不可為負") 
@@ -1454,7 +1585,7 @@ public class OrderFilter {
 
 03-rest-api 第 05 章的規格：`GET /orders` 同時支援 offset 與 cursor 分頁。
 
-**不要用 `params` 分派**（1.3.2 說過會回 404）：
+**不要用 `params` 分派**（1.3.2 說過會回 **400** `UnsatisfiedServletRequestParameterException`）：
 
 ```java
 // ❌
@@ -1932,17 +2063,68 @@ public class WebMvcConfig implements WebMvcConfigurer {
 
 ```java
 @RequestParam(name = "createdFrom", required = false)
-@DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME)
-Instant createdFrom
+Instant createdFrom                                  // ★ 不需要 @DateTimeFormat
 ```
 
-| `ISO` 值 | 格式 | 例子 |
-|---|---|---|
-| `DATE` | `yyyy-MM-dd` | `2026-08-20` |
-| `TIME` | `HH:mm:ss.SSSXXX` | `06:12:44Z` |
-| `DATE_TIME` | ISO-8601 完整 | `2026-08-20T06:12:44Z` |
+| `ISO` 值 | 格式 | 例子 | 適用型別 |
+|---|---|---|---|
+| `DATE` | `yyyy-MM-dd` | `2026-08-20` | `LocalDate`、`java.util.Date` |
+| `TIME` | `HH:mm:ss.SSSXXX` | `06:12:44Z` | `LocalTime`、`OffsetTime` |
+| `DATE_TIME` | ISO-8601 完整 | `2026-08-20T06:12:44Z` | `LocalDateTime`、`OffsetDateTime`、`ZonedDateTime` |
 
-⚠️ **`Instant` 需要帶時區資訊。** `?createdFrom=2026-08-20T06:12:44`（沒有 `Z`）會失敗。
+> ### ⚠️⚠️ `@DateTimeFormat` 對 `Instant` 是**沒有作用**的 ★★
+>
+> 這是一個很多人（包含本課程早期的版本）寫錯的地方。
+>
+> `@DateTimeFormat` 由 `Jsr310DateTimeFormatAnnotationFormatterFactory` 處理，
+> 而它的 `getFieldTypes()` 明確列出支援的型別：
+>
+> ```java
+> // Jsr310DateTimeFormatAnnotationFormatterFactory
+> private static final Set<Class<?>> FIELD_TYPES = Set.of(
+>         LocalDate.class, LocalTime.class, LocalDateTime.class,
+>         ZonedDateTime.class, OffsetDateTime.class, OffsetTime.class,
+>         YearMonth.class, MonthDay.class);
+> //  ★★ 沒有 Instant.class
+> ```
+>
+> **所以 `@DateTimeFormat` 標在 `Instant` 上會被完全忽略** ——
+> 不會報錯、不會警告，`iso = ISO.DATE` 也一樣沒效果。
+>
+> 真正處理 `Instant` 的是 `DateTimeFormatterRegistrar` 註冊的
+> **`InstantFormatter`**，它的規則是固定的：
+>
+> ```java
+> // org.springframework.format.datetime.standard.InstantFormatter
+> public Instant parse(String text, Locale locale) {
+>     if (text.length() > 0 && Character.isAlphabetic(text.charAt(0))) {
+>         // 支援 RFC-1123（"Tue, 3 Jun 2008 11:05:30 GMT"）—— HTTP header 用的格式
+>         return Instant.from(DateTimeFormatter.RFC_1123_DATE_TIME.parse(text));
+>     }
+>     return Instant.parse(text);              // ★ 其餘一律 Instant.parse（嚴格 ISO-8601）
+> }
+> ```
+>
+> **三個實務結論**：
+>
+> | | |
+> |---|---|
+> | `Instant` 參數**不要**標 `@DateTimeFormat` | 它是噪音，會讓讀者以為格式可以調 |
+> | `Instant` 的可接受格式**不可調整** | 想要寬容（接受 `+08:00`、epoch 秒）就要**自己註冊 Converter** —— 見 06 章 6.6.1 的 `StringToInstantConverter` |
+> | 想用 `@DateTimeFormat` 控制格式 | 型別要改成 `OffsetDateTime` 或 `LocalDateTime` |
+
+⚠️ **`Instant.parse()` 需要帶時區資訊。**
+`?createdFrom=2026-08-20T06:12:44`（沒有 `Z`）會拋
+`DateTimeParseException` → `MethodArgumentTypeMismatchException` → **400**。
+
+⚠️ **而 `Instant.parse()` 也不接受 `2026-08-20T14:12:44+08:00`**（JDK 11 之前）。
+JDK 12+ 開始 `Instant.parse` 接受帶偏移的寫法並轉成 UTC，
+**但 `2026-08-20`（只有日期）永遠不接受** ——
+而那正是前端最常送的東西。
+👉 **所以 shop-service 註冊了 06 章 6.6.1 的 `StringToInstantConverter`**，
+它同時接受 `2026-08-20`、`2026-08-20T06:12:44Z`、`+08:00` 與 epoch 毫秒，
+並且**與 Jackson 的反序列化共用同一個解析函式**（那是 6.6.1 的重點）。
+
 如果要接受「本地時間」，用 `LocalDateTime` 然後在程式裡明確指定時區
 （03-rest-api 第 03 章 3.6：**時間一律 UTC ISO-8601**）。
 
@@ -2676,6 +2858,343 @@ public ResponseEntity<OrderDetail> get(
 **shop-service 的規則**：所有 `@PathVariable` 加 `@Size(max = 64)`。
 用 1.4.3 的路徑正規表示式也可以，但註解版的錯誤訊息更好（422 而不是 404）。
 
+### 1.12.5 支援型別：前面用到但還沒定義的東西
+
+這一節補上前面幾節出現過、但還沒給出完整定義的型別。
+**它們會被 02～07 章一路用下去**，所以放在這裡而不是散在各節。
+
+**① `CreateOrderResponse`：`POST /orders` 的回應**
+
+```java
+package example.shop.order.web.dto;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import java.time.Instant;
+import java.util.List;
+
+/**
+ * 下單成功的回應。
+ *
+ * <p>★★ 一個重要的設計決定：**它不等於 {@code OrderDetail}**。
+ *
+ * <p>三個理由：
+ * <ol>
+ *   <li><b>剛建立的訂單沒有 {@code shippedAt}、{@code cancelledAt}</b> ——
+ *       把它們放進來只會是一堆 null。</li>
+ *   <li><b>建立的回應要小</b> —— 客戶端拿到 201 之後通常會轉頁，
+ *       完整明細由 {@code GET /orders/&#123;id&#125;} 取得
+ *       （而那一次可以被 ETag 快取，06 章 6.8）。</li>
+ *   <li><b>兩者的演化速度不同</b> —— {@code OrderDetail} 會一直加欄位，
+ *       而建立的回應應該保持穩定。共用一個 record 會讓
+ *       「加一個明細欄位」變成「改了建立的契約」。</li>
+ * </ol>
+ *
+ * <p>⚠️ 反例：很多專案讓 POST 直接回傳完整的 detail。
+ *    那在第一年很方便，第三年會變成「不敢改 OrderDetail」——
+ *    因為它同時是三個端點的回應。
+ */
+public record CreateOrderResponse(
+
+    /** 訂單 ID（ULID，1.4.3）。也在 {@code Location} 標頭裡。 */
+    String orderId,
+
+    /** 給人看的訂單編號，格式 {@code ORD-yyyyMMdd-NNNN}。 */
+    String orderNumber,
+
+    /** 建立後的狀態。永遠是 {@code PENDING_PAYMENT}，但明確回傳讓客戶端不用假設。 */
+    OrderStatus status,
+
+    /** ★ 狀態的顯示文字 —— 讓「新增 enum 值」不是破壞性變更（06 章 6.5.8）。 */
+    String statusLabel,
+
+    /** ★ 金額用字串（06 章 6.5.7）。 */
+    String totalAmount,
+
+    /** ISO 4217。 */
+    String currency,
+
+    /** ★ 付款期限 —— 客戶端要用它顯示倒數計時。 */
+    Instant paymentDueAt,
+
+    /**
+     * ★ 下一步該做什麼（03-rest-api 4.10 的 action 設計）。
+     *
+     * <p>它讓客戶端不需要自己判斷「建立後要導去哪裡」——
+     * 而那個判斷會隨著付款方式增加而變複雜。
+     */
+    NextAction nextAction,
+
+    Instant createdAt
+
+) {
+    /** @param href 相對路徑；@param method HTTP 方法。 */
+    public record NextAction(String code, String href, String method) {
+
+        public static NextAction pay(String orderId) {
+            return new NextAction("PAY", "/orders/" + orderId + "/payments", "POST");
+        }
+    }
+
+    public CreateOrderResponse {
+        // ⚠️ 不做防禦性複製 —— 這個 record 沒有可變的元件。
+        //    如果之後加了 List 欄位，記得補 List.copyOf（3.6.2 的教訓）。
+    }
+}
+```
+
+⚠️ **`paymentDueAt` 用 `Instant` 而不是「剩餘秒數」**，
+理由是 06 章 6.5.6 的同一個：**絕對時間可以被快取、被重送、被記錄；
+相對時間一離開產生它的那一刻就錯了。**
+
+**② `CreateOrderCommand` / `CancelOrderCommand`：往下傳的命令**
+
+```java
+package example.shop.order.service.command;
+
+import example.shop.order.domain.Actor;
+import example.shop.order.domain.InvoiceType;
+
+import java.util.List;
+
+/**
+ * 下單的命令物件。
+ *
+ * <p>★★ 它與 {@code CreateOrderRequest}（02 章 2.12.1）的差別，
+ *    就是「Controller 到底做了什麼翻譯」的完整答案：
+ *
+ * <table>
+ *   <tr><th></th><th>CreateOrderRequest（HTTP）</th><th>CreateOrderCommand（Service）</th></tr>
+ *   <tr><td>巢狀型別</td><td>{@code Item} / {@code InvoiceRequest}（web.dto 套件）</td>
+ *       <td><b>{@code Line} / {@code InvoiceSpec}</b>（service.command 套件）</td></tr>
+ *   <tr><td>「誰在操作」</td><td>不在 body 裡（在 token 裡）</td><td><b>{@code Actor}</b>（04 章 4.10）</td></tr>
+ *   <tr><td>冪等鍵</td><td>在標頭裡</td><td><b>是一個欄位</b>（04 章 4.9）</td></tr>
+ *   <tr><td>數量</td><td>{@code Integer}（可為 null，讓 {@code @NotNull} 報錯）</td>
+ *       <td><b>{@code int}</b> —— 到這裡不可能是 null</td></tr>
+ *   <tr><td>驗證註解</td><td>有（02 章）</td><td><b>沒有</b> —— 進到這裡就代表格式已經對了</td></tr>
+ * </table>
+ *
+ * <p>★ 最後一列是關鍵：<b>Command 上不放 Bean Validation 註解</b>。
+ *    放了的話會有兩份規則，而它們一定會分岔。
+ *    Service 的前置條件用 {@code Objects.requireNonNull} 這種
+ *    「程式錯誤才會觸發」的斷言表達，不是用驗證。
+ *
+ * <p>⚠️ 為什麼不直接把 {@code CreateOrderRequest} 傳給 Service：
+ *    那會讓 Service 依賴 Web 層的型別 ——
+ *    於是排程、批次匯入、gRPC 入口都得先組一個「假的 HTTP 請求」。
+ *    （00 章 0.6.2 的完整論證。）
+ *
+ * <h3>★★ 這裡刻意「沒有」的三樣東西，每一個都是一個安全或正確性決定</h3>
+ *
+ * <table>
+ *   <tr><th>沒有</th><th>為什麼</th></tr>
+ *   <tr><td><b>任何金額欄位</b>（{@code unitPrice}、{@code totalAmount}）</td>
+ *       <td>★★ 價格<b>只能</b>由伺服器查商品目錄決定。讓客戶端送價格 =
+ *           把「我要用 1 元買 iPhone」變成一個合法的請求（00 章 0.6.2）。
+ *           <b>Command 上沒有這個欄位，那個漏洞就在型別上不可能存在。</b></td></tr>
+ *   <tr><td><b>展開的 {@code ShippingAddress} 物件</b></td>
+ *       <td>只有 {@code shippingAddressId}。Web 層<b>不查資料庫</b>（00 章 0.4），
+ *           所以它不可能把 ID 換成地址；而「這個地址是不是這個客戶的」
+ *           本身就是一個授權判斷，屬於 Service（07 章 7.9.5）。</td></tr>
+ *   <tr><td><b>{@code requestedDeliveryAt}</b></td>
+ *       <td>shop-service 的到貨日由物流方案決定，不由客戶端指定。
+ *           ⚠️ 如果哪天要加，它要同時出現在 Request、Command 與
+ *           {@code orders-api.yaml} —— 而 07 章 7.10.2 的契約測試會強迫這件事。</td></tr>
+ * </table>
+ *
+ * @param lines 訂單項目，至少一筆（{@code @NotEmpty} 已在 Request 上驗證過）
+ */
+public record CreateOrderCommand(
+    Actor actor,                       // ★★ 授權判斷的依據（07 章 7.2.1）
+    String idempotencyKey,             // ★ 04 章 4.9
+    List<Line> lines,
+    String shippingAddressId,          // ★ 只有 ID —— 見上方說明
+    String couponCode,                 // 可為 null
+    String customerNote,               // 可為 null
+    InvoiceSpec invoice                // 可為 null（沒開發票）
+) {
+    /**
+     * 一筆訂單項目。
+     *
+     * <p>★★ 只有「買什麼、買幾個」——<b>沒有價格</b>。
+     */
+    public record Line(String productId, int quantity) {}
+
+    /** 發票資訊。與 {@code CreateOrderRequest.InvoiceRequest} 一對一，只是換了套件。 */
+    public record InvoiceSpec(InvoiceType type, String taxId, String companyName,
+                              String carrierId, String donationCode) {}
+
+    public CreateOrderCommand {
+        lines = List.copyOf(lines);    // ★ 不可變
+    }
+}
+```
+
+⚠️ **這個 record 的欄位順序與 00 章 0.10.3 的 `OrderWebMapper.toCommand()` 一致**
+（`actor, idempotencyKey, lines, shippingAddressId, couponCode, customerNote, invoice`）。
+**七章之中只要有一處對不上，07 章 7.6.5 的 `ArgumentCaptor` 測試就編譯不過** ——
+那個測試存在的理由之一就是把這件事釘住。
+
+```java
+package example.shop.order.service.command;
+
+import example.shop.order.domain.Actor;
+
+/**
+ * 取消訂單的命令。
+ *
+ * <p>★ 注意它有 {@code actor} 但**沒有** {@code orderId} 以外的識別 ——
+ *    「這個 actor 有沒有資格取消這張訂單」是 Service 的判斷，
+ *    Controller 只負責把兩者都傳下去（07 章 7.9.5 的資源層級授權）。
+ */
+public record CancelOrderCommand(
+    String orderId,
+    CancelReason reason,
+    String note,                       // 可為 null，客服填的備註
+    Actor actor,
+    String idempotencyKey
+) {
+    /**
+     * ★ 取消原因是 enum 而不是自由文字。
+     *
+     * <p>理由：它會進報表（「這個月有多少人因為運費太貴取消」）。
+     *    自由文字的欄位在報表上只能做字串比對，而那永遠是錯的。
+     *
+     * <p>⚠️ 而 {@code OTHER} + {@code note} 是必要的逃生門 ——
+     *    沒有它的話，使用者會被迫在 8 個不符的選項裡亂選一個，
+     *    於是報表的數字比「沒有這個欄位」更糟（它看起來很精確）。
+     */
+    public enum CancelReason {
+        CHANGED_MIND, FOUND_CHEAPER, SHIPPING_TOO_SLOW, SHIPPING_FEE_TOO_HIGH,
+        WRONG_ITEM, DUPLICATE_ORDER, PAYMENT_ISSUE, OTHER
+    }
+}
+```
+
+**③ `InvalidSortFieldException`：排序白名單（1.10.3）**
+
+```java
+package example.shop.common.web;
+
+import example.shop.common.error.BusinessException;
+import example.shop.common.error.ErrorCode;
+import example.shop.common.web.DidYouMean;
+import example.shop.common.web.ValueMasker;
+
+import java.util.List;
+import java.util.Set;
+
+/**
+ * 排序欄位不在白名單裡。
+ *
+ * <p>★★ 為什麼它是 {@code FORBIDDEN_PARAMETER}（403）而不是 400：
+ *
+ * <p>因為「白名單」的語意是「這個欄位存在，但你不可以用它排序」——
+ * 例如 {@code internalCostPrice} 是一個真的欄位，
+ * 而讓客戶端用它排序等於**洩漏了成本的相對大小**
+ * （排序後就能二分搜尋出每個商品的成本排名）。
+ *
+ * <p>⚠️ 這是一個容易被忽略的資訊洩漏：
+ *    你沒有回傳那個欄位，但「允許用它排序」等價於回傳了它的順序。
+ *
+ * <p>而對「根本不存在的欄位」（打錯字），回 400 比較合理 ——
+ * 所以這個例外帶一個 {@code known} 旗標讓 advice 分辨。
+ */
+public class InvalidSortFieldException extends BusinessException {
+
+    public InvalidSortFieldException(String field, Set<String> allowed) {
+        super(knownButForbidden(field) ? ErrorCode.FORBIDDEN_PARAMETER
+                                       : ErrorCode.UNKNOWN_PARAMETER,
+              "Sort field is not allowed.",          // ★ detail 不含使用者輸入
+              null,
+              // ★ 用父類別的 ext() 建構擴充欄位 —— 03 章 3.5.2 的統一範式。
+              //   ⚠️ 不要覆寫 extensions()：那個 accessor 讀的是 final 欄位，
+              //      整個 codebase 一律走建構子這條路。
+              ext("parameter", "sort",
+                  // ★★ 一定要遮蔽 —— field 直接來自查詢參數（3.11.2、4.5.4）
+                  "value", ValueMasker.mask("sort", field),
+                  // ⚠️ 刻意**不**回傳完整白名單給匿名使用者 ——
+                  //    那等於免費告訴攻擊者有哪些欄位可以探測。
+                  //    只給「你打的這個字最接近哪一個」（03 章 3.9.4）。
+                  "didYouMean", DidYouMean.closest(field, List.copyOf(allowed))),
+              new Object[0],
+              List.of());
+    }
+
+    /** ★ 已知但禁止排序的欄位 —— 見上方 javadoc。 */
+    private static boolean knownButForbidden(String field) {
+        return SENSITIVE_SORT_FIELDS.contains(field);
+    }
+
+    private static final Set<String> SENSITIVE_SORT_FIELDS = Set.of(
+            "internalCostPrice", "margin", "supplierId", "customerLifetimeValue");
+}
+```
+
+⚠️ **`ValueMasker.mask("sort", field)` 這一層不可以省。**
+`field` 直接來自查詢參數，把它原封不動放進回應就是
+03 章 3.11.2 的反射式資訊洩漏（也可能是 log injection，04 章 4.5.4）。
+`ValueMasker.mask` 會截斷過長的值並對敏感欄位名回傳 `***`（3.9.5）。
+
+⚠️ **而 `detail` 裡刻意完全不含 `field`** ——
+03 章 3.11.2 的規則是「`detail` 給開發者看，但仍然會進日誌與 APM」，
+所以使用者輸入只放在**被遮蔽過的 extensions** 裡。
+
+**④ `InvalidWebhookSignatureException`：webhook 驗簽（1.6.6）**
+
+```java
+package example.shop.common.web;
+
+import example.shop.common.error.BusinessException;
+import example.shop.common.error.ErrorCode;
+
+/**
+ * webhook 的簽章驗證失敗。
+ *
+ * <p>★★ 三個刻意的設計：
+ *
+ * <p><b>① 沒有任何 extensions。</b>
+ * 不告訴對方「簽章長度不對」還是「時間戳過期」——
+ * 那是在幫攻擊者除錯。
+ *
+ * <p><b>② 用 {@code INVALID_TOKEN}（401）而不是 403。</b>
+ * 401 的語意是「你沒有提供有效的憑證」，而簽章就是憑證。
+ * 403 的語意是「憑證有效但權限不足」—— 不適用。
+ *
+ * <p><b>③ ⚠️ 它是 06 章 6.5.8「webhook 不要回 4xx」的一個例外。</b>
+ * 那一節說的是「**內容**看不懂時不要回 4xx，
+ * 否則對方（金流商）會停用整個 endpoint」。
+ * 但**簽章錯誤**必須回 401 —— 因為那代表
+ * 「這個請求不是對方送的」，而讓它靜默通過才是真正的危險。
+ *
+ * <p>判準：<b>「這個請求是不是對方送的」→ 4xx；
+ * 「對方送的東西我看不懂」→ 200 + 記錄 + 告警。</b>
+ */
+public class InvalidWebhookSignatureException extends BusinessException {
+
+    public InvalidWebhookSignatureException() {
+        // ⚠️ detail 是固定字串，不含任何請求內容
+        super(ErrorCode.INVALID_TOKEN, "Webhook signature verification failed.");
+    }
+}
+```
+
+⚠️ **驗簽的兩個必要條件，比例外本身重要**：
+
+| 條件 | 為什麼 |
+|---|---|
+| **用原始 bytes 比對**（1.6.6） | 反序列化再重新序列化會改變欄位順序與空白 |
+| **用 `MessageDigest.isEqual` 而不是 `equals`** | 常數時間比較，避免時序攻擊 |
+
+```java
+// 🔴 錯：String.equals 會在第一個不同的字元就返回 → 可以用時間差逐字元猜出簽章
+if (!expectedSignature.equals(providedSignature)) { ... }
+
+// ✅ 對：常數時間比較
+if (!java.security.MessageDigest.isEqual(
+        expectedSignature.getBytes(StandardCharsets.UTF_8),
+        providedSignature.getBytes(StandardCharsets.UTF_8))) { ... }
+```
+
 ---
 
 ## 1.13 常見誤區
@@ -2801,15 +3320,47 @@ enum ItemType { PHYSICAL, DIGITAL }
 | 3 | **400** | 列舉大小寫敏感 → `MethodArgumentTypeMismatchException`（1.9.2） |
 | 4 | `ABC/3/[a, b]/20/PHYSICAL` | 逗號自動切割 |
 | 5 | `ABC/3/[a, b]/20/PHYSICAL` | 重複 key 也是兩個值。**注意 4 和 5 結果相同** |
-| 6 | `ABC/3/null/20/PHYSICAL` | `?size=` 空字串 → converter 回 `null` → `defaultValue` 生效？<br>⚠️ **實測是 `null`**：`defaultValue` 只在**參數缺席**時套用，參數存在但值為空字串時走轉換 → `null`。所以 `size` 是 `null`（`Integer` 可以是 null）。<br>👉 這就是為什麼要在 record 的 compact constructor 裡補預設值（1.7.2） |
+| 6 | `ABC/3/null/20/PHYSICAL` | `?size=` 空字串 → **`defaultValue` 仍然生效** → `size = 20`。<br>★ 見下方說明：`AbstractNamedValueMethodArgumentResolver` 對「空字串 + 有 defaultValue」有一個專門的分支 |
 | 7 | `ABC.json/3/null/20/PHYSICAL` | Boot 3 不再截斷後綴（1.4.4） |
 | 8 | **404** | 尾斜線不再自動比對（1.3.5） |
 
-**第 6 題是最容易答錯的。** 很多人以為 `defaultValue` 也涵蓋空字串。
-`RequestParamMethodArgumentResolver` 的邏輯是：
-`resolveName()` 回 `null`（參數不存在）才套 `defaultValue`；
-參數存在但值是 `""` 時，`""` 會進 `ConversionService`，
-`StringToNumber` 對空字串回 `null`。
+**第 6 題是最容易答錯的**，而**答錯的方向通常是「以為 `defaultValue` 不涵蓋空字串」**。
+實際上 `AbstractNamedValueMethodArgumentResolver.resolveArgument()` 有**兩個**分支：
+
+```java
+// AbstractNamedValueMethodArgumentResolver.resolveArgument()（節錄）
+Object arg = resolveName(resolvedName.toString(), nestedParameter, webRequest);
+if (arg == null) {
+    if (namedValueInfo.defaultValue != null) {                     // ① 參數缺席
+        arg = resolveEmbeddedValuesAndExpressions(namedValueInfo.defaultValue);
+    }
+    else if (namedValueInfo.required && !nestedParameter.isOptional()) {
+        handleMissingValue(namedValueInfo.name, nestedParameter, webRequest);
+    }
+    arg = handleNullValue(namedValueInfo.name, arg, nestedParameter.getNestedParameterType());
+}
+else if ("".equals(arg) && namedValueInfo.defaultValue != null) {   // ★★ ② 參數存在但是空字串
+    arg = resolveEmbeddedValuesAndExpressions(namedValueInfo.defaultValue);
+}
+// ↑ 兩個分支都在【轉型之前】就把值換成 defaultValue，所以 ConversionService 收到的是 "20"
+```
+
+**所以 `?size=` 得到 `20`，`?size` 也得到 `20`（`getParameter` 回 `""`）。**
+
+⚠️ **但這只涵蓋「有寫 `defaultValue`」的情況。** 沒寫的話：
+
+| 宣告 | `?size=`（空字串） |
+|---|---|
+| `@RequestParam(defaultValue = "20") Integer size` | **`20`** ★ |
+| `@RequestParam(required = false) Integer size` | **`null`**（`""` 進 `ConversionService` → `StringToNumber` 對空字串回 `null`） |
+| `@RequestParam(required = false) int size` | **500** —— `handleNullValue` 對原始型別拋 `IllegalStateException`（坑 ②） |
+| `@RequestParam(required = false) String size` | **`""`**（不是 `null`！字串不需要轉換） |
+
+★ **最後一列是實務上最常出錯的**：一個 `required=false` 的 `String` 參數，
+「沒送」是 `null`、「送了空的」是 `""` ——
+而 `if (keyword != null)` 這種檢查會讓 `?keyword=` 進到 `WHERE name LIKE '%%'`。
+👉 **所以 shop-service 的字串參數一律綁成物件，並在 compact constructor 裡
+`trimToNull()`（1.7.2）。**
 
 **修正版**：
 
@@ -2902,10 +3453,12 @@ public ExportJobResponse get(@PathVariable("exportId") String exportId) { }
 `@RequestBody Order`（Entity）→ 客戶端可以送 `status`、`totalAmount`、`customerId`。
 改用 `CreateOrderRequest`（1.6.2）。
 
-**(4) `params` 分派會讓沒帶參數的請求回 404**
+**(4) `params` 分派會讓沒帶參數的請求回 400**
 
 ```
-GET /orders          → 404（1.3.2）
+GET /orders          → 400 UnsatisfiedServletRequestParameterException（1.3.2）
+                       ⚠️ 而它的訊息是「Parameter conditions "cursor" OR "page" not met」——
+                          客戶端看不出「所以我到底該送什麼」
 ```
 
 改成一個方法 + 可選參數（或綁成 `OrderFilter`）：
@@ -3295,14 +3848,14 @@ public record AddCartItemRequest(
 
 - [ ] 我知道 `@RestController` = `@Controller` + `@ResponseBody`，也知道漏掉 `@ResponseBody` 會出現「Circular view path」或 404。
 - [ ] 我知道 Spring 自動處理 `HEAD` 與 `OPTIONS`，也知道 `HEAD` 會真的執行方法。
-- [ ] 我能說出 `consumes` 不符回 415、`produces` 不符回 406、`params` / `headers` 不符回 **404**。
+- [ ] 我能說出 `consumes` 不符回 415、`produces` 不符回 406、**`params` 不符回 400**（`UnsatisfiedServletRequestParameterException`）、**`headers` 不符回 404**，也知道為什麼這兩個不一樣（`handleNoMatch` 只有 params 的分支）。
 - [ ] 我知道為什麼要明確寫 `consumes` / `produces`（文件、分派、以及「加了 XML converter 就意外支援 XML」的安全問題）。
 - [ ] 我能說出路由衝突的排序規則，並知道字面值比路徑變數具體。
 - [ ] 我知道 Spring Boot 3 的尾斜線不再自動比對，並選定了一種處理方式。
 - [ ] 我知道 `PathPatternParser` 不支援 `**` 在模式中間。
 - [ ] 我一律明確寫 `@PathVariable("name")` / `@RequestParam("name")`，並知道 Spring 6.1 移除了參數名稱推斷的 fallback。
 - [ ] 我知道 `@RequestParam(required = false) int` 會回 **500**，而且開發時測不出來。
-- [ ] 我知道 `defaultValue` 只在參數**缺席**時套用，`?size=` 空字串會得到 `null`。
+- [ ] 我知道 `defaultValue` 對「參數缺席」與「值是空字串」**兩種情況都生效**，也知道沒寫 `defaultValue` 時空字串會變成 `null`（包裝型別）、`""`（字串）或 500（原始型別）。
 - [ ] 我知道 `@RequestParam List<String>` 沒送時是 `null` 而不是空 list。
 - [ ] 我知道逗號會被自動切割，也知道這對「值含逗號」的參數是 bug。
 - [ ] 我知道 `@RequestParam Map<String,String>` 是反模式，唯一用途是做未知參數檢查。

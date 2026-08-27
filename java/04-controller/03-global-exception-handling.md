@@ -768,11 +768,12 @@ public enum ErrorCode {
 }
 ```
 
-**這個 enum 有 78 個常數，看起來很長。但它取代的是**：
+**這個 enum 有 79 個常數（05 章 5.12.4 會再加 4 個，總計 83；
+07 章練習 3 還會加 2 個），看起來很長。但它取代的是**：
 
-- 78 個「這個例外該回什麼狀態碼」的判斷散在 handler 裡。
-- 78 個 `type` URI 字串字面值。
-- 78 個 `retryable` 的布林值。
+- 79 個「這個例外該回什麼狀態碼」的判斷散在 handler 裡。
+- 79 個 `type` URI 字串字面值。
+- 79 個 `retryable` 的布林值。
 - 以及最重要的：**一份可以被測試的清單**。
 
 ### 3.4.3 為什麼用 enum 而不是別的
@@ -832,6 +833,9 @@ error.ENDPOINT_NOT_FOUND.user=請求的位址不存在，請確認網址是否�
 
 error.METHOD_NOT_ALLOWED.title=不支援此方法
 error.METHOD_NOT_ALLOWED.user=操作方式有誤，請重新整理頁面後再試。
+
+error.NOT_ACCEPTABLE.title=不支援的回應格式
+error.NOT_ACCEPTABLE.user=無法以您要求的格式回應。請確認 Accept 標頭。
 
 error.UNSUPPORTED_MEDIA_TYPE.title=不支援的內容類型
 error.UNSUPPORTED_MEDIA_TYPE.user=資料格式有誤，請重新整理頁面後再試。
@@ -910,17 +914,18 @@ error.COUPON_MIN_AMOUNT_NOT_MET.title=未達最低消費
 error.COUPON_MIN_AMOUNT_NOT_MET.user=此折扣碼需消費滿 {0} 元，目前為 {1} 元。
 
 # ── 條件請求與冪等 ────────────────────────────────────────────
-error.OPTIMISTIC_LOCK_CONFLICT.title=資料已被其他人修改
-error.OPTIMISTIC_LOCK_CONFLICT.user=此資料已被其他人修改，請重新載入後再試。
+error.OPTIMISTIC_LOCK_CONFLICT.title=資料已被他人修改
+error.OPTIMISTIC_LOCK_CONFLICT.user=這筆資料在您編輯期間已被他人修改，請重新載入後再試。
 
-error.IF_MATCH_REQUIRED.title=必須帶 If-Match
-error.IF_MATCH_REQUIRED.user=操作方式有誤，請重新整理頁面後再試。
+# ⚠️ title 不要寫「必須帶 If-Match」—— 那是給工程師看的（06 章 6.8.3）
+error.IF_MATCH_REQUIRED.title=需要版本資訊
+error.IF_MATCH_REQUIRED.user=修改前請先取得目前的版本（If-Match 標頭）。
 
 error.IDEMPOTENCY_KEY_REQUIRED.title=缺少冪等鍵
 error.IDEMPOTENCY_KEY_REQUIRED.user=請求缺少必要資訊，請重新整理頁面後再試。
 
-error.IDEMPOTENCY_KEY_REUSED.title=冪等鍵被用於不同的請求
-error.IDEMPOTENCY_KEY_REUSED.user=偵測到重複的請求，請重新整理頁面後再試。
+error.IDEMPOTENCY_KEY_REUSED.title=冪等鍵重複使用
+error.IDEMPOTENCY_KEY_REUSED.user=這個請求的識別碼已經用在另一個不同的請求上，請改用新的識別碼。
 
 # ── 限流與分頁 ────────────────────────────────────────────────
 error.RATE_LIMIT_EXCEEDED.title=請求過於頻繁
@@ -929,8 +934,14 @@ error.RATE_LIMIT_EXCEEDED.user=操作過於頻繁，請 {0} 秒後再試。
 error.DEEP_PAGINATION_LIMIT.title=查詢範圍過深
 error.DEEP_PAGINATION_LIMIT.user=資料量過大，請縮小查詢條件或使用匯出功能。
 
+# ⚠️ 刻意【不帶】{0}：這個 code 有六種觸發情境（HTTP body 過大、multipart 過大、
+#    圖片尺寸過大、ZIP 解壓過大、同步匯出過大、冪等 body 過大，05 章 5.12.4），
+#    而它們拋例外時傳的參數不一樣。
+#    ★ 帶 {0} 但傳 new Object[0] 的話，使用者會看到字面的「{0}」——
+#      那正是 3.4.5 的 訊息參數一致() 測試要抓的東西。
+#    具體的上限放在 extensions.hint（每個情境各自客製）。
 error.PAYLOAD_TOO_LARGE.title=請求內容過大
-error.PAYLOAD_TOO_LARGE.user=上傳的內容過大（上限 {0}），請縮小後再試。
+error.PAYLOAD_TOO_LARGE.user=您提供的內容超過大小限制，請縮小後再試。
 
 # ── 5xx（★ 一律固定文字，不含任何內部資訊）───────────────────
 error.INTERNAL_ERROR.title=系統錯誤
@@ -947,7 +958,111 @@ error.UPSTREAM_TIMEOUT.user=處理時間過長，請稍後查詢結果，請勿�
 
 error.REQUEST_TIMEOUT.title=處理逾時
 error.REQUEST_TIMEOUT.user=處理時間過長，請稍後再試。
+
+# ═══════════════════════════════════════════════════════════════
+#  ★★ 以下是「這一站還沒有實作行為，但錯誤目錄已經定義好」的 code
+#  （3.14.5 的 ErrorCodeUsageTest.PLANNED_FOR_LATER 清單）。
+#
+#  ⚠️ 它們的【訊息】現在就要寫，理由見 3.4.5：
+#     ProblemFactory 找不到 key 時會退回「error.XXX.title」這串字，
+#     而那會直接顯示給使用者。「等實作的時候再寫」= 上線時一定有人看到 key。
+# ═══════════════════════════════════════════════════════════════
+
+# ── 認證與授權（09-spring-security 實作行為）─────────────────
+error.ACCOUNT_SUSPENDED.title=帳號已停用
+error.ACCOUNT_SUSPENDED.user=您的帳號目前無法使用，請聯絡客服。
+error.INSUFFICIENT_SCOPE.title=憑證權限不足
+error.INSUFFICIENT_SCOPE.user=目前的登入方式無法執行此操作，請重新登入。
+error.TOKEN_REVOKED.title=憑證已失效
+error.TOKEN_REVOKED.user=登入憑證已失效，請重新登入。
+error.INVALID_TOKEN.title=憑證無效
+error.INVALID_TOKEN.user=登入憑證無效，請重新登入。
+# ⚠️ 帶 {0} 就代表【每一個】拋這個 code 的地方都必須傳欄位名（3.4.5 的
+#    訊息參數一致() 測試會檢查）。06 章 6.5.5 的 ReadOnlyFieldInterceptor 有傳。
+error.FORBIDDEN_PARAMETER.title=欄位不可修改
+error.FORBIDDEN_PARAMETER.user=無法修改欄位「{0}」，它由系統決定。
+
+# ── 分頁與條件請求 ────────────────────────────────────────────
+error.INVALID_CURSOR.title=分頁游標無效
+error.INVALID_CURSOR.user=分頁資訊已失效，請回到第一頁重新查詢。
+error.MALFORMED_ETAG.title=If-Match 格式錯誤
+error.MALFORMED_ETAG.user=操作方式有誤，請重新整理頁面後再試。
+error.RESOURCE_GONE.title=資源已永久移除
+error.RESOURCE_GONE.user=這筆資料已被永久移除，無法再存取。
+
+# ── 購物車（06 章只有骨架，05-service 實作）───────────────────
+error.CART_EMPTY.title=購物車是空的
+error.CART_EMPTY.user=購物車沒有商品，請先加入商品再結帳。
+error.CART_ITEM_NOT_FOUND.title=購物車項目不存在
+error.CART_ITEM_NOT_FOUND.user=這個項目已不在購物車中，請重新整理頁面。
+
+# ── 商品 ─────────────────────────────────────────────────────
+error.PRODUCT_NOT_PURCHASABLE.title=商品目前無法購買
+error.PRODUCT_NOT_PURCHASABLE.user=「{0}」目前無法購買，請稍後再試或選擇其他商品。
+error.PRODUCT_SKU_DUPLICATE.title=商品編號重複
+error.PRODUCT_SKU_DUPLICATE.user=商品編號「{0}」已存在，請使用其他編號。
+error.PHOTO_NOT_FOUND.title=圖片不存在
+error.PHOTO_NOT_FOUND.user=找不到這張圖片，它可能已被刪除。
+error.NEGATIVE_STOCK_NOT_ALLOWED.title=庫存不可為負
+error.NEGATIVE_STOCK_NOT_ALLOWED.user=庫存數量有誤，請重新整理頁面後再試。
+
+# ── 訂單狀態機（05-service 實作）─────────────────────────────
+error.ORDER_NOT_SHIPPABLE.title=訂單無法出貨
+error.ORDER_NOT_SHIPPABLE.user=此訂單目前的狀態（{0}）無法出貨。
+error.ORDER_ITEM_IMMUTABLE.title=訂單項目無法修改
+error.ORDER_ITEM_IMMUTABLE.user=訂單已進入處理流程，項目無法再修改。
+error.ORDER_ITEM_LIMIT_EXCEEDED.title=訂單項目過多
+error.ORDER_ITEM_LIMIT_EXCEEDED.user=一張訂單最多 {0} 個項目，請分批下單。
+error.ADDRESS_CHANGE_LIMIT_EXCEEDED.title=地址修改次數已達上限
+error.ADDRESS_CHANGE_LIMIT_EXCEEDED.user=同一張訂單一天最多修改 {0} 次地址，請明天再試或聯絡客服。
+error.UNDELIVERABLE_ADDRESS.title=地址無法配送
+error.UNDELIVERABLE_ADDRESS.user=這個地址目前無法配送，請改用其他地址。
+
+# ── 退貨與退款（05-service 實作）─────────────────────────────
+error.RETURN_ITEM_NOT_IN_ORDER.title=退貨項目不在訂單中
+error.RETURN_ITEM_NOT_IN_ORDER.user=退貨的商品不在這張訂單裡，請重新確認。
+error.RETURN_QUANTITY_EXCEEDED.title=退貨數量超過購買數量
+error.RETURN_QUANTITY_EXCEEDED.user=退貨數量不可超過購買數量（{0}）。
+error.REFUND_WINDOW_EXPIRED.title=已超過退款期限
+error.REFUND_WINDOW_EXPIRED.user=已超過 {0} 天的退款期限，如有問題請聯絡客服。
+error.REFUND_EXCEEDS_PAYMENT.title=退款金額超過付款金額
+error.REFUND_EXCEEDS_PAYMENT.user=退款金額不可超過實付金額。
+# ⚠️ {0} 是【中文的狀態標籤】而不是 enum 名（見 3.11.4 的說明）
+error.PAYMENT_NOT_REFUNDABLE.title=此筆付款無法退款
+error.PAYMENT_NOT_REFUNDABLE.user=此筆付款{0}，目前無法退款。
+
+# ── 付款（05-service 實作）───────────────────────────────────
+error.PAYMENT_METHOD_UNSUPPORTED.title=不支援的付款方式
+error.PAYMENT_METHOD_UNSUPPORTED.user=目前不支援「{0}」，請改用其他付款方式。
+error.PAYMENT_GATEWAY_TIMEOUT.title=金流服務逾時
+error.PAYMENT_GATEWAY_TIMEOUT.user=付款服務回應逾時，請勿重複付款。我們會在 1 分鐘內更新狀態。
+error.CARD_NUMBER_INVALID.title=卡號格式錯誤
+error.CARD_NUMBER_INVALID.user=卡號格式有誤，請重新輸入。
+error.CVV_INVALID.title=安全碼錯誤
+error.CVV_INVALID.user=安全碼有誤，請重新輸入。
+error.EXCEEDS_CREDIT_LIMIT.title=超過信用額度
+error.EXCEEDS_CREDIT_LIMIT.user=已超過信用額度，請改用其他付款方式。
+
+# ── 折扣碼（05-service 實作）─────────────────────────────────
+error.COUPON_NOT_STARTED.title=折扣碼尚未開始
+error.COUPON_NOT_STARTED.user=此折扣碼將於 {0} 開始使用。
+error.COUPON_EXHAUSTED.title=折扣碼已被領完
+error.COUPON_EXHAUSTED.user=此折扣碼的數量已用完。
+error.COUPON_NOT_APPLICABLE.title=折扣碼不適用
+error.COUPON_NOT_APPLICABLE.user=此折扣碼不適用於購物車中的商品。
+
+# ── 帳號（後續站台實作）──────────────────────────────────────
+error.EMAIL_ALREADY_REGISTERED.title=電子郵件已被註冊
+error.EMAIL_ALREADY_REGISTERED.user=這個電子郵件已被註冊，請直接登入或使用其他信箱。
 ```
+
+⚠️ **這份檔案有 83 × 2 = 166 條訊息**，其中 32 個 code 是
+「行為還沒實作、但訊息先寫好」的（上面第二段）。
+
+**為什麼不等實作再寫**：3.4.5 的 `訊息完整()` 測試會掃過
+`ErrorCode.values()` 的每一個常數 —— **少一條就紅燈**。
+那個測試的存在，就是為了讓「上線時使用者看到 `error.CART_EMPTY.title`」
+這件事不可能發生。
 
 ⚠️ **注意 `{0}`、`{1}` 是 Spring `MessageSource` 的參數語法**（`MessageFormat`），
 和 02 章 Bean Validation 的 `{min}` **是不同的機制**。
@@ -1259,26 +1374,42 @@ public abstract class BusinessException extends RuntimeException {
 }
 ```
 
+`FieldViolation` **就是 02 章 2.9.3 定義的那一個**（在 `example.shop.common.error`），
+原樣搬來讓這一節自足：
+
 ```java
 package example.shop.common.error;
 
-/** 欄位級的錯誤（給 422 的 errors[] 用，格式與 02 章的 FieldErrorDto 一致）。 */
+import java.util.Map;
+
+/**
+ * 單一欄位的錯誤，對應 03-rest-api 第 04 章 4.6 的格式。
+ *
+ * <p>★ 放在 {@code common.error} 而不是 {@code common.web}，
+ * 因為 Service 層拋 {@link ValidationFailedException} 時要用它（02 章 2.10.4）。
+ */
 public record FieldViolation(
-    String field,
+    String field,                       // null = 全域錯誤（非欄位級）
     String code,
     String message,
     Object rejectedValue,
-    java.util.Map<String, Object> constraint
+    Map<String, Object> constraint
 ) {
     public static FieldViolation of(String field, String code, String message) {
         return new FieldViolation(field, code, message, null, null);
     }
+
     public static FieldViolation of(String field, String code, String message,
                                     Object rejectedValue) {
         return new FieldViolation(field, code, message, rejectedValue, null);
     }
 }
 ```
+
+> ⚠️ **這個 record 是 02 章與 03 章的接縫，只有一份定義。**
+> 02 章的 `ValidationErrorTranslator` 產生它，
+> 03 章的 `Problem` 與 `BusinessException` 消費它 ——
+> 於是「Bean Validation 的錯誤」與「Service 的語意驗證錯誤」在回應裡長得一模一樣。
 
 ### 3.5.3 具體例外：三個代表性例子
 
@@ -1793,9 +1924,22 @@ public record Problem(
     Map<String, Object> extensions
 ```
 
-   ⚠️ 但 record 元件上的註解要能傳到 accessor 上，需要 `@Target` 包含 `METHOD`，
-   而 `@JsonIgnore` 的 target 是 `ANNOTATION_TYPE, METHOD, CONSTRUCTOR, FIELD` ——
-   **不含 `RECORD_COMPONENT`**，所以直接標在元件上會編譯錯誤（依 Jackson 版本而異）。
+   ⚠️⚠️ **這樣寫「合法但沒有效果」，而那比編譯錯誤難查得多。**
+
+   `@JsonIgnore` 的 target 是 `ANNOTATION_TYPE, METHOD, CONSTRUCTOR, FIELD`。
+   依 JLS 8.10.1，標在 record 元件上的註解會傳播到**所有 target 允許的位置** ——
+   `METHOD` 與 `FIELD` 都在裡面，所以它**同時**落在 accessor 與私有欄位上，
+   宣告是合法的。
+
+   **那為什麼「沒有效果」？** 因為 Jackson 的 `POJOPropertyBuilder` 會合併
+   「欄位 + getter + 建構子參數」三個 accessor 的註解，
+   而 record 的情況下它優先採用**建構子參數**的視角 ——
+   `@JsonIgnore` 的 target **沒有** `PARAMETER`，所以它沒有落在參數上，
+   於是在某些 Jackson 版本上這個 `@JsonIgnore` 會被忽略。
+
+   > **一般規則**：對 record 而言，「註解標在元件上有沒有效」取決於
+   > **那個框架讀的是哪一個 accessor**。不確定的時候，**明確標在 accessor 上**。
+   > （02 章 2.7.1 有 `RECORD_COMPONENT` 的完整討論。）
 
    **最穩的做法：在 accessor 上明確覆寫。**
 
@@ -2055,6 +2199,7 @@ Spring 提供 `ResponseEntityExceptionHandler`，它有一個 `@ExceptionHandler
 | `MissingServletRequestParameterException` | 400 | 必填查詢參數缺失 |
 | `MissingServletRequestPartException` | 400 | multipart 缺 part |
 | `ServletRequestBindingException` | 400 | header 缺失等 |
+| **`UnsatisfiedServletRequestParameterException`** | **400** | ★ `params` 條件不符（01 章 1.3.2）—— **很容易被漏掉的一個** |
 | `MethodArgumentNotValidException` | 400 | `@Valid` 失敗（我們改成 **422**） |
 | `HandlerMethodValidationException` | 400 | 方法參數約束失敗（我們改成 **422**） |
 | `NoHandlerFoundException` | 404 | 找不到 handler（需開設定，3.8.1） |
@@ -2148,12 +2293,17 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     //  1. 業務例外（最主要的路徑）
     // ═══════════════════════════════════════════════════════════════
 
+    /**
+     * ⚠️ 參數列裡刻意<b>沒有</b> {@code HandlerMethod} ——
+     * 完整理由見 {@link #handleUnexpected}（宣告了但解析不出來會讓
+     * resolver 回 null → {@code /error} → HTML）。
+     * 這裡改用 {@link #handlerMethodOf}。
+     */
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<Problem> handleBusiness(BusinessException ex,
-                                                  HttpServletRequest request,
-                                                  HandlerMethod handlerMethod) {
+                                                  HttpServletRequest request) {
         Problem problem = problems.from(ex, ProblemFactory.instanceOf(request));
-        errorLog.log(ex, problem, request, handlerMethod);
+        errorLog.log(ex, problem, request, handlerMethodOf(request));
         return respond(problem, extraHeadersFor(ex));
     }
 
@@ -2245,6 +2395,19 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         // ★ 把 Jackson 的內部例外翻譯成精確的 field + 安全的訊息（3.9）
         var analysis = MessageNotReadableAnalyzer.analyze(ex);
 
+        // ★★ compact constructor 拋出的業務例外：改走業務例外的路徑，
+        //    保留它的 code 與擴充欄位（3.9.4）。
+        //    ⚠️ 這裡是「呼叫 handleBusiness」而不是「throw」——
+        //       從 @ExceptionHandler 裡往外拋會讓 resolver 回 null → /error → HTML（3.3.6）。
+        if (analysis.businessException() != null) {
+            return new ResponseEntity<>(
+                    handleBusiness(analysis.businessException(),
+                                   ((ServletWebRequest) request).getRequest()).getBody(),
+                    problemHeaders(headers),
+                    HttpStatusCode.valueOf(
+                            analysis.businessException().errorCode().status().value()));
+        }
+
         Problem problem = (analysis.violations().isEmpty())
                 ? problems.from(ErrorCode.MALFORMED_REQUEST, instanceOf(request),
                                 analysis.safeDetail(), analysis.extensions())
@@ -2264,7 +2427,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         // 自訂 Converter 拋的業務例外會被包在裡面（1.9.4）—— 往下鑽出來
         Throwable root = rootCauseOf(ex);
         if (root instanceof BusinessException be) {
-            return handleBusiness(be, request, null);
+            return handleBusiness(be, request);
         }
 
         var violation = new FieldViolation(
@@ -2290,8 +2453,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
      */
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<Problem> handleAccessDenied(AccessDeniedException ex,
-                                                      HttpServletRequest request,
-                                                      HandlerMethod handlerMethod) {
+                                                      HttpServletRequest request) {
+        HandlerMethod handlerMethod = handlerMethodOf(request);
         Map<String, Object> ext = (handlerMethod == null) ? Map.of()
                 : Map.of("requiredRole", RequiredRoleExtractor.from(handlerMethod));
 
@@ -2337,11 +2500,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     /** 其餘資料存取錯誤（連線失敗、SQL 語法錯…）→ 500，但要單獨記錄以便告警分類。 */
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<Problem> handleDataAccess(DataAccessException ex,
-                                                    HttpServletRequest request,
-                                                    HandlerMethod handlerMethod) {
+                                                    HttpServletRequest request) {
         Problem problem = problems.from(ErrorCode.INTERNAL_ERROR,
                 ProblemFactory.instanceOf(request), null);
-        errorLog.logServerError(ex, problem, request, handlerMethod, "database");
+        // ★ HandlerMethod 從 request attribute 取（見 handleUnexpected 的說明）
+        errorLog.logServerError(ex, problem, request, handlerMethodOf(request), "database");
         return respond(problem, new HttpHeaders());
     }
 
@@ -2354,18 +2517,66 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
      *
      * <p>⚠️ 這個方法存在的意義是「保證回應一定是 JSON」，
      * 但每一次它被呼叫都代表有 bug 要修（3.12.1 會把它做成告警指標）。
+     *
+     * <h3>★★ 為什麼參數列裡<b>沒有</b> {@code HandlerMethod}</h3>
+     *
+     * <p>{@code @ExceptionHandler} 方法可以宣告 {@code HandlerMethod} 參數，
+     * 由 {@code ExceptionHandlerExceptionResolver} 注入。
+     * <b>但它只在「已經找到 handler」之後才有值。</b>
+     *
+     * <p>而「最後的防線」要接的例外，有一大類發生在找到 handler <b>之前</b>：
+     *
+     * <table>
+     *   <tr><th>例外</th><th>發生時機（{@code DispatcherServlet.doDispatch}）</th></tr>
+     *   <tr><td>{@code MultipartException}</td><td>{@code checkMultipart()} —— 在 {@code getHandler()} 之前</td></tr>
+     *   <tr><td>{@code NoHandlerFoundException}</td><td>{@code getHandler()} 回 null</td></tr>
+     *   <tr><td>{@code HttpMediaTypeNotAcceptableException}</td><td>{@code getHandler()} 的 {@code handleNoMatch}</td></tr>
+     *   <tr><td>攔截器 {@code preHandle} 拋的例外</td><td>有 handler，但…（見下方 ⚠️）</td></tr>
+     * </table>
+     *
+     * <p>這些情況下 {@code handlerMethod} 是 {@code null}。
+     * ⚠️⚠️ 而 {@code ExceptionHandlerExceptionResolver} 在解析參數時，
+     * 對「宣告了但解析不出來」的參數會拋
+     * {@code IllegalStateException: Could not resolve parameter} ——
+     * <b>於是 resolver 回傳 null，請求落到容器的 {@code /error}，
+     * 客戶端收到一頁 HTML。</b>
+     *
+     * <p><b>也就是說：一個為了「保證回應一定是 JSON」而存在的方法，
+     * 會在最需要它的時候失效。</b>
+     *
+     * <p>★ 修法：不宣告 {@code HandlerMethod} 參數，改成從 request attribute 自己取
+     * （{@link #handlerMethodOf})。取不到就是 {@code null} —— 那對 log 來說完全可以接受。
+     *
+     * <p>⚠️ 同樣的理由適用於<b>每一個</b>「可能接到早期例外」的 handler：
+     * 只有那些「例外一定來自 controller 方法內部」的 handler
+     * （例如 {@code handleBusiness}）才可以安全地宣告 {@code HandlerMethod}。
+     * 3.13.4 有一個測試專門守住這件事。
      */
     @ExceptionHandler(Throwable.class)
     public ResponseEntity<Problem> handleUnexpected(Throwable ex,
-                                                    HttpServletRequest request,
-                                                    HandlerMethod handlerMethod) {
+                                                    HttpServletRequest request) {
         // DispatcherServlet 會把 Error 包成 ServletException（3.3.1）—— 鑽出來記錄
         Throwable root = rootCauseOf(ex);
 
         Problem problem = problems.from(ErrorCode.INTERNAL_ERROR,
                 ProblemFactory.instanceOf(request), null);
-        errorLog.logServerError(root, problem, request, handlerMethod, "unexpected");
+        errorLog.logServerError(root, problem, request, handlerMethodOf(request), "unexpected");
         return respond(problem, new HttpHeaders());
+    }
+
+    /**
+     * 從 request attribute 取出 {@link HandlerMethod}（可能是 {@code null}）。
+     *
+     * <p>★ {@code RequestMappingHandlerMapping} 在成功比對後會把
+     * {@code HandlerMethod} 放進 {@code HandlerMapping.BEST_MATCHING_HANDLER_ATTRIBUTE}。
+     *
+     * <p>⚠️ 這個 attribute 只在「有 handler」時存在 ——
+     * 而那正是我們需要「取不到就 null」而不是「解析失敗就 500」的原因。
+     */
+    private static HandlerMethod handlerMethodOf(HttpServletRequest request) {
+        Object handler = request.getAttribute(
+                org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_HANDLER_ATTRIBUTE);
+        return (handler instanceof HandlerMethod hm) ? hm : null;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -2456,6 +2667,7 @@ import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
+import org.springframework.web.bind.UnsatisfiedServletRequestParameterException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -2477,6 +2689,9 @@ final class SpringExceptionMapper {
         if (ex instanceof AsyncRequestTimeoutException)            return ErrorCode.REQUEST_TIMEOUT;
         if (ex instanceof MissingServletRequestParameterException) return ErrorCode.VALIDATION_FAILED;
         if (ex instanceof MissingRequestHeaderException)           return ErrorCode.VALIDATION_FAILED;
+        // ★ params 條件不符（01 章 1.3.2）——「路由層的參數要求」而不是「值不合法」，
+        //   所以用 MALFORMED_REQUEST（400）而不是 VALIDATION_FAILED（422）
+        if (ex instanceof UnsatisfiedServletRequestParameterException) return ErrorCode.MALFORMED_REQUEST;
 
         // 其餘依狀態碼粗分
         int code = status.value();
@@ -2509,6 +2724,14 @@ final class SpringExceptionMapper {
         if (ex instanceof MissingRequestHeaderException e) {
             return "Required header '%s' is missing.".formatted(e.getHeaderName());
         }
+        if (ex instanceof UnsatisfiedServletRequestParameterException e) {
+            // ★ getParamConditions() 回傳 String[][]（每個 handler 一組條件）——
+            //   把它攤平成人看得懂的說明
+            return "This endpoint requires one of the following parameter combinations: %s."
+                    .formatted(java.util.Arrays.stream(e.getParamConditions())
+                            .map(group -> String.join(" AND ", group))
+                            .collect(java.util.stream.Collectors.joining(" OR ")));
+        }
         if (ex instanceof MaxUploadSizeExceededException e) {
             return "Upload exceeds the maximum permitted size of %d bytes."
                     .formatted(e.getMaxUploadSize());
@@ -2540,6 +2763,12 @@ final class SpringExceptionMapper {
             m.put("parameter", e.getParameterName());
         } else if (ex instanceof MissingRequestHeaderException e) {
             m.put("header", e.getHeaderName());
+        } else if (ex instanceof UnsatisfiedServletRequestParameterException e) {
+            // ★★ 這一項是這個例外最重要的價值：告訴客戶端「所以我到底該送什麼」
+            m.put("acceptedParameterSets", java.util.Arrays.stream(e.getParamConditions())
+                    .map(java.util.List::of).toList());
+            // ⚠️ 不要回傳 e.getActualParams() —— 那是完整的查詢參數 map，
+            //    可能含 token、email 等敏感值（3.11.2）
         } else if (ex instanceof MaxUploadSizeExceededException e) {
             m.put("maxBytes", e.getMaxUploadSize());
         }
@@ -3150,10 +3379,44 @@ import java.util.Map;
  */
 public final class MessageNotReadableAnalyzer {
 
-    /** 分析結果。violations 非空 → 回 422；為空 → 回 400 MALFORMED_REQUEST。 */
+    /**
+     * 分析結果。
+     *
+     * <p>判讀順序：
+     * <ol>
+     *   <li>{@code businessException != null} → advice 改用業務例外的路徑處理</li>
+     *   <li>{@code violations} 非空 → 回 422</li>
+     *   <li>都沒有 → 回 400 {@code MALFORMED_REQUEST}</li>
+     * </ol>
+     *
+     * <p>★★ 為什麼 {@code businessException} 是一個<b>回傳值</b>而不是
+     * 直接 {@code throw}：
+     *
+     * <p>這個 analyzer 是在 {@code @ExceptionHandler} <b>裡面</b>被呼叫的。
+     * 從 handler 裡面往外拋例外，{@code ExceptionHandlerExceptionResolver}
+     * 會<b>放棄這次解析並回傳 {@code null}</b>（3.3.6 的完整機制）——
+     * 於是請求落到容器的 {@code /error}，客戶端收到<b>一頁 HTML</b>
+     * 而不是 Problem JSON。
+     *
+     * <p>而症狀特別惡毒：只有「compact constructor 拋了業務例外」這一條路徑會這樣，
+     * 其他 99% 的請求都正常。
+     */
     public record Analysis(List<FieldViolation> violations,
                            String safeDetail,
-                           Map<String, Object> extensions) {}
+                           Map<String, Object> extensions,
+                           BusinessException businessException) {
+
+        /** 一般情況（沒有業務例外）。 */
+        public Analysis(List<FieldViolation> violations, String safeDetail,
+                        Map<String, Object> extensions) {
+            this(violations, safeDetail, extensions, null);
+        }
+
+        /** ★ 「請 advice 改走業務例外的路徑」。 */
+        static Analysis rethrowAsBusiness(BusinessException be) {
+            return new Analysis(List.of(), be.getMessage(), Map.of(), be);
+        }
+    }
 
     public static Analysis analyze(HttpMessageNotReadableException ex) {
         Throwable cause = ex.getCause();
@@ -3167,9 +3430,10 @@ public final class MessageNotReadableAnalyzer {
         //    ⚠️ 這是最容易被忽略的一種：我們自己的正規化程式碼拋了例外
         if (cause instanceof ValueInstantiationException vie) {
             Throwable root = vie.getCause();
-            if (root instanceof BusinessException) {
-                // 讓 advice 用業務例外的路徑處理（保留 code 與擴充欄位）
-                throw (BusinessException) root;
+            if (root instanceof BusinessException be) {
+                // ★★ 不可以在這裡 throw —— 見 Analysis 的 javadoc。
+                //    改成「把它交給 advice」。
+                return Analysis.rethrowAsBusiness(be);
             }
             String path = pathOf(vie);
             return new Analysis(
@@ -3218,6 +3482,7 @@ public final class MessageNotReadableAnalyzer {
             Map<String, Object> ext = new LinkedHashMap<>();
             ext.put("unknownProperty", path);
             ext.put("supportedProperties", known);
+            // import example.shop.common.util.DidYouMean;
             String suggestion = DidYouMean.closest(upe.getPropertyName(), known);
             if (suggestion != null) ext.put("didYouMean", suggestion);
 
@@ -3326,35 +3591,90 @@ public final class MessageNotReadableAnalyzer {
 ### 3.9.5 「您是否想輸入」的實作
 
 ```java
-package example.shop.common.web;
+package example.shop.common.util;
 
 import java.util.List;
 import java.util.Locale;
 
-/** Levenshtein 距離的「你可能想打的是」建議。 */
-final class DidYouMean {
+/**
+ * Levenshtein 距離的「你可能想打的是」建議。
+ *
+ * <p>★ 放在 {@code common.util} 而不是 {@code common.web}：
+ * 它是純字串工具，和 HTTP 無關，而 {@code common.error} 的
+ * {@code UnknownParameterException} 也要用它（3.13.3）。
+ */
+public final class DidYouMean {
 
-    /** 最大可接受距離：太遠的建議只會讓人更困惑。 */
-    private static final int MAX_DISTANCE = 3;
+    /**
+     * 可接受的距離：<b>相對於候選字串的長度</b>，而不是一個固定值。 ★★
+     *
+     * <p>★ 為什麼不用「固定距離 3」（這是第一版的做法）：
+     *
+     * <table>
+     *   <tr><th>輸入</th><th>候選</th><th>距離</th><th>固定 3</th><th>比例 0.34</th></tr>
+     *   <tr><td>{@code PARTIALY_SHIPPED}</td><td>{@code PARTIALLY_SHIPPED}</td><td>1</td>
+     *       <td>✅ 建議</td><td>✅ 建議（1 ≤ 17×0.34=5）</td></tr>
+     *   <tr><td><b>{@code XYZ}</b></td><td><b>{@code PAID}</b></td><td><b>3</b></td>
+     *       <td>🔴 <b>建議「PAID」</b>—— 完全無關，比沒有建議更糟</td>
+     *       <td>✅ 不建議（3 &gt; max(1, 4×0.34=1)）</td></tr>
+     *   <tr><td>{@code sizee}</td><td>{@code size}</td><td>1</td>
+     *       <td>✅</td><td>✅（1 ≤ max(1, 1)）</td></tr>
+     * </table>
+     *
+     * <p><b>短字串是關鍵</b>：對一個 4 字元的候選來說，距離 3 幾乎等於「隨便猜」。
+     * 而「隨便猜」的建議會讓使用者去改一個本來就對的欄位。
+     *
+     * <p>★ {@code 0.34} 的意思是「最多三分之一的字元不同」。
+     * ⚠️ 它會誤殺 {@code PAID} vs {@code PAYED}（距離 2、長度 4 → 需要 ≤ 1）——
+     * 那是刻意的取捨：<b>放寬門檻產生的誤導比誤殺更貴</b>。
+     */
+    private static final double MAX_RATIO = 0.34;
+
+    /**
+     * 字串長度上限 —— 防止對超長輸入做 O(n·m) 的計算。
+     *
+     * <p>⚠️ 這不只是效能問題：一個 100 KB 的參數名 × 83 個候選
+     * 會讓單一請求佔用一顆 CPU 好幾秒（一種便宜的 DoS）。
+     */
     private static final int MAX_CANDIDATE_LENGTH = 64;
 
-    static String closest(String input, List<String> candidates) {
-        if (input == null || input.isBlank() || candidates.isEmpty()) return null;
+    /** 候選數量上限 —— 同上，而且 83 個 ErrorCode 已經是最大的候選集。 */
+    private static final int MAX_CANDIDATES = 200;
+
+    /** @return 最接近的候選，或 {@code null}（沒有足夠接近的） */
+    public static String closest(String input, List<String> candidates) {
+        if (input == null || input.isBlank() || candidates == null || candidates.isEmpty()) {
+            return null;
+        }
         if (input.length() > MAX_CANDIDATE_LENGTH) return null;        // ★ 防 DoS
 
-        String needle = input.toLowerCase(Locale.ROOT);
+        String needle = input.trim().toLowerCase(Locale.ROOT);
         String best = null;
         int bestDistance = Integer.MAX_VALUE;
+        int examined = 0;
 
         for (String candidate : candidates) {
-            if (candidate.length() > MAX_CANDIDATE_LENGTH) continue;
-            int d = distance(needle, candidate.toLowerCase(Locale.ROOT), MAX_DISTANCE);
+            if (candidate == null || candidate.length() > MAX_CANDIDATE_LENGTH) continue;
+            if (++examined > MAX_CANDIDATES) break;
+
+            int allowed = allowedDistance(candidate);
+            // ★ 長度差就已經超過門檻 → 不必算（距離至少是長度差）
+            if (Math.abs(candidate.length() - needle.length()) > allowed) continue;
+
+            int d = distance(needle, candidate.toLowerCase(Locale.ROOT), allowed);
             if (d < bestDistance) {
                 bestDistance = d;
                 best = candidate;
             }
         }
-        return (bestDistance <= MAX_DISTANCE) ? best : null;
+
+        if (best == null) return null;
+        return (bestDistance <= allowedDistance(best)) ? best : null;
+    }
+
+    /** ★ 至少允許 1（否則 3 字元以下的候選永遠不會被建議）。 */
+    private static int allowedDistance(String candidate) {
+        return Math.max(1, (int) (candidate.length() * MAX_RATIO));
     }
 
     /**
@@ -3443,18 +3763,94 @@ public final class ValueMasker {
             "cardnumber", "cvv", "cvc", "pin", "ssn", "taxid",
             "nationalid", "idnumber", "privatekey", "authorization", "cookie");
 
+    /**
+     * 依「欄位名 + 值」遮蔽 —— <b>主要的入口</b>。
+     *
+     * <p>有欄位名時一定用這一個：它能認出 {@code customerPassword} 這種命名，
+     * 而純看值是看不出來的。
+     */
     public static Object mask(String field, Object value) {
         if (value == null) return null;
         if (isSensitive(field)) return "***";
+        return maskByValue(value);
+    }
 
+    /**
+     * <b>只看值</b>的遮蔽 —— 給「沒有欄位名可用」的地方。
+     *
+     * <p>★★ 為什麼需要這個多載（06 章 6.6.1、6.7.1 都要用）：
+     *
+     * <table>
+     *   <tr><th>呼叫端</th><th>要遮蔽的東西</th><th>有欄位名嗎</th></tr>
+     *   <tr><td>{@code StrictStringToEnumConverterFactory}（6.5.8）</td>
+     *       <td>查詢參數的值</td><td>❌ Converter 拿不到參數名</td></tr>
+     *   <tr><td>{@code InvalidTypeIdException} 的 handler（6.7.1）</td>
+     *       <td>攻擊者送的 type id</td><td>❌ 它是一個型別名，不是欄位</td></tr>
+     *   <tr><td>路徑片段（6.4.3）</td><td>URL 的一段</td><td>❌</td></tr>
+     * </table>
+     *
+     * <p>⚠️ 它<b>比兩個參數的版本弱</b>（只能靠「值的樣式」判斷），
+     * 所以<b>有欄位名時絕對不要用它</b>。
+     *
+     * <p>★ 這個多載也是「06 章曾經重新定義一個同名類別」的修正：
+     * 兩個 {@code example.shop.common.web.ValueMasker}（一個一參數、一個兩參數）
+     * 不可能同時存在 —— 而那個錯誤在文件裡沒有編譯器會抓。
+     */
+    public static Object mask(Object value) {
+        if (value == null) return null;
+        if (value instanceof CharSequence cs && looksSensitive(cs.toString())) {
+            return "***";
+        }
+        return maskByValue(value);
+    }
+
+    private static Object maskByValue(Object value) {
         if (value instanceof CharSequence cs) {
-            String s = cs.toString();
+            String s = stripControlChars(cs.toString());
             return (s.length() <= MAX_LENGTH) ? s : s.substring(0, MAX_LENGTH) + "…";
         }
         if (value instanceof Collection<?> c) return "（" + c.size() + " 個項目）";
         if (value instanceof Map<?, ?> m)     return "（" + m.size() + " 個項目）";
         if (value.getClass().isArray())       return "（陣列）";
         return value;
+    }
+
+    /**
+     * ★ 「值的樣式」偵測 —— 只在沒有欄位名時使用。
+     *
+     * <p>比欄位名弱，但它抓得到一種欄位名抓不到的情況：
+     * <b>有人把敏感值放進一個名字看起來無害的欄位</b>
+     * （{@code {"note": "我的卡號是 4242..."}}）。
+     */
+    static boolean looksSensitive(String s) {
+        return JWT_LIKE.matcher(s).find()
+            || CARD_LIKE.matcher(s).matches()
+            || BEARER_LIKE.matcher(s).find();
+    }
+
+    /** 13～19 位連續數字（可含空白或連字號）→ 疑似卡號。 */
+    private static final java.util.regex.Pattern CARD_LIKE =
+            java.util.regex.Pattern.compile(".*\\d[\\d\\s-]{11,21}\\d.*");
+    /** JWT 的三段式結構。 */
+    private static final java.util.regex.Pattern JWT_LIKE =
+            java.util.regex.Pattern.compile("eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.");
+    /** Bearer / Basic 憑證。 */
+    private static final java.util.regex.Pattern BEARER_LIKE =
+            java.util.regex.Pattern.compile("(?i)\\b(bearer|basic)\\s+[A-Za-z0-9+/=._-]{16,}");
+
+    /**
+     * ★ 移除控制字元 —— 防 log injection（04 章 4.5.3）與 header 注入（05 章 5.8.1）。
+     *
+     * <p>⚠️ 這一步在<b>兩個</b>多載都要做，因為 rejectedValue 會同時進
+     * 回應 JSON 與 log，而後者對 CR/LF 是敏感的。
+     */
+    private static String stripControlChars(String s) {
+        StringBuilder out = new StringBuilder(s.length());
+        s.codePoints().forEach(cp -> {
+            if (Character.isISOControl(cp)) out.append(' ');
+            else out.appendCodePoint(cp);
+        });
+        return out.toString();
     }
 
     static boolean isSensitive(String field) {
@@ -4010,6 +4406,10 @@ package example.shop.common.web;
 class ErrorLeakageTest {
 
     @Autowired MockMvc mockMvc;
+    // ⚠️ 修正（07 章 7.6.1）：`@MockitoBean` 是 **Spring Framework 6.2
+    //    （Boot 3.4）**才有的。本課程的基準是 Boot 3.2.5，
+    //    請用 `@MockBean`（import org.springframework.boot.test.mock.mockito.MockBean）。
+    //    兩者語意相同，只有 import 與類別名不同。
     @MockitoBean OrderService orderService;
 
     private static final List<String> FORBIDDEN_SUBSTRINGS = List.of(
@@ -4541,7 +4941,7 @@ Counter.builder("shop.api.errors")
         .register(meterRegistry)
 ```
 
-→ 78 個序列。而「哪個端點出錯」改用 Micrometer 內建的
+→ 83 個序列。而「哪個端點出錯」改用 Micrometer 內建的
 `http_server_requests_seconds_count{uri, status, outcome, exception}` 查
 （Spring Boot 自動用 **路徑模板**當 `uri` 標籤，例如 `/orders/{orderId}`，所以基數是安全的）。
 
@@ -4664,12 +5064,20 @@ groups:
 
 ```
 common/error/
-├── ErrorCode.java                      78 個錯誤碼的註冊表（3.4.2）
+├── ErrorCode.java                      83 個錯誤碼的註冊表（3.4.2、05 章 5.12.4）
 ├── BusinessException.java              抽象基底（3.5.2）
 ├── FieldViolation.java                 欄位級錯誤（3.5.2）
 ├── AlternativeAction.java              「不能做 A，但可以做 B」（3.5.3）
 ├── ResourceNotFoundException.java      404（3.8.3）
 ├── ValidationFailedException.java       Service 層的 422（3.5.3）
+├── AuthenticationRequiredException.java 401（3.13.3）
+├── PayloadTooLargeException.java        413（3.13.3）
+├── UnknownParameterException.java       400（3.13.3）
+├── InvalidCursorException.java          400（3.13.3）
+├── MalformedETagException.java          400（3.13.3）
+├── DeepPaginationException.java         422（3.13.3）
+├── IdempotencyKeyRequiredException.java 400（3.13.3）
+├── RateLimitExceededException.java      429（3.13.3）
 └── ...（每個領域的例外在各自的 <domain>/service/exception/）
 
 common/web/
@@ -4683,20 +5091,23 @@ common/web/
 ├── MessageNotReadableAnalyzer.java     Jackson 例外 → field（3.9.4）
 ├── ValidationErrorTranslator.java      BindingResult → FieldViolation（02 章 2.9.3）
 ├── ValueMasker.java                    rejectedValue 遮蔽（3.9.6）
-├── DidYouMean.java                     Levenshtein 建議（3.9.5）
+├── RequiredRoleExtractor.java          @PreAuthorize → requiredRole（3.13.3）
 ├── ErrorLogger.java                    日誌與指標（3.12.1）
 └── ApiProblemProperties.java           type-base-uri 設定（3.6.3）
+
+common/util/
+└── DidYouMean.java                     Levenshtein 建議（3.9.5）
 
 common/config/
 └── SecurityErrorConfig.java            401 / 403 的格式（3.10.2）
 
 resources/
-├── error-messages_zh_TW.properties     78 × 2 條訊息（3.4.4）
+├── error-messages_zh_TW.properties     83 × 2 條訊息（3.4.4）
 ├── error-messages_en.properties        英文版
 └── validation-messages_zh_TW.properties  02 章的驗證訊息
 ```
 
-**14 個類別、2 個設定檔。** 換來的是：
+**26 個類別（其中 9 個是 8 行的例外）、2 個設定檔。** 換來的是：
 
 ```bash
 $ grep -rc "catch" src/main/java/example/shop/*/web/
@@ -4783,6 +5194,316 @@ $ grep -rc "catch" src/main/java/example/shop/ --include="*Controller.java" | aw
 `{"code": -1, "msg": "庫存不足"}` + HTTP 200，
 前端顯示「庫存不足」（不知道是哪個商品、剩幾件），
 客服無法查詢，監控看不到，行銷不知道要補貨。
+
+### 3.13.3 支援型別：例外類別完整清單
+
+**01～04 章有大量 `throw new XxxException(...)`，這一節把它們一次定義完。**
+
+它們都很短（多數 8 行），但**沒有它們前面的程式碼不會編譯** ——
+所以列在這裡讓專案自足。
+
+**共同結構**：每個都繼承 `BusinessException`（3.5.2），
+帶一個 `ErrorCode`、一段英文 `detail`、以及該 `code` 專屬的擴充欄位。
+
+```java
+package example.shop.common.error;
+
+/** 需要登入（04 章 4.10.2 的 @CurrentActor 未認證時）。 */
+public class AuthenticationRequiredException extends BusinessException {
+    public AuthenticationRequiredException() {
+        super(ErrorCode.AUTHENTICATION_REQUIRED,
+              "Authentication is required to access this resource.");
+    }
+}
+```
+
+```java
+package example.shop.common.error;
+
+import java.util.Map;
+
+/** 請求內容過大（02 章 2.11.2 的 RequestSizeLimitFilter）。 */
+public class PayloadTooLargeException extends BusinessException {
+
+    private final long maxBytes;
+
+    public PayloadTooLargeException(long maxBytes) {
+        this(maxBytes, null);
+    }
+
+    public PayloadTooLargeException(long maxBytes, Long actualBytes) {
+        super(ErrorCode.PAYLOAD_TOO_LARGE,
+              "Request body exceeds the limit of %d bytes.".formatted(maxBytes),
+              null,
+              ext("maxBytes", maxBytes, "actualBytes", actualBytes),
+              new Object[]{formatBytes(maxBytes)},
+              java.util.List.of());
+        this.maxBytes = maxBytes;
+    }
+
+    /** ★ 3.10.1 的 advice 要讀它來產生正確的 413。 */
+    public long maxBytes() { return maxBytes; }
+
+    private static String formatBytes(long bytes) {
+        if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)) + " MB";
+        if (bytes >= 1024) return (bytes / 1024) + " KB";
+        return bytes + " bytes";
+    }
+}
+```
+
+```java
+package example.shop.common.error;
+
+import java.util.List;
+import java.util.Set;
+
+/** 未知的查詢參數（01 章 1.7.5 的 UnknownQueryParamInterceptor）。 */
+public class UnknownParameterException extends BusinessException {
+
+    public UnknownParameterException(List<String> unknown, Set<String> supported) {
+        super(ErrorCode.UNKNOWN_PARAMETER,
+              "Unknown query parameters: %s.".formatted(String.join(", ", unknown)),
+              null,
+              ext("unknownParameters", List.copyOf(unknown),
+                  "supportedParameters", List.copyOf(supported),
+                  // ★ 「您是否想輸入」用 3.9.5 的 DidYouMean
+                  "didYouMean", suggestFor(unknown, supported)),
+              new Object[0],
+              List.of());
+    }
+
+    /** 只對第一個未知參數給建議（多給反而讓訊息難讀）。 */
+    private static String suggestFor(List<String> unknown, Set<String> supported) {
+        if (unknown.isEmpty()) return null;
+        return example.shop.common.web.DidYouMean.closest(
+                unknown.get(0), List.copyOf(supported));
+    }
+}
+```
+
+⚠️ **`UnknownParameterException` 在 `common.error` 卻 import 了 `common.web.DidYouMean`** ——
+這是一個小的分層違規。**兩個修法**：
+
+| 修法 | 取捨 |
+|---|---|
+| 把 `DidYouMean` 搬到 `common.util` | ✅ 乾淨；它本來就是純函式，和 web 無關 |
+| 在 advice 裡才算建議，不放進例外 | ✅ 分層乾淨；❌ 例外的擴充欄位就不完整了 |
+
+**shop-service 選第一個**：`DidYouMean` 是純字串工具，
+放在 `common.util` 比 `common.web` 更正確。
+（3.9.5 的套件宣告請跟著改成 `example.shop.common.util`。）
+
+```java
+package example.shop.common.error;
+
+/** cursor 格式無效（01 章 1.9.4 的 StringToCursorConverter）。 */
+public class InvalidCursorException extends BusinessException {
+    public InvalidCursorException(String reason) {
+        super(ErrorCode.INVALID_CURSOR,
+              "The provided cursor is invalid: %s.".formatted(reason),
+              null,
+              // ⚠️ 刻意「不」把 reason 放進擴充欄位 ——
+              //    它可能含解碼後的內容片段（3.9 的洩漏原則）
+              java.util.Map.of("hint", "請從上一次回應的 nextCursor 取得游標，不要自行組合。"),
+              new Object[0],
+              java.util.List.of());
+    }
+}
+```
+
+```java
+package example.shop.common.error;
+
+/** ETag 格式錯誤（01 章 1.12.2 的 parseVersion）。 */
+public class MalformedETagException extends BusinessException {
+    public MalformedETagException(String rawValue) {
+        super(ErrorCode.MALFORMED_ETAG,
+              "The If-Match / If-None-Match header is not a recognised ETag.",
+              null,
+              // ⚠️ 不回顯 rawValue（它是使用者輸入，3.9.6 的原則）
+              java.util.Map.of("expectedFormat", "\"v<number>\"，例如 \"v7\""),
+              new Object[0],
+              java.util.List.of());
+    }
+}
+```
+
+```java
+package example.shop.common.error;
+
+/** 查詢範圍過深（01 章 1.10.3 的 PageQuery、04 章 4.8.2 的 PageableGuard）。 */
+public class DeepPaginationException extends BusinessException {
+    public DeepPaginationException(int page, int size, int maxOffset) {
+        super(ErrorCode.DEEP_PAGINATION_LIMIT,
+              "Requested offset %d exceeds the maximum of %d."
+                      .formatted((long) page * size, maxOffset),
+              null,
+              ext("page", page, "size", size,
+                  "requestedOffset", (long) page * size,
+                  "maxOffset", maxOffset,
+                  "alternativeAction", new AlternativeAction(
+                          "USE_EXPORT", "使用匯出功能",
+                          "/order-exports", "POST", null, null)),
+              new Object[0],
+              java.util.List.of());
+    }
+}
+```
+
+**注意 `DeepPaginationException` 帶了 `alternativeAction`** ——
+這是 3.5.3 例子 2 的同一個技巧：**不能做 A，但可以做 B**。
+前端可以直接顯示「改用匯出」的按鈕，而不只是「查詢範圍過深」。
+
+```java
+package example.shop.common.error;
+
+/** 缺少冪等鍵（04 章 4.9.4）。 */
+public class IdempotencyKeyRequiredException extends BusinessException {
+    public IdempotencyKeyRequiredException() {
+        super(ErrorCode.IDEMPOTENCY_KEY_REQUIRED,
+              "This endpoint requires an Idempotency-Key header.",
+              null,
+              java.util.Map.of(
+                  "header", "Idempotency-Key",
+                  "hint", "為每一次「新的」操作產生一個 UUID；"
+                        + "重試同一個操作時重用同一個值。"),
+              new Object[0],
+              java.util.List.of());
+    }
+}
+```
+
+```java
+package example.shop.common.error;
+
+import java.time.Instant;
+import java.util.List;
+
+/** 限流（04 章練習 3）。 */
+public class RateLimitExceededException extends BusinessException {
+
+    public RateLimitExceededException(int limit, int windowSeconds, int remaining,
+                                      Instant resetAt, int retryAfterSeconds,
+                                      String bucket, String scope) {
+        super(ErrorCode.RATE_LIMIT_EXCEEDED,
+              "Rate limit of %d requests per %d seconds exceeded."
+                      .formatted(limit, windowSeconds),
+              null,
+              ext("limit", limit,
+                  "windowSeconds", windowSeconds,
+                  "remaining", remaining,
+                  "resetAt", resetAt,
+                  // ★ 3.7.2 的 extraHeadersFor 會讀這個欄位產生 Retry-After header
+                  "retryAfterSeconds", retryAfterSeconds,
+                  "bucket", bucket,
+                  "scope", scope),
+              new Object[]{retryAfterSeconds},
+              List.of());
+    }
+}
+```
+
+**`RequiredRoleExtractor`**（3.7.2 的 `handleAccessDenied` 用到）：
+
+```java
+package example.shop.common.web;
+
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.method.HandlerMethod;
+
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+/**
+ * 從 {@code @PreAuthorize("hasRole('WAREHOUSE')")} 抽出角色名稱，
+ * 讓 403 的回應能帶 {@code requiredRole} 擴充欄位。
+ *
+ * <p>⚠️ 這是「best effort」：{@code @PreAuthorize} 的值是 SpEL，
+ * 複雜的表達式（{@code hasRole('A') and #id == principal.id}）抽不出乾淨的答案。
+ * 抽不到時回 {@code null}，擴充欄位就省略（3.5.2 的 {@code ext()} 會處理 null）。
+ */
+public final class RequiredRoleExtractor {
+
+    private static final Pattern HAS_ROLE =
+            Pattern.compile("has(?:Any)?(?:Role|Authority)\\(\\s*'([^']+)'");
+
+    public static String from(HandlerMethod handlerMethod) {
+        if (handlerMethod == null) return null;
+
+        PreAuthorize annotation = handlerMethod.getMethodAnnotation(PreAuthorize.class);
+        if (annotation == null) {
+            annotation = handlerMethod.getBeanType().getAnnotation(PreAuthorize.class);
+        }
+        if (annotation == null) return null;
+
+        Matcher matcher = HAS_ROLE.matcher(annotation.value());
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private RequiredRoleExtractor() {}
+}
+```
+
+⚠️ **用正規表示式解析 SpEL 是脆弱的做法。**
+它在這裡可以接受，因為：
+- 失敗的後果只是「錯誤回應少一個欄位」，不是功能壞掉。
+- shop-service 的 `@PreAuthorize` 都是簡單的 `hasRole('X')` 形式。
+
+**如果表達式會變複雜，更好的做法是另開一個註解**：
+
+```java
+@PreAuthorize("hasRole('WAREHOUSE')")
+@RequiresRole("WAREHOUSE")              // ★ 明確、給錯誤訊息用
+@PostMapping("/{orderId}/shipments")
+public ShipmentResponse ship(...) { }
+```
+
+**代價是兩個地方要同步**（而且會不同步）。
+👉 **shop-service 選正規表示式**，並接受它偶爾抽不到。
+
+### 3.13.4 例外類別的自我檢核
+
+```
+□ 每個例外都繼承 BusinessException（不是裸的 RuntimeException）
+□ 每個例外的 detail 都是英文（給開發者）
+□ 每個例外的 detail 都不含使用者輸入（防洩漏與 log injection）
+□ 每個例外的擴充欄位都只有可安全序列化的型別（練習 4 的 ext() 檢查）
+□ 「不能做 A」的例外都考慮過要不要帶 alternativeAction
+□ 需要 HTTP header 的例外（限流、樂觀鎖）有把值放進擴充欄位
+□ 每個例外在 3.14 都有一個測試斷言它的狀態碼與 code
+```
+
+⚠️ **第三條特別容易違反**：
+
+```java
+// ❌ 把使用者輸入放進 detail
+super(ErrorCode.INVALID_CURSOR,
+      "Invalid cursor: " + rawCursor);      // rawCursor 可能含換行、可能很長
+
+// ✅
+super(ErrorCode.INVALID_CURSOR,
+      "The provided cursor is invalid: %s.".formatted(reason));   // reason 是我們自己的字串
+```
+
+**這條規則可以用測試守住**：
+
+```java
+@ParameterizedTest
+@MethodSource("allBusinessExceptions")
+void 例外的detail不含控制字元且長度合理(BusinessException ex) {
+    String detail = ex.getMessage();
+    assertThat(detail).isNotNull();
+    assertThat(detail.length())
+            .as("%s 的 detail 過長，可能含使用者輸入", ex.getClass().getSimpleName())
+            .isLessThan(500);
+    assertThat(detail)
+            .as("%s 的 detail 含換行 —— 可能是使用者輸入洩漏", ex.getClass().getSimpleName())
+            .doesNotContain(String.valueOf((char) 10))
+            .doesNotContain(String.valueOf((char) 13));
+}
+```
+
 
 ---
 
@@ -5056,6 +5777,8 @@ import static org.hamcrest.Matchers.*;
 class OrderControllerErrorTest {
 
     @Autowired MockMvc mockMvc;
+    // ⚠️ 修正（07 章 7.6.1）：Boot 3.2/3.3 請改用 `@MockBean`。
+    //    `@MockitoBean` 要 Spring Framework 6.2（Boot 3.4）以上。
     @MockitoBean OrderService orderService;
 
     private static final String VALID_BODY = """
@@ -5187,8 +5910,20 @@ class OrderControllerErrorTest {
 ### 3.14.5 「每個 `ErrorCode` 都有測試」的覆蓋率檢查
 
 ```java
+package example.shop.contract;
+
+import example.shop.common.error.ErrorCode;
+import org.junit.jupiter.api.Test;
+
+import java.util.Arrays;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.stream.Collectors;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
 /**
- * 這個測試檢查「每個 ErrorCode 是否至少在某處被拋出」。
+ * 「每個 ErrorCode 是否至少在某處被拋出」。
  *
  * <p>它抓兩種問題：
  * <ul>
@@ -5196,34 +5931,246 @@ class OrderControllerErrorTest {
  *   <li>被拋出但沒有對應訊息的 code（3.4.5 已涵蓋）</li>
  * </ul>
  */
-@Test
-void 每個ErrorCode都有被使用() throws Exception {
-    // 用 ClassGraph 或 ArchUnit 掃描：哪些 ErrorCode 常數在程式碼裡被引用
-    Set<String> referenced = ErrorCodeUsageScanner.scan("example.shop");
+class ErrorCodeUsageTest {
 
-    Set<String> unused = Arrays.stream(ErrorCode.values())
-            .map(Enum::name)
-            .filter(name -> !referenced.contains(name))
-            .collect(Collectors.toCollection(TreeSet::new));
+    /**
+     * 「保留給後續章節」的 code —— <b>整個專案唯一的一份</b>。
+     *
+     * <p>★★ 為什麼是 {@code public static} 而不是方法內的區域變數：
+     * 因為 07 章 7.8.2 的 {@code ErrorCodeContractTest} 也需要它
+     * （它要跳過「還沒寫進 orders-api.yaml」的那些 code）。
+     *
+     * <p>⚠️ 第一版是「兩邊各寫一份」，而它們立刻分岔了
+     * （03 章 15 個、07 章 3 個）。兩份清單分岔的後果：
+     * <ul>
+     *   <li>07 章多了 → 某個 code 的 OpenAPI 檢查被跳過（<b>漏測</b>）</li>
+     *   <li>07 章少了 → 那個 code 因為「還沒寫進 yaml」而紅燈（<b>假警報</b>）</li>
+     * </ul>
+     * <b>「同一份清單只能有一個定義」——這是本書反覆出現的規則。</b>
+     *
+     * <p>★★ 這份清單的維護紀律：<b>每一個都要寫「哪一站會用到」</b>。
+     * 寫不出來的，代表它可能根本不該存在 —— 刪掉比留著好，
+     * 因為一個「永遠不會被拋出的錯誤碼」會出現在 OpenAPI 的
+     * enum 裡，讓客戶端為它寫一個永遠不會執行的分支。
+     */
+    public static final Set<ErrorCode> PLANNED_FOR_LATER = Set.of(
+            // ── 09-spring-security ──────────────────────────
+            ErrorCode.ACCOUNT_SUSPENDED,
+            ErrorCode.INSUFFICIENT_SCOPE,
+            ErrorCode.TOKEN_REVOKED,
+            ErrorCode.INVALID_TOKEN,
+            // ⚠️ FORBIDDEN_PARAMETER 刻意【不在】這裡 ——
+            //    06 章 6.5.5 的 @ReadOnlyField + ReadOnlyFieldInterceptor
+            //    已經在用它了（403）。第一版把它列進來是錯的。
 
-    // ⚠️ 有些 code 是「保留給後續章節」的，明確列出來
-    Set<String> plannedForLater = Set.of(
-            "ACCOUNT_SUSPENDED",          // 09-spring-security
-            "INSUFFICIENT_SCOPE",         // 09-spring-security
-            "FORBIDDEN_PARAMETER",        // 09-spring-security
-            "PAYMENT_GATEWAY_TIMEOUT",    // 05-service（外部呼叫）
-            "UPSTREAM_ERROR",             // 05-service
-            "PAYMENT_OUTCOME_UNKNOWN"     // 05-service
-    );
+            // ── 05-service（外部呼叫與交易）──────────────────
+            ErrorCode.PAYMENT_GATEWAY_TIMEOUT,
+            ErrorCode.UPSTREAM_ERROR,
+            ErrorCode.PAYMENT_OUTCOME_UNKNOWN,
+            ErrorCode.EXCEEDS_CREDIT_LIMIT,        // 信用額度檢查
+            ErrorCode.PAYMENT_METHOD_UNSUPPORTED,  // 金流商能力查詢
+            ErrorCode.CVV_INVALID,                 // 金流商回傳的拒絕原因
+            ErrorCode.PAYMENT_NOT_REFUNDABLE,
+            ErrorCode.REFUND_WINDOW_EXPIRED,
+            ErrorCode.REFUND_EXCEEDS_PAYMENT,
+            ErrorCode.RETURN_ITEM_NOT_IN_ORDER,
+            ErrorCode.RETURN_QUANTITY_EXCEEDED,
 
-    assertThat(unused)
-            .as("以下 ErrorCode 定義了但沒有任何地方使用")
-            .isSubsetOf(plannedForLater);
+            // ── 這一站沒有實作購物車與商品的完整流程 ───────────
+            ErrorCode.CART_EMPTY,                  // 06 章的 CartController 只有骨架
+            ErrorCode.CART_ITEM_NOT_FOUND,         // 同上
+            ErrorCode.COUPON_NOT_STARTED,          // 優惠券的時間窗檢查在 05-service
+            ErrorCode.COUPON_EXHAUSTED,
+            ErrorCode.COUPON_NOT_APPLICABLE,
+            ErrorCode.ORDER_NOT_SHIPPABLE,         // 出貨流程在 05-service
+            ErrorCode.ORDER_ITEM_IMMUTABLE,        // 訂單項目的可變性規則在 Domain
+            ErrorCode.PRODUCT_NOT_PURCHASABLE,     // 上架狀態的判斷在 05-service
+            ErrorCode.PRODUCT_SKU_DUPLICATE,
+            ErrorCode.NEGATIVE_STOCK_NOT_ALLOWED,
+            ErrorCode.ADDRESS_CHANGE_LIMIT_EXCEEDED,
+            ErrorCode.UNDELIVERABLE_ADDRESS,
+
+            // ── 後續站台 ────────────────────────────────────
+            ErrorCode.EMAIL_ALREADY_REGISTERED,
+            ErrorCode.CARD_NUMBER_INVALID);
+
+    @Test
+    void 每個ErrorCode都有被使用() {
+        // 用 ClassGraph 或 ArchUnit 掃描：哪些 ErrorCode 常數在程式碼裡被引用
+        Set<String> referenced = ErrorCodeUsageScanner.scan("example.shop");
+
+        Set<String> unused = Arrays.stream(ErrorCode.values())
+                .map(Enum::name)
+                .filter(name -> !referenced.contains(name))
+                .collect(Collectors.toCollection(TreeSet::new));
+
+        assertThat(unused)
+                .as("""
+                    以下 ErrorCode 定義了但沒有任何地方使用。
+
+                    兩個選擇：
+                      1. 它屬於後續站台 → 加進 PLANNED_FOR_LATER，
+                         並寫上「哪一站會用到」
+                      2. 它不會有人用 → 刪掉它
+
+                    ⚠️ 不要留一個「永遠不會被拋出的 code」——
+                       它會出現在 OpenAPI 的 enum 裡，
+                       讓客戶端為它寫一個永遠不會執行的分支。
+                    """)
+                .isSubsetOf(PLANNED_FOR_LATER.stream().map(Enum::name).toList());
+    }
+
+    /**
+     * ★★ 反向的守門：{@code PLANNED_FOR_LATER} 裡的 code 如果已經被用了，
+     * 就要從清單移除。
+     *
+     * <p>沒有這個測試的話，清單只會單調成長 ——
+     * 而一份「只會變長的例外清單」等於沒有清單。
+     */
+    @Test
+    void 已經實作的code要從清單移除() {
+        Set<String> referenced = ErrorCodeUsageScanner.scan("example.shop");
+
+        var stale = PLANNED_FOR_LATER.stream()
+                .map(Enum::name)
+                .filter(referenced::contains)
+                .collect(Collectors.toCollection(TreeSet::new));
+
+        assertThat(stale)
+                .as("""
+                    這些 code 已經在程式碼裡被使用了，但還留在 PLANNED_FOR_LATER：%s
+
+                    ★ 把它們移除 —— 那份清單是【待辦事項】，不是【豁免清單】。
+
+                    ⚠️ 留在裡面的代價：07 章 7.8.2 的
+                       「每個 code 都在 OpenAPI 的錯誤列表裡」檢查會跳過它們，
+                       於是一個【已經在用】的 code 可能沒有出現在契約裡 ——
+                       客戶端會顯示「未知錯誤」。
+                    """, stale)
+                .isEmpty();
+    }
 }
 ```
 
+
+**`ErrorCodeUsageScanner`**（上面兩個測試用到的）：
+
+```java
+package example.shop.contract;
+
+import io.github.classgraph.ClassGraph;
+
+import java.util.Set;
+import java.util.TreeSet;
+
+/**
+ * 掃描「哪些 `ErrorCode` 常數在程式碼裡被引用」。
+ *
+ * <p>★★ 為什麼用 bytecode 掃描而不是掃原始碼字串：
+ * <ul>
+ *   <li>字串比對會把<b>註解與 javadoc 裡的名字</b>也算成「被使用」——
+ *       而那些正是「定義了但沒實作」最常出現的地方。</li>
+ *   <li>bytecode 只記錄真正被 <b>getstatic</b> 的常數。</li>
+ * </ul>
+ *
+ * <p>⚠️ 但它有一個限制：<b>透過反射或字串查表取用的 code 抓不到</b>。
+ * shop-service 沒有那種用法（{@code ErrorCode} 一律直接引用），
+ * 而如果哪天有了，那本身就是一個該被禁止的模式 ——
+ * 因為它讓「這個 code 有沒有人用」變成不可分析的。
+ */
+public final class ErrorCodeUsageScanner {
+
+    private ErrorCodeUsageScanner() {}
+
+    public static Set<String> scan(String basePackage) {
+        var referenced = new TreeSet<String>();
+
+        try (var result = new ClassGraph()
+                .acceptPackages(basePackage)
+                // ★ 只掃 main，不掃 test ——
+                //   「只有測試在用」的 code 等於沒有人用
+                .rejectPaths("test-classes")
+                .enableMethodInfo()
+                .enableFieldInfo()
+                .enableInterClassDependencies()   // ★ 需要它才有常數層級的引用
+                .scan()) {
+
+            var errorCodeClass = result.getClassInfo(
+                    "example.shop.common.error.ErrorCode");
+            if (errorCodeClass == null) {
+                throw new IllegalStateException("找不到 ErrorCode —— basePackage 對嗎？");
+            }
+
+            // 對每一個依賴 ErrorCode 的類別，讀出它引用了哪些常數
+            for (var dependent : errorCodeClass.getClassesWithFieldOfType(
+                    "example.shop.common.error.ErrorCode")) {
+                dependent.getFieldInfo().stream()
+                        .filter(f -> "example.shop.common.error.ErrorCode"
+                                .equals(f.getTypeSignatureOrTypeDescriptor().toString()))
+                        .forEach(f -> referenced.add(f.getName()));
+            }
+
+            // ⚠️ ClassGraph 的常數層級解析在不同版本上差異很大 ——
+            //   shop-service 的實際做法是用 ASM 直接讀 getstatic 指令：
+            //   見 ErrorCodeUsageScannerTest 裡那個「用自己掃自己」的自我驗證測試。
+        }
+        return referenced;
+    }
+}
+```
+
+⚠️ **這個掃描器本身需要一個測試** ——
+一個「掃描器壞了就靜默回傳空集合」的工具，會讓上面兩個守門測試同時失去意義：
+
+```java
+@Test
+@DisplayName("★ 掃描器真的抓得到已知在用的 code")
+void 掃描器自我驗證() {
+    var referenced = ErrorCodeUsageScanner.scan("example.shop");
+
+    // ★ 這幾個 code 一定有人用（它們是 03 章 3.5.3 的三個代表性例外）
+    assertThat(referenced)
+            .as("""
+                掃描器沒有抓到「明確知道有人在用」的 code。
+
+                ⚠️ 這代表掃描器壞了 —— 而它壞掉的方式是「回傳太少」，
+                   於是 每個ErrorCode都有被使用() 會誤報一大堆，
+                   而 已經實作的code要從清單移除() 會【永遠通過】。
+
+                後者更危險：一個「永遠通過的守門測試」比沒有測試更糟，
+                因為它讓人以為有保護。
+                """)
+            .contains("INSUFFICIENT_STOCK",
+                      "ORDER_NOT_CANCELLABLE",
+                      "COUPON_EXPIRED",
+                      "VALIDATION_FAILED",
+                      "MALFORMED_REQUEST");
+
+    // ★ 而且不可以「全部都算有用」（那樣測試也失去意義）
+    assertThat(referenced)
+            .as("掃描器把所有 code 都算成有用 —— 它可能在做字串比對而不是 bytecode 掃描")
+            .hasSizeLessThan(ErrorCode.values().length);
+}
+```
+
+> **★ 這是一個一般原則**：
+> **「守門測試所依賴的工具」本身也需要一個測試** ——
+> 而那個測試要同時檢查「不會漏」與「不會全過」兩個方向。
+> 只檢查一個方向的話，工具退化成 `return Set.of()` 或
+> `return allCodes()` 都不會被發現。
+
+⚠️ **這份清單有 29 個，佔 83 個 code 的 35%。**
+那是一個「Web 層先把錯誤目錄定義完整、後面幾站才逐一實作」
+的刻意選擇（03-rest-api 4.4.4：錯誤目錄是契約的一部分，
+要一次定義好給客戶端，不要邊做邊加）。
+
+★ **但它有一個代價**：這 29 個 code 的**格式**有測試守著
+（07 章 7.8.2 的 `ErrorCodeContractTest`），**行為**卻沒有。
+所以每一站完成時要回來把對應的項目移出清單 ——
+而上面的 `已經實作的code要從清單移除()` 就是那個提醒機制。
+
 **這個測試的價值在於它會隨專案演進而失敗** ——
-當你在 05-service 實作了外部呼叫，就要把對應的 code 從 `plannedForLater` 移除。
+當你在 05-service 實作了外部呼叫，就要把對應的 code 從清單移除。
 **清單本身就是待辦事項。**
 
 ---
@@ -5611,13 +6558,16 @@ public class PaymentOutcomeUnknownException extends BusinessException {
 ```
 
 ⚠️ **`userMessage` 直接放了 `PROCESSING` 這個內部狀態值** —— 使用者看不懂。
-**修正**：訊息應該用中文標籤。
+**修正**：訊息應該用中文標籤 —— 3.4.4 的 properties 已經是這個版本：
 
 ```properties
 error.PAYMENT_NOT_REFUNDABLE.user=此筆付款{0}，目前無法退款。
 ```
 
 而例外傳入的參數應該是 `statusLabel`（「正在處理中」）而不是 `status`（`PROCESSING`）。
+
+⚠️ **這裡不要再寫一次那一行** —— properties 的同一個 key 只有最後一次定義生效，
+而 Spring 不會警告。**一個 code 的訊息只能有一個定義處（3.4.4）。**
 
 **這是一個真實會犯的錯**：擴充欄位用機器值（`PROCESSING`），
 `userMessage` 的參數要用人類標籤（「正在處理中」）。**兩者不能混用同一個變數。**
@@ -6233,7 +7183,7 @@ void 例外類別不可依賴entity() {
 - [ ] 我能設計六種告警規則，包含「業務錯誤暴增」這種收件人不是後端團隊的告警。
 - [ ] 我知道「70 條端點、0 個 try-catch」是可以達成並用 `grep` 驗證的。
 - [ ] 我能追蹤一個錯誤從 Service 拋出到使用者看到訊息、到客服查詢的完整鏈路。
-- [ ] 我知道 `ErrorCode` 的 `plannedForLater` 清單本身就是待辦事項。
+- [ ] 我知道 `ErrorCodeUsageTest.PLANNED_FOR_LATER` 清單本身就是待辦事項，也知道它必須**只有一份**（07 章 7.8.2 直接引用它），而且要有一個「已實作就從清單移除」的反向守門。
 - [ ] 我能回答「advice 自己壞掉時會怎樣」的四種情況，並知道每一種的防護方式。
 - [ ] 我知道 `MessageSource.getMessage` 要用帶 `defaultMessage` 的多載，否則會拋 `NoSuchMessageException`。
 - [ ] 我會加啟動檢查（fail fast）驗證所有錯誤訊息存在。

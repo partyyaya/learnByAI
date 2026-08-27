@@ -170,13 +170,46 @@ type ReverseSlow<T extends unknown[]> = T extends [infer H, ...infer R]
 // ✅ 尾遞迴：用 Acc 累加器攜帶中間結果，遞迴是最後一步
 type ReverseFast<
   T extends unknown[],
+  // Acc = accumulator（累加器）：一個「多出來的參數」，用來存放已經算好的中間結果。
+  // 預設值 [] 讓外部呼叫時可以只寫 ReverseFast<[1, 2, 3]>，不必自己傳空陣列。
   Acc extends unknown[] = [],
 > = T extends [infer H, ...infer R]
-  ? ReverseFast<R, [H, ...Acc]> // 直接回傳遞迴呼叫
+  // 把 H 塞到 Acc 的最前面（順序自然就反過來了），再把「剩下的 R」和「新的 Acc」交給下一層。
+  // 關鍵：整條分支就只有這個遞迴呼叫，結果直接回傳，外面沒有再包 [...] 之類的運算 → 尾遞迴。
+  ? ReverseFast<R, [H, ...Acc]>
+  // 終止條件：T 空了代表全部搬完，此時 Acc 就是最終答案。
   : Acc;
 
 type R = ReverseFast<[1, 2, 3, 4, 5]>; // [5, 4, 3, 2, 1]
 ```
+
+**Acc 到底在幹嘛？** 把上面的展開過程列出來就很清楚了——`T` 逐步變短，`Acc` 逐步長出反轉後的結果：
+
+```
+ReverseFast<[1, 2, 3], []>
+ReverseFast<[2, 3],    [1]>
+ReverseFast<[3],       [2, 1]>
+ReverseFast<[],        [3, 2, 1]>   // T 空了 → 回傳 Acc
+```
+
+對比沒有 Acc 的 `ReverseSlow`，它必須等最深層先回傳，才能在回程時一層層把 `H` 接上去：
+
+```
+ReverseSlow<[1, 2, 3]> = [...ReverseSlow<[2, 3]>, 1]
+                       = [...[...ReverseSlow<[3]>, 2], 1]
+                       = [...[...[...ReverseSlow<[]>, 3], 2], 1]
+                       // 每一層都還「欠著」一個 [..., H] 沒做完，得原路展開回來
+```
+
+兩者的差別可以這樣記：
+
+| | `ReverseSlow`（無 Acc） | `ReverseFast`（有 Acc） |
+| --- | --- | --- |
+| 中間結果放哪 | 卡在呼叫堆疊上，等回程才組合 | 直接存在 `Acc` 參數裡，往下傳 |
+| 遞迴後還有運算嗎 | 有（`[...結果, H]`） | 沒有，直接回傳 |
+| 深度上限 | 約 50 層 | 約 1000 層（編譯器可展開成迴圈） |
+
+所以 `Acc` 的用意不是「多存一份資料」，而是**把原本要在回程做的工作提前做掉**，讓遞迴呼叫成為最後一步，換取編譯器的尾遞迴最佳化。這個模式在型別體操裡到處都是（後面的算術、字串處理也會反覆用到），看到多出一個帶預設值的參數，通常就是累加器。
 
 ---
 
@@ -213,6 +246,20 @@ type C = Concat<[1, 2], [3, 4]>; // [1, 2, 3, 4]
 ```
 
 > 💡 關鍵洞察：`T["length"]` 對**元組**會回傳字面值（如 `3`），對一般陣列 `number[]` 只會回傳 `number`。這個特性是下一節「型別層級算術」的基礎。
+
+```
+Tuple：「我知道自己有幾個元素」
+        ↓
+[string, number, boolean]["length"]
+        ↓
+3
+
+Array：「我不知道自己有幾個元素」
+        ↓
+number[]["length"]
+        ↓
+number
+```
 
 ---
 
@@ -258,6 +305,15 @@ type GreaterThan<A extends number, B extends number> = BuildTuple<A> extends [
 
 type G1 = GreaterThan<5, 3>; // true
 type G2 = GreaterThan<3, 5>; // false
+
+/**
+ * 這段代表意思是：扣除b數組以後至少還要一個元素，其他隨便
+ extends [
+  ...BuildTuple<B>,
+  unknown,
+  ...unknown[],
+]
+ */
 ```
 
 > ⚠️ 因為 `BuildTuple` 會真的建出長度為 N 的元組，這套算術只適合**小數字**。數字一大，很容易撞到遞迴深度上限，也會拖慢編譯。真的需要大數運算時，型別層級不是合適的工具。

@@ -86,26 +86,145 @@ function ok<T>(value: T): Result<T, never> {
 function err<E>(error: E): Result<never, E> {
   return { ok: false, error };
 }
+```
 
-// 使用
-async function fetchUser(id: number): Promise<Result<User, string>> {
-  try {
-    const res = await fetch(`/api/users/${id}`);
-    if (!res.ok) {
-      return err(`HTTP Error: ${res.status}`);
-    }
-    const user = await res.json();
-    return ok(user);
-  } catch (e) {
-    return err(`Network Error: ${(e as Error).message}`);
-  }
+只有型別和兩個建構子還不夠用——每次取值都要先 `if (r.ok)`，串三四層就變成巢狀地獄。Result 模式真正的價值在**組合工具**：
+
+```typescript
+// 成功才套用轉換，失敗原封不動往下傳
+function map<T, U, E>(r: Result<T, E>, fn: (value: T) => U): Result<U, E> {
+  return r.ok ? ok(fn(r.value)) : r;
 }
 
-const result = await fetchUser(1);
-if (result.ok) {
-  console.log(result.value.name); // 型別安全
-} else {
-  console.error(result.error);    // 型別安全
+// 轉換本身也可能失敗時用這個（避免 Result<Result<T>>）
+function andThen<T, U, E>(
+  r: Result<T, E>,
+  fn: (value: T) => Result<U, E>,
+): Result<U, E> {
+  return r.ok ? fn(r.value) : r;
+}
+
+// 取值，失敗給預設
+function unwrapOr<T, E>(r: Result<T, E>, fallback: T): T {
+  return r.ok ? r.value : fallback;
+}
+
+// 兩邊都要處理成同一種東西（例如都轉成畫面文字）
+function match<T, E, R>(
+  r: Result<T, E>,
+  handlers: { ok: (value: T) => R; err: (error: E) => R },
+): R {
+  return r.ok ? handlers.ok(r.value) : handlers.err(r.error);
+}
+```
+
+#### 兩個容易漏掉的地方
+
+**錯誤不要壓成 `string`。** 寫成 `Result<User, string>` 之後，呼叫端只拿到一段文字，沒辦法分辨「該重試」還是「該叫使用者改輸入」。用聯合型別，`switch` 才有 exhaustive 檢查。
+
+**`res.json()` 回傳 `any`。** 這是最隱蔽的一個：
+
+```typescript
+async function fetchUser(id: number): Promise<Result<User, string>> {
+  // ...
+  const user = await res.json(); // any
+  return ok(user);               // ❌ any 一路穿過，編譯器不會吭一聲
+}
+```
+
+`ok(user)` 得到 `Result<any, never>`，可以指派給 `Result<User, string>`，所以 `result.value.name` 看起來型別安全——但那個 `User` 是標註出來的，**runtime 完全沒有驗證過**。API 少一個欄位或型別變了，錯誤會延後到某個 `undefined.xxx` 才爆。要在邊界擋下來：
+
+```typescript
+import { z } from "zod";
+
+const UserSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  email: z.string().email(),
+});
+type User = z.infer<typeof UserSchema>;
+
+type FetchError =
+  | { kind: "http"; status: number }
+  | { kind: "network"; message: string }
+  | { kind: "parse"; issues: string[] };
+
+async function fetchUser(id: number): Promise<Result<User, FetchError>> {
+  let res: Response;
+  try {
+    res = await fetch(`/api/users/${id}`);
+  } catch (e) {
+    return err({ kind: "network", message: (e as Error).message });
+  }
+
+  if (!res.ok) {
+    return err({ kind: "http", status: res.status });
+  }
+
+  const parsed = UserSchema.safeParse(await res.json());
+  if (!parsed.success) {
+    return err({
+      kind: "parse",
+      issues: parsed.error.issues.map((i) => i.message),
+    });
+  }
+
+  return ok(parsed.data); // 到這裡 User 才是真的
+}
+```
+
+#### 使用
+
+```typescript
+// 注意：top-level await 需要檔案是 module，否則 TS1375
+async function main() {
+  const result = await fetchUser(1);
+
+  // 只關心成功的情況
+  const label = map(result, (u) => `${u.name} <${u.email}>`);
+  console.log(unwrapOr(label, "(載入失敗)"));
+
+  // 兩邊都要處理，且每種錯誤給不同訊息
+  const msg = match(result, {
+    ok: (u) => `Hello ${u.name}`,
+    err: (e) => {
+      switch (e.kind) {
+        case "http":
+          return `伺服器回 ${e.status}`;
+        case "network":
+          return `連線失敗：${e.message}`;
+        case "parse":
+          return `回傳格式不符：${e.issues.join(", ")}`;
+      }
+    },
+  });
+  console.log(msg);
+}
+```
+
+四種情境的實際輸出：
+
+| 情境 | `unwrapOr(label, ...)` | `match(...)` |
+|---|---|---|
+| 200 + 格式正確 | `Alice <a@example.com>` | `Hello Alice` |
+| 404 | `(載入失敗)` | `伺服器回 404` |
+| 200 但欄位型別錯 | `(載入失敗)` | `回傳格式不符：Invalid input: expected number, received string, ...` |
+| fetch 直接 throw | `(載入失敗)` | `連線失敗：ECONNREFUSED` |
+
+順帶一個誤解：`switch` 漏掉一個 `case` 時，TS **不會**在 `switch` 當場報錯——`err` 的回傳型別只是悄悄變成 `string | undefined`，錯誤要等到把它當 `string` 用的地方才浮出來。想在原地擋下來，加一個 `never` 兜底：
+
+```typescript
+switch (e.kind) {
+  case "http":
+    return `伺服器回 ${e.status}`;
+  case "network":
+    return `連線失敗：${e.message}`;
+  default: {
+    const _exhaustive: never = e;
+    // ❌ TS2322: Type '{ kind: "parse"; issues: string[]; }'
+    //    is not assignable to type 'never'
+    return _exhaustive;
+  }
 }
 ```
 
@@ -150,6 +269,113 @@ function handleError(error: unknown): void {
     console.log(`App Error [${error.code}]: ${error.message}`);
   } else {
     console.log("Unknown error:", error);
+  }
+}
+
+// ---- 使用：拋出 ----
+interface User { id: number; name: string; email: string }
+
+const users = new Map<number, User>([
+  [1, { id: 1, name: "Alice", email: "alice@example.com" }],
+]);
+
+function getUser(id: number): User {
+  const user = users.get(id);
+  if (!user) throw new NotFoundError("User", id);
+  return user;
+}
+
+function createUser(name: string, email: string): User {
+  const fields: Record<string, string> = {};
+  if (name.trim() === "") fields.name = "不可為空";
+  if (!email.includes("@")) fields.email = "格式錯誤";
+  if (Object.keys(fields).length > 0) {
+    throw new ValidationError("使用者資料驗證失敗", fields);
+  }
+  const user: User = { id: users.size + 1, name, email };
+  users.set(user.id, user);
+  return user;
+}
+
+// ---- 使用：接住 ----
+try { getUser(999) } catch (e) { handleError(e) }
+// 404: User with id 999 not found
+
+try { createUser("", "not-an-email") } catch (e) { handleError(e) }
+// Validation: {"name":"不可為空","email":"格式錯誤"}
+
+try { throw new AppError("DB connection lost", "DB_ERROR", 503) } catch (e) { handleError(e) }
+// App Error [DB_ERROR]: DB connection lost
+
+try { throw "oops" } catch (e) { handleError(e) }
+// Unknown error: oops
+```
+
+`instanceof` 的判斷順序**必須子類別在前**。把 `AppError` 那條搬到最上面，`NotFoundError` 和 `ValidationError` 就永遠進不去自己的分支——它們本身也都是 `AppError` 的實例。
+
+`handleError` 只是印出來，真正的用途是在**邊界**把錯誤收斂成回應。`statusCode` 和 `code` 就是為此存在的：
+
+```typescript
+function toResponse(error: unknown): { status: number; body: unknown } {
+  if (error instanceof AppError) {
+    return {
+      status: error.statusCode,
+      body: {
+        code: error.code,
+        message: error.message,
+        ...(error instanceof ValidationError && { fields: error.fields }),
+      },
+    };
+  }
+  // 非預期錯誤：記下來，但不要把內部細節吐給前端
+  console.error("Unexpected:", error);
+  return {
+    status: 500,
+    body: { code: "INTERNAL_ERROR", message: "Internal Server Error" },
+  };
+}
+
+toResponse(new NotFoundError("User", 999));
+// { status: 404, body: { code: "NOT_FOUND", message: "User with id 999 not found" } }
+
+toResponse(new ValidationError("驗證失敗", { email: "格式錯誤" }));
+// { status: 400, body: { code: "VALIDATION_ERROR", message: "驗證失敗",
+//                        fields: { email: "格式錯誤" } } }
+
+toResponse(new Error("boom"));
+// { status: 500, body: { code: "INTERNAL_ERROR", message: "Internal Server Error" } }
+```
+
+在 Express 就掛成一個 error middleware，所有 handler 只管 `throw`：
+
+```typescript
+import type { Request, Response, NextFunction } from "express";
+
+app.get("/users/:id", (req, res) => {
+  res.json(getUser(Number(req.params.id))); // 找不到就直接 throw
+});
+
+app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  const { status, body } = toResponse(error);
+  res.status(status).json(body);
+});
+```
+
+⚠️ 一個常見的坑：`tsconfig` 的 `target` 設成 `ES5` 時，繼承 `Error` 會讓 `instanceof` 全部失效，上面每個分支都會掉到 `else`。原因是 ES5 沒有真正的 class，降級後 `super(message)` 回傳的新物件蓋掉了原型鏈。
+
+| `target` | `e instanceof NotFoundError` | `e instanceof AppError` |
+|---|---|---|
+| `ES5` | `false` | `false` |
+| `ES2015` 以上 | `true` | `true` |
+
+解法是 `target` 用 `ES2015` 以上；真的得編到 ES5，就在每個 constructor 最後補一行（需要 `lib` 有 `ES2015`）：
+
+```typescript
+class NotFoundError extends AppError {
+  constructor(resource: string, id: string | number) {
+    super(`${resource} with id ${id} not found`, "NOT_FOUND", 404);
+    this.name = "NotFoundError";
+    Object.setPrototypeOf(this, NotFoundError.prototype); // ES5 下才需要
   }
 }
 ```
