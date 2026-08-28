@@ -347,7 +347,7 @@ type Join<
 
 type Path = Join<["a", "b", "c"], "/">; // "a/b/c"
 
-// Trim：去除頭尾空白
+// Trim：去除頭尾空白(注意：每一次只移除一個空白，是用遞迴的方式去掉全部空白)
 type TrimLeft<S extends string> = S extends ` ${infer R}` ? TrimLeft<R> : S;
 type TrimRight<S extends string> = S extends `${infer R} ` ? TrimRight<R> : S;
 type Trim<S extends string> = TrimLeft<TrimRight<S>>;

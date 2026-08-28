@@ -72,7 +72,7 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 02 | [02-spring-boot/](./02-spring-boot/) ✅ | Spring Boot 框架原理 | 10 | IoC 容器、DI、自動組態、設定檔與 Profile、AOP、Actuator、打包部署 |
 | 03 | [03-rest-api/](./03-rest-api/) ✅ | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
 | 04 | [04-controller/](./04-controller/) ✅ | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、檔案與串流、SSE、CORS 與序列化、MockMvc 與授權矩陣測試 |
-| 05 | [05-service/](./05-service/) 🚧 | 商業邏輯層 | 8 | 商業邏輯層定位與**不變量**、貧血 vs 充血、Service 設計與**循環依賴**、交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
+| 05 | [05-service/](./05-service/) ✅ | 商業邏輯層 | 8 | 商業邏輯層定位與**不變量**、貧血 vs 充血、Service 設計與**循環依賴**、交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
 | 06 | [06-repository/](./06-repository/) | 資料存取層 | 7 | DataSource 與連線池、JdbcTemplate、Spring Data 抽象、交易邊界、測試 |
 | 07 | [07-mysql/](./07-mysql/) | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢、Flyway |
 | 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) | JPA / Hibernate 與 MyBatis | 10 | Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL |
@@ -85,12 +85,12 @@ Capstone             整合成一個可上線的服務（10-capstone）
 
 | 子課程 | 狀態 |
 |--------|------|
-| 01-java-core | ✅ 已結業（14 章，約 54,200 行） |
+| 01-java-core | ✅ 已結業（14 章，約 54,400 行） |
 | 02-spring-boot | ✅ 已結業（10 章，約 29,100 行） |
 | 03-rest-api | ✅ 已結業（10 章，約 33,700 行） |
-| 04-controller | ✅ 完成（00～07 章，約 58,300 行） |
-| 05-service | 🚧 進行中（00～03 章可讀，約 22,250 行） |
-| 06～10 | ⏳ 未開始 |
+| 04-controller | ✅ 完成（00～07 章，約 61,300 行） |
+| 05-service | ✅ 完成（00～07 章，約 42,400 行） |
+| 06～10 | ⏳ 未開始（下一站：06-repository） |
 
 ---
 

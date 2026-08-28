@@ -89,7 +89,7 @@
 ```
 第 00 章  Service 層的職責、貧血 vs 充血、不變量清單、三層重構
 第 01 章  Service 設計與依賴管理：介面 vs 實作、Service 之間的界線、循環依賴
-第 02 章  交易管理（核心章）：@Transactional 全參數、7 種傳播、三大失效、併發控制
+第 02 章  交易管理（核心章）：@Transactional 全參數、7 種傳播、五種失效、併發控制
 第 03 章  DTO ↔ Entity 轉換：為何不回傳 Entity、手寫 vs MapStruct、PATCH 的三態
 第 04 章  業務例外設計：例外階層、與 93 個 ErrorCode 的對應（00 章 0.12 ⑮ 新增了 10 個）
 第 05 章  服務層快取：@Cacheable、Redis、一致性、擊穿與雪崩
@@ -110,7 +110,10 @@
 > ⚠️ 但**有一個例外**：交易與併發**沒有辦法**用記憶體假實作學。
 > 樂觀鎖、悲觀鎖、隔離級別都是資料庫的行為。
 > 所以 02 章會**破例**用 Testcontainers 起一個真的 MySQL ——
-> 那是這一站唯一必須碰真資料庫的地方，理由在 2.2.5。
+> 理由在 2.2.5。
+>
+> ⚠️ **前向指標**：07 章 7.11 會把「哪些事必須用真的資料庫」列成完整清單 ——
+> 而它比這裡說的多。02 章是**第一個**碰真資料庫的地方，不是唯一的。
 
 ---
 
@@ -1057,6 +1060,13 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
         return result;
     }
 
+    // ⚠️⚠️ 前向指標（05 章 5.8.3 / 5.13 ②）：下面這三個 isXxx() 會被 Jackson
+    //    當成 boolean getter → Money 序列化出 5 個欄位而建構子只認得 2 個
+    //    → 🔴【Jackson 往返直接失敗】。
+    //    ✅ 它在 API 上沒事（03 章 3.8.4 規定金額是 String），
+    //    🔴 但在【快取】與【outbox】上會出事（那是另一個 ObjectMapper）。
+    //    處置：不改 Money（不讓 domain 依賴 Jackson），改快取的 ObjectMapper
+    //    （`IS_GETTER → NONE`，05 章 5.8.5）。
     public boolean isZero()      { return amount.signum() == 0; }
     public boolean isPositive()  { return amount.signum() > 0; }
     public boolean isNegative()  { return amount.signum() < 0; }
@@ -5751,7 +5761,7 @@ public record CustomerSummary(String customerId, CustomerLevel level, String ema
 |---|---|---|---|
 | **00**（本章） | 商業邏輯層定位 | 規則該由誰守 | `Order` 聚合、`Money`、狀態機、ArchUnit 守門 |
 | **01** | Service 設計與依賴 | 一個 Service 該有多大、介面要不要 | 拆分後的 Service、埠與轉接器、循環依賴的解法 |
-| **02** ★ | 交易管理 | `@Transactional` 到底做了什麼 | 7 種傳播、三大失效、樂觀/悲觀鎖、`tryReserve` 的完整實作 |
+| **02** ★ | 交易管理 | `@Transactional` 到底做了什麼 | 7 種傳播、**五種**失效、樂觀/悲觀鎖、`tryReserve` 的完整實作 |
 | **03** | DTO ↔ Entity 轉換 | 邊界上的資料要怎麼變形 | mapper 策略、PATCH 三態、MapStruct 的取捨 |
 | **04** | 業務例外設計 | **93 個** `ErrorCode` 怎麼對應到例外階層 | 完整例外樹、與 04-controller 03 章 advice 的對應表 |
 | **05** | 服務層快取 | 快取的一致性怎麼保證 | `@Cacheable`、Redis、擊穿與雪崩、key 設計 |

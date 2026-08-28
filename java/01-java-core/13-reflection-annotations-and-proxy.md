@@ -1387,8 +1387,8 @@ Caused by: java.lang.IllegalStateException: 庫存不足    ← ★ 你要的東
 | `Method.invoke` | 呼叫 `@PostConstruct`、事件監聽器 | getter 存取 | — | 執行測試方法 |
 | `field.getGenericType()` | `ResolvableType`、泛型注入 | `TypeReference` | 關聯的目標型別 | 參數化測試的型別轉換 |
 | `Proxy.newProxyInstance` | **AOP 代理**（02-spring-boot 4.4） | — | 延遲載入代理（08-jpa-mybatis） | Mockito 的 `mock()` |
-| `InvocationHandler` | `@Around` Advice（02 章 4.10） | — | — | Mockito 的 stub 邏輯 |
-| **`this.inner()` 繞過代理** | **自呼叫失效**（02 章 4.14 ★） | — | 延遲載入失效 | — |
+| `InvocationHandler` | `@Around` Advice（02-spring-boot 4.10） | — | — | Mockito 的 stub 邏輯 |
+| **`this.inner()` 繞過代理** | **自呼叫失效**（02-spring-boot 4.14 ★） | — | 延遲載入失效 | — |
 | 快取 `Method` 物件 | `ReflectionUtils` 的快取 | 序列化計畫快取 | Metamodel | — |
 
 > 🔑 **整張表只有一句話：框架 = 反射 + 註解 + 代理 + 大量的邊界處理。**
@@ -1413,7 +1413,7 @@ Caused by: java.lang.IllegalStateException: 庫存不足    ← ★ 你要的東
 | 8 | 忘了處理 `Object` 的方法 | 代理放進 `HashMap` 時行為詭異；debugger 一碰就觸發攔截 | `if (method.getDeclaringClass() == Object.class)` |
 | 9 | 攔截器不解 `InvocationTargetException` | 呼叫端收到 `UndeclaredThrowableException` | `throw e.getCause()` |
 | 10 | 把代理轉型成實作類別 | `ClassCastException: $Proxy0 cannot be cast to XxxImpl` | 依賴介面（第 03 章 3.13） |
-| 11 | 以為 `this.method()` 會經過代理 | 攔截邏輯（記錄 / 交易 / 快取）靜默失效 | 13.11 ④；解法在 02 章 4.14 |
+| 11 | 以為 `this.method()` 會經過代理 | 攔截邏輯（記錄 / 交易 / 快取）靜默失效 | 13.11 ④；解法在 02-spring-boot 4.14 |
 | 12 | 對 `record` 欄位 `set()` | `IllegalAccessException` | record 是 trusted final，設計上就不該改 |
 | 13 | 對 JDK 內部類別 `setAccessible` | `InaccessibleObjectException` | 升級那個函式庫；`--add-opens` 只是止血 |
 | 14 | 反射在原生映像 / uber-jar 裡失效 | 只有打包後才發生 | 13.14 的六格表 |

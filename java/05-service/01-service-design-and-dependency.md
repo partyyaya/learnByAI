@@ -947,7 +947,7 @@ public class JdbcOrderRepository implements OrderRepository { … }
 ```
 1. 確認沒有第二個實作（IDE 的 "Show Implementations"）
 2. 確認不是跨 module 被引用（mvn dependency:tree / IDE 的 Find Usages）
-3. 確認測試沒有用 @MockitoBean XxxService（有的話一起改成具體類別）
+3. 確認測試沒有用 @MockBean XxxService（有的話一起改成具體類別）
 4. IDE 的「Inline Interface / Push Members Down」重構
    ⚠️ IntelliJ：對介面按 F6 → "Use interface where possible" 反向操作
       實務上更簡單的做法是：
@@ -4902,7 +4902,7 @@ public class MemberApplicationService {
 
 | 這一章埋的伏筆 | 02 章哪一節 |
 |---|---|
-| CGLIB 代理的三個限制（1.3.1） | 2.7.2 —— **三大失效情境的完整機制** |
+| CGLIB 代理的三個限制（1.3.1） | 2.7.2 —— **「非 public / final / static」這個失效情境的完整機制** |
 | `this.method()` 繞過代理（1.6.5） | 2.7.1 —— 自呼叫，以及四種解法 |
 | `REQUIRED` / `REQUIRES_NEW` / `NESTED` 的差別（1.5.2） | **2.3 —— 七種傳播行為的完整矩陣** |
 | `readOnly = true` 的三個非效能作用（00 章 0.10.8） | 2.5 |
@@ -4922,7 +4922,7 @@ public class MemberApplicationService {
 | 2.4 | 隔離級別：四種、三種讀異常、MySQL 的預設值為什麼是 `REPEATABLE READ` |
 | 2.5 | `readOnly`、`timeout`、`rollbackFor` 的完整語意 |
 | 2.6 | rollback 規則：**為什麼 checked exception 預設不 rollback** |
-| 2.7 ★★ | **三大失效情境**：自呼叫、非 public、非 Spring 管理的物件 |
+| 2.7 ★★ | **五種失效情境**：自呼叫、非 public / final / static、非 Spring 管理的物件、換了執行緒、例外被 catch 掉 |
 | 2.8 | `UnexpectedRollbackException` 與 rollback-only 標記 |
 | 2.9 | 交易的邊界與長度：連線池、逾時、**交易裡不可以做的六件事** |
 | 2.10 | `TransactionTemplate` 與程式式交易：什麼時候比註解好 |

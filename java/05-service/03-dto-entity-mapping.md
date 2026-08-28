@@ -542,7 +542,7 @@ package example.shop.order.web;
 class MassAssignmentProtectionTest {
 
     @Autowired MockMvc mvc;
-    @MockitoBean OrderService orderService;
+    @MockBean OrderService orderService;        // ⚠️ Boot 3.4 起改名 @MockitoBean（07 章 7.3.6）
 
     @Test
     void 送出status欄位時回400而不是靜默忽略() throws Exception {

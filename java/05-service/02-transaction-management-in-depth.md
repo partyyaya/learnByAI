@@ -24,7 +24,7 @@
 
 完成本章後，你應該可以：
 
-- 說出一個 `@Transactional` 方法從進入到離開，Spring 實際做了哪些事（14 步）。
+- 說出一個 `@Transactional` 方法從進入到離開，Spring 實際做了哪些事（15 步）。
 - 說明交易、連線、`ThreadLocal` 三者的關係，以及為什麼「換執行緒 = 換交易」。
 - 完整說出 **7 種傳播行為**，以及「A 在 B 裡面」的 7×2 組合各自會發生什麼。
 - 說出 `REQUIRES_NEW` 的三個代價，以及它為什麼是「連線池耗盡」的常見來源。
@@ -1652,6 +1652,32 @@ void 批次的每一筆都真的在自己的交易裡() {
 ```
 
 ### 2.7.2 情境二：非 public / final / static
+
+> ⚠️⚠️ **前向指標（05 章 5.2.3 / 5.13 ① 修正了這一節的一半）**
+>
+> 下面「關卡 ①」說 `publicMethodsOnly = true`，於是
+> **`package-private` 與 `protected` 的 `@Transactional` 會靜默失效**。
+>
+> 🔴 **那在 Spring Framework 6.1 + CGLIB + Spring Boot 自動組態下是錯的。**
+> 05 章實測（Boot 3.2.5）：
+>
+> ```
+> [tx] 容器裡的 TransactionAttributeSource publicMethodsOnly = false
+> [tx] package-private 方法在交易裡嗎 = true
+> [tx] package-private 失敗後的列數  = 0（有 rollback）
+> ```
+>
+> **原因**：`AnnotationTransactionAttributeSource` 的**無參數建構子**確實是 `true`，
+> ⚠️ 但 `ProxyTransactionManagementConfiguration` **明確傳 `false`**（位元碼可驗證）。
+>
+> 👉 **正確的版本在 05 章 5.13 ①。**
+> 這一節刻意保留原文，因為
+> **「預設值是 true」與「Spring 用的是 false」都是事實，而混淆兩者是一個很好的教材。**
+>
+> ✅ **而下面的四條 ArchUnit 規則仍然全部正確** ——
+> 它們不分可見性，所以本來就涵蓋 `package-private`。
+> ⚠️ 唯一要調整的是 `transactional方法必須是public` 那一條的**理由**：
+> 它守的不再是「否則會失效」，而是「**團隊約定：交易邊界要看得見**」。
 
 01 章 1.3.1 列了 CGLIB 的限制，這裡補完整的機制。
 
@@ -3322,7 +3348,7 @@ class TransactionRollbackIntegrationTest extends MySqlIntegrationTestBase {
     @Autowired OrderApplicationService service;
     @Autowired JdbcTemplate jdbc;
     @Autowired DatabaseCleaner cleaner;
-    @MockitoBean CouponRepository coupons;      // ⚠️ Boot 3.2/3.3 請改成 @MockBean
+    @MockBean CouponRepository coupons;         // ⚠️ Boot 3.4 起改名 @MockitoBean（07 章 7.3.6）
 
     @AfterEach void clean() { cleaner.clean(); }
 
@@ -4438,7 +4464,7 @@ void 同一張訂單重複記錄是冪等的() {
 
 **事件**
 
-- [ ] 四個 phase 各自在 14 步的哪一步？哪一個還在交易裡？
+- [ ] 四個 phase 各自在 15 步的哪一步？哪一個還在交易裡？
 - [ ] 沒有交易時發佈事件會怎樣？兩種處理，shop-service 選哪一個、為什麼？
 - [ ] `AFTER_COMMIT` 與 `AFTER_COMPLETION` 對「listener 拋例外」的處理有什麼不同？
 - [ ] 為什麼 `AFTER_COMMIT` + 寫資料庫 = 一定要 `REQUIRES_NEW`？
@@ -4494,7 +4520,7 @@ var body  = mapper.toCreateResponse(order);  // ← 存取 order 的欄位
 
 | 03 章的節 | 主題 |
 |---|---|
-| 3.2 | 為什麼不回傳 Entity：**五個具體的洩漏與破壞** |
+| 3.2 | 為什麼不回傳 Entity：**六個具體的代價**（其中一個是安全漏洞等級） |
 | 3.3 | 三種轉換策略：Service 回 Domain / Service 回 DTO / 讀取模型直接查投影 |
 | 3.4 | 手寫 mapper vs MapStruct：**「漏映射一個欄位」為什麼是靜默的** |
 | 3.5 | 巢狀轉換與集合：`List.copyOf` 的邊界在哪 |

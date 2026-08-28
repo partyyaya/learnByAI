@@ -2481,23 +2481,67 @@ public OrderDetailView detailOf(String orderId, boolean privileged) {
 ⚠️ **而「拋例外不被快取」代表穿透保護也沒了** ——
 於是 `orderContents` 依賴「orderId 猜不到」這個前提。
 
-✅ **把那個前提寫成一條測試**：
+⚠️ **而「orderId 猜不到」這個前提值得認真查證，因為 shop-service 有兩個識別碼**：
+
+| 識別碼 | 格式 | 可以被猜嗎 |
+|---|---|---|
+| **`Order.id`** | **ULID**（`UlidIdGenerator`，00 章 0.12） | ✅ **不行** —— 80 bits 的隨機性 |
+| `Order.orderNumber` | `ORD-yyyyMMdd-NNNN`（00 章 0.12、02 章 2.11.4 的遞增序號） | 🔴🔴 **可以** —— `ORD-20260827-0001` 開始數 |
+
+✅ **前提成立 —— 但它成立的理由是「key 用的是 `orderId` 而不是 `orderNumber`」，
+而那是一個很容易在重構時被改掉的細節。**
+
+**把它寫成一條測試**：
 
 ```java
 /**
- * ★ 訂單編號必須包含足夠的隨機性（不可被猜測）。
+ * ★★ orderContents 的 key 必須用 orderId（ULID），不可以用 orderNumber。
  *
- * <p>它守的是 5.7.3 那個「orderContents 不做穿透保護」的<b>前提</b>。
- * ⚠️ 而 02 章 2.11.4 的 OrderNumberGenerator 是<b>遞增序號</b>
- * （ORD-2026-0827-0001）—— <b>它可以被猜測</b>。
+ * <p>⚠️ 它守的是 5.7.3 的一個<b>隱含前提</b>：
+ * {@code orderContents} 刻意不做穿透保護（不快取 null），
+ * 而那個決定只在「key 猜不到」時才安全。
  *
- * <p>🔴 <b>所以這個前提不成立。</b> 見 5.13 ③ 的處置。
+ * <p>🔴 {@code orderNumber} 是遞增序號（02 章 2.11.4）——
+ * 換成它就等於把穿透的大門打開。
  */
 @Test
-void 訂單編號不可被猜測() { /* 5.13 ③ */ }
+void orderContents的key不可以用orderNumber() {
+    var violations = MAIN.stream()
+            .flatMap(c -> c.getMethods().stream())
+            .filter(m -> m.tryGetAnnotationOfType(Cacheable.class)
+                    .map(a -> names(a).contains("orderContents")).orElse(false))
+            .filter(m -> m.getRawParameterTypes().stream()
+                    .noneMatch(t -> t.getName().equals(String.class.getName()))
+                    || m.getName().toLowerCase().contains("number"))
+            .map(JavaMethod::getFullName)
+            .toList();
+
+    assertThat(violations)
+            .as("orderContents 的 key 必須是 orderId（ULID）—— 見 5.7.3")
+            .isEmpty();
+}
 ```
 
-🔴 **這條測試會紅燈，而那是一個真實的發現** —— 5.13 ③ 處理它。
+⚠️⚠️ **這條測試寫得很弱**（它只看方法名裡有沒有 `number`）——
+而那是誠實的：**ArchUnit 看不到 SpEL 字串裡用了哪個參數。**
+
+👉 **更可靠的做法是把它變成一個型別**：
+
+```java
+/** ★ ULID 的訂單技術主鍵。用型別讓「不要傳 orderNumber 進來」變成編譯期的事。 */
+public record OrderId(String value) {
+    public OrderId {
+        if (value == null || value.length() != 26) {
+            throw new IllegalArgumentException("OrderId 必須是 26 字元的 ULID：" + value);
+        }
+    }
+}
+```
+
+**於是 `detailOf(OrderId orderId, boolean privileged)` 根本收不到 `orderNumber`。**
+
+⚠️ **而引入 `OrderId` 是一個跨全站的改動**（00～04 章共 ~200 處用 `String orderId`），
+所以本章**不做** —— 👉 記進 5.16 的缺口清單，並在 5.13 ③ 說明理由。
 
 ### 5.7.4 三個問題的解法對照表
 
@@ -2523,3 +2567,1956 @@ void 訂單編號不可被猜測() { /* 5.13 ③ */ }
 > 而回答那個問題需要**兩個數字**：問題的規模，與解法的成本。
 
 ---
+
+## 5.8 序列化：三個序列化器的實測 ★★
+
+⚠️ **這一節只在用 Redis（或任何跨行程的快取）時有意義。**
+本地快取存的是**物件參考**，沒有序列化。
+
+### 5.8.1 三個序列化器，開箱即用時全部失敗
+
+**被測的型別**（一個很普通的 View）：
+
+```java
+record ProductView(String id, String name, Money price, Instant updatedAt,
+                   OrderStatus status, List<String> tags) {}
+```
+
+**實測**（Spring Boot 3.2.5 / Spring Data Redis 3.2）：
+
+| 序列化器 | 結果 |
+|---|---|
+| `JdkSerializationRedisSerializer` | 🔴 `SerializationException: DefaultSerializer requires a Serializable payload but received an object of type [ProductView]` |
+| `GenericJackson2JsonRedisSerializer`（無參數） | 🔴 `Java 8 date/time type java.time.Instant not supported by default: add Module "com.fasterxml.jackson.datatype:jackson-datatype-jsr310"` |
+| `Jackson2JsonRedisSerializer<>(ProductView.class)` | 🔴 **同上** |
+
+**三個全部失敗，而失敗的原因各不相同。**
+
+#### 🔴 為什麼 Jackson 不認得 `Instant`
+
+**這是最反直覺的一個**，因為 Spring Boot **有**註冊 `JavaTimeModule` ——
+`spring-boot-starter-web` 的自動組態會把它加到 `ObjectMapper` 上。
+
+⚠️ **而那個 `ObjectMapper` 不是這裡用的那一個。**
+
+```java
+new GenericJackson2JsonRedisSerializer()      // ★ 它在內部 new 一個全新的 ObjectMapper
+new Jackson2JsonRedisSerializer<>(Foo.class)  // ★ 同樣
+```
+
+**「Spring Boot 設定好的 `ObjectMapper`」與「序列化器內部 new 的」是兩個物件。**
+
+✅ **修法：把容器裡的 `ObjectMapper` 傳進去**：
+
+```java
+@Bean
+RedisCacheConfiguration redisCacheConfiguration(ObjectMapper springBootObjectMapper) {
+    // ⚠️ 不要直接用它 —— 見 5.8.4
+    ...
+}
+```
+
+> 📌 **一般規則**：
+> **任何「內部 `new` 了一個 `ObjectMapper`」的元件，都不會有你設定的模組。**
+> 這在 Redis 序列化器、Kafka 序列化器、`RestTemplate` 的 converter 上都會遇到。
+
+### 5.8.2 修好之後：三者的實測大小
+
+**用同一個設定好的 `ObjectMapper`**（含 `JavaTimeModule`）：
+
+```
+[size] Jackson2Json(指定型別)      =  137 bytes  (1.00x)
+[size] GenericJackson2Json(帶型別) =  401 bytes  (2.93x)
+[size] JdkSerialization            =  329 bytes  (2.40x)
+```
+
+**內容**：
+
+```jsonc
+// Jackson2JsonRedisSerializer（指定型別）—— 137 bytes
+{"id":"P-1","name":"耳機","price":{"amount":1500.00,"currency":"TWD"},
+ "updatedAt":"2026-08-27T08:00:00Z","status":"PAID","tags":["3C"]}
+
+// GenericJackson2JsonRedisSerializer（帶型別）—— 401 bytes
+{"@class":"...ProductView","id":"P-1","name":"耳機",
+ "price":{"@class":"example.shop.common.money.Money",
+          "amount":["java.math.BigDecimal",1500.00],
+          "currency":["java.util.Currency","TWD"]},
+ "updatedAt":["java.time.Instant","2026-08-27T08:00:00Z"],
+ "status":["example.shop.order.domain.OrderStatus","PAID"],
+ "tags":["java.util.ImmutableCollections$List12",["3C"]]}
+```
+
+⚠️ **`GenericJackson2Json` 大了 2.93 倍，而那個 2.93 倍換到的是「能還原成正確的型別」。**
+
+**三者的完整對照**：
+
+| | `Jackson2Json`（指定型別） | `GenericJackson2Json` | `JdkSerialization` |
+|---|---|---|---|
+| 大小 | ✅ **137** | ⚠️ 401（2.93×） | 329（2.40×） |
+| 可讀（`redis-cli GET`） | ✅ | ✅ | 🔴 **二進位** |
+| 需要 `Serializable` | 🔴 不需要 | 不需要 | ✅ **需要** |
+| 一個 cache 存多種型別 | 🔴 **不行** | ✅ 可以 | ✅ 可以 |
+| **改欄位名會怎樣** | ⚠️ 舊資料反序列化失敗 | ⚠️ 同左 | 🔴 同左 |
+| **改類別名／搬套件** | ✅ **沒事** | 🔴🔴 **全部失效**（`@class` 寫死 FQCN） | 🔴🔴 同左 |
+| 跨語言 | ✅ | ⚠️ 有 `@class` 雜訊 | 🔴 **不行** |
+
+🔴 **「改類別名／搬套件」那一列是 `GenericJackson2Json` 最大的問題**：
+
+```
+把 ProductView 從 order.web.dto 搬到 order.application.view
+→ 舊的快取項目 @class 指向舊路徑
+→ 反序列化：ClassNotFoundException
+→ ⚠️ 而 CacheErrorHandler 會把它當成 miss（5.7.2）→ ✅ 降級成查 DB
+→ 但如果沒有 CacheErrorHandler → 🔴 全部 500
+```
+
+### 5.8.3 🔴 `Money` 的序列化是壞的
+
+**實測**：
+
+```
+[money] 序列化 = {"amount":1500.00,"currency":"TWD","zero":false,"negative":false,"positive":true}
+[money] 往返失敗 = UnrecognizedPropertyException: Unrecognized field "zero"
+                   (class Money), not marked as ignorable (2 known properties: "amount", "currency")
+```
+
+🔴🔴 **`Money` 序列化出 5 個欄位，反序列化只認得 2 個 —— 往返直接失敗。**
+
+**原因**：00 章 0.9.1 的 `Money` 有三個 `isXxx()` 方法：
+
+```java
+public boolean isZero()      { return amount.signum() == 0; }
+public boolean isPositive()  { return amount.signum() > 0; }
+public boolean isNegative()  { return amount.signum() < 0; }
+```
+
+**Jackson 把 `isXxx()` 當成 `boolean` 的 getter** →
+於是 `zero` / `positive` / `negative` 變成 JSON 欄位。
+而 record 的建構子只有 `(amount, currency)` → 反序列化炸。
+
+⚠️ **為什麼 03 章沒有發現這件事**：
+
+| 03 章的路徑 | 為什麼沒事 |
+|---|---|
+| API 回應 | `Money` **不會**被直接序列化 —— 03 章 3.8.4 規定「金額是 `String`」 |
+| ⚠️ 而 04-controller 6.5.7 有一個 `MoneySerializer` | 它註冊在 **web 層的 `ObjectMapper`** 上 |
+| **快取的 `ObjectMapper`** | 🔴 **是另一個** —— 5.8.1 的同一個問題 |
+
+🔴 **`Money` 在 API 上是安全的，在快取上是壞的。**
+
+**三個修法**：
+
+| 修法 | 做法 | 取捨 |
+|---|---|---|
+| ① `@JsonIgnore` 標在三個方法上 | 改 `Money` | 🔴 **domain 依賴 Jackson**（00 章 0.11.2 的分層規則） |
+| ② 快取的 `ObjectMapper` 關掉 `IS_GETTER` 偵測 | 只改組態 | ✅ 實測可行 |
+| ③ 快取的 `ObjectMapper` 加 `FAIL_ON_UNKNOWN_PROPERTIES = false` | 只改組態 | ⚠️ 見下 |
+| ④ 快取的 View 不含 `Money`（用 `String`） | 改 View | ✅ 與 03 章 3.8.4 一致 |
+
+**實測 ② 與 ③ 都能讓往返成功**：
+
+```
+[money] A: 關 IS_GETTER 序列化 = {"amount":1500.00,"currency":"TWD"}
+[money] A: 往返 = Money[amount=1500.00, currency=TWD]
+[money] B: 忽略未知欄位 往返 = Money[amount=1500.00, currency=TWD]
+```
+
+⚠️ **而 ③ 有一個代價**：它讓**所有**的欄位不符都被忽略 ——
+於是「View 少了一個欄位」變成靜默的 `null`
+（03 章 3.4.2「漏映射的三種形狀」的第四種形狀）。
+
+✅ **shop-service 選 ②**：
+
+```java
+.setVisibility(PropertyAccessor.IS_GETTER, JsonAutoDetect.Visibility.NONE)
+```
+
+**它的效果是「只序列化 record 的元件，不序列化衍生的述詞」** ——
+而那正好是我們要的。
+
+⚠️⚠️ **但它有一個範圍問題**：它關掉了**所有**型別的 `is-getter` 偵測。
+
+**檢查有沒有型別真的需要 `is-getter`**：
+
+| 型別 | 有 `isXxx()` 嗎 | 那個欄位需要進快取嗎 |
+|---|---|---|
+| `Money` | ✅ 三個 | 🔴 不需要（衍生的） |
+| `OrderDetailView` | ⚠️ 可能有 | ⚠️ **要檢查** |
+| `Actor` | `isCustomer()` / `isInternal()` / `isPrivileged()` | 🔴 不需要（衍生的） |
+
+✅ **一條掃描測試**（5.11.5）確認「沒有任何快取的型別依賴 `is-getter`」。
+
+> 📌 **這一節的一般規則**：
+> **「衍生的述詞」（`isZero()`、`isPrivileged()`）不該進序列化。**
+> 它們可以從其他欄位算出來，放進 JSON 只會：
+> ① 佔空間、② 讓往返失敗、③ **在兩邊算法不同時產生矛盾的資料**。
+
+### 5.8.4 🔴 `GenericJackson2Json` + 自訂 `ObjectMapper` 會失去型別資訊
+
+**第一次嘗試（看起來很合理）**：
+
+```java
+var om = new ObjectMapper()
+        .registerModule(new JavaTimeModule())
+        .activateDefaultTyping(ptv, DefaultTyping.NON_FINAL, JsonTypeInfo.As.PROPERTY);
+var serializer = new GenericJackson2JsonRedisSerializer(om);
+```
+
+**實測**：
+
+```
+[deep] 手動 typing 內容={"id":"P-1","name":"耳機","price":{"amount":["java.math.BigDecimal",1500.00],...}}
+                        ↑ 🔴 根物件【沒有】@class
+[deep] 手動 typing 失敗=InvalidTypeIdException: Could not resolve subtype of
+                        [simple type, class java.lang.Object]: missing type id property '@class'
+```
+
+🔴 **根物件沒有型別 id，反序列化直接失敗。**
+
+**原因**：`DefaultTyping.NON_FINAL` 的意思是
+「**非 final** 的型別才加型別資訊」——
+⚠️⚠️ **而 record 是 `final` 的。**
+
+✅ **正確的是 `DefaultTyping.EVERYTHING`**：
+
+```
+[final] EVERYTHING 內容={"@class":"...ProductView","id":"P-1",...}
+[final] EVERYTHING 還原型別=...ProductView
+[final] EVERYTHING 還原=ProductView[id=P-1, name=耳機, price=Money[...], ...]
+```
+
+⚠️ **而「無參數的 `GenericJackson2JsonRedisSerializer()`」本來就用對了**
+（實測：`{"@class":"...SimpleView","id":"P-1","name":"耳機"}` → 正確還原）。
+
+> 📌📌 **這是一個「自己設定反而弄壞了預設行為」的典型**：
+>
+> ```
+> 無參數建構子：✅ 型別資訊正確，🔴 沒有 JavaTimeModule
+> 傳自己的 mapper：✅ 有 JavaTimeModule，🔴 型別資訊壞掉
+> ```
+>
+> **兩個都不對，而正確的做法是「傳自己的 mapper，並且自己補上型別設定」** ——
+> 那需要知道原本的設定是什麼。
+
+### 5.8.5 shop-service 的最終組態
+
+```java
+package example.shop.common.cache;
+
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
+import com.fasterxml.jackson.annotation.PropertyAccessor;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
+
+/**
+ * ★★ 快取專用的 ObjectMapper。
+ *
+ * <p>⚠️ 它<b>刻意不重用</b> Spring Boot 設定好的那一個，理由有兩個：
+ * <ol>
+ *   <li>那一個是<b>對外契約</b>（API 的 JSON 形狀），
+ *       而快取是<b>內部格式</b> —— 兩者不該綁在一起。
+ *       改 API 的 JSON 設定不該讓所有快取失效。</li>
+ *   <li>快取需要 {@code activateDefaultTyping}，而 API <b>絕對不可以</b>有它
+ *       （那是一個已知的反序列化漏洞面）。</li>
+ * </ol>
+ *
+ * <p>⚠️⚠️ 而「不重用」的代價是：<b>兩個 ObjectMapper 的設定會漂移</b>。
+ * 5.11.5 有一條測試在比對兩者的關鍵設定。
+ */
+public final class CacheObjectMappers {
+
+    private CacheObjectMappers() {}
+
+    public static ObjectMapper forCache() {
+        // ★ 型別白名單 —— activateDefaultTyping 沒有它是一個反序列化漏洞
+        var typeValidator = BasicPolymorphicTypeValidator.builder()
+                .allowIfSubType("example.shop.")
+                .allowIfSubType("java.util.")
+                .allowIfSubType("java.time.")
+                .allowIfSubType("java.math.")
+                .build();
+
+        return new ObjectMapper()
+                .registerModule(new JavaTimeModule())                        // 5.8.1
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)      // 時間用 ISO-8601
+                // ★ 5.8.3：不要把 isZero() 這種衍生述詞序列化出來
+                .setVisibility(PropertyAccessor.IS_GETTER, JsonAutoDetect.Visibility.NONE)
+                // ★★ 5.8.4：EVERYTHING 而不是 NON_FINAL —— record 是 final 的
+                .activateDefaultTyping(typeValidator,
+                                       ObjectMapper.DefaultTyping.EVERYTHING,
+                                       JsonTypeInfo.As.PROPERTY);
+    }
+
+    public static GenericJackson2JsonRedisSerializer serializer() {
+        return new GenericJackson2JsonRedisSerializer(forCache());
+    }
+}
+```
+
+⚠️⚠️ **`BasicPolymorphicTypeValidator` 不是裝飾品。**
+
+`activateDefaultTyping` 讓 Jackson **依 JSON 裡的 `@class` 決定要實例化哪個類別** ——
+而如果攻擊者能寫入 Redis，他就能指定任意類別。
+**那是一整類的遠端程式碼執行漏洞**（Jackson 的 CVE 大部分是這一類）。
+
+| 沒有 validator | 有 validator |
+|---|---|
+| 🔴 任何 classpath 上的類別都能被實例化 | ✅ 只有白名單的四個前綴 |
+
+⚠️ **而「攻擊者能寫入 Redis」聽起來很遠**，直到：
+Redis 沒有密碼、Redis 綁在 `0.0.0.0`、
+或者**同一個 Redis 被另一個服務共用而那個服務有漏洞**。
+
+> 📌 **一般規則**：
+> **`activateDefaultTyping` 一定要配 `PolymorphicTypeValidator`。**
+> Jackson 2.10 之後**不加 validator 的版本已經被標為 deprecated**，
+> 而它還能編譯 —— 所以要靠 code review 或一條測試守它（5.11.5）。
+
+#### 這個組態的三個實測
+
+```java
+@Test
+void 完整往返() {
+    var s = CacheObjectMappers.serializer();
+    var view = new ProductView("P-1", "無線降噪耳機 Pro", Money.twd("1500"),
+            Instant.parse("2026-08-27T08:00:00Z"), OrderStatus.PAID, List.of("3C","熱銷"));
+    byte[] b = s.serialize(view);
+    assertThat(s.deserialize(b)).isEqualTo(view);       // ★ record 的 equals
+}
+```
+
+```
+[cfg] 長度=424
+[cfg] 內容={"@class":"...ProductView","id":"P-1","name":"無線降噪耳機 Pro",
+       "price":{"@class":"example.shop.common.money.Money",
+                "amount":["java.math.BigDecimal",1500.00],
+                "currency":["java.util.Currency","TWD"]},
+       "updatedAt":["java.time.Instant","2026-08-27T08:00:00Z"],
+       "status":["example.shop.order.domain.OrderStatus","PAID"],
+       "tags":["java.util.ImmutableCollections$List12",["3C","熱銷"]]}
+[cfg] 還原=ProductView[id=P-1, name=無線降噪耳機 Pro, price=Money[amount=1500.00, currency=TWD],
+       updatedAt=2026-08-27T08:00:00Z, status=PAID, tags=[3C, 熱銷]]
+```
+
+✅ **`Money` 只有兩個欄位了**（`isZero()` 等三個衍生述詞沒有出現）。
+
+```java
+@Test
+void Actor也能往返_衍生述詞不進JSON() {
+    byte[] b = CacheObjectMappers.serializer().serialize(
+            new Actor(Actor.ActorType.SUPPORT, "sup_1", "客服小美"));
+    assertThat(new String(b)).doesNotContain("customer").doesNotContain("privileged");
+}
+```
+
+```
+[cfg] Actor={"@class":"example.shop.order.domain.Actor",
+             "type":["example.shop.order.domain.Actor$ActorType","SUPPORT"],
+             "id":"sup_1","displayName":"客服小美"}
+```
+
+✅ **`isCustomer` / `isInternal` / `isPrivileged` 三個都沒有進 JSON。**
+
+```java
+@Test
+void 型別白名單擋住不在清單裡的類別() {
+    var om = CacheObjectMappers.forCache();
+    String evil = """{"@class":"java.lang.ProcessBuilder","command":[]}""";
+    assertThatThrownBy(() -> om.readValue(evil, Object.class))
+            .rootCause()
+            .isInstanceOf(com.fasterxml.jackson.databind.exc.InvalidTypeIdException.class);
+}
+```
+
+```
+[cfg] ✅ 白名單擋住了：InvalidTypeIdException: Could not resolve type id
+      'java.lang.ProcessBuilder' as a subtype of `java.lang.Object`:
+      Configured `PolymorphicTypeValidator` ... denied resolution
+```
+
+> 📌 **第三個測試值得留在專案裡**，因為它是**唯一**會在
+> 「有人拿掉 validator」時紅燈的東西 ——
+> 而拿掉它是一個**編譯得過、測試會綠、直到被攻擊才發現**的改動。
+
+### 5.8.6 一個誠實的限制：本章沒有真的 Redis
+
+⚠️ **這一節（5.8）的所有實測都是「序列化器本身」的往返測試**：
+
+```java
+byte[] bytes = serializer.serialize(view);
+Object back = serializer.deserialize(bytes);
+```
+
+**它們沒有經過真的 Redis。** 而以下三件事**沒有被驗證**：
+
+| 沒驗證的 | 為什麼可能不同 |
+|---|---|
+| `RedisCacheManager` 的 key 前綴與 `SimpleKey` 的互動 | key 的組成有一層 `CacheKeyPrefix` |
+| `RedisCache#get(key, Callable)` 的實際併發行為 | 5.7.1 的分析來自讀原始碼，不是實測 |
+| TTL 的實際行為（Redis 的 `EXPIRE`） | — |
+
+🔴 **請以你的環境實測為準。**
+5.11.3 會給一組 Testcontainers 的測試 —— **而撰稿的機器上沒有 Docker，所以那組沒有跑過。**
+
+---
+
+## 5.9 快取的可觀測性 ★
+
+### 5.9.1 四個必要的指標
+
+**「加了快取」之後如果不量測，你不知道它有沒有用，也不知道它什麼時候壞了。**
+
+| 指標 | 回答什麼問題 | 沒有它會怎樣 |
+|---|---|---|
+| **命中率** | 快取有用嗎 | 🔴 你不知道 TTL 該調長還是調短 |
+| **項目數 / 記憶體** | 快取會不會爆 | 🔴 OOM |
+| **淘汰數**（eviction） | 容量夠不夠 | ⚠️ 命中率低的原因可能是「一直被擠掉」 |
+| **錯誤數** | Redis 還活著嗎 | 🔴 5.7.2 的降級是靜默的 |
+
+**Caffeine 的接法**（三行）：
+
+```java
+@Bean
+CacheManager cacheManager(MeterRegistry meters) {
+    var manager = new CaffeineCacheManager();
+    manager.setCaffeine(Caffeine.newBuilder()
+            .maximumSize(50_000)
+            .expireAfterWrite(Duration.ofSeconds(30))
+            .recordStats());                     // ★★ 沒有這一行，統計全部是 0
+    // ⚠️ Spring Boot 的 CacheMetricsRegistrar 需要 cache 已經被建立
+    //    而 CaffeineCacheManager 是 lazy 的 → 要先宣告名稱
+    manager.setCacheNames(List.of("products", "orderOwners", "orderContents"));
+    return manager;
+}
+```
+
+⚠️⚠️ **`recordStats()` 是最容易漏的一行**，而漏了它的症狀是：
+
+```
+cache_gets_total{result="hit"}  = 0
+cache_gets_total{result="miss"} = 0
+```
+
+**「全部是 0」看起來像「沒有人在用這個快取」，而實際上是「沒有在記錄」。**
+
+✅ **一條測試**：
+
+```java
+@Test
+void 每個快取都有開啟統計() {
+    for (String name : cacheManager.getCacheNames()) {
+        var cache = (CaffeineCache) cacheManager.getCache(name);
+        assertThat(cache.getNativeCache().stats().requestCount())
+                .as("%s 沒有 recordStats() —— 所有指標會是 0（5.9.1）", name)
+                .isNotNegative();
+        // ⚠️ 上面那個斷言其實抓不到（沒有 recordStats 時 stats() 回 disabled 的實例，
+        //    而 requestCount() 是 0，不是負數）
+    }
+}
+```
+
+🔴 **上面那條測試沒有用**，而那是一個誠實的示範。**正確的做法**：
+
+```java
+@Test
+void 每個快取都有開啟統計() {
+    for (String name : cacheManager.getCacheNames()) {
+        var native_ = ((CaffeineCache) cacheManager.getCache(name)).getNativeCache();
+        // ★ 放一個值、讀兩次，然後檢查統計有沒有動
+        native_.put("__probe__", "v");
+        native_.getIfPresent("__probe__");
+        native_.getIfPresent("__missing__");
+        var stats = native_.stats();
+        assertThat(stats.requestCount())
+                .as("%s 的 stats().requestCount() 是 0 → 沒有 recordStats()（5.9.1）", name)
+                .isEqualTo(2);
+        native_.invalidate("__probe__");
+    }
+}
+```
+
+⚠️ **它有一個副作用（污染快取）**，所以只能在測試環境跑。
+👉 **而那個副作用用 `__probe__` 這個不可能撞到的 key + 最後 `invalidate` 處理掉。**
+
+### 5.9.2 命中率多少才算好
+
+**這是最常被問、最常被答錯的問題。**
+
+🔴 **「命中率越高越好」是錯的。**
+
+| 命中率 | 可能的意義 |
+|---|---|
+| **30%** | ⚠️ 可能是「快取沒用」，也可能是「這個查詢本來就很分散」 |
+| 85% | ✅ 通常很好 |
+| 98% | ✅ 很好 |
+| **99.99%** | 🔴🔴 **可能是壞消息** —— 見下 |
+
+⚠️⚠️ **99.99% 為什麼可能是壞消息**：
+
+```
+命中率 99.99% = 每 10,000 次讀取才 miss 一次
+            = TTL 內平均有 10,000 次請求
+            = 🔴 資料可能已經舊了很久，而沒有人發現
+```
+
+**命中率要與「不一致的成本」一起看**：
+
+| 資料 | 目標命中率 | 為什麼 |
+|---|---|---|
+| `orderOwners`（永不變） | **越高越好** | ✅ 沒有不一致的可能 |
+| `productSummaries` | 90～98% | 平衡 |
+| **`productPrices`** | ⚠️ **不看命中率，看 TTL** | 一致性優先（5.10.1） |
+
+✅ **正確的問法不是「命中率夠高嗎」，是三個問題**：
+
+```
+① 快取讓資料庫的負載降了多少？        → 對照 miss 數 × 查詢成本
+② 不一致的最長時間是多久？             → TTL（+ 清除的延遲）
+③ 那個時間業務上可以接受嗎？          → 這是產品決定，不是工程決定
+```
+
+### 5.9.3 三個該告警的情況
+
+```yaml
+# ① 命中率突然掉 —— 通常代表「快取被清了」或「key 的組成變了」
+- alert: CacheHitRateDropped
+  expr: |
+    (rate(cache_gets_total{result="hit"}[10m])
+     / rate(cache_gets_total[10m])) < 0.5
+  for: 10m
+  annotations:
+    summary: "{{ $labels.cache }} 命中率低於 50%"
+    # ⚠️ 最常見的原因：有人改了 key 的組成（5.4）→ 舊的項目永遠不會被命中
+
+# ② 淘汰率高 —— 容量不夠
+- alert: CacheEvictionRateHigh
+  expr: rate(cache_evictions_total[10m]) / rate(cache_puts_total[10m]) > 0.5
+  for: 15m
+
+# ③ 快取錯誤 —— Redis 有問題（5.7.2 的降級是靜默的）
+- alert: CacheErrorRateHigh
+  expr: rate(cache_errors_total[5m]) > 1
+  for: 5m
+```
+
+⚠️ **① 的註解值得強調。「改了 key 的組成」的症狀是**：
+
+```
+部署之後：
+  命中率從 95% 掉到 0%
+  資料庫 QPS 從 400 變成 8,000
+  ⚠️ 而【沒有任何錯誤】—— 功能完全正常，只是慢
+```
+
+**這是快取最常見的生產事故，而它只有指標抓得到。**
+
+### 5.9.4 一個容易被忘記的指標：快取的「年齡」
+
+**TTL 保證「最舊的資料有多舊」，而它是一個上限，不是實際值。**
+
+```java
+/**
+ * ★ 記錄「被命中的項目寫入多久了」——
+ * 它回答「實際上使用者看到的資料有多舊」。
+ *
+ * <p>⚠️ Caffeine 沒有內建這個，要自己包一層。
+ * 而它的成本是「每個項目多存一個 long」——
+ * 對 5 萬個項目來說是 400 KB，可以接受。
+ */
+record Aged<T>(T value, long writtenAtNanos) {}
+
+<T> T getWithAge(Cache cache, String key, String cacheName,
+                 java.util.function.Supplier<T> loader) {
+    @SuppressWarnings("unchecked")
+    Aged<T> aged = (Aged<T>) cache.get(key, () ->
+            new Aged<>(loader.get(), System.nanoTime()));
+    long ageMillis = (System.nanoTime() - aged.writtenAtNanos()) / 1_000_000;
+    meters.timer("cache.age", "cache", cacheName)
+          .record(ageMillis, java.util.concurrent.TimeUnit.MILLISECONDS);
+    return aged.value();
+}
+```
+
+**它讓一個問題變得可回答**：
+
+> 「客戶抱怨看到舊價格。那個價格有多舊？」
+>
+> ✅ `cache_age_seconds{quantile="0.99"} = 28` → 最舊的 1% 是 28 秒
+> 🔴 沒有這個指標 → 只能說「最多 30 秒，因為 TTL 是 30 秒」
+
+---
+
+## 5.10 什麼不該快取 ★★
+
+### 5.10.1 四類不該快取的資料
+
+| 類別 | 例子 | 為什麼 |
+|---|---|---|
+| ① **計數器與餘額** | 庫存數量、券的已用次數、帳戶餘額 | 🔴 **它們是「當前值」，而快取的定義就是「舊值」** |
+| ② **正在被競爭的資料** | 促銷商品的庫存 | 🔴 02 章 2.11.2「檢查與寫入之間的縫」—— 快取讓那個縫變成 30 秒 |
+| ③ **依賴呼叫者身分的** | `detail(orderId, actor)` | 🔴 5.4.4（授權與快取不相容） |
+| ④ **有副作用的方法** | 「查詢並標記為已讀」 | 🔴 5.2.1（命中時方法不跑） |
+
+⚠️ **① 值得展開，因為「庫存」是最常見的錯誤快取對象。**
+
+```java
+// 🔴🔴 這行程式碼會讓超賣變成必然
+@Cacheable(cacheNames = "stock", key = "#productId")
+public int availableOf(String productId) { ... }
+```
+
+**它為什麼一定會出事**：
+
+```
+促銷開始，庫存 100
+T=0     快取寫入 100
+T=0~30  8,000 個請求全部讀到「100」
+        → 每一個都通過「庫存夠嗎」的檢查
+        → 🔴 8,000 筆訂單成立，而庫存只有 100
+```
+
+⚠️⚠️ **而 00 章 0.3.2 事故 3（超賣 47 筆）的成因是「先 SELECT 再 UPDATE」** ——
+**快取讓那個問題放大 100 倍**，因為它把「幾毫秒的縫」變成「30 秒的縫」。
+
+✅ **正確做法（02 章 2.11.7）**：原子 UPDATE，**完全不讀庫存**：
+
+```sql
+UPDATE stock SET available = available - ?
+WHERE product_id = ? AND available >= ?
+-- ★ 影響 0 列 = 庫存不足
+```
+
+**那「商品頁上顯示的庫存數字」呢？**
+
+| 選項 | |
+|---|---|
+| ① 快取它 | ✅ **可以** —— 它只是**顯示**，不是**判斷** |
+| ② 不顯示精確數字 | ✅ 「剩不到 10 件」比「剩 7 件」更好（它天生容忍不一致） |
+
+> 📌📌 **這是本節最重要的區分**：
+>
+> **「顯示用的庫存」可以快取，「判斷用的庫存」絕對不行。**
+>
+> 而讓兩者不會被混用的方法是**兩個方法、兩個名字**：
+>
+> ```java
+> /** ★ 顯示用。可能是舊的。⚠️ 不可用於任何判斷。 */
+> @Cacheable(cacheNames = "stockDisplay", key = "#productId")
+> public StockDisplay displayStockOf(String productId) { ... }
+>
+> /** ★★ 判斷用。它【不查詢】—— 它直接嘗試扣減。 */
+> public boolean tryReserve(String productId, int quantity) { ... }
+> ```
+>
+> ⚠️ **注意 `tryReserve` 根本沒有「查詢」的版本** ——
+> 那讓「先查再判斷」在 API 上不可能。
+
+### 5.10.2 有副作用的方法
+
+```java
+// 🔴 第二次呼叫時，viewCount 不會增加
+@Cacheable(cacheNames = "articles", key = "#id")
+public Article readAndCount(String id) {
+    Article a = repo.findById(id).orElseThrow();
+    repo.incrementViewCount(id);          // ★ 副作用
+    return a;
+}
+```
+
+⚠️ **這個 bug 的表現是「瀏覽數不動」，而沒有任何錯誤。**
+
+✅ **一條 ArchUnit 規則抓「`@Cacheable` 方法呼叫了寫入方法」**：
+
+```java
+/**
+ * ★ @Cacheable 的方法不可以呼叫 @Transactional 的寫入方法。
+ *
+ * <p>⚠️ 它是一個<b>啟發式</b>：「呼叫寫入交易」是「有副作用」最常見的形狀，
+ * 但不是唯一的（寫檔案、送訊息、改靜態變數都抓不到）。
+ */
+@ArchTest
+static final ArchRule Cacheable方法不可呼叫寫入交易 =
+        noMethods().that().areAnnotatedWith(Cacheable.class)
+                   .should(new ArchCondition<JavaMethod>("呼叫寫入交易的方法") {
+                       @Override
+                       public void check(JavaMethod m, ConditionEvents events) {
+                           m.getMethodCallsFromSelf().stream()
+                            .map(call -> call.getTarget().resolveMember())
+                            .flatMap(java.util.Optional::stream)
+                            .filter(t -> t.tryGetAnnotationOfType(Transactional.class)
+                                    .map(tx -> !tx.readOnly()).orElse(false))
+                            .forEach(t -> events.add(SimpleConditionEvent.violated(m, """
+                                    %s 是 @Cacheable，但它呼叫了寫入交易 %s。
+                                    ⚠️ 快取命中時這個方法【完全不會執行】（5.2.1）——
+                                    於是那個副作用會靜默消失（5.10.2）。
+                                    """.formatted(m.getFullName(), t.getFullName()))));
+                       }
+                   });
+```
+
+### 5.10.3 一個反直覺的例子：`ResourceBundleMessageSource` 不該再加一層
+
+**04 章 4.17 預告了這件事。**
+
+```java
+// ProblemFactory.build()
+String userMessage = message(code.userMessageKey(), args, "…", locale);
+//                   ↑ 每一個 4xx 都會查一次 ResourceBundle
+```
+
+**算術**：41 個例外 × 每秒 200 次 4xx = **每秒 8,200 次 bundle 查詢**。
+看起來很值得加快取。
+
+⚠️ **而 `ResourceBundleMessageSource` 本身就有快取**：
+
+| 設定 | 預設值 | 意義 |
+|---|---|---|
+| `cacheMillis` | **-1** | **永久快取**（bundle 載入後不重讀） |
+| `cacheSeconds` | -1 | 同上 |
+
+✅ **所以那 8,200 次查詢是「一次 `ConcurrentHashMap` 查詢」** —— 約 20 ns。
+
+**再加一層快取會**：
+
+| | |
+|---|---|
+| 節省 | 20 ns × 8,200 = **0.16 ms/秒** |
+| 付出 | 一個新的快取、一組新的 key、一個新的失效問題（**改文案要清它**） |
+
+🔴 **明顯不值得。**
+
+> 📌📌 **這一節的一般規則，也是全章最實用的一條**：
+>
+> **加快取之前先問「它下面已經有快取了嗎」。**
+>
+> **已經有內建快取而常被重複快取的東西**：
+>
+> | 元件 | 內建的快取 |
+> |---|---|
+> | `MessageSource` | ✅ `cacheMillis = -1`（永久） |
+> | JPA 的一級快取 | ✅ 同一個交易內 `findById` 只查一次 |
+> | **`@ConfigurationProperties`** | ✅ 它是一個 singleton bean，**根本沒有查詢** |
+> | Spring 的 bean | ✅ singleton |
+> | `Pattern.compile` 的結果 | 🔴 **沒有** —— 這個真的該自己快取（static final） |
+
+### 5.10.4 shop-service 的「不快取」清單
+
+| 不快取的 | 理由 | 誰守它 |
+|---|---|---|
+| `stock.availableOf()` | 5.10.1 ① | ✅ 它**不存在**（只有 `tryReserve`） |
+| `coupon.usageCount()` | 5.10.1 ① | ✅ 同上 |
+| `OrderApplicationService` 的**所有**方法 | 它們是命令，有副作用 | ✅ ArchUnit（5.10.2） |
+| `detail(orderId, actor)` | 5.4.4（授權） | ⚠️ **沒有機制守** → 5.16 的缺口 |
+| `MessageSource` 的查詢 | 5.10.3 | ⚠️ 沒有機制守 |
+
+---
+
+## 5.11 快取的測試 ★★
+
+### 5.11.1 「證明第二次沒打資料庫」
+
+**這是快取測試的核心斷言，而它有三種寫法。**
+
+**寫法 A：Mockito 的 `verify(times(1))`** ★
+
+```java
+@Test
+void 第二次查詢不會打資料庫() {
+    when(productRepository.findById("P-1")).thenReturn(Optional.of(aProduct()));
+
+    productService.findById("P-1");
+    productService.findById("P-1");
+
+    // ★★ 這一行就是整個測試的目的
+    verify(productRepository, times(1)).findById("P-1");
+}
+```
+
+| | |
+|---|---|
+| ✅ | 快、明確、不需要真的資料庫 |
+| 🔴 | ⚠️ 需要 Spring 的 context（`@Cacheable` 要代理）→ 不是純單元測試 |
+
+**寫法 B：計數器**（5.3.1 的實驗用的）
+
+```java
+static final AtomicInteger DB_HITS = new AtomicInteger();
+```
+
+| | |
+|---|---|
+| ✅ | 不需要 Mockito；在整合測試裡也能用 |
+| 🔴 | ⚠️ **不可以是實例欄位**（5.3.2 的 CGLIB 陷阱） |
+
+**寫法 C：直接檢查 `Cache`**
+
+```java
+@Test
+void 查詢後快取裡有項目() {
+    productService.findById("P-1");
+    assertThat(cacheManager.getCache("products").get("P-1")).isNotNull();
+}
+```
+
+| | |
+|---|---|
+| ✅ | 順便驗證了 **key 的組成**（5.4） |
+| 🔴 | 🔴 **它不證明「第二次沒打資料庫」** —— 只證明「有寫進去」 |
+
+✅ **shop-service 的做法：A + C**。
+
+**A 證明「有讀到」，C 證明「key 是對的」** —— 而兩者都需要：
+
+```java
+@Test
+void 商品查詢的快取行為() {
+    when(productRepository.findById("P-1")).thenReturn(Optional.of(aProduct()));
+
+    var first = productService.findById("P-1");
+    var second = productService.findById("P-1");
+
+    verify(productRepository, times(1)).findById("P-1");     // ★ A：只查一次
+    assertThat(second).isSameAs(first);                       // ★ 本地快取回同一個實例
+    assertThat(cacheManager.getCache("products").get("P-1"))  // ★ C：key 正確
+            .isNotNull();
+}
+```
+
+⚠️ **`isSameAs` 在本地快取上成立，在 Redis 上不成立**（反序列化產生新實例）——
+**所以這條斷言把測試綁在「本地快取」上。**
+
+👉 **處置**：改用 `isEqualTo`，並**另外**寫一條「序列化往返」的測試（5.8.5）。
+
+### 5.11.2 ⚠️ 測試之間的快取污染
+
+**這是快取測試最常見的問題**：
+
+```java
+@SpringBootTest
+class ProductServiceCacheTest {
+
+    @Test void 測試A() { productService.findById("P-1"); ... }
+
+    @Test void 測試B() {
+        // 🔴 P-1 已經在快取裡（測試 A 放的）
+        //    → repository 的 mock 不會被呼叫 → verify 失敗
+        //    ⚠️ 而它的失敗訊息是「Wanted 1 time but was 0 times」，
+        //       看起來像「快取沒生效」而不是「快取太生效」
+    }
+}
+```
+
+✅ **一個 `@BeforeEach` 清全部**：
+
+```java
+@BeforeEach
+void clearAllCaches() {
+    cacheManager.getCacheNames()
+            .forEach(name -> cacheManager.getCache(name).clear());
+}
+```
+
+⚠️⚠️ **而 `getCacheNames()` 在 `CaffeineCacheManager` 上是 lazy 的**：
+
+```java
+// ★ 沒有呼叫過 getCache("products") 之前，getCacheNames() 是空的
+//   → 這個 @BeforeEach 在第一個測試時什麼都沒清
+```
+
+✅ **修法：明確宣告快取名稱**（5.9.1 的 `setCacheNames`），
+**而那同時也是 5.9.1 指標需要的**。
+
+> 📌 **一個設定同時解決兩個問題，通常代表它本來就該設。**
+
+### 5.11.3 用 Testcontainers 測 Redis ⚠️ 未實測
+
+```java
+/**
+ * ⚠️⚠️ <b>這組測試在撰稿的機器上沒有跑過</b>（沒有 Docker）。
+ * 5.8.6 已經說明本章的 Redis 部分只驗證了「序列化器本身」。
+ */
+@SpringBootTest
+@Testcontainers
+class RedisCacheIntegrationTest {
+
+    @Container
+    static final GenericContainer<?> REDIS =
+            new GenericContainer<>(DockerImageName.parse("redis:7.2-alpine"))
+                    .withExposedPorts(6379);
+
+    @DynamicPropertySource
+    static void redisProperties(DynamicPropertyRegistry registry) {
+        registry.add("spring.data.redis.host", REDIS::getHost);
+        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+    }
+
+    @Autowired ProductService products;
+    @Autowired StringRedisTemplate redis;
+    @MockBean ProductRepository repository;
+
+    @Test
+    void 存進Redis的key長什麼樣() {
+        when(repository.findById("P-1")).thenReturn(Optional.of(aProduct()));
+        products.findById("P-1");
+
+        // ★ 這是本章最想知道但沒驗證到的事（5.8.6）
+        var keys = redis.keys("*");
+        System.out.println("Redis 裡的 key = " + keys);
+        assertThat(keys).contains("products::P-1");
+    }
+
+    @Test
+    void TTL有被設定() {
+        when(repository.findById("P-1")).thenReturn(Optional.of(aProduct()));
+        products.findById("P-1");
+        Long ttl = redis.getExpire("products::P-1");
+        assertThat(ttl).isBetween(20L, 31L);      // 30 秒 ± 抖動
+    }
+}
+```
+
+### 5.11.4 5.3 那組交易實驗的完整版
+
+```java
+@Test
+void 交易rollback之後快取裡不可以有髒資料() {
+    setUp();
+
+    assertThatThrownBy(() -> writer.renameAndReadThenFail("P-1", "髒名稱"))
+            .isInstanceOf(IllegalStateException.class);
+
+    // ★★ 這條斷言【現在會失敗】—— 而那正是 5.3.3 實驗 4 的結論
+    assertThat(cachedValue("P-1"))
+            .as("""
+                快取裡有一個從來沒有在資料庫裡存在過的值（5.3.3 實驗 4）。
+                本章的處置是「短 TTL + AFTER_COMMIT 清快取 + ArchUnit 禁止在寫入交易裡
+                呼叫 @Cacheable」（5.3.5、5.3.6）——
+                ⚠️ 而這條測試守的是「那三個機制真的有裝上」。
+                """)
+            .isNotEqualTo("髒名稱");
+}
+```
+
+⚠️ **這條測試在「三個機制裝上之後」才會綠**：
+
+| 機制 | 讓這條測試綠嗎 |
+|---|---|
+| 短 TTL | 🔴 **不會**（30 秒內它還在） |
+| `AFTER_COMMIT` 清快取 | 🔴 **不會**（交易 rollback → 沒有 AFTER_COMMIT） |
+| **ArchUnit 禁止交易裡呼叫 `@Cacheable`** | ✅ **會** —— 因為那個呼叫根本不該存在 |
+
+> 📌📌 **這個對照表本身是一個重要的發現**：
+>
+> **5.3.5 的兩個機制（短 TTL、`AFTER_COMMIT`）都解決不了實驗 4。**
+> 它們解決的是**別的**問題（併發回填舊值）。
+>
+> ⚠️ **實驗 4 只有一個解法：不要在寫入交易裡呼叫 `@Cacheable` 方法。**
+> 而那讓 5.3.6 的 ArchUnit 規則從「一個選項」變成「唯一的解」。
+
+### 5.11.5 五條守門測試
+
+```java
+package example.shop.cache;
+
+/**
+ * ★★ 快取的五條守門測試。
+ *
+ * <p>⚠️ 全部都是「掃描測試」，所以全部都需要<b>下限斷言</b>（04 章 4.12.1）。
+ */
+class CacheGuardTest {
+
+    private static final JavaClasses MAIN = new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
+            .importPackages("example.shop");
+
+    /** ① 每個 cache 名稱只被一個方法使用（5.4.2 事故 2）。 */
+    @Test void 每個cache名稱只被一個方法使用() { /* 5.4.2 已給 */ }
+
+    /** ② sync = true 不可有 unless 或多個 cacheNames（5.7.1）。 */
+    @Test void sync為true的Cacheable不可有unless或多個cacheNames() { /* 5.7.1 已給 */ }
+
+    /** ③ 每個 @Cacheable 的 cache 名稱都在 CacheManager 的清單裡。 */
+    @Test
+    void 每個Cacheable的名稱都有被宣告() {
+        var declared = Set.of("products", "productSummaries", "productPrices",
+                              "orderOwners", "orderContents", "couponDefinitions",
+                              "categoryIndex", "catalogVersion");
+        var used = new java.util.TreeSet<String>();
+        MAIN.stream().flatMap(c -> c.getMethods().stream())
+            .forEach(m -> m.tryGetAnnotationOfType(Cacheable.class)
+                    .ifPresent(a -> used.addAll(names(a))));
+
+        assertThat(used).as("掃到 0 個 @Cacheable —— 檢查掃描範圍").isNotEmpty();
+        assertThat(declared).containsAll(used);
+    }
+
+    /**
+     * ④ ★★ 沒有任何被快取的型別依賴 `is-getter`（5.8.3）。
+     *
+     * <p>⚠️ 5.8.5 的 ObjectMapper 關掉了 IS_GETTER 偵測 ——
+     * 於是一個「只有 isXxx() 沒有欄位」的屬性會<b>靜默消失</b>。
+     */
+    @Test
+    void 沒有快取型別依賴is_getter() {
+        var om = CacheObjectMappers.forCache();
+        var withIsGetter = new java.util.ArrayList<String>();
+
+        for (Class<?> type : CACHED_TYPES) {           // 手寫清單，見下
+            for (var m : type.getDeclaredMethods()) {
+                if (m.getName().startsWith("is") && m.getParameterCount() == 0
+                        && (m.getReturnType() == boolean.class
+                            || m.getReturnType() == Boolean.class)) {
+                    // ★ 只有「沒有對應的 record 元件」時才是問題
+                    boolean hasComponent = type.isRecord()
+                            && java.util.Arrays.stream(type.getRecordComponents())
+                                    .anyMatch(rc -> rc.getName().equals(m.getName()));
+                    if (!hasComponent) {
+                        withIsGetter.add(type.getSimpleName() + "#" + m.getName());
+                    }
+                }
+            }
+        }
+        // ★ 這一條【印出來】而不是失敗 —— 有 is-getter 不一定是問題，
+        //   問題是「那個值需要被還原」，而那需要人判斷（04 章 4.2.3 的同一個手法）
+        withIsGetter.forEach(s -> System.out.println("[is-getter] " + s));
+    }
+
+    /**
+     * ⑤ ★★ 快取的 ObjectMapper 一定有 PolymorphicTypeValidator（5.8.5）。
+     */
+    @Test
+    void 快取的ObjectMapper擋得住任意類別() {
+        var om = CacheObjectMappers.forCache();
+        String evil = "{\"@class\":\"java.lang.ProcessBuilder\",\"command\":[]}";
+        assertThatThrownBy(() -> om.readValue(evil, Object.class))
+                .as("""
+                    activateDefaultTyping 沒有 PolymorphicTypeValidator ——
+                    任何能寫入 Redis 的人都能實例化 classpath 上的任意類別（5.8.5）。
+                    """)
+                .rootCause()
+                .isInstanceOf(InvalidTypeIdException.class);
+    }
+}
+```
+
+⚠️ **④ 的 `CACHED_TYPES` 是一個手寫清單**，而那有 04 章 4.12.2 的同一個問題：
+**手寫會漏**。
+
+✅ **修法：從 `@Cacheable` 方法的回傳型別自動推導**：
+
+```java
+/** ★ 所有「會被放進快取」的型別 —— 從 @Cacheable 方法的回傳型別推導。 */
+private static Set<Class<?>> cachedTypes() {
+    return MAIN.stream()
+            .flatMap(c -> c.getMethods().stream())
+            .filter(m -> m.isAnnotatedWith(Cacheable.class))
+            .map(m -> m.getRawReturnType().reflect())
+            .collect(java.util.stream.Collectors.toSet());
+}
+```
+
+⚠️⚠️ **而它只涵蓋「頂層的回傳型別」** ——
+`List<ProductView>` 會被推導成 `List`，而 `ProductView` 漏掉。
+**這是一個已知的不完備**（5.16）。
+
+---
+
+## 5.12 shop-service 的快取總表
+
+### 5.12.1 八個快取
+
+⚠️ **為什麼別的地方寫「七個」**：下面這張表有 **8 列**，
+而 `CacheConfig`（Caffeine）只組態 **7 個** —— 因為 `productPrices` 在 Redis。
+**而這一節的結論是它應該被刪掉**（見表格下方），所以最終狀態是 **7 個本地快取**。
+
+| 快取 | 存什麼 | 位置 | TTL | key | 誰清它 |
+|---|---|---|---|---|---|
+| `orderOwners` | `orderId → customerId`（`String`） | 本地 | **1 小時** | `orderId` | ✅ 不需要清（永不變） |
+| `orderContents` | `OrderDetailView` | 本地 | 30 秒 | `orderId:privileged` | `AFTER_COMMIT`（`OrderChangedEvent`） |
+| `products` | `ProductView` | 本地 | 30 秒 | `productId` | `AFTER_COMMIT`（`ProductChangedEvent`） |
+| `productSummaries` | 名稱 + 圖片 | 本地 | 5 分鐘 | `productId` | 同上 |
+| **`productPrices`** | `Money` | **Redis** | 30 秒 | `productId` | 同上 |
+| `couponDefinitions` | `Coupon`（定義） | 本地 | 5 分鐘 | `code` | `AFTER_COMMIT` |
+| `categoryIndex` | `List<String>`（商品 id） | 本地 | 1 分鐘 | `category:page` | 上下架 / 換分類時 |
+| `catalogVersion` | `long` | 本地 | **1 秒** | 固定 | ✅ 不清（靠 1 秒 TTL） |
+
+⚠️ **`productPrices` 是唯一放 Redis 的**，理由（5.5.3）：
+**價格必須跨實例一致** —— 三個實例顯示三個價格是不可接受的。
+
+⚠️ **而它有一個尚未解決的矛盾**：
+
+```
+productPrices 在 Redis（一致）
+products 在本地（不一致）—— 而 ProductView 裡【也有價格】
+```
+
+🔴 **同一個價格有兩個快取，一個一致一個不一致。**
+
+**三個處理方式**：
+
+| 方式 | |
+|---|---|
+| ① `ProductView` 拿掉價格，前端分兩次要 | 🔴 多一個往返 |
+| ② `products` 也放 Redis | ⚠️ 失去 14 ns 的本地讀取 |
+| ③ ✅ **`products` 的 TTL 縮到與 `productPrices` 相同（30 秒）** | 兩者的不一致上限相同 |
+
+✅ **選 ③**（表格已經是 30 秒），而它的意思是：
+**`productPrices` 放 Redis 買到的「跨實例一致」，在 `products` 也有價格的情況下沒有實際效果。**
+
+> 📌📌 **這是一個誠實的結論：`productPrices` 放 Redis 是多餘的。**
+>
+> ⚠️ 保留它的唯一理由是**「結帳時的價格」走的是另一條路徑** ——
+> 而那條路徑**根本不該讀快取**（5.10.1 的判準：判斷用的資料不快取）。
+>
+> 👉 **真正的結論**：`productPrices` **應該被刪掉**。
+> 顯示用的價格走 `products`（本地、30 秒），
+> 判斷用的價格走 `productRepository`（不快取）。
+> **記進 5.16 的待辦。**
+
+### 5.12.2 組態
+
+```yaml
+spring:
+  cache:
+    type: caffeine
+    cache-names:
+      - orderOwners
+      - orderContents
+      - products
+      - productSummaries
+      - couponDefinitions
+      - categoryIndex
+      - catalogVersion
+    caffeine:
+      # ⚠️ 這一行是【所有】快取的預設值 —— 個別的 TTL 要用 Java 組態（見下）
+      spec: maximumSize=50000,expireAfterWrite=30s,recordStats
+```
+
+⚠️⚠️ **`spring.cache.caffeine.spec` 只能設一組值** ——
+而我們有三種 TTL（1 秒 / 30 秒 / 5 分鐘 / 1 小時）。
+
+✅ **所以要用 Java 組態**：
+
+```java
+/**
+ * ★★ 每個快取不同的 TTL。
+ *
+ * <p>⚠️ {@code CaffeineCacheManager} 只支援「一組共用的 Caffeine 設定」——
+ * 要分開必須用 {@link SimpleCacheManager} + 手動建立每一個 Cache。
+ */
+@Bean
+CacheManager cacheManager(MeterRegistry meters) {
+    var manager = new SimpleCacheManager();
+    manager.setCaches(List.of(
+            caffeine("orderOwners",      Duration.ofHours(1),     200_000),
+            caffeine("orderContents",    Duration.ofSeconds(30),   50_000),
+            caffeine("products",         Duration.ofSeconds(30),   50_000),
+            caffeine("productSummaries", Duration.ofMinutes(5),   100_000),
+            caffeine("couponDefinitions",Duration.ofMinutes(5),     5_000),
+            caffeine("categoryIndex",    Duration.ofMinutes(1),    10_000),
+            caffeine("catalogVersion",   Duration.ofSeconds(1),         1)));
+    return manager;
+}
+
+private static CaffeineCache caffeine(String name, Duration ttl, long maxSize) {
+    return new CaffeineCache(name, Caffeine.newBuilder()
+            .maximumSize(maxSize)
+            .recordStats()                                    // ★ 5.9.1
+            .expireAfter(jittered(ttl))                       // ★ 5.7.2
+            .build());
+}
+
+/** ★ TTL ± 20% 的抖動（5.7.2 解法 ②）。 */
+private static Expiry<Object, Object> jittered(Duration base) {
+    long baseNanos = base.toNanos();
+    long jitter = baseNanos / 5;
+    return new Expiry<>() {
+        private long ttl() {
+            return baseNanos + ThreadLocalRandom.current().nextLong(-jitter, jitter);
+        }
+        @Override public long expireAfterCreate(Object k, Object v, long now) { return ttl(); }
+        @Override public long expireAfterUpdate(Object k, Object v, long now, long cur) { return ttl(); }
+        /** ★ 讀取不延長 —— 5.7.2 的說明 */
+        @Override public long expireAfterRead(Object k, Object v, long now, long cur) { return cur; }
+    };
+}
+```
+
+⚠️ **`catalogVersion` 的 `maximumSize(1)`** —— 它只有一個項目（固定 key）。
+**寫 1 而不是留預設，是為了讓「它只該有一個項目」這件事被看見。**
+
+### 5.12.3 套件結構
+
+```
+example.shop
+├── common/cache/
+│   ├── CacheObjectMappers.java          ★★ 5.8.5（Redis 用；本地快取不需要）
+│   ├── CacheConfig.java                  ★ 5.12.2
+│   ├── CacheErrorHandlerConfig.java      ★★ 5.7.2（降級）
+│   └── Cached.java                       ★ 5.6.2 的手動快取小工具
+├── order/cache/
+│   ├── OrderContentKeys.java             ★★ 5.6.5（key 的唯一定義處）
+│   └── OrderCacheInvalidator.java        ★ AFTER_COMMIT 清快取
+├── product/cache/
+│   ├── ProductCacheKeys.java
+│   └── ProductCacheInvalidator.java
+└── coupon/cache/
+    └── CouponCacheInvalidator.java
+```
+
+⚠️ **`order/cache/` 而不是 `common/cache/order/`** ——
+與 04 章 4.3.7 的判準一致：**東西放在它所屬的領域裡**。
+
+---
+
+## 5.13 本章回頭修正前面的地方 ★★
+
+### ① 🔴 02 章 2.7.2 的 `publicMethodsOnly` 說法是錯的
+
+**02 章 2.7.2 說**：
+
+> `publicMethodsOnly` 預設 `true` → **非 `public` 方法同樣靜默失效**
+
+**實測（Spring Boot 3.2.5 / Framework 6.1.6，CGLIB 代理）**：
+
+```
+[tx] 容器裡的 TransactionAttributeSource publicMethodsOnly = false
+[tx] package-private 方法在交易裡嗎 = true
+[tx] package-private 失敗後的列數  = 0（有 rollback）
+```
+
+**位元碼證據**：
+
+```
+ProxyTransactionManagementConfiguration.transactionAttributeSource():
+  new AnnotationTransactionAttributeSource
+  iconst_0                          ← ★ publicMethodsOnly = false
+  invokespecial <init>:(Z)V
+```
+
+**修正後的正確說法**：
+
+| 修飾詞 | 有效嗎 | 為什麼 |
+|---|---|---|
+| `public` | ✅ | — |
+| **`package-private`** | ✅ **有效** | `publicMethodsOnly = false`；CGLIB 可覆寫同套件的 package-private |
+| `protected` | ⚠️ **理論上有效**，但它通常被自呼叫 | — |
+| `private` | 🔴 | CGLIB 無法覆寫；且只能自呼叫 |
+| `static` / `final` | 🔴 | CGLIB 無法覆寫 |
+
+⚠️ **02 章那個說法在三種情況下是對的**：
+JDK 動態代理、自己 `new AnnotationTransactionAttributeSource()`、
+或 Spring 5.x 之前的某些版本。
+**而 shop-service 用 CGLIB + 自動組態，所以它不適用。**
+
+✅ **處置**：02 章 2.7.2 那一段改寫，並保留「為什麼很多人以為是 `true`」的說明
+（因為**類別的預設建構子**確實是 `true`）。
+
+⚠️ **而它對 00 章 0.11.2 的守門規則沒有影響**：
+
+```java
+// 「@Transactional 方法不可為 final」—— 仍然正確
+// 「@Transactional 方法不可宣告 checked exception」—— 仍然正確
+```
+
+**兩條規則都不分可見性，所以它們本來就涵蓋 package-private。**
+
+### ② 🔴 00 章 0.9.1 的 `Money` 無法通過 Jackson 往返
+
+**實測**：
+
+```
+序列化 = {"amount":1500.00,"currency":"TWD","zero":false,"negative":false,"positive":true}
+往返   = UnrecognizedPropertyException: Unrecognized field "zero"
+```
+
+**成因**：`isZero()` / `isPositive()` / `isNegative()` 被當成 getter。
+
+⚠️ **它在 API 上不會出事**（03 章 3.8.4 規定金額是 `String`，
+而 04-controller 6.5.7 有 `MoneySerializer`），
+**但在快取上會**（另一個 `ObjectMapper`，5.8.1）。
+
+✅ **處置：不改 `Money`**（那會讓 domain 依賴 Jackson），
+改快取的 `ObjectMapper`（5.8.5 的 `IS_GETTER → NONE`）。
+
+⚠️ **而它留下一個一般性的風險**：
+**任何「把 domain 物件直接序列化」的地方都會遇到這件事** ——
+Kafka 的訊息、outbox 的 payload（06 章）、稽核紀錄的 JSON。
+
+👉 **記進 5.16，並在 06 章處理 outbox 時重新檢查。**
+
+### ③ ⚠️ `orderId` 是 ULID，`orderNumber` 是遞增序號 —— 兩者不可混用
+
+**5.7.3 的分析發現 `orderContents` 不做穿透保護，
+而那個決定的安全性取決於「key 猜不到」。**
+
+| | 格式 | 猜得到嗎 |
+|---|---|---|
+| `Order.id` | ULID（`UlidIdGenerator`，00 章 0.12） | ✅ 猜不到 |
+| `Order.orderNumber` | `ORD-yyyyMMdd-NNNN`（02 章 2.11.4） | 🔴 **猜得到** |
+
+✅ **目前是安全的**，而它靠的是一個**沒有被任何機制保護的慣例**。
+
+**正確的長期解法是 `record OrderId(String value)`** ——
+而它是一個跨 00～04 章約 200 處的改動。
+
+👉 **本章不做**，理由與 04 章 4.6.1 的「已知命名不一致」相同：
+**改動範圍遠大於它解決的風險**。
+記進 5.16，並在 5.7.3 留一條（弱的）測試與一段說明。
+
+### ④ ✅ 04 章 4.17 預告的那件事：`ProblemFactory` 不需要加快取
+
+04 章 4.17 說：
+
+> `ProblemFactory` 的 `messageSource.getMessage()` 每次都查 ResourceBundle。
+> 41 個例外 × 每秒 200 次 4xx = 每秒 8,200 次 bundle 查詢。
+
+✅ **不需要處理** —— `ResourceBundleMessageSource` 的 `cacheMillis` 預設是 **-1（永久）**，
+所以那 8,200 次是 `ConcurrentHashMap` 查詢（~20 ns）。
+
+**這是 5.10.3「加快取之前先問下面有沒有快取」的實例。**
+
+### ⑤ ⚠️ 01 章 1.9.2 的 `@Transactional(readOnly = true)` 讓一個解法不可用
+
+5.3.6 的選項 ③（用 `condition` 排除「交易中的呼叫」）在 shop-service 上不可行，
+因為 `OrderQueryService` **整個類別**都是 `@Transactional(readOnly = true)` ——
+於是所有查詢都會被排除掉。
+
+✅ **這不是「01 章寫錯了」** ——
+`readOnly = true` 是正確的（02 章 2.5.2 有三個非效能的理由）。
+
+👉 **它只是讓 5.3.6 的解法從「三選一」變成「二選一」**，
+而最終選的是 ①（ArchUnit 禁止）+ ④（短 TTL）。
+
+### ⑥ 🔴 `productPrices` 這個快取應該被刪掉
+
+**5.12.1 的分析**：`ProductView` 裡也有價格，而它在本地快取 ——
+於是「`productPrices` 放 Redis 換到跨實例一致」在實務上沒有效果。
+
+✅ **處置**：刪掉 `productPrices`。
+- 顯示用的價格 → `products`（本地，30 秒）
+- **判斷用的價格 → 不快取**（5.10.1）
+
+⚠️ **而這個修正是在寫 5.12.1 的總表時才發現的** ——
+**因為那張表把「哪個快取存什麼」並排放在一起了。**
+
+> 📌 **一張總表的價值不只是「查閱」**：
+> **它讓「兩個東西存了同一份資料」變得看得見。**
+
+### ⑦ 本章新增的組態與類別（給 04-controller 與前四章）
+
+| 新增 | 位置 |
+|---|---|
+| `@EnableCaching(order = ...)` 與 `@EnableTransactionManagement(order = ...)` | 5.2.2 |
+| `CacheErrorHandler`（降級） | 5.7.2 |
+| `CacheObjectMappers`（Redis 用的 `ObjectMapper`） | 5.8.5 |
+| `OrderContentKeys`（key 的唯一定義處） | 5.6.5 |
+| 三個 `CacheInvalidator`（`AFTER_COMMIT`） | 5.12.3 |
+| 六條快取守門測試 | 5.11.5 + 5.3.6 + 5.10.2 |
+
+---
+
+## 5.14 常見誤區
+
+**誤區 1：以為 `@Cacheable` 知道交易的存在**
+
+🔴 **它不知道。** 交易裡讀到的未提交值會進快取，
+而 rollback 之後**它永久留著**（5.3.3 實驗 4 實測）。
+
+**誤區 2：`@CacheEvict` 就能保持一致**
+
+⚠️ 它只清「你想到的那一個 key」。
+改一個商品的價格會影響**六個**快取（5.6.1），
+而三個只能用 `allEntries = true` 清 → **事故 3**。
+
+**誤區 3：以為 `beforeInvocation` 是「rollback 的解法」**
+
+實測顯示 `true` 與 `false` 在 rollback 時**都一致**（5.3.4）。
+🔴 **真正的問題是「清了之後、commit 之前的窗口」**，而兩者都有。
+
+**誤區 4：兩個方法共用一個 `cacheNames`**
+
+`SimpleKeyGenerator` **不把「哪個方法」放進 key**（5.4.2 實測）。
+→ `ClassCastException`（幸運），或**看到別人的資料**（不幸運）。
+
+**誤區 5：把 `Actor` 整個當 key 的一部分**
+
+key 會包含 `displayName` → 改名字讓全部快取失效（5.4.3）。
+✅ 只放「會改變結果的東西」。
+
+**誤區 6：快取一個需要授權的方法**
+
+🔴 命中時方法**完全不執行** → **授權檢查被跳過**（5.4.4）。
+✅ 授權在外、快取在內。
+
+**誤區 7：以為 `sync = true` 的組態錯誤會在啟動時被發現**
+
+🔴 **實測：它在第一次呼叫時才拋 `IllegalStateException`** ——
+於是「上線後第一個使用者看到 500」（5.7.1）。
+
+**誤區 8：加 `unless = "#result == null"` 省記憶體**
+
+🔴 它把**穿透保護**關掉了（5.7.3 實測：預設**會**快取 `null`）。
+
+**誤區 9：忘記 `recordStats()`**
+
+所有指標是 0，而它看起來像「沒有人在用這個快取」（5.9.1）。
+
+**誤區 10：以為命中率越高越好**
+
+99.99% 可能代表「資料舊了很久而沒人發現」（5.9.2）。
+✅ 命中率要與**不一致的成本**一起看。
+
+**誤區 11：沒有 `CacheErrorHandler`**
+
+🔴 預設的 `SimpleCacheErrorHandler` **把例外拋出去** ——
+Redis 掛掉 = **所有讀取 500**（5.7.2）。
+
+**誤區 12：`activateDefaultTyping` 沒有 `PolymorphicTypeValidator`**
+
+🔴 任何能寫入 Redis 的人都能實例化 classpath 上的任意類別（5.8.5）。
+
+**誤區 13：以為 `DefaultTyping.NON_FINAL` 會給 record 型別資訊**
+
+🔴 **record 是 `final` 的** → 根物件沒有 `@class` → 反序列化失敗（5.8.4 實測）。
+✅ 要用 `EVERYTHING`。
+
+**誤區 14：從外部讀一個 Spring bean 的欄位**
+
+🔴 CGLIB 代理有**自己的一組未初始化欄位** → 讀到 `null`（5.3.2 實測）。
+
+**誤區 15：快取庫存**
+
+🔴 它把「幾毫秒的縫」變成「30 秒的縫」→ **超賣是必然的**（5.10.1）。
+✅ 顯示用可以快取，**判斷用絕對不行** —— 而讓它們不會混用的方法是**兩個方法名**。
+
+**誤區 16：在已經有快取的東西上再加一層**
+
+`MessageSource`、JPA 一級快取、`@ConfigurationProperties` 都已經有了（5.10.3）。
+
+---
+
+## 5.15 本章練習
+
+### 練習 1：找出這段快取程式碼的 9 個問題
+
+```java
+@Service
+public class ArticleService {
+
+    @Cacheable(cacheNames = "articles", sync = true, unless = "#result == null")
+    public Article read(String id, Actor actor) {
+        Article a = repository.findById(id).orElse(null);
+        if (a != null) {
+            repository.incrementViewCount(id);
+            if (!a.isPublic() && !actor.isInternal()) {
+                throw new ResourceNotFoundException("Article", id);
+            }
+        }
+        return a;
+    }
+
+    @Cacheable(cacheNames = "articles")
+    public ArticleSummary summary(String id) { ... }
+
+    @Transactional
+    @CacheEvict(cacheNames = "articles", allEntries = true)
+    public void publish(String id) {
+        Article a = repository.findById(id).orElseThrow();
+        a.publish();
+        repository.save(a);
+        Article after = read(id, Actor.SYSTEM);
+        auditLog.record("PUBLISHED", after);
+    }
+}
+```
+
+<details>
+<summary>答案</summary>
+
+| # | 問題 | 後果 | 節 |
+|---|---|---|---|
+| 1 | 🔴🔴 **`sync = true` + `unless`** | **第一次呼叫時** `IllegalStateException` → 500 | 5.7.1 |
+| 2 | 🔴🔴 **快取一個做授權的方法** | 命中時授權**完全被跳過** → 非公開文章外洩 | 5.4.4 |
+| 3 | 🔴 **key 沒有包含 `actor`** | 內部人員查過之後，一般使用者也命中 | 5.4.3 |
+| 4 | 🔴 **`incrementViewCount` 是副作用** | 命中時瀏覽數不增加 | 5.10.2 |
+| 5 | 🔴🔴 **`read` 與 `summary` 共用 `articles`** | 同 key → `ClassCastException` 或看到錯的型別 | 5.4.2 |
+| 6 | 🔴 **`allEntries = true`** | 發佈一篇文章清掉全部 → 雪崩 | 5.7.2 |
+| 7 | 🔴🔴 **在 `@Transactional` 裡呼叫 `read`（`@Cacheable`）** | 未提交的值進快取；rollback 後永久留著 | 5.3.3 |
+| 8 | ⚠️ **`read` 是自呼叫**（`this.read(...)`） | 🔴 **代理被繞過 → 快取完全沒作用** —— ✅ 而這意外地讓 7 不會發生 | 5.2.3 |
+| 9 | ⚠️ `orElse(null)` + `unless` | 穿透保護被關掉（而 1 讓它根本跑不起來） | 5.7.3 |
+
+⚠️⚠️ **第 8 點值得特別注意**：`read(id, Actor.SYSTEM)` 是**自呼叫**，
+所以問題 7（交易裡的 `@Cacheable`）**實際上不會發生** ——
+**因為快取根本沒有生效。**
+
+> 📌 **「一個 bug 讓另一個 bug 不會發生」是最難處理的情況**：
+> 修好第 8 個（改用注入自己或拆 bean）→ **第 7 個立刻出現。**
+>
+> ✅ **所以修的順序很重要**：先修 2、3、4、5（設計），再修 8（機制）。
+
+**修正版**：
+
+```java
+@Service
+public class ArticleService {
+
+    private final ArticleContentService contents;      // ★ 拆出去的 bean
+
+    /** ★ 授權在這裡，【不快取】（5.4.4）。 */
+    public Article read(String id, Actor actor) {
+        // ① 授權需要的最小資訊 —— 它可以快取（小、幾乎不變）
+        ArticleVisibility v = contents.visibilityOf(id);
+        if (!v.isPublic() && !actor.isInternal()) {
+            throw new ResourceNotFoundException("Article", id);
+        }
+        // ② 副作用（5.10.2）—— 明確地放在快取之外
+        viewCounter.increment(id);
+        // ③ 內容 —— 可以快取
+        return contents.contentOf(id);
+    }
+
+    @Transactional
+    public void publish(String id) {
+        Article a = repository.findById(id).orElseThrow();
+        a.publish();
+        repository.save(a);
+        // ★ 稽核用【剛剛改過的聚合】，不要再查一次（5.3.6）
+        auditLog.record("PUBLISHED", ArticleAuditEntry.from(a));
+        // ★ 清快取推到 AFTER_COMMIT（5.3.5 解法 A）
+        events.publishEvent(new ArticlePublishedEvent(id));
+    }
+}
+
+@Service
+public class ArticleContentService {
+
+    /** ★ 只快取「公開與否」—— 極小、幾乎不變、命中率極高（5.4.4 的 orderOwners 模式）。 */
+    @Cacheable(cacheNames = "articleVisibility", key = "#id")
+    public ArticleVisibility visibilityOf(String id) { ... }
+
+    /** ★ 內容。它不做授權，所以 key 不需要 actor。 */
+    @Cacheable(cacheNames = "articleContents", key = "#id", sync = true)
+    public Article contentOf(String id) {
+        return repository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Article", id));
+    }
+}
+```
+
+⚠️ **注意修正版把一個快取拆成兩個**（`articleVisibility` + `articleContents`）——
+**而那正是 5.4.4 的結論**：
+**「這個方法能不能快取」常常是「這個方法的職責混在一起」的訊號。**
+
+</details>
+
+### 練習 2：計算 TTL
+
+**條件**：
+
+```
+商品總數        10,000
+熱門商品        100 個（佔 80% 的流量）
+總 QPS          8,000
+可接受的不一致  ≤ 60 秒
+JVM 實例        3 個（本地快取）
+```
+
+**問**：TTL 該設多少？命中率大概是多少？
+
+<details>
+<summary>答案</summary>
+
+**TTL 的上限由「可接受的不一致」決定：60 秒。**
+
+⚠️ **而它不是唯一的約束。** 算一下**熱門商品**的命中率：
+
+```
+熱門商品的 QPS = 8,000 × 80% = 6,400，分給 100 個商品 = 每個 64 QPS
+每個實例分到     64 / 3 ≈ 21 QPS
+TTL = 60 秒 → 每個 key 在每個實例上每 60 秒 miss 一次
+             → 命中率 = 1 - 1/(21 × 60) = 99.92%
+```
+
+**冷門商品**：
+
+```
+冷門的 QPS = 8,000 × 20% = 1,600，分給 9,900 個商品 = 每個 0.16 QPS
+每個實例    0.054 QPS → 60 秒內平均 3.2 次請求
+             → 命中率 ≈ 1 - 1/3.2 = 69%
+```
+
+**加權**：`0.8 × 99.92% + 0.2 × 69% = 93.7%`
+
+⚠️⚠️ **而「TTL 設 60 秒」是錯的答案。** 三個理由：
+
+| 理由 | 說明 |
+|---|---|
+| 1 | **60 秒是「可接受的上限」，不是目標** —— 而 `AFTER_COMMIT` 清快取讓實際的不一致遠短於 TTL |
+| 2 | ⚠️ **命中率從 60 秒降到 30 秒只掉多少？** 熱門：99.92% → 99.84%（**掉 0.08%**）；加權：93.7% → 92.1% |
+| 3 | 🔴 **記憶體**：10,000 個商品 × 3 個實例，TTL 越長佔用越久 |
+
+✅ **答案：30 秒**，理由是「命中率只掉 1.6%，而不一致的上限減半」。
+
+**追問：那冷門商品的 69% 命中率要不要處理？**
+
+🔴 **不要。** 算一下它省了什麼：
+
+```
+冷門商品的 miss 數 = 1,600 QPS × 31% = 496 QPS 打資料庫
+沒有快取           = 1,600 QPS 打資料庫
+→ 快取仍然擋掉了 69%
+```
+
+⚠️ **而如果為了冷門商品把 TTL 拉長到 10 分鐘**：
+
+```
+冷門命中率 69% → 94%（省下 400 QPS）
+熱門的不一致上限 60 秒 → 🔴 600 秒
+```
+
+**用「熱門商品錯 10 分鐘」換「冷門商品少 400 QPS」是很差的交易。**
+
+> 📌 **一般規則**：
+> **TTL 要用「最需要正確的那份資料」來定，不是用「命中率最差的那份」。**
+
+</details>
+
+### 練習 3：這條測試為什麼是假綠燈
+
+```java
+@Test
+void 快取有生效() {
+    productService.findById("P-1");
+    productService.findById("P-1");
+    assertThat(cacheManager.getCache("products").get("P-1")).isNotNull();
+}
+```
+
+<details>
+<summary>答案</summary>
+
+**它證明「有東西被寫進快取」，不證明「第二次沒打資料庫」。**
+
+**它在下面三種 bug 下都會通過**：
+
+| bug | 為什麼還是綠 |
+|---|---|
+| ① `@Cacheable` 被自呼叫繞過 | 🔴 **不會綠** —— 自呼叫時**連寫都不寫**（5.2.3 實測） |
+| ② **key 每次都不同**（例如 key 含時間戳） | ✅ **會綠** —— `get("P-1")` 拿到的是**別的**測試留下的項目 |
+| ③ **上一個測試留下的污染**（5.11.2） | ✅ **會綠** —— 這個測試甚至可以完全不呼叫 service |
+
+⚠️ **③ 最容易發生**，而它的極端版本是：
+
+```java
+@Test
+void 快取有生效() {
+    // 🔴 把兩行 findById 註解掉，測試【還是綠的】
+    assertThat(cacheManager.getCache("products").get("P-1")).isNotNull();
+}
+```
+
+✅ **修正版**：
+
+```java
+@Test
+void 第二次查詢不打資料庫() {
+    // ★ ① 明確的起點（5.11.2）
+    cacheManager.getCache("products").clear();
+    when(productRepository.findById("P-1")).thenReturn(Optional.of(aProduct()));
+
+    var first  = productService.findById("P-1");
+    var second = productService.findById("P-1");
+
+    // ★★ ② 這一行才是這個測試的目的
+    verify(productRepository, times(1)).findById("P-1");
+    // ★ ③ 順便驗證 key 的組成（5.4）
+    assertThat(cacheManager.getCache("products").get("P-1")).isNotNull();
+    assertThat(second).isEqualTo(first);
+}
+```
+
+> 📌 **04 章 4.12.2 的那句話在這裡再一次適用**：
+> **一條測試的價值 = 它失敗的能力。**
+> 而檢查方式是**把被測的東西弄壞一次**——
+> 這裡就是「把 `@Cacheable` 註解掉，看它紅不紅」。
+
+</details>
+
+### 練習 4：設計「商品列表」的快取
+
+**需求**：
+
+```
+GET /api/products?category=3C&sort=price_asc&page=0&size=20
+```
+
+**條件**：
+- 商品共 10,000 個，分類 20 個
+- 商品的價格每天改動約 200 次（行銷）
+- 上下架每天約 50 次
+- 列表頁的 QPS 約 2,000
+
+<details>
+<summary>答案</summary>
+
+**先分析「改一次價格會影響哪些列表」**：
+
+| 排序方式 | 改價格影響嗎 |
+|---|---|
+| `sort=newest` | 🔴 **不影響順序**，但影響**內容**（列表顯示價格） |
+| `sort=price_asc` | 🔴🔴 **影響順序** —— 商品可能換頁 |
+| `sort=popular` | 不影響順序，影響內容 |
+
+✅ **用 5.6.2 方式 A：把「順序」與「內容」分開**：
+
+```java
+/**
+ * ★★ 只快取「id 的順序」，不快取內容。
+ *
+ * <p>於是「改價格」只影響 {@code sort=price_asc} 的索引，
+ * 而其他排序方式的索引完全不用動。
+ */
+@Cacheable(cacheNames = "categoryIndex",
+           key = "#category + ':' + #sort + ':' + #page + ':' + #size")
+public List<String> idsOf(String category, Sort sort, int page, int size) { ... }
+
+/** ★ 內容從 products 快取逐個取（本地，30 秒）。 */
+public List<ProductView> list(String category, Sort sort, int page, int size) {
+    List<String> ids = index.idsOf(category, sort, page, size);
+    return products.findAllById(ids);          // ★ 5.2.3 的批次版本
+}
+```
+
+**清除策略**：
+
+| 事件 | 清什麼 | 頻率 |
+|---|---|---|
+| 改價格 | `products::{id}` + **只有 `price_asc` / `price_desc` 的索引** | 200/天 |
+| 上下架 | `products::{id}` + **該分類的所有索引** | 50/天 |
+| 換分類 | 兩個分類的所有索引 | 少 |
+
+⚠️ **「該分類的所有索引」有幾個 key**：
+
+```
+1 個分類 × 4 種排序 × 平均 25 頁 = 100 個 key
+```
+
+**清 100 個 key 每天 50 次 = 5,000 次 evict** —— ✅ 完全沒問題。
+
+⚠️⚠️ **而「改價格要清 price_asc 的索引」有一個問題**：
+
+```
+改一個商品的價格 → 它可能從第 3 頁移到第 7 頁
+→ 🔴 第 3 到第 7 頁【全部】要清（因為每一頁的內容都往後推了一格）
+→ 而如果它移到第 1 頁，那就是【全部 25 頁】
+```
+
+✅ **所以改價格要清「該分類 × price 排序的所有頁」** = 50 個 key。
+**200 次/天 × 50 = 10,000 次 evict** —— 仍然沒問題。
+
+**而更簡單的做法是 5.6.2 方式 C（版本化的 key）**：
+
+```java
+// 改價格 → catalogVersion.bump() → 所有列表索引自然失效
+key = "#version + ':' + #category + ':' + #sort + ':' + #page"
+```
+
+| | 精確清除 | 版本化 |
+|---|---|---|
+| 實作複雜度 | ⚠️ 要知道「哪些頁受影響」 | ✅ 一個 `INCR` |
+| 命中率 | ✅ 只失效受影響的 | 🔴 **全部失效**（200 次/天 → 每 7 分鐘一次全清） |
+| 雪崩風險 | ✅ 低 | 🔴 **每 7 分鐘一次小雪崩** |
+
+✅ **選精確清除**，理由：**版本化的全清在 2,000 QPS 下會造成 5.0 事故 3 的情況。**
+
+⚠️ **而如果改價格的頻率是「每天 20,000 次」（例如動態定價），
+那精確清除也沒有意義了** —— 那時的正確答案是
+**列表完全不快取，靠資料庫的索引 + 讀取副本**。
+
+> 📌 **這一題的教訓**：
+> **快取策略的正確答案取決於「寫入頻率 ÷ 讀取頻率」這個比值**，
+> 而那個比值必須**先量測**。
+
+</details>
+
+---
+
+## 5.16 驗收清單
+
+### 完成本章後，你的專案應該有
+
+```
+✅ common/cache/
+   ├── CacheConfig.java                     ★★ 七個快取，各自的 TTL + 抖動（5.12.2）
+   ├── CacheObjectMappers.java              ★★ Redis 用（5.8.5）
+   │                                        ★ JavaTimeModule + IS_GETTER=NONE
+   │                                        ★ EVERYTHING typing + PolymorphicTypeValidator
+   ├── CacheErrorHandlerConfig.java          ★★ 降級（5.7.2）
+   └── Cached.java                           ★ 手動快取的小工具（5.6.2）
+
+✅ order/cache/
+   ├── OrderContentKeys.java                 ★★ key 的唯一定義處（5.6.5）
+   └── OrderCacheInvalidator.java            ★ AFTER_COMMIT（5.3.5 解法 A）
+✅ product/cache/  · coupon/cache/            ★ 同上
+
+✅ 組態
+   ├── @EnableCaching(order = HIGHEST + 100)          ★★ 快取在外層（5.2.2）
+   ├── @EnableTransactionManagement(order = HIGHEST + 200)
+   └── recordStats() + setCacheNames(...)             ★★ 5.9.1 / 5.11.2
+
+✅ 測試
+   ├── cache/CacheTransactionExperimentTest.java  ★★ 5.3（四個實驗，用真的交易）
+   ├── cache/CacheGuardTest.java                  ★★ 五條守門（5.11.5）
+   ├── cache/CacheObjectMappersTest.java          ★★ 往返 + 白名單（5.8.5）
+   ├── cache/CacheStampedeExperimentTest.java     ★ 擊穿 / null / TTL（5.7）
+   └── architecture/CacheArchitectureTest.java    ★ 5.3.6 + 5.10.2
+
+🔴 刪除
+   └── productPrices 這個快取                       ★ 5.13 ⑥
+```
+
+### 我能回答的問題
+
+- [ ] `@Cacheable` 命中時，方法裡的**授權檢查**還會跑嗎？（5.2.1）
+- [ ] 快取與交易的 advisor **誰在外層**？怎麼決定？為什麼要決定？（5.2.2）
+- [ ] `package-private` 的 `@Transactional` **會不會**生效？02 章怎麼說？實測怎麼說？（5.2.3、5.13 ①）
+- [ ] 「在交易裡呼叫 `@Cacheable` 方法然後 rollback」會發生什麼？（5.3.3 實驗 4）
+- [ ] `beforeInvocation = true` 與 `false` 在 rollback 時**有差別嗎**？（5.3.4）
+- [ ] `AFTER_COMMIT` 清快取解決了什麼、**沒有**解決什麼？（5.3.5）
+- [ ] 為什麼「短 TTL」是**必要的兜底**而不是懶惰？（5.3.5 解法 C）
+- [ ] `SimpleKeyGenerator` 在 1 個參數與 2 個參數時的 key **型別**各是什麼？（5.4.1）
+- [ ] 兩個方法共用一個 `cacheNames` 會怎樣？**用 `Object` 接住能避開嗎**？（5.4.2）
+- [ ] 為什麼「授權」與「快取」在同一個方法上不相容？（5.4.4）
+- [ ] `sync = true` 的五個限制是什麼？其中兩個**什麼時候**才炸？（5.7.1）
+- [ ] 擊穿、雪崩、穿透的差別，以及各自的實測數字？（5.7）
+- [ ] `@Cacheable` 預設**會不會**快取 `null`？加 `unless` 會怎樣？（5.7.3）
+- [ ] 三個 Redis 序列化器開箱即用時各自為什麼失敗？（5.8.1）
+- [ ] 為什麼 `DefaultTyping.NON_FINAL` 對 record 沒有用？（5.8.4）
+- [ ] `Money` 為什麼無法通過 Jackson 往返？為什麼 API 上沒事？（5.8.3、5.13 ②）
+- [ ] 命中率 99.99% 為什麼**可能**是壞消息？（5.9.2）
+- [ ] 「顯示用的庫存」與「判斷用的庫存」差在哪？怎麼讓它們不會被混用？（5.10.1）
+- [ ] 加快取之前該先問什麼？（5.10.3）
+- [ ] 「快取有生效」這條測試為什麼是假綠燈？（練習 3）
+
+### ⚠️ 已知缺口
+
+| # | 缺口 | 為什麼不修 | 替代 |
+|---|---|---|---|
+| 1 | 🔴 **本章沒有真的 Redis**（沒有 Docker） | — | 5.11.3 有 Testcontainers 的測試，**但沒跑過**（5.8.6） |
+| 2 | 5.3.6 的 ArchUnit 規則只看**直接呼叫** | ArchUnit 追不了呼叫鏈 | 短 TTL 兜底 |
+| 3 | 5.11.5 ④ 的 `cachedTypes()` 只涵蓋**頂層回傳型別** | `List<ProductView>` 推導成 `List` | 手寫清單補充 |
+| 4 | **`detail(orderId, actor)` 不可快取** 沒有機制守 | 「這個方法做授權」無法自動判斷 | javadoc + code review |
+| 5 | **`OrderId` 型別** 沒有引入 | 跨 00～04 章約 200 處 | 5.13 ③ 的（弱）測試 |
+| 6 | **`Money` 在其他序列化路徑上仍然是壞的**（outbox、Kafka） | 本章只處理快取 | ⏳ **06 章重新檢查** |
+| 7 | 🔴 **快取掛掉時資料庫會被打** | 需要限流／熔斷 | ⏳ **06 章** |
+| 8 | `productPrices` 還沒被刪 | — | 5.13 ⑥ 的待辦 |
+| 9 | 5.6.5 的「key 組成與清除在同一個類別」**沒有測試守** | — | ⚠️ 加一條「`allVariants` 的每一個 key 都能被 `of(...)` 產生」 |
+
+### ⚠️ 環境與驗證狀態
+
+**這一章的絕大部分結論都在本機實測過**：
+
+| 項目 | 值 |
+|---|---|
+| JDK | Temurin 21.0.5 |
+| Maven | 3.9.16 |
+| Spring Boot | 3.2.5（Framework 6.1.6、Data Redis 3.2） |
+| Caffeine | 3.1.8 |
+| 資料庫 | **H2 in-memory**（真的交易管理器） |
+| 平台 | macOS 14.2.1 / Apple Silicon |
+
+**跑過的實驗**：
+
+| 實驗 | 結果 |
+|---|---|
+| 自呼叫（5.2.3） | ✅ 50→3 次載入，且**連寫都沒寫** |
+| `package-private` 的 tx 與 cache（5.2.3、5.13 ①） | ✅ **兩者都生效** —— 推翻 02 章 2.7.2 |
+| 交易 rollback + `@Cacheable`（5.3.3） | ✅ **髒值永久留在快取** |
+| `beforeInvocation` 兩種值（5.3.4） | ✅ 兩者在 rollback 時都一致 |
+| advisor order（5.2.2） | ✅ 快取在外層時命中不開交易 |
+| `SimpleKeyGenerator`（5.4.1） | ✅ 1 個參數時 key 是參數本身 |
+| 兩個方法共用 cacheName（5.4.2） | ✅ `ClassCastException`，**`Object` 接住也一樣** |
+| 擊穿 `sync`（5.7.1） | ✅ **50 → 1** |
+| `sync` + `unless` / 多 cacheNames（5.7.1） | ✅ **第一次呼叫**才拋 |
+| `null` 被快取（5.7.3） | ✅ 預設**會**快取 |
+| TTL 到期（5.7.2） | ✅ |
+| 三個序列化器（5.8.1、5.8.2） | ✅ 三個都失敗；修好後 137 / 401 / 329 bytes |
+| `Money` 往返（5.8.3） | ✅ **失敗**；`IS_GETTER=NONE` 修好 |
+| `NON_FINAL` vs `EVERYTHING`（5.8.4） | ✅ record 需要 `EVERYTHING` |
+| 最終組態的往返 + 白名單（5.8.5） | ✅ 三個測試通過 |
+| `Cache#get(key, Callable)` 的原子性（5.7.1） | ✅ Caffeine 與 ConcurrentMap **都是 1/50** |
+| Caffeine 讀取延遲（5.5.1） | ✅ **14 ns**（key 已存在陣列）／28 ns（含串接） |
+
+🔴 **沒有驗證的**：
+
+| 沒驗證的 | 影響哪一節 |
+|---|---|
+| **真的 Redis**（key 格式、TTL、`RedisCache` 的併發） | 5.8.6、5.11.3 |
+| `CacheErrorHandler` 的降級行為 | 5.7.2 |
+| pub/sub 廣播失效 | 5.5.2 |
+| 5.9 的指標與告警 | 整節 |
+| 5.12.2 的多 TTL 組態 | ⚠️ 程式碼經逐行檢閱但沒有啟動過 |
+
+---
+
+## 5.17 下一章預告
+
+這一章反覆撞到同一堵牆：
+
+> **快取的問題，一半是「交易邊界」的問題，一半是「跨行程」的問題。**
+
+**而兩者在這一章都只被「縮小窗口」，沒有被解決**：
+
+| 問題 | 本章的處置 | 真正的解法在哪 |
+|---|---|---|
+| 交易 rollback 後快取有髒值 | ArchUnit 禁止 + 短 TTL | ✅ 本章解決了 |
+| 清快取失敗 | log + 指標 + 短 TTL 兜底 | ⏳ **06 章的 outbox** |
+| **快取掛掉 → 資料庫被打** | 🔴 **沒有解決** | ⏳ **06 章的限流與熔斷** |
+| 多實例的本地快取不一致 | 短 TTL | ⏳ 06 章的事件廣播 |
+| `AFTER_COMMIT` 的 listener 失敗 | catch + log | ⏳ **06 章的 outbox** |
+
+**06 章：非同步與外部呼叫。** 而它的核心問題是本章與 04 章共同留下的那一個：
+
+> **交易 commit 之後、回應送出之前，還有一堆事情要做（寄信、清快取、通知 ERP、
+> 更新搜尋索引），而它們每一個都可能失敗。**
+>
+> **「失敗了怎麼辦」在交易裡有答案（rollback），在交易外沒有。**
+
+| 06 章的節 | 主題 |
+|---|---|
+| 6.2 | `@Async` 與執行緒池 —— 以及它與 `@Transactional` 的**四個衝突** |
+| 6.3 ★★ | **交易與非同步**：`AFTER_COMMIT` + `@Async` 的組合為什麼會遺失事件 |
+| 6.4 | `RestClient` / `WebClient`：逾時、連線池、重試 |
+| 6.5 ★★ | **逾時的三個層次**：連線、讀取、**整體** —— 而只設一個是不夠的 |
+| 6.6 ★ | 重試：什麼可以重試（04 章 4.9 的 `safeToRetryBlindly` 在這裡兌現） |
+| 6.7 ★★ | **熔斷**：它與 5.7.2 的降級是同一件事的兩個層次 |
+| 6.8 ★★ | **Outbox**：本章與 04 章一共留下 **4 個**「失敗只進 log」的地方 |
+| 6.9 | 領域事件的可靠投遞 |
+| 6.10 ★ | Saga：跨服務的「rollback」 |
+| 6.11 | 測試非同步：`Awaitility` 與「怎麼證明它真的做完了」 |
+
+⚠️ **而 06 章會回頭修正這一章的兩件事**：
+
+| 修正 | 為什麼 |
+|---|---|
+| **5.3.5 解法 A 的 listener 是同步的** | 清快取的延遲（Redis 往返）會加到請求上。而改成 `@Async` 會踩到 6.3 那個「事件遺失」 |
+| **5.7.2 的降級讓資料庫承受全部流量** | 缺口 7 —— 它需要的是熔斷（6.7），而不是更多快取 |
+
+---
+
+**完成本章後**，請確認 5.16 的清單。
+
+⚠️ **最後一件事**：這一章有 **9 個已知缺口**，其中 **3 個**（1、7 與 Redis 相關的）
+不是「沒做」而是**「這台機器上做不到」**。
+
+> 📌 **而那個區分很重要**：
+> 「沒做」是一個**決定**，「做不到」是一個**限制**。
+> 兩者都要寫下來，而**只有前者需要被辯護**。
+
+下一章：`06-async-and-external-api-calls.md`
