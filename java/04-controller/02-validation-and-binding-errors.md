@@ -1457,6 +1457,37 @@ sum = 1*1 + 0*9 = 1
 發票是 `COMPANY` 型別時要驗統一編號。**用 `@Pattern(regexp = "\\d{8}")` 是不夠的** ——
 `12345678` 格式對但檢查碼錯，會在開發票時被財政部退回，而那時訂單已經成立了。
 
+**先是註解本身**（與 `@TaiwanId` 同一個模式）：
+
+```java
+package example.shop.common.validation;
+
+import jakarta.validation.Constraint;
+import jakarta.validation.Payload;
+
+import java.lang.annotation.*;
+
+/**
+ * 台灣統一編號（統編，8 碼）。
+ *
+ * <p>★ 對 {@code null} 一律通過（2.4 的通則）——「必填」是 {@code @NotBlank} 的事。
+ * 這讓 {@code @TaxId} 可以直接用在「只有 B2B 才需要」的欄位上，
+ * 由 2.6 的驗證群組決定何時必填。
+ */
+@Documented
+@Constraint(validatedBy = TaxIdValidator.class)
+@Target({ElementType.FIELD, ElementType.PARAMETER, ElementType.RECORD_COMPONENT,
+         ElementType.TYPE_USE, ElementType.ANNOTATION_TYPE})
+@Retention(RetentionPolicy.RUNTIME)
+public @interface TaxId {
+    String message() default "{example.shop.validation.TaxId.message}";
+    Class<?>[] groups() default {};
+    Class<? extends Payload>[] payload() default {};
+}
+```
+
+**再是驗證器**：
+
 ```java
 package example.shop.common.validation;
 
@@ -2586,7 +2617,7 @@ public class ValidationErrorTranslator {
         return rest;
     }
 
-    // ── 敏感值遮蔽（03-rest-api 4.6.4）──────────────────────────────────
+    // ── 敏感值遮蔽（03-rest-api 4.6.2 要點 4）──────────────────────────────────
 
     private Object maskIfSensitive(String field, Object value) {
         if (value == null) return null;
@@ -4935,7 +4966,7 @@ private static JsonNullable<String> normalizeEmptyToNull(JsonNullable<String> v)
 沒有 `code`、沒有 `errors[]`、沒有 `traceId`、沒有 `userMessage`，
 而且狀態碼是 400 不是 422。
 
-**03 章要把 03-rest-api 第 04 章的錯誤目錄（約 60 個 `code`）全部落地。** 內容包括：
+**03 章要把 03-rest-api 第 04 章的錯誤目錄全部落地成一個 79 個常數的 `ErrorCode` enum。** 內容包括：
 
 - `@RestControllerAdvice` 的完整結構，以及它和 `ResponseEntityExceptionHandler` 的關係。
 - 用 enum 當**錯誤碼註冊表**，把 `code → 狀態碼 / type / retryable / i18n key` 綁在一起。

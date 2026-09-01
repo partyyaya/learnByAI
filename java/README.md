@@ -73,7 +73,7 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 03 | [03-rest-api/](./03-rest-api/) ✅ | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
 | 04 | [04-controller/](./04-controller/) ✅ | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、檔案與串流、SSE、CORS 與序列化、MockMvc 與授權矩陣測試 |
 | 05 | [05-service/](./05-service/) ✅ | 商業邏輯層 | 8 | 商業邏輯層定位與**不變量**、貧血 vs 充血、Service 設計與**循環依賴**、交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
-| 06 | [06-repository/](./06-repository/) | 資料存取層 | 7 | DataSource 與連線池、JdbcTemplate、Spring Data 抽象、交易邊界、測試 |
+| 06 | [06-repository/](./06-repository/) ✅ | 資料存取層 | 7 | 資料層定位與**介面設計的七個判準**、**不變量的第四個位置**、DataSource 與連線池、JdbcTemplate、Spring Data 抽象、**分頁與動態查詢**、**交易邊界與批次**、**資料層測試（H2 vs 真 MySQL 的 21 根探針）** |
 | 07 | [07-mysql/](./07-mysql/) | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢、Flyway |
 | 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) | JPA / Hibernate 與 MyBatis | 10 | Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL |
 | 09 | [09-spring-security/](./09-spring-security/) | 認證與授權 | 9 | Filter Chain、UserDetails、方法層權限、Session vs Token、JWT、OAuth2 |
@@ -88,9 +88,10 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 01-java-core | ✅ 已結業（14 章，約 54,400 行） |
 | 02-spring-boot | ✅ 已結業（10 章，約 29,100 行） |
 | 03-rest-api | ✅ 已結業（10 章，約 33,700 行） |
-| 04-controller | ✅ 完成（00～07 章，約 61,300 行） |
+| 04-controller | ✅ 完成（00～07 章，約 61,500 行） |
 | 05-service | ✅ 完成（00～07 章，約 42,400 行） |
-| 06～10 | ⏳ 未開始（下一站：06-repository） |
+| 06-repository | ✅ 完成（00～06 章，約 20,150 行） |
+| 07～10 | ⏳ 未開始 |
 
 ---
 
@@ -135,6 +136,32 @@ Capstone             整合成一個可上線的服務（10-capstone）
 | 客戶收到「訂單成立」的信，但點進去 404 | [05-service/](./05-service/) 00（0.3.2） |
 | 升級 Boot 之後啟動失敗，訊息是一個 40 行的框框 | [05-service/](./05-service/) 01（1.6） |
 | 「每個 Service 都要有介面嗎」講不出理由 | [05-service/](./05-service/) 01（1.3） |
+| 加了 `CHECK` 約束還是超賣，而資料庫裡的數字看起來正常 | [06-repository/](./06-repository/) 00（0.8） |
+| 單元測試全綠，換成真的 SQL 才發現資料沒被存下來 | [06-repository/](./06-repository/) 00（0.10） |
+| 半夜整站停止回應，但資料庫 CPU 只有 4% | [06-repository/](./06-repository/) 01（1.9） |
+| `Connection is not available, request timed out` | [06-repository/](./06-repository/) 01（1.9.2 的五分鐘流程） |
+| 連線池要設多大講不出理由 | [06-repository/](./06-repository/) 01（1.6） |
+| 使用者刪掉一筆明細、存檔成功，重新整理後它又回來了 | [06-repository/](./06-repository/) 02（2.8.4） |
+| 搜尋框輸入一個 `%`，資料庫 CPU 就滿了 | [06-repository/](./06-repository/) 02（2.3.6） |
+| 報表上「沒有折扣」與「折扣 0 元」分不出來 | [06-repository/](./06-repository/) 02（2.5.5） |
+| 客戶取消了訂單，系統仍然出貨（每週兩三件） | [06-repository/](./06-repository/) 02（2.8.3、練習 3） |
+| 一段沒有實作的介面「就是會動」，但說不出為什麼 | [06-repository/](./06-repository/) 03（3.2） |
+| 訂單列表在測試機很快，上線後越來越慢（而且不報錯） | [06-repository/](./06-repository/) 03（3.9.4 的 N+1） |
+| 「我沒有呼叫 save，資料怎麼被改掉了？」 | [06-repository/](./06-repository/) 03（3.9.2） |
+| Controller 回傳時炸 `LazyInitializationException`，堆疊卻指向 Jackson | [06-repository/](./06-repository/) 03（3.5.2） |
+| 使用者說「列表裡有一筆重複，而我的訂單不見了」 | [06-repository/](./06-repository/) 04（4.4.1） |
+| 列表翻到後面越來越慢，第 1 頁卻很快 | [06-repository/](./06-repository/) 04（4.7） |
+| 「加了商品篩選之後，有些訂單就從列表裡消失了」 | [06-repository/](./06-repository/) 04（4.6.6） |
+| 排序參數傳一個不存在的欄位就 500，訊息還印出 entity 類名 | [06-repository/](./06-repository/) 04（4.5.2） |
+| 匯出功能一跑就 OOM，而程式碼裡用的是 `Stream` | [06-repository/](./06-repository/) 05（5.11.2） |
+| 設了 `hibernate.jdbc.batch_size` 卻一點都沒變快 | [06-repository/](./06-repository/) 05（5.8.3） |
+| 方法看起來成功卻拋 `UnexpectedRollbackException`，而且外層寫的也不見了 | [06-repository/](./06-repository/) 05（5.5.2） |
+| 業務例外拋出來了，資料卻被寫進去 | [06-repository/](./06-repository/) 05（5.5.1） |
+| 一個外部呼叫塞在交易裡，連線池就滿了 | [06-repository/](./06-repository/) 05（5.12.1） |
+| 測試全綠，上到 MySQL 就 `bad SQL grammar` | [06-repository/](./06-repository/) 06（6.6） |
+| 使用者用 `Admin` 註冊，卻能用 `admin` 登入 | [06-repository/](./06-repository/) 06（6.4.2 探針 ⑬） |
+| 約束測試在 H2 上是綠的，正式環境卻擋不住 | [06-repository/](./06-repository/) 06（6.3.2） |
+| CI 從 4 分鐘變 47 分鐘，而刪測試沒有用 | [06-repository/](./06-repository/) 06（6.9） |
 | 查詢很慢、log 一堆 SQL | [08-jpa-mybatis/](./08-jpa-mybatis/) 04、[07-mysql/](./07-mysql/) 03 |
 | 不知道 JWT 該怎麼做才安全 | [09-spring-security/](./09-spring-security/) 05 |
 

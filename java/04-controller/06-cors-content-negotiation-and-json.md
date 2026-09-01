@@ -3933,8 +3933,17 @@ public record CreateOrderRequest(
     String couponCode,
 
     /**
-     * @deprecated 自 2026-08-01 起改用 {@link #couponCode}。
-     *             預計 2026-11-01 移除。
+     * 已棄用：自 2026-08-01 起改用 {@link #couponCode}，預計 2026-11-01 移除。
+     *
+     * <p>⚠️⚠️ <b>這裡刻意<u>不</u>寫 javadoc 的 {@code @deprecated} 標籤</b> ——
+     * record component 上只允許「註解」這一種修飾子，而 javadoc 的
+     * {@code @deprecated} 標籤會讓 javac 把這個 component 也視為帶有
+     * <b>deprecated 修飾子</b>，於是報：
+     * <pre>error: record components cannot have modifiers</pre>
+     * 這是 record 專屬的坑（同樣的寫法在一般 class 的欄位上完全合法）。
+     * 棄用的語意由下面的 {@code @Deprecated} 註解表達就夠了；
+     * 要寫給 javadoc 讀者看的話，把 {@code @deprecated} 標籤放在
+     * <b>accessor 方法</b>（{@code legacyPromoCode()}）上，而不是 component 上。
      *
      * <p>★ 保留這個欄位的唯一理由是「不要讓舊客戶端 400」。
      * 它的值<b>完全不被使用</b>（見 {@link #effectiveCouponCode()}）。
@@ -5519,6 +5528,114 @@ public record OrderDetail(
     }
 }
 ```
+
+#### `OrderDetail` 的三個成員型別：前面一直在用，這裡補完 ★
+
+**`OrderItemResponse`、`ShippingAddress`、`InvoiceResponse` 從 01 章的路由表就開始出現，
+但一直沒有被定義過。** 這一節把它們補上 —— 它們是「型別即契約」三條規則的實際套用對象，
+而且 07 章的測試 fixture（`Items`、`Addresses`）造的就是它們。
+
+```java
+package example.shop.order.web.dto;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+
+/**
+ * 訂單明細的一行。
+ *
+ * <p>★ 金額同樣是 {@link String}（6.5.7 的決定）——
+ * 與 {@link Amounts} 用同一條規則，讓「回應裡所有的錢都是字串」沒有例外。
+ *
+ * <p>⚠️ 這裡<b>沒有</b> {@code productImageUrl}：
+ * 圖片 URL 是預簽名的、有有效期（05 章 5.7），放進「可以被前端快取」的訂單詳情
+ * 會讓它在快取命中時已經過期。
+ */
+public record OrderItemResponse(
+
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    String productId,
+
+    /** 下單當時的品名快照 —— 不是「現在的品名」（03-rest-api 第 03 章 3.6）。 */
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    String productName,
+
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    int quantity,
+
+    /** 下單當時的單價，兩位小數字串。 */
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    String unitPrice,
+
+    /** 小計 = 單價 × 數量。⚠️ 由 Service 算好傳進來，Web 層不做算術（第 00 章 0.6.2）。 */
+    @JsonInclude(JsonInclude.Include.ALWAYS)
+    String lineTotal
+
+) {}
+```
+
+```java
+package example.shop.order.web.dto;
+
+/**
+ * 收件地址（<b>回應</b>用的 DTO）。
+ *
+ * <p>⚠️ 不要與 05-service 的領域型別 `ShippingAddress` 混在一起 ——
+ * 這一個是 Web 層的，欄位是<b>已經遮蔽過</b>的展示值。
+ *
+ * <p>★ {@code phone} 一定是遮蔽後的字串（06 章 6.6.2 的 {@code @Masked}）：
+ * 遮蔽發生在 mapper，而不是序列化的時候 ——
+ * 因為「這個欄位要不要遮蔽」取決於<b>誰在看</b>，而序列化器不知道那件事。
+ */
+public record ShippingAddress(
+
+    String addressId,
+
+    String recipientName,
+
+    /** 已遮蔽，例如 {@code "0912****78"}。 */
+    String phone,
+
+    String postalCode,
+
+    String addressLine,
+
+    /** 選填的外送備註。null 時整個欄位不會出現（`non_null`）。 */
+    String deliveryNote
+
+) {}
+```
+
+```java
+package example.shop.order.web.dto;
+
+import example.shop.order.domain.InvoiceType;
+
+/**
+ * 發票資訊（回應用）。
+ *
+ * <p>★ {@code taxId} 只在 {@code COMPANY} 型別時有值 —— 這是 02 章 2.6 驗證群組
+ * 在回應側的鏡像：<b>請求端的「必填與否」與回應端的「有值與否」是同一條規則</b>。
+ */
+public record InvoiceResponse(
+
+    InvoiceType type,
+
+    /** 統一編號（{@code @TaxId}，02 章 2.7.2），僅 {@code COMPANY} 型別有值。 */
+    String taxId,
+
+    /** 發票號碼；開立前是 null。 */
+    String invoiceNumber,
+
+    java.time.Instant issuedAt
+
+) {}
+```
+
+> 📌 **07 章的 `Items` / `Addresses` fixture 造的就是這兩個型別**
+> （07 章 7.14.3）。如果你在自己的專案裡改了這裡的欄位，
+> 那兩個 fixture 會**編譯失敗** —— 那正是我們要的：
+> **DTO 的形狀改變，測試資料必須跟著改，而編譯器負責提醒。**
+
 
 ⚠️ **`@JsonInclude(ALWAYS)` 加在 record 元件上需要注意**：
 `@JsonInclude` 的 `@Target` 含 `FIELD`、`METHOD`、`PARAMETER`、`TYPE`，

@@ -4094,7 +4094,7 @@ public final class Orders {
                 .withShippedAt(FIXED_CREATED_AT.plusSeconds(86_400));
     }
 
-    /** ★ 空訂單 —— 用來測 022 章的 ORDER_EMPTY 與集合序列化（6.5.9）。 */
+    /** ★ 空訂單 —— 用來測 03 章的 ORDER_EMPTY 與集合序列化（06 章 6.5.9）。 */
     public static OrderDetail 沒有品項的訂單() {
         return 已付款的單品訂單().withItems(List.of())
                 .withTotalAmount(BigDecimal.ZERO);
@@ -4149,10 +4149,10 @@ public final class OrderDetailBuilder {
     private String orderId       = "ord_01J5GKA1";
     private String orderNumber   = "ORD-20260824-0001";
     private OrderStatus status   = OrderStatus.PAID;
-    private List<OrderItemDto> items = new ArrayList<>(List.of(Items.無線滑鼠(1)));
+    private List<OrderItemResponse> items = new ArrayList<>(List.of(Items.無線滑鼠(1)));
     private BigDecimal totalAmount   = new BigDecimal("1280.50");
     private String currency          = "TWD";
-    private ShippingAddressDto address = Addresses.台北市中正區();
+    private ShippingAddress address = Addresses.台北市中正區();
     private String couponCode        = null;
     private Instant createdAt        = Orders.FIXED_CREATED_AT;
     private Instant shippedAt        = null;
@@ -4164,7 +4164,7 @@ public final class OrderDetailBuilder {
 
     public OrderDetailBuilder orderId(String v)        { this.orderId = v;     return this; }
     public OrderDetailBuilder status(OrderStatus v)    { this.status = v;      return this; }
-    public OrderDetailBuilder items(OrderItemDto... v) {
+    public OrderDetailBuilder items(OrderItemResponse... v) {
         this.items = new ArrayList<>(List.of(v));                             return this; }
     public OrderDetailBuilder noItems()                { this.items.clear();   return this; }
     public OrderDetailBuilder totalAmount(String v)    {
@@ -4223,10 +4223,10 @@ public record OrderDetail(
         String orderNumber,
         OrderStatus status,
         String statusLabel,
-        List<OrderItemDto> items,
+        List<OrderItemResponse> items,
         BigDecimal totalAmount,
         String currency,
-        ShippingAddressDto shippingAddress,
+        ShippingAddress shippingAddress,
         String couponCode,
         Instant createdAt,
         Instant shippedAt,
@@ -4244,6 +4244,30 @@ public record OrderDetail(
     //      多 12 個方法會讓那個檢查變吵。
 }
 ```
+
+> ### ⚠️⚠️ 這個 `OrderDetail` 是「測試章的簡化版」，不是正式版 ★★
+>
+> **正式版在 06 章 6.5.9**，欄位不一樣。這一節（與 7.7.2 / 7.7.3 的 fixture）
+> 為了讓 builder 與 Object Mother 的**模式**看得清楚，用了一個扁平的 12 欄位版本。
+> **如果你照著課程做專案，請以 06 章的那一個為準**，並照下表調整 fixture：
+>
+> | | 06 章 6.5.9（正式版） | 這一節（簡化版） |
+> |---|---|---|
+> | 狀態 | `String status` + `String statusLabel` | `OrderStatus status` + `String statusLabel` |
+> | 金額 | **`Amounts amounts`**（`currency` / `subtotal` / `discount` / `shippingFee` / `tax` / `total`，全部是字串） | `BigDecimal totalAmount` + `String currency` |
+> | 明細 | `List<OrderItemResponse> items` | 同 |
+> | 地址 | `ShippingAddress shippingAddress` | 同 |
+> | 只有正式版有 | `giftWrapped` / `invoiceIssued`（原始 `boolean`）、`allowedActions`、`customerNote`、`paidAt`、`invoice` | — |
+> | 只有簡化版有 | — | `orderNumber`、`couponCode`、`cancelledAt` |
+>
+> 🔴 **最重要的一列是金額**：正式版的 JSON 是 `"amounts": { "total": "1280.50", ... }`，
+> 所以這一章所有 `jsonPath("$.totalAmount")` 的斷言，
+> 在正式版上要寫成 **`jsonPath("$.amounts.total")`**。
+>
+> 📌 **這件事本身就是 7.12 的反模式之一的實例**：
+> **測試資料的形狀與正式 DTO 分岔時，測試會繼續是綠的，而它保護的東西已經不在了。**
+> 06 章 6.7.4 的 `DtoSerializabilityTest` 之所以用**反射**掃描真正的 DTO 型別
+> （而不是自己列欄位），就是為了讓這種分岔變成紅燈。
 
 **所以最終的分工是三層**：
 
@@ -6166,7 +6190,7 @@ class OpenApiContractTest extends WebSliceTest {
 ```java
 package example.shop.test;
 
-import org.springframework.boot.test.web.servlet.MockMvcBuilderCustomizer;
+import org.springframework.boot.test.autoconfigure.web.servlet.MockMvcBuilderCustomizer;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 
@@ -9775,7 +9799,7 @@ public final class PageFixtures {
 ```java
 package example.shop.test.mother;
 
-import example.shop.order.web.dto.OrderItemDto;
+import example.shop.order.web.dto.OrderItemResponse;
 
 import java.math.BigDecimal;
 
@@ -9790,13 +9814,13 @@ public final class Items {
      * ★ 金額是 {@code String}（06 章 6.5.7 的決定），
      *   而且值是<b>寫死的</b>而不是 {@code MoneyFormat.format(...)} 算的（7.12.2）。
      */
-    public static OrderItemDto 無線滑鼠(int quantity) {
-        return new OrderItemDto("P-1001", "無線滑鼠", quantity, "1280.50",
+    public static OrderItemResponse 無線滑鼠(int quantity) {
+        return new OrderItemResponse("P-1001", "無線滑鼠", quantity, "1280.50",
                 MoneyFixtures.multiply("1280.50", quantity));
     }
 
-    public static OrderItemDto 機械鍵盤(int quantity) {
-        return new OrderItemDto("P-2002", "機械鍵盤", quantity, "2990.00",
+    public static OrderItemResponse 機械鍵盤(int quantity) {
+        return new OrderItemResponse("P-2002", "機械鍵盤", quantity, "2990.00",
                 MoneyFixtures.multiply("2990.00", quantity));
     }
 }
@@ -9805,15 +9829,15 @@ public final class Items {
 ```java
 package example.shop.test.mother;
 
-import example.shop.order.web.dto.ShippingAddressDto;
+import example.shop.order.web.dto.ShippingAddress;
 
 /** 地址的 fixture。 */
 public final class Addresses {
 
     private Addresses() {}
 
-    public static ShippingAddressDto 台北市中正區() {
-        return new ShippingAddressDto(
+    public static ShippingAddress 台北市中正區() {
+        return new ShippingAddress(
                 "adr_01J5GKA1B2C3D4E5F6G7H8",
                 "王小明",
                 "0912****78",                 // ★ 已遮蔽（06 章 6.6.2 的 MaskedPhone）
@@ -11102,7 +11126,7 @@ class OrderEventStreamIntegrationTest { ... }
 
 **04-controller 到這裡結束了。**
 
-七章的成果，一句話總結：
+八章的成果，一句話總結：
 
 ```
 00  Controller 只做三件事：翻譯參數、驗證輸入、翻譯回應

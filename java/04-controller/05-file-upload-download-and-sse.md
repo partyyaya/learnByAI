@@ -10178,10 +10178,14 @@ class ProductImageControllerTest {
 
     @Autowired MockMvc mockMvc;
 
-    @MockBean ProductImageService imageService;
-    @MockBean ProductImageWebMapper mapper;
-    @MockBean MalwareScanner scanner;
-    @MockBean UploadProperties uploadProperties;
+    // ⚠️ 版本：`@MockitoBean` 是 Spring Framework 6.2（Boot 3.4）才有的。
+    //    本課程的基準是 Boot 3.2.5 —— 在基準上請改成
+    //    `@MockBean`（import org.springframework.boot.test.mock.mockito.MockBean）。
+    //    全站政策與逐處註記見 07 章 7.6.1。
+    @MockitoBean ProductImageService imageService;
+    @MockitoBean ProductImageWebMapper mapper;
+    @MockitoBean MalwareScanner scanner;
+    @MockitoBean UploadProperties uploadProperties;
 
     @BeforeEach
     void setUp() {

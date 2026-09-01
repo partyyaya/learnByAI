@@ -6,7 +6,7 @@
 > 但參數綁定是 Web 層**最多陷阱**的地方 ——
 > 而且它的陷阱有一個共同特徵：**在開發環境不會出現，在正式環境才出現**。
 > `@RequestParam(required = false) int page` 這一行會回 500，但只在客戶端不送 `page` 時；
-> `?status=paid` 會回 500 而不是 422，但只在客戶端用小寫時；
+> `?status=paid` 會回 400 而不是 422（連 `field` 都沒有），但只在客戶端用小寫時；
 > `/orders/` 多一個斜線會 404，但只在某些前端框架自動加斜線時。
 >
 > 這一章把這些坑一次挖完。
@@ -23,7 +23,7 @@
 - 知道 Spring Boot 3 的**尾斜線行為改變**，並選一種處理方式。
 - 完整說明 `@PathVariable` / `@RequestParam` / `@RequestBody` / `@RequestHeader` / `@CookieValue` 的行為與陷阱。
 - 解釋 `required`、`defaultValue`、`Optional` 三者的交互作用，並知道哪三種組合是 bug。
-- 把 12 個查詢參數綁成**一個物件**，而不是 12 個方法參數。
+- 把 14 個查詢參數綁成**一個物件**（`OrderFilter`），而不是 14 個方法參數。
 - 處理列舉綁定：大小寫、未知值、以及「怎麼回 422 而不是 500」。
 - 用 `JsonNullable` 表達 `PATCH` 的三態語意（缺欄位 / `null` / 有值）。
 - 註冊自訂 `Converter` 處理 API 專屬的型別（`Cursor`、`SortSpec`、`Money`）。

@@ -1,22 +1,31 @@
 # 04 — Controller（Web 層）
 
-> Controller 只該做三件事：**把請求翻譯成參數、驗證輸入、把結果翻譯成回應**。
-> 它不該有商業邏輯，也不該直接碰資料庫。這一站的重點與其說是語法，不如說是**職責邊界**。
+> 上一站（03-rest-api）你把**契約**設計完了：70 條 URL、22 個 DTO、一份 `orders-api.yaml`。
+> **這一站要把那份契約變成會動的 Java。**
+>
+> 而 Controller 只該做三件事：**把請求翻譯成參數、驗證輸入、把結果翻譯成回應**。
+> 它不該有商業邏輯，也不該直接碰資料庫 ——
+> 所以這一站的難點不是語法，是**職責邊界**，以及邊界上那些「在本機完全正常、上線才炸」的細節。
 
 ---
 
 ## 學完你可以
 
-- 講清楚哪些程式碼屬於 Controller、哪些該往下推到 Service。
-- 熟練參數綁定：路徑變數、查詢參數、請求主體、標頭、檔案。
-- 用 Bean Validation 做輸入驗證，並把錯誤轉成一致的回應格式。
-- 用 `@RestControllerAdvice` 統一處理例外，讓 Controller 裡不再有 try-catch。
-- 說明一個請求從 Filter → DispatcherServlet → Interceptor → Controller 的完整路徑。
-- 安全地處理檔案：判斷檔名與內容都不可信，並在「大到放不進記憶體」時改用串流或預簽名 URL。
+- 講清楚哪些程式碼屬於 Controller、哪些該往下推到 Service，並用**五個問題**當場判斷。
+- 把 70 條 URL 對映成方法簽章，並說出路由衝突時 Spring 用什麼規則選。
+- 熟練參數綁定：路徑變數、查詢參數、請求主體、標頭、檔案，
+  以及 `required` / `defaultValue` / `Optional` 之間**哪三種組合是 bug**。
+- 用 Bean Validation 驗證輸入，說出**每個註解對 `null` 的行為**，並把錯誤轉成一致的回應格式。
+- 用 `@RestControllerAdvice` 把 83 個錯誤碼統一成一種格式，讓 Controller 裡不再有 try-catch ——
+  並知道**哪六種例外根本進不了 advice**。
+- 說明一個請求從 Filter → DispatcherServlet → Interceptor → Controller 的完整路徑，
+  並在 Filter / Interceptor / ArgumentResolver / AOP 之間做出有理由的選擇。
+- 安全地處理檔案：**檔名與內容都不可信**；在「大到放不進記憶體」時改用串流或預簽名 URL。
 - 用 SSE 做即時推播，並知道它在 Nginx / 多實例部署下的必要設定。
-- 正確設定 CORS，包含**最容易漏的「錯誤回應也要有 CORS 標頭」**。
-- 掌握 Jackson 的全域設定，並說出每一項的理由與「改了會壞掉什麼」。
-- 用 MockMvc 寫出不啟動整個應用程式的 Web 層測試。
+- 正確設定 CORS，包含最容易漏的那一個：**錯誤回應也要有 CORS 標頭**。
+- 掌握 Jackson 的全域設定，並說出每一項「改了會壞掉什麼」。
+- 用 MockMvc 寫出不啟動整個應用程式的 Web 層測試，
+  並知道 MockMvc **測不到**的 12 件事各自該用哪一種測試補。
 
 ## 前置知識
 
@@ -26,100 +35,135 @@
 
 ## 章節目錄
 
-| 章節 | 檔案 | 主題 | 重點 |
-|------|------|------|------|
-| 00 | [00-course-map-web-layer-role.md](./00-course-map-web-layer-role.md) ✅ | 課程地圖與 Web 層職責 | 分層架構總覽、**Controller 不該做的十件事**、判斷邊界的五個問題、請求完整旅程、800→40 行重構、專案骨架 |
-| 01 | [01-request-mapping-and-binding.md](./01-request-mapping-and-binding.md) ✅ | 路由與參數綁定 | 路由衝突優先順序、**Boot 3 尾斜線 breaking change**、`required`/`defaultValue`/`Optional` 三角關係、14 個查詢參數綁成一個 record、`JsonNullable` 三態、自訂 `Converter`、`ResponseEntity` 決策表 |
-| 02 | [02-validation-and-binding-errors.md](./02-validation-and-binding-errors.md) ✅ | 輸入驗證 | **每個註解對 `null` 的行為**、Spring 6.1 內建方法驗證、ReDoS 防護、`addPropertyNode()`、為什麼不在驗證器裡查 DB、EL 注入、`BindingResult`→`errors[]`、四層 DoS 防護、驗證覆蓋率測試 |
-| 03 | [03-global-exception-handling.md](./03-global-exception-handling.md) ✅ | 全域例外處理 | `HandlerExceptionResolver` 鏈、**advice 順序贏過精確度**、83 個 code 的錯誤碼註冊表、**六種進不了 advice 的例外**、Jackson 例外→精確 field、Filter/Security/Nginx 四層格式統一、5xx 資訊洩漏防護、日誌分級與業務告警 |
-| 04 | [04-filter-interceptor-and-lifecycle.md](./04-filter-interceptor-and-lifecycle.md) ✅ | 請求生命週期 | 五種機制的能力對照與決策流程、`OncePerRequestFilter`、**可重複讀的 body**、`TraceIdFilter` 與 log injection、三層請求日誌與 JSON 遮蔽、**分頁硬上限**、**冪等鍵（Filter+Interceptor 混合）**、`ArgumentResolver`、非同步生命週期 |
-| 05 | [05-file-upload-download-and-sse.md](./05-file-upload-download-and-sse.md) ✅ | 檔案與串流 | multipart 四個設定值與暫存檔生命週期、**`getOriginalFilename()` 的四種攻擊**、magic number 與**圖片二次編碼**、ZIP bomb 四道防線、中文檔名的 `Content-Disposition`、`Range` 的三個前提、**`StreamingResponseBody` 的執行緒與交易**、串流中途失敗的三層應對、`202`+輪詢+一次性 token、**SSE 完整生命週期與 Nginx 三個坑** |
-| 06 | [06-cors-content-negotiation-and-json.md](./06-cors-content-negotiation-and-json.md) ✅ | 跨來源與序列化 | **同源政策擋的是「讀回應」**、preflight 三個判準、`Allow-Headers: *` 不涵蓋 `Authorization`、**`response.reset()` 清掉 CORS 標頭**、`CorsFilter` 為何要 order -200、`configureMessageConverters` 弄掉 Range 支援、**永不 `new ObjectMapper()`**、`BigDecimal` 三個坑、**新增 enum 值不再是破壞性變更**、多型反序列化的 RCE、JSON 炸彈、`ETag` 快速 304 與 `If-Match` |
-| 07 | [07-controller-testing-mockmvc.md](./07-controller-testing-mockmvc.md) ✅ | Web 層測試 | 測試金字塔在 Web 層是**梯形**、`@WebMvcTest` 的切片邊界、**`addFilters = false` 造成的資料洩漏**、context 快取鍵與「47 分鐘→4 分鐘」、MockMvc 與真實容器的 **12 個行為差異**、`jsonPath` 六陷阱、**mock 沒 stub 就回 `null`**、`ArgumentCaptor` 是 Controller 測試的核心、83 個 `ErrorCode` 一個測試、**授權矩陣 70×5 與 IDOR**、OpenAPI 契約與 REST Docs、12 個反模式、CI 分層與突變測試 |
+| 章節 | 主題 | 核心問題 |
+|------|------|---------|
+| **00** | [課程地圖與 Web 層職責](./00-course-map-web-layer-role.md) | 這段程式碼該放哪一層？800 行的 Controller 是怎麼長出來的 |
+| **01** | [路由與參數綁定](./01-request-mapping-and-binding.md) | HTTP 的字串怎麼變成 Java 物件，以及沿路會掉什麼 |
+| **02** | [輸入驗證與綁定錯誤](./02-validation-and-binding-errors.md) | 壞資料怎麼在進入 Service 之前被擋下來 |
+| **03** ★ | [全域例外處理](./03-global-exception-handling.md) | 一個 advice、70 條端點、零個 try-catch 怎麼做到 |
+| **04** | [請求生命週期](./04-filter-interceptor-and-lifecycle.md) | 橫切的需求（追蹤、日誌、限流、冪等）該掛在哪一層 |
+| **05** | [檔案上傳下載與 SSE](./05-file-upload-download-and-sse.md) | 「不是 JSON 的東西」與「大到放不進記憶體的東西」 |
+| **06** | [跨來源與序列化](./06-cors-content-negotiation-and-json.md) | 為什麼前端只看得到 `Network Error`；錢與時間怎麼變成 JSON |
+| **07** ★ | [Web 層測試](./07-controller-testing-mockmvc.md) | 你怎麼知道前面六章都是對的 |
+
+### 怎麼讀
+
+```
+00（分層、邊界、請求旅程、專案骨架）
+ └─→ 01（路由與綁定：所有後續章節的前提）
+      └─→ 02（驗證）
+           └─→ 03 ★ 全域例外處理（錯誤格式從這裡開始固定下來）
+                ├─→ 04（生命週期：traceId、日誌、冪等、限流）
+                │    ├─→ 05（檔案、串流、SSE）
+                │    └─→ 06（CORS、內容協商、Jackson）
+                └─→ 07 ★ 測試（讀完 03 與 06 再讀，效果最好）
+```
+
+⚠️ **如果時間有限**：
+**03 是最關鍵的一章** —— 錯誤格式一旦定下來，後面每一章都在往它上面掛東西。
+**06 是「上線後才會發現」密度最高的一章**（CORS、金額、時區、enum 演進）。
+**05 是唯一會讓服務整個掛掉的一章**（一個匯出報表就能 OOM）。
 
 ---
 
-## 目前進度
+## 這一站會打破的幾個假設
 
-| 章節 | 狀態 | 篇幅 |
-|------|------|------|
-| 00 課程地圖與 Web 層職責 | ✅ 完成 | 約 2,630 行 |
-| 01 路由與參數綁定 | ✅ 完成 | 約 3,910 行 |
-| 02 輸入驗證與綁定錯誤 | ✅ 完成 | 約 4,950 行 |
-| 03 全域例外處理 | ✅ 完成 | 約 7,220 行 |
-| 04 請求生命週期 | ✅ 完成 | 約 7,270 行 |
-| 05 檔案與串流 | ✅ 完成 | 約 12,310 行 |
-| 06 跨來源與序列化 | ✅ 完成 | 約 11,850 行 |
-| 07 Web 層測試 | ✅ 完成 | 約 11,160 行 |
+每一章都在處理同一種東西：
+**在本機、單一前端網域、小檔案、happy path 之下【完全正確】，而在正式環境是錯的程式碼。**
 
-目前合計約 **61,300 行**（不含 README）。
+| 你以為 | 實際上 | 在哪一章 |
+|---|---|---|
+| 「`/orders/` 跟 `/orders` 一樣」 | Boot 3 起尾斜線**不再**自動比對 → 404 | 01 章 1.3 |
+| 「`@RequestParam(required=false) int page` 沒送就是 0」 | 500，而且只在「客戶端不送」時發生 | 01 章 1.5 |
+| 「`?status=paid` 會被接受」 | 400，連 `field` 都沒有（實測） | 01 章 1.9.2 |
+| 「加了 `@Valid` 就有驗證」 | 沒加 `spring-boot-starter-validation` 時**完全不生效，也不報錯** | 00 章 0.11.3 |
+| 「例外拋出去就會變成我的錯誤格式」 | **六種例外根本進不了 advice**（Filter、Security、404…） | 03 章 3.5.4 |
+| 「advice 越精確的越先被選到」 | **順序贏過精確度** —— 註冊順序決定誰接到 | 03 章 3.3 |
+| 「`getOriginalFilename()` 是檔名」 | 它是**攻擊者送的字串**，四種攻擊都從這裡進來 | 05 章 5.4 |
+| 「匯出用 `List<T>` 就好」 | 41 萬筆訂單讓下單服務一起中斷 | 05 章 5.9 |
+| 「SSE 本機是好的就是好的」 | 在 Nginx 後面預設完全不動 | 05 章 5.11 |
+| 「回應是對的就等於前端拿得到」 | 錯誤回應少了 CORS 標頭 → 前端只看到 `Network Error` | 06 章 6.2.1、6.3.5 |
+| 「`new ObjectMapper()` 只是拿一個 mapper」 | 你拿到的是**沒有任何設定**的那一個 | 06 章 6.5.2 |
+| 「新增一個 enum 值是相容的變更」 | 舊 App 大量閃退 —— 除非你先做過準備 | 06 章 6.5.8 |
+| 「測試全綠就是對的」 | `addFilters = false` 讓 350 個測試跑在沒有授權的世界裡 | 07 章 7.2.1 |
+| 「斷言 `status().isOk()` 就夠了」 | mock 沒 stub 回 `null` → 200 + 空 body，測試照樣綠 | 07 章 7.2.3 |
 
-**04-controller 第 00～07 章（共八章）全部完成。**
+**每一條都有一段跑得起來的程式碼把它拆掉**，而不是一句「應該要注意」。
+每一章最後都有一份「常見誤區」的完整清單。
 
 ---
 
-## 程式碼演進表：後面的章節修正了前面的四處
+## 產出
 
-**這四處是「上游的決定被下游的現實推翻」** —— 課程刻意**不**回頭改寫前面的章節，
-只在原處標註理由，因為「先看見痛，再給解法」需要痛留在原處。
+依照 03-rest-api 的 `orders-api.yaml` 契約，實作出一組**完整的訂單 Web 層**：
+
+- **路由與綁定**：70 條 URL 的方法簽章、14 個查詢參數綁成一個 `OrderFilter` record、
+  `PATCH` 的三態語意、自訂 `Converter`。
+- **驗證**：Bean Validation + 七個自訂驗證註解 + 四層 DoS 防護，錯誤一律變成 `errors[]`。
+- **一套錯誤格式**：83 個 `ErrorCode` 的註冊表、一個 advice、
+  以及 **Controller / Filter / Security / Nginx 四層格式一致**的檢查。
+- **橫切機制**：`TraceIdFilter`、三層請求日誌與遮蔽、分頁硬上限、冪等鍵、`@CurrentActor`。
+- **檔案與串流**：安全的上傳（magic number、二次編碼、ZIP bomb）、中文檔名下載、
+  `StreamingResponseBody` 匯出、`202` + 輪詢的非同步工作、SSE 推播。
+- **序列化**：CORS 設定、Jackson 全域設定、金額與時間的最終決策、enum 的演進策略、`ETag`。
+- **測試**：`@WebMvcTest` 切片、`ArgumentCaptor`、一個測試涵蓋 83 個 code、
+  **70 × 5 的授權矩陣**、OpenAPI 契約測試、CI 分層與突變測試。
+
+**商業邏輯全部以介面呼叫下一層** —— `OrderService` 之後的東西是
+[05-service/](../05-service/) 的事。
+
+### 三張最常回頭查的決策表
+
+| 想做什麼 | 去哪裡查 |
+|---|---|
+| 一個橫切需求該用 Filter / Interceptor / ArgumentResolver / AOP？ | 04 章 4.13.5 |
+| 一個「大東西」該用 multipart / 預簽名 / 串流 / 非同步工作？ | 05 章 5.12.3 |
+| 這個東西該用哪一種測試（純單元 / 切片 / 整合 / 真 HTTP）？ | 07 章 7.3.3、7.3.4 |
+| filter 的 order 該給多少？ | 06 章 6.9.4（04 → 06 章的總表） |
+| `@WebMvcTest` 測不到什麼、要改用哪一種？ | 07 章 7.11.1（配合 7.5.9 的 12 個差異） |
+
+---
+
+## 關於書裡的程式碼
+
+**基準版本**：Java 21 / Spring Boot 3.2.5（Spring Framework 6.1）/ Jackson 2.17.2 /
+Hibernate Validator 8.0 / JUnit 5.10 / Mockito 5.7 / ArchUnit 1.3。
+
+⚠️ **三件開始前先知道的事**：
+
+1. **Jackson 版本是刻意拉高的。** Boot 3.2.5 管理的是 2.15.4，
+   而 06 章 6.5.3 的 JSON 炸彈防護需要 2.16+ 的 `maxDocumentLength` / `StreamWriteConstraints`。
+   pom 裡的 `<jackson-bom.version>` 覆寫**必須留著**，理由與代價寫在 6.5.3。
+2. **`@MockitoBean` 需要 Boot 3.4。** 這一站統一寫 `@MockitoBean`（政策見 07 章 7.6.1），
+   因為 7.6.1 整節就是在教「新的那個在你的版本上不存在」這件事。
+   **在 Boot 3.2 / 3.3 上，每一處都要改成 `@MockBean`** —— 課程在每個出現的地方都加了註記。
+   ⚠️ 下一站（05-service）刻意選了相反的做法：它全站直接寫 `@MockBean`。
+   兩者語意相同，只有 import 與類別名不同；放在同一個專案裡挑一個統一即可。
+3. **07 章 7.7.3～7.7.4 的測試 fixture 用的是簡化版的 `OrderDetail`**，
+   欄位與 06 章 6.5.9 的正式版不同（最重要的差別是金額：
+   正式版是 `amounts.total`，簡化版是 `totalAmount`）。
+   完整的欄位對照表就放在 7.7.4 那一節 —— **照著做專案時請以 06 章的為準**。
+
+---
+
+## 程式碼演進：後面的章節修正了前面的三處
+
+**這三處是「上游的決定被下游的現實推翻」。**
+課程刻意**不**回頭改寫前面的章節，只在原處標註理由 ——
+因為「先看見痛，再給解法」需要痛留在原處。
 
 | 改了什麼 | 原本在哪 | 為什麼 |
 |---|---|---|
 | `CachedBodyFilter` 要跳過 multipart | 04 章 4.4.6 | 否則 `MultipartFile` 綁到 `null`（05 章 5.6.4） |
 | 冪等指紋對 multipart 不含 body | 04 章 4.9.4 | boundary 每次隨機 → 同樣的請求算出不同指紋（05 章 5.6.4） |
-| `ProblemWriter` 的 `reset()` 要保留 CORS 標頭 | 03 章 3.10.1 | 否則所有 401/403 前端都讀不到內容（06 章 6.3.5） |
-| **`@MockitoBean` 的版本註記** | 03 章 3.13、3.14.4 | `@MockitoBean` 是 **Spring Framework 6.2（Boot 3.4）** 才有的，在 3.2.5 基準上不會編譯 |
-
-⚠️ **最後一列是你最可能立刻撞到的一個**：
-
-> **這一站**統一寫 `@MockitoBean`（07 章 7.6.1 有政策說明與 `mvn` profile），
-> 但如果你用 **Boot 3.2 / 3.3**，每一處都要改成 `@MockBean`。
-> 課程在每個出現的地方都加了註記。
->
-> ⚠️⚠️ **而下一站（05-service）刻意選了相反的做法：它直接寫 `@MockBean`。**
-> 兩站的基準版本是同一個（Boot 3.2.5），差別在**這一節要教什麼**：
->
-> | 站 | 寫哪一個 | 為什麼 |
-> |---|---|---|
-> | **04-controller** | `@MockitoBean` + 逐處註記 | 7.6.1 整節就是在教「新的那個在你的版本上不存在」這件事 |
-> | **05-service** | `@MockBean` | 那一站不談版本遷移，寫**在基準上能直接編譯**的那個（05-service 07 章 7.3.6） |
->
-> 🔴 **所以如果你把兩站的測試放在同一個專案裡，會看到兩種寫法。**
-> 挑一個統一即可 —— 兩者語意相同，只有 import 與類別名不同。
+| `ProblemWriter` 的 `reset()` 要保留 CORS 標頭 | 03 章 3.10.1 | 否則所有 401 / 403 前端都讀不到內容（06 章 6.3.5） |
 
 > 📌 **下一站（[05-service/](../05-service/)）有一張同樣的表，而它有 46 列。**
 > 那不是因為 04-controller 寫得比較好，而是因為
 > **「Service 是 stub」這個前提一旦拿掉，Web 層的許多決定就要重做** ——
 > 例如 `allowedActions()` 為什麼不可能沒有參數。
 
-## 常見誤區（課程會逐一破解）
+---
 
-- Controller 裡直接注入 Repository，順手寫了 200 行商業邏輯。
-- 每個方法都自己包 try-catch 回錯誤訊息，格式各寫各的。
-- 只驗證 happy path，惡意輸入（超長字串、負數金額、缺欄位）直接進資料庫。
-- 用 `@CrossOrigin("*")` 全開解決跨域，上線後才發現安全問題（06 章 6.2.2）。
-- 檔案上傳沒限制大小與型別，被塞爆磁碟（05 章 5.2.1）。
-- 以為「回應是對的」就等於「前端拿得到」—— 錯誤回應少了 CORS 標頭（06 章 6.2.1）。
-- 用 `List<T>` 匯出 41 萬筆訂單，一個報表功能讓下單服務中斷（05 章 5.2.3）。
-- SSE 在本機完美、在 Nginx 後面完全不動（05 章 5.2.4）。
-- 為了修掉測試的 401 而加 `@AutoConfigureMockMvc(addFilters = false)`，
-  於是 350 個測試全部跑在「沒有認證與授權」的環境裡（07 章 7.2.1）。
-- 測試只斷言 `status().isOk()`，而 mock 沒 stub 回傳 `null` → 200 + 空 body（07 章 7.2.3）。
-- 用被測的 `MoneyFormat` 算期望值，於是測試斷言「它等於它自己」（07 章 7.2.5）。
-
-## 產出
-
-依照 03-rest-api 的 `orders-api.yaml` 契約，實作出一組**完整的訂單 Controller**：
-含驗證、統一錯誤格式、請求追蹤 ID、檔案上傳下載、非同步匯出、SSE 推播、CORS 與序列化設定，
-以及整套 MockMvc 測試 — 但商業邏輯全部以介面呼叫下一層（由 05-service 補上）。
-
-**跨章節的「機制決策表」**（讀完 04～06 章之後，這三張表是最常回頭查的）：
-
-| 想做什麼 | 去哪裡查 |
-|---|---|
-| 一個橫切需求該用 Filter / Interceptor / ArgumentResolver / AOP？ | 04 章 4.13.5 |
-| 一個「大東西」該用 multipart / 預簽名 / 串流 / 非同步工作？ | 05 章 5.12.3 |
-| filter 的 order 該給多少？ | 06 章 6.9.4（04→06 章的總表） |
-| 這個東西該用哪一種測試（純單元 / 切片 / 整合 / 真 HTTP）？ | **07 章 7.3.3、7.3.4** |
-| `@WebMvcTest` 測不到什麼、要改用哪一種？ | **07 章 7.11.1**（配合 7.5.9 的 12 個差異） |
-| 一個新端點要寫哪些測試？ | **07 章 7.16 練習 3**（含「哪些是免費的」） |
+> 讀完這一站，一個請求已經可以完整地進來、被驗證、變成一個 command，然後原路變成 JSON 回去。
+> **接下來要決定的是「它到底做了什麼」** —— 從 [05-service/](../05-service/) 開始。

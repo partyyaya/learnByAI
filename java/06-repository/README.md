@@ -1,19 +1,24 @@
 # 06 — Repository（資料存取層）
 
-> Repository 的價值在於**把「資料怎麼存」封裝起來**，讓 Service 不必知道背後是 MySQL、快取還是外部服務。
-> 這一站先講清楚這層的抽象與邊界、連線池怎麼調、交易在哪裡開始結束；
-> 至於 ORM 細節，留到 [08-jpa-mybatis/](../08-jpa-mybatis/) 深入。
+> 05-service 站結束時，你的商業邏輯層底下躺著一個 `ConcurrentHashMap`。
+> **這一站要把它換成真的資料庫。**
+>
+> 而換掉它會破壞三件你以為已經做對的事：
+> 不變量的守法、交易的邊界、還有「測試綠了就是對的」這個假設。
 
 ---
 
 ## 學完你可以
 
-- 說明 Repository 模式解決什麼問題，以及它與 DAO 的差異。
-- 設定與調校 HikariCP 連線池，並判斷「連線池耗盡」的根因。
-- 用 JdbcTemplate 寫出安全的原生 SQL（含具名參數與批次操作）。
-- 使用 Spring Data 的方法命名查詢、`@Query` 與 Pageable，知道它們何時不夠用。
-- 說明交易邊界為什麼要在 Service 而不是 Repository。
-- 用 `@DataJpaTest` 與 Testcontainers 寫出貼近正式環境的資料層測試。
+- 說明 Repository 模式解決什麼問題、它與 DAO 的差異，並判斷一個專案為什麼**兩個都需要**。
+- 用**七個判準**評審一個資料存取介面的方法簽章，並說出每一個判準在防哪一種事故。
+- 判斷一條不變量該用**資料庫約束**、**原子 UPDATE**、**唯一索引**還是**應用層檢查**來守。
+- 設定與調校 HikariCP 連線池，並在五分鐘內診斷出「連線池耗盡」的根因。
+- 用 JdbcTemplate 寫出安全的原生 SQL（含具名參數、批次、例外翻譯）。
+- 使用 Spring Data 的方法命名查詢、`@Query` 與投影，並知道它們何時不夠用。
+- 設計不會重複也不會遺漏的分頁，並在 `OFFSET` 與 keyset 之間做出有依據的選擇。
+- 說明交易邊界為什麼要在 Service 而不是 Repository，並讓批次寫入**真的**變成批次。
+- 判斷哪些資料層測試可以跑 H2、哪些**必須**跑正式環境用的那個資料庫。
 
 ## 前置知識
 
@@ -23,28 +28,117 @@
 
 ## 章節目錄
 
-| 章節 | 檔案 | 主題 | 重點 |
-|------|------|------|------|
-| 00 | `00-course-map-data-access-layer.md` | 課程地圖與資料層定位 | Repository vs DAO、抽象的價值與過度抽象的代價、介面設計原則 |
-| 01 | `01-datasource-and-connection-pool.md` | 資料來源與連線池 | JDBC URL 參數、HikariCP 關鍵設定、池大小怎麼算、連線洩漏診斷 |
-| 02 | `02-jdbc-and-jdbctemplate.md` | JDBC 與 JdbcTemplate | `PreparedStatement` 與 SQL Injection、`RowMapper`、具名參數、批次寫入、`JdbcClient` |
-| 03 | `03-spring-data-repository-abstraction.md` | Spring Data 抽象 | `Repository` 家族階層、方法命名查詢規則、`@Query`、投影（Projection）、動態代理原理 |
-| 04 | `04-pagination-sorting-and-dynamic-query.md` | 分頁、排序與動態查詢 | `Pageable` / `Slice` / `Page`、`Sort`、`Specification`、大量資料分頁的效能陷阱 |
-| 05 | `05-transaction-boundary-and-batch.md` | 交易邊界與批次操作 | 為何邊界在 Service、唯讀交易、flush 時機、批次寫入、大量資料串流讀取 |
-| 06 | `06-repository-testing.md` | 資料層測試 | `@DataJpaTest`、為什麼 H2 會騙你、Testcontainers 跑真 MySQL、測試資料準備與清理 |
+| 章節 | 主題 | 核心問題 |
+|------|------|---------|
+| **00** | [課程地圖與資料層定位](./00-course-map-data-access-layer.md) | 邊界在哪、介面該長什麼樣、不變量守在哪一層 |
+| **01** | [DataSource 與連線池](./01-datasource-and-connection-pool.md) | 連線用完了怎麼辦？`maximum-pool-size: 10` 的 10 是怎麼來的 |
+| **02** ★ | [JDBC 與 JdbcTemplate](./02-jdbc-and-jdbctemplate.md) | SQL 怎麼寫才安全、`ResultSet` 怎麼變成物件而不掉東西 |
+| **03** | [Spring Data 抽象](./03-spring-data-repository-abstraction.md) | 那些沒有實作的介面是怎麼跑起來的、什麼時候該用它 |
+| **04** | [分頁、排序與動態查詢](./04-pagination-sorting-and-dynamic-query.md) | 條件是動態的、翻到第 5,000 頁為什麼會慢 |
+| **05** ★ | [交易邊界與批次操作](./05-transaction-boundary-and-batch.md) | 括號畫在哪、一次寫 10 萬筆要怎麼寫 |
+| **06** | [資料層測試](./06-repository-testing.md) | **H2 上綠燈可以信嗎** |
+
+### 怎麼讀
+
+```
+00（觀念、埠、schema、骨架）
+ ├─→ 01（連線池：所有查詢的前提）
+ │    └─→ 02 ★ JdbcTemplate（實作的主體）
+ │         ├─→ 03 Spring Data（另一種寫法，對照 02）
+ │         │    └─→ 04 分頁與動態查詢
+ │         └─→ 05 ★ 交易邊界與批次
+ └─→ 06 測試（讀完 02 與 05 再讀，效果最好）
+```
+
+⚠️ **如果時間有限**：
+**02 是實作的核心，05 是最容易出事的一章。**
+**01 是唯一「上線後半夜會叫你起床」的一章** —— 內容最少，故障率最高。
 
 ---
 
-## 常見誤區（課程會逐一破解）
+## 這一站會打破的幾個假設
 
-- 連線池大小設成 100，以為越大越快，實際上資料庫先被打垮。
-- 用字串拼接組 SQL，直接開一扇 SQL Injection 大門。
-- 在 Repository 方法上加 `@Transactional`，導致每次呼叫各開一個交易，無法組成原子操作。
-- 用 H2 測試通過，上線遇到 MySQL 的語法 / 排序規則差異才爆炸。
-- 一次 `findAll()` 撈 50 萬筆進記憶體，直接 OOM。
+這門課的每一章都在處理同一種東西：
+**在單機、低流量、小資料量、H2 之下【完全正確】，而在正式環境是錯的程式碼。**
+
+- 「加了 `CHECK (qty >= 0)` 就不會超賣」 → **00 章**
+- 「池越大越快」 → **01 章**
+- 「用了 `PreparedStatement` 就不會被 SQL Injection」 → **02 章**
+- 「Entity 上有 `@Version` 就有樂觀鎖」 → **03 章**
+- 「`ORDER BY created_at` 就有排序了」 → **04 章**
+- 「拋了例外交易就會回滾」 → **05 章**
+- 「用 H2 測資料層就夠了」 → **06 章**
+
+**每一條都有一個十幾行的實驗把它拆掉**，而不是一段「應該要注意」的說明。
+每一章的最後都有一份「常見誤區」的完整清單。
+
+---
 
 ## 產出
 
 把 05-service 的記憶體假實作換成**真的資料存取層**：
-先用 JdbcTemplate 實作一版，再用 Spring Data 實作第二版，同一組介面兩種實作互相對照，
-並用 Testcontainers 跑真 MySQL 驗證兩者行為一致。
+
+- **兩個埠**：`OrderRepository`（寫）與 `OrderSearchPort`（讀）—— 讀寫分離的介面。
+- **寫的那一側四個實作**：記憶體 fake / `JdbcTemplate` / `JdbcClient` / Spring Data JPA，
+  跑**同一組 17 條契約測試**。
+- **讀的那一側三個實作**：`Specification` / QueryDSL / 手寫 SQL，
+  跑**同一組 16 條契約測試**。
+- **application 層完全看不到 Spring Data 的型別**（`PageSpec` / `PageResult` / `Cursor` /
+  `KeysetPage` / `OrderSummaryView`）。
+- **18 條 ArchUnit 守門規則**，每一條都實測過「讓它紅」。
+- **最後把契約測試搬到真的 MySQL 8 上再跑一次** —— 而它抓到了一個活了四章的 bug。
+
+📌 **契約測試是這一站的骨幹**：
+同一組測試跑在四個實作上，**換實作的成本從「重寫測試」降到「加一個子類別」** ——
+而它真的抓到了兩個用讀程式碼看不出來的 bug。
+
+---
+
+## 關於書裡的數字
+
+**每一章的結論都來自一個跑得起來的實驗，而不是文件。**
+每一章最後一節列出那一章的環境、跑過的實驗、以及**沒有驗證到的東西**。
+
+**基準版本**：Java 21 / Spring Boot 3.2.5 / Hibernate 6.4.4 / QueryDSL 5.0.0 /
+HikariCP 5.0.1 / H2 2.2.224 / MySQL 8.0.46 / ArchUnit 1.3。
+
+⚠️ **00～05 章的實驗跑在 H2 上，06 章把它們搬到真的 MySQL 8 重跑一次 ——
+而 06 章推翻了前面章節的四個結論**：
+
+| 原本的結論 | 寫在 | 修正在 |
+|---|---|---|
+| 「`FETCH FIRST` 比 `LIMIT` 可攜」 | 02 章 2.6.4 | 06 章 6.6 |
+| 「keyset 要用 row value 寫法」 | 04 章 4.7.4 | 04 章 4.7.4b |
+| 「`saveAll()` 可以用 `updated[i]` 判斷新舊」 | 05 章 5.8.7 | 05 章 5.8.7b |
+| 「批次失敗會部分寫入」 | 05 章 5.10.1 | 05 章 5.10.1b |
+
+📌 **四個都是「在 H2 上量出來、寫得很有把握、而且是錯的」。**
+**那四個修正沒有被藏起來，它們留在原地** ——
+因為「一個推理正確、文件正確、測試全綠的結論，仍然可能是錯的」
+本身就是這一站最重要的一課。
+
+🔴 **這一站仍然沒有驗證到的**（全部交給 [07-mysql/](../07-mysql/)）：
+InnoDB 的鎖與死鎖、`REPEATABLE_READ` 的可見性、長交易的 undo log、
+`AUTO_INCREMENT` 鎖、UUID 主鍵的寫入放大、索引設計、真實網路延遲、
+連線池在真實負載下的曲線、Open Session In View 的完整請求流程。
+**每一項都標在 06 章 6.10.3 的表裡。**
+
+---
+
+## 程式碼演進
+
+**你在前面章節寫的程式碼，後面章節會改動它。**
+每一次改動都留著「改之前長什麼樣、為什麼要改」——
+因為那個「為什麼」比改完的樣子更值得學。
+
+| 你在哪裡寫的 | 哪一章改它 | 為什麼 |
+|---|---|---|
+| 00 章的 `JdbcOrderRepository.save()` | 02 章 2.8.4 | 它只更新訂單頭、不動明細 —— 改了明細會**靜默不生效** |
+| 00 章的 `LIMIT :limit` | 02 章 2.6.4 → **06 章 6.6** | 換成「標準的」`FETCH FIRST`，而 MySQL 8 不支援它 |
+| 00 章的 `OrderStatus.valueOf(...)` | 02 章 2.9 | 資料庫裡出現未知狀態時，訊息要說得出**是哪一筆訂單** |
+| 02 章的 `JdbcOrderRepository` | 03 章 3.10 | 加上 Spring Data 的第二個實作，**同一組契約會有兩條紅的** |
+| 02 章的 `saveAll()` | 05 章 5.8.7 → **5.8.7b** | 改成真的批次，而它在 MySQL 上會壞 |
+| 03 章的 `JpaOrderRepository.save()` | 03 章 3.10.3 | `@Version` 在，樂觀鎖卻失效 |
+| 03 章的 `nextId()` | 03 章 3.10.4 → **3.10.5** | 它不碰資料庫卻被 `MANDATORY` 綁住；修好之後守門規則反而紅了 |
+| 04 章的 keyset 寫法 | **04 章 4.7.4b** | 在 H2 上快 42 倍，**在 MySQL 上慢 26 倍** |
+| 記憶體假實作的 `saveAll()` | 05 章 5.13.4 | 它沒有交易，`saveAll` 會部分成功 |

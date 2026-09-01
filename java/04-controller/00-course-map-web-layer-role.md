@@ -96,7 +96,7 @@ HTTP 請求
 第 00 章  專案骨架 + 職責判準 + 一個 800→40 行的重構
 第 01 章  路由與參數綁定：把 70 條 URL 對映成方法簽章
 第 02 章  Bean Validation：把 DTO 上的驗證全部落地
-第 03 章  @RestControllerAdvice：把第 04 章的錯誤目錄（60 個 code）落地 ← 最關鍵的一章
+第 03 章  @RestControllerAdvice：把第 04 章的錯誤目錄落地成 79 個 code ← 最關鍵的一章
 第 04 章  Filter / Interceptor：traceId、請求日誌、分頁參數硬上限
 第 05 章  檔案上傳下載、匯出串流、SSE 訂單狀態推播
 第 06 章  CORS、內容協商、Jackson 全域設定（金額與時間的序列化）
@@ -1097,7 +1097,7 @@ Controller 做的事（解析、驗證、翻譯）都是**純函式式的**：�
 ⑬ Tomcat 寫回 socket，執行緒歸還執行緒池
 ```
 
-### 0.8.2 四種攔截機制的能力對照 ★
+### 0.8.2 五種攔截機制的能力對照 ★
 
 這張表是 04 章的核心，先在這裡建立印象。**選錯機制是最常見的錯誤之一。**
 
@@ -1591,6 +1591,21 @@ shop-service/
       <artifactId>spring-boot-starter-validation</artifactId>
     </dependency>
 
+    <!-- ★★ Spring Security：03 / 04 / 07 章從第一段程式碼就在用
+         （@AuthenticationPrincipal、@PreAuthorize、SecurityFilterChain、
+          AuthenticationEntryPoint）。完整的認證授權是 09-spring-security，
+         但**沒有這個依賴，這一站的程式碼一行都編不過**。 -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+
+    <!-- 04 章：AOP（ServiceTimingAspect；@Transactional 在 05-service 也要它） -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-aop</artifactId>
+    </dependency>
+
     <!-- 02 章：JsonNullable（PATCH 的三態語意） -->
     <dependency>
       <groupId>org.openapitools</groupId>
@@ -1616,6 +1631,21 @@ shop-service/
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+
+    <!-- ★ 07 章：@WithSecurityContext / SecurityMockMvcRequestPostProcessors -->
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- 00 章 0.6.3 / 07 章：ArchUnit 守門規則 -->
+    <dependency>
+      <groupId>com.tngtech.archunit</groupId>
+      <artifactId>archunit-junit5</artifactId>
+      <version>1.3.0</version>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>
@@ -1637,13 +1667,28 @@ shop-service/
 </project>
 ```
 
-⚠️ **兩個一定會踩的坑先講**：
+⚠️ **三個一定會踩的坑先講**：
 
 1. **`spring-boot-starter-validation` 必須自己加。**
    Spring Boot 2.3 起把它從 web starter 移出來了。
    沒加的話 `@Valid`、`@NotBlank` **完全不會生效，也不會有任何錯誤訊息** ——
    請求會帶著 `null` 一路衝進 Service。這是最常見的「驗證沒生效」原因。
-2. **`<parameters>true</parameters>`**：Spring Framework 6.1 起，
+2. **加了 `spring-boot-starter-security` 之後，所有端點預設都要登入。**
+   啟動時 log 會印出一組隨機密碼（使用者名稱是 `user`），而 0.12 的 15 分鐘試跑會全部 401。
+   **這一站的做法**：先用 03 章的那份 `SecurityConfig`
+   （3.10.2：`permitAll()` + 統一的 401 / 403 錯誤格式），真正的認證授權留給 09-spring-security。
+   在還沒讀到 03 章之前，最省事的做法是暫時關掉它：
+
+   ```java
+   @SpringBootApplication(exclude = {
+           SecurityAutoConfiguration.class,
+           ManagementWebSecurityAutoConfiguration.class})   // ★ 有 actuator 就一定要連這個一起排除
+   ```
+
+   ⚠️ **只排除 `SecurityAutoConfiguration` 會啟動失敗**（實測），錯誤訊息是
+   `No qualifying bean of type 'HttpSecurity' available`，來自 actuator 的
+   `ManagementWebSecurityAutoConfiguration` —— 它還在等一個已經不會被建立的 `HttpSecurity`。
+3. **`<parameters>true</parameters>`**：Spring Framework 6.1 起，
    如果沒有這個編譯選項，`@RequestParam String status` 這種**省略名稱**的寫法會在啟動時直接失敗
    （以前是靠 `-parameters` 或 ASM 猜；6.1 開始不再猜了）。
    `spring-boot-starter-parent` 其實已經幫你設了，但如果你不用它當 parent 就要自己加。
@@ -1753,7 +1798,7 @@ management:
 |---|---|
 | 01 | `GET /orders`、`POST /orders`、`GET /orders/{id}`、`PATCH /orders/{id}`、`GET /orders/{id}/items`、`GET /orders/{id}/status-changes`、`PUT /orders/{id}/invoice` |
 | 02 | 上述全部端點的驗證 + `POST /orders/{id}/payments`（卡號、發票的跨欄位驗證） |
-| 03 | 全部端點的錯誤路徑（約 60 個 code 落地） |
+| 03 | 全部端點的錯誤路徑（`ErrorCode` 註冊表：03 章 79 個，05 章再加 4 個 → 83） |
 | 04 | `POST /orders`（冪等鍵）、`GET /orders`（分頁上限）、全站 traceId |
 | 05 | `POST /products/{id}/images`、`POST /order-exports`、`GET /order-exports/{id}/file`、`GET /orders/{id}/events`（SSE） |
 | 06 | 全站 CORS + Jackson；`GET /orders/{id}` 的 `ETag` |
@@ -2618,9 +2663,9 @@ public record ChangeShippingAddressCommand(
 - `@RequestMapping` 家族的完整語意，以及**路由衝突時 Spring 怎麼選**（優先順序規則）。
 - `@PathVariable` / `@RequestParam` / `@RequestBody` / `@RequestHeader` / `@CookieValue` / `@ModelAttribute` 的完整行為與陷阱。
 - **`required` 與 `Optional` 與 `defaultValue` 的三角關係**（以及為什麼 `@RequestParam(required=false) int` 會 500）。
-- 把 12 個查詢參數綁成**一個物件**（`OrderFilter`），而不是 12 個方法參數。
+- 把 14 個查詢參數綁成**一個物件**（`OrderFilter`），而不是 14 個方法參數。
 - `Pageable` 的自動綁定與它的三個坑。
-- 列舉綁定：`?status=paid` 要不要接受小寫？找不到值時怎麼回 422 而不是 500。
+- 列舉綁定：`?status=paid` 要不要接受小寫？找不到值時怎麼回 422 而不是 400（1.9.2 實測）。
 - `JsonNullable` 與 `PATCH` 的三態語意。
 - `ResponseEntity` vs 直接回 DTO vs `@ResponseStatus` 的取捨。
 - Spring Boot 3.x 的兩個 breaking change：**尾斜線比對**與**路徑變數的正規表示式**。
