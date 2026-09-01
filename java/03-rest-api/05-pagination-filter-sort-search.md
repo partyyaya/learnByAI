@@ -577,13 +577,17 @@ LIMIT 21;                                  -- ★ 多取 1 筆判斷 hasMore
 SELECT id, order_number, created_at
 FROM orders
 WHERE customer_id = ?
-  AND (created_at, id) < ('2026-08-19 06:12:44', 48213)     -- ★ 關鍵
+  AND (created_at, id) < ('2026-08-19 06:12:44', 48213)     -- ★ 關鍵（先看語意，寫法下面會修正）
 ORDER BY created_at DESC, id DESC
 LIMIT 21;
 ```
 
-**效能**：`WHERE (created_at, id) < (?, ?)` 可以直接用索引**定位**到起點，
-不需要掃描前面的資料。
+**語意**：`(created_at, id) < (?, ?)` 表達的是「排在這一組值後面的資料」——
+先比 `created_at`，相同時再比 `id`。這是 cursor 分頁的核心條件。
+
+**效能上它應該可以直接用索引「定位」到起點，不需要掃描前面的資料** ——
+**但這件事在 MySQL 上不會自動發生**，下面 5.4.1 結尾就是實測。
+先記住語意，寫法等一下會修正。
 
 | `page` 等價位置 | offset 掃描列數 | cursor 掃描列數 |
 |---|---|---|
@@ -593,36 +597,85 @@ LIMIT 21;
 
 **cursor 分頁是 O(1)，和深度無關。** 這是它存在的唯一理由，也是壓倒性的理由。
 
-**用 `EXPLAIN` 驗證**：
+**⚠️ 但是：`(a, b) < (?, ?)` 這種寫法在 MySQL 上不一定走 range scan。**
+
+這是本章最容易踩到的一個坑 —— 而且**只有深分頁時才看得出來**。
+以下是 MySQL 8.0.46、20 萬筆訂單、索引 `(created_at, id)` 的實測。
+
+**寫法 A：row constructor（直覺寫法）**
 
 ```sql
 EXPLAIN ANALYZE
 SELECT id, order_number FROM orders
-WHERE (created_at, id) < ('2026-08-19 06:12:44', 48213)
+WHERE (created_at, id) < ('2025-08-12 12:00:20', 1000)
 ORDER BY created_at DESC, id DESC
 LIMIT 21;
 ```
 
 ```
--> Limit: 21 row(s)  (actual time=0.08..0.31 rows=21 loops=1)
-    -> Index range scan on orders using idx_orders_created_id
-       over (created_at, id) < ('2026-08-19 06:12:44', 48213)
-       (actual time=0.07..0.28 rows=21 loops=1)
-                                  ↑↑↑↑↑↑
-                    只掃了 21 筆 —— 不管在第幾「頁」都一樣
+-> Limit: 21 row(s)  (actual time=103..103 rows=21 loops=1)
+    -> Filter: ((orders.created_at,orders.id) < ('2025-08-12 12:00:20', 1000))
+        -> Index scan on orders using idx_orders_created_id (reverse)
+           (actual time=0.0422..92.4 rows=199022 loops=1)
+                                        ↑↑↑↑↑↑↑↑↑↑↑
+                    掃了 199,022 筆 —— 它把整個索引掃過去再逐筆過濾
 ```
 
-> ⚠️ **MySQL 版本注意**：row constructor 的範圍最佳化（把 `(a,b) < (?,?)` 轉成 index range scan）
-> 在 MySQL 8.0 上運作良好。如果你的版本沒有做這個最佳化（`EXPLAIN` 顯示 `Using where` 但掃描列數很大），
-> 就手動展開成 OR 形式：
+**寫法 B：手動展開成 `OR` 形式**
+
+```sql
+EXPLAIN ANALYZE
+SELECT id, order_number FROM orders
+WHERE (created_at < '2025-08-12 12:00:20'
+       OR (created_at = '2025-08-12 12:00:20' AND id < 1000))
+ORDER BY created_at DESC, id DESC
+LIMIT 21;
+```
+
+```
+-> Limit: 21 row(s)  (actual time=0.054..0.0559 rows=21 loops=1)
+    -> Index range scan on orders using idx_orders_created_id
+       over (NULL < created_at < '2025-08-12 12:00:20')
+         OR (created_at = '2025-08-12 12:00:20' AND id < 1000) (reverse)
+       (actual time=0.0535..0.0546 rows=21 loops=1)
+                                    ↑↑↑↑↑↑
+                    掃了 21 筆 —— 這才是 cursor 分頁該有的樣子
+```
+
+| 寫法 | 執行計畫 | 掃描列數 | 耗時 |
+|---|---|---|---|
+| A：`(created_at, id) < (?, ?)` | `Index scan` + `Filter` | 199,022 | **103 ms** |
+| B：`OR` 展開 | `Index range scan` | 21 | **0.055 ms** |
+
+**差距約 1,900 倍。** ASC 方向（`>` 與 `ORDER BY ... ASC`）實測結果相同。
+
+**三個必須記住的後果**：
+
+1. **寫法 A 在這個情況下比它要取代的 offset 分頁還慢。**
+   同樣深度的 `LIMIT 20 OFFSET 100000` 實測是 26.5 ms —— 也就是說，
+   你「改成 cursor 分頁」之後效能反而退步了，
+   而且你會以為自己已經解決了深分頁問題。
+2. **淺分頁完全看不出來。** cursor 還在前幾頁時，寫法 A 只花 0.012 ms，
+   本機測試、QA、壓測的前幾頁全部都是綠的。它只在正式環境跑到深處時才炸。
+3. **這跟 MySQL 版本與索引定義高度相關。** 不要背結論，要背方法。
+
+> ✅ **shop-service 的規定**：
+> **cursor 的 `WHERE` 條件一律寫成 `OR` 展開形式**，並在 code review 時要求附上
+> `EXPLAIN ANALYZE` 的輸出，確認執行計畫是 **`Index range scan`**
+> 而不是 `Index scan` + `Filter`。
 >
 > ```sql
+> -- ✅ 一律這樣寫（三個欄位的 cursor 就再多包一層）
 > WHERE (created_at < ?
 >        OR (created_at = ? AND id < ?))
+> ORDER BY created_at DESC, id DESC
+> LIMIT 21;
 > ```
 >
-> 兩者邏輯等價，但展開形式在某些版本／某些索引下才會走 range scan。
-> **上線前一定要用 `EXPLAIN ANALYZE` 確認實際掃描列數。**
+> row constructor 寫法比較好讀，只有在你**實際驗證過**它在你的
+> MySQL 版本 + 索引定義下會走 range scan 時才可以用。
+>
+> **驗收判準：掃描列數必須跟 `LIMIT` 同一個量級，而且不隨頁數增加。**
 
 ### 5.4.2 為什麼必須用複合鍵 ★ 這裡有真實 bug
 
@@ -677,6 +730,9 @@ WHERE (created_at, id) < ('2026-08-19 06:12:44', 51)
 ORDER BY created_at DESC, id DESC
 LIMIT 20;
 ```
+
+> 📌 本節與後續小節都用 `(a, b) < (?, ?)` 這個記法來表達**語意**（比較好讀）。
+> **實際下到 MySQL 的 SQL 請依 5.4.1 的規定寫成 `OR` 展開形式**，否則會退化成全索引掃描。
 
 **tie-breaker 的選擇規則**：
 
@@ -3378,8 +3434,12 @@ if (w.hasNext()) {
 ```
 
 **它幫你處理的**：
-- ✅ 產生 `WHERE (created_at, id) < (?, ?)` 的條件（含 tie-breaker）。
+- ✅ 產生帶 tie-breaker 的 keyset 條件。
 - ✅ `hasNext()` 判斷。
+
+> ⚠️ **一定要打開 SQL log 看它實際產生什麼。** 依 Spring Data 版本不同，
+> 產生的可能是 row constructor 形式、也可能是 `OR` 展開形式 ——
+> 而這兩者的效能差距在深分頁時是量級差異（5.4.1）。
 
 **它「不」幫你處理的（你還是要自己做）**：
 - ❌ cursor 的**編碼／解碼**（`ScrollPosition` 是 Java 物件，不是字串）。
@@ -4564,6 +4624,8 @@ UNIQUE KEY uk_invoices_number         (invoice_number)
 - [ ] 我能重現「資料漂移」造成的重複與漏資料，並知道 `asOf` 凍結是低成本的緩解。
 - [ ] 我知道 offset 分頁在「要跳頁」「要總頁數」「資料量小」時仍是正確選擇。
 - [ ] 我能實作 cursor 分頁，並解釋它為什麼是 O(1)。
+- [ ] 我知道 cursor 的 `WHERE` 要寫成 `OR` 展開形式，也知道 row constructor 寫法
+      在 MySQL 上可能退化成全索引掃描，而且**只有深分頁時才看得出來**。
 - [ ] 我知道 cursor **必須**用「排序欄位 + 唯一 tie-breaker」的複合鍵，也能說出只用單欄位會漏 50 筆的情境。
 - [ ] 我知道 cursor 要放 `sortSpec` 與 `filterHash`，也能說出不放會產生什麼靜默錯誤。
 - [ ] 我知道 cursor 要嚴格驗證長度與字元集，不放敏感資訊，且 base64 不是加密。

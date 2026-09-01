@@ -67,6 +67,7 @@
 
 工作型資源（非同步任務）
 ├── OrderExport            訂單匯出工作
+├── OrderImportJob         訂單匯入工作
 └── ReconciliationJob      對帳工作
 
 值物件（不是資源，是欄位的一部分）
@@ -169,7 +170,7 @@ Product ──(1:N 聚合)── Review          /products/{id}/reviews     ← 
 
 **動詞由 HTTP 方法承擔**。URL 只回答「操作什麼」，方法回答「怎麼操作」。
 
-> **唯一例外**：控制器資源（controller resource），見 1.7.3。
+> **唯一例外**：控制器資源（controller resource），見 1.7 手法 3。
 > 那是「真的沒有合適名詞」時的逃生門，不是常態。
 
 ### 規則 2：集合用複數
@@ -543,7 +544,7 @@ refundService.refund("48213");           // ← 48213 是訂單？付款？客�
 
 ```javascript
 JSON.parse('{"id": 1725088331234567890}').id
-// → 1725088331234567900   ← 最後幾位被改掉了！而且不會報錯
+// → 1725088331234568000   ← 最後幾位被改掉了！而且不會報錯
 ```
 
 **這是真實發生過的事故**：Twitter 的 snowflake ID 超過安全範圍，
@@ -1797,7 +1798,7 @@ GET /order-import-jobs/job_01J5GK.../errors?page=0&size=50
 
 ```
 資源總數：19 個
-端點總數：70 條
+端點總數：83 條（55 條相異 URL，其中 25 條支援多個方法）
 巢狀最深：2 層（/orders/{id}/items/{itemId}、/me/addresses/{id}/default）
 路徑動詞（手法 3）：2 個 —— recalculate、purge  ← 白名單，code review 時要求說明
 單例子資源：7 個 —— /carts/current、/carts/current/coupon、/me、/me/preferences、
@@ -2360,7 +2361,7 @@ WHERE id = 1 AND next_number <= end_number;
 - [ ] 我知道大檔上傳要用預簽名 URL，也知道 base64 塞 JSON 會膨脹 33% 且無法串流。
 - [ ] 我能按批量選擇批次操作的四種做法，並知道「超時設定不是解法，非同步才是」。
 - [ ] 我知道 webhook 必須和業務 API 分開，因為它的驗證、冪等、失敗語意完全相反。
-- [ ] 我完成了 shop-service 的 70 條端點表，並能解釋每一條的設計理由。
+- [ ] 我完成了 shop-service 的 83 條端點表，並能解釋每一條的設計理由。
 
 ---
 

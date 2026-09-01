@@ -288,7 +288,7 @@ COPY target/shop-service-1.4.2.jar /app.jar
 ENTRYPOINT ["java", "-jar", "/app.jar"]
 ```
 
-**六個問題：**
+**七個問題：**
 
 | # | 問題 | 後果 |
 |---|---|---|
@@ -1925,7 +1925,7 @@ jobs:
         run: ./mvnw -B test
 
       - name: 整合測試
-        run: ./mvnw -B verify -DskipUnitTests
+        run: ./mvnw -B verify -Dsurefire.skip=true    # 快測試已在上一步跑過
 
       - name: 上傳測試報告
         if: always()
@@ -1954,6 +1954,11 @@ jobs:
       contents: read
       packages: write
       id-token: write                     # cosign keyless 簽章需要
+    outputs:
+      # ★ 一定要宣告 job 層級的 outputs，下游 job 才拿得到 ★
+      #   少了這三行，needs.build.outputs.version 會是空字串，
+      #   而 kubectl set image 會設成 "image:"（且不會報錯）
+      version: ${{ steps.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4

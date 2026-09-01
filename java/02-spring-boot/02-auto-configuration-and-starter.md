@@ -1095,7 +1095,8 @@ audit-spring-boot/                        父專案（pom packaging）
 │       ├── AuditEvent.java
 │       ├── AuditRecorder.java            介面
 │       ├── LoggingAuditRecorder.java     實作 1
-│       └── JdbcAuditRecorder.java        實作 2
+│       ├── JdbcAuditRecorder.java        實作 2
+│       └── FilteringAuditRecorder.java   裝飾器（動作過濾）
 ├── audit-spring-boot-autoconfigure/      自動組態
 │   ├── pom.xml
 │   └── src/main/
@@ -1313,6 +1314,52 @@ public class JdbcAuditRecorder implements AuditRecorder {
 }
 ```
 
+`excludedActions` 這個設定要有人真的用它 —— 用**裝飾器**，而不是在每個實作裡寫 `if`：
+
+```java
+package com.example.audit;
+
+import java.util.Set;
+
+/**
+ * 依「動作代碼」過濾的裝飾器。
+ *
+ * <p>為什麼用裝飾器而不是在 LoggingAuditRecorder / JdbcAuditRecorder 裡各寫一次 if：
+ * 「要不要記錄」是**橫切關注點**，跟「記到哪裡」無關。
+ * 之後新增第三種 recorder（Kafka、S3）時，過濾邏輯完全不用再寫一次。
+ */
+public class FilteringAuditRecorder implements AuditRecorder {
+
+    private final AuditRecorder delegate;
+    private final Set<String> excludedActions;
+
+    private FilteringAuditRecorder(AuditRecorder delegate, Set<String> excludedActions) {
+        this.delegate = delegate;
+        this.excludedActions = Set.copyOf(excludedActions);
+    }
+
+    /**
+     * ★ 沒有任何排除項目時，直接回傳原本的 recorder ★
+     * 不要為了「保持一致」而永遠多包一層什麼都不做的物件 ——
+     * 那會讓使用者在除錯時看到一個莫名的 FilteringAuditRecorder。
+     */
+    public static AuditRecorder wrap(AuditRecorder delegate, Set<String> excludedActions) {
+        if (excludedActions == null || excludedActions.isEmpty()) {
+            return delegate;
+        }
+        return new FilteringAuditRecorder(delegate, excludedActions);
+    }
+
+    @Override
+    public void record(AuditEvent event) {
+        if (excludedActions.contains(event.action())) {
+            return;
+        }
+        delegate.record(event);
+    }
+}
+```
+
 ### `audit-spring-boot-autoconfigure`
 
 ```xml
@@ -1454,7 +1501,9 @@ public class AuditAutoConfiguration {
         @Bean
         @ConditionalOnMissingBean(AuditRecorder.class)          // ⑤ 使用者自己定義就退開
         AuditRecorder loggingAuditRecorder(AuditProperties properties) {
-            return new LoggingAuditRecorder(properties.getLoggerName());
+            return FilteringAuditRecorder.wrap(                // ⑧ 套上過濾設定
+                    new LoggingAuditRecorder(properties.getLoggerName()),
+                    properties.getExcludedActions());
         }
     }
 
@@ -1466,8 +1515,10 @@ public class AuditAutoConfiguration {
         @Bean
         @ConditionalOnBean(DataSource.class)                    // ⑦ 真的有 DataSource Bean
         @ConditionalOnMissingBean(AuditRecorder.class)
-        AuditRecorder jdbcAuditRecorder(DataSource dataSource) {
-            return new JdbcAuditRecorder(dataSource);
+        AuditRecorder jdbcAuditRecorder(DataSource dataSource, AuditProperties properties) {
+            return FilteringAuditRecorder.wrap(                // ⑧ 兩個目的地共用同一份過濾邏輯
+                    new JdbcAuditRecorder(dataSource),
+                    properties.getExcludedActions());
         }
     }
 }
@@ -1484,6 +1535,7 @@ public class AuditAutoConfiguration {
 | ⑤ | **starter 的黃金規則**：所有 `@Bean` 都要有 `@ConditionalOnMissingBean`，使用者永遠能覆寫 |
 | ⑥ | `@ConditionalOnClass` 用來擋「classpath 根本沒有 JDBC」的情況，這一步很快（讀 metadata 索引） |
 | ⑦ | `@ConditionalOnBean` 擋「有 JDBC 類別但沒設定 DataSource」的情況 |
+| ⑧ | **設定一定要有人用**。`excluded-actions` 如果只是宣告在 `AuditProperties` 裡卻沒有任何程式讀它，使用者設了會以為有效 —— 這是 starter 最容易累積的一種「假設定」 |
 
 > **⑥ 和 ⑦ 為什麼都要？**
 > - 沒有 ⑥：使用者沒有 JDBC 時，`JdbcAuditRecorder` 這個類別的方法簽章裡有 `DataSource`，
@@ -1725,14 +1777,19 @@ Spring Boot 提供了 `ApplicationContextRunner`：
 ```java
 package com.example.audit.autoconfigure;
 
+import com.example.audit.AuditEvent;
 import com.example.audit.AuditRecorder;
+import com.example.audit.FilteringAuditRecorder;
 import com.example.audit.JdbcAuditRecorder;
 import com.example.audit.LoggingAuditRecorder;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.FilteredClassLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -1740,6 +1797,7 @@ import javax.sql.DataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(OutputCaptureExtension.class)
 class AuditAutoConfigurationTest {
 
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
@@ -1817,9 +1875,31 @@ class AuditAutoConfigurationTest {
               });
     }
 
+    @Test
+    void 沒有排除項目時不應多包一層裝飾器() {
+        runner.run(context -> assertThat(context.getBean(AuditRecorder.class))
+                .isInstanceOf(LoggingAuditRecorder.class));
+    }
+
+    @Test
+    void 被排除的動作不應寫出稽核紀錄(CapturedOutput output) {
+        runner.withPropertyValues("shop.audit.excluded-actions=HEALTH_CHECK")
+              .run(context -> {
+                  AuditRecorder recorder = context.getBean(AuditRecorder.class);
+                  assertThat(recorder).isInstanceOf(FilteringAuditRecorder.class);
+
+                  recorder.record(AuditEvent.success("system", "HEALTH_CHECK", "actuator:health"));
+                  recorder.record(AuditEvent.success("admin", "CANCEL_ORDER", "order:1001"));
+
+                  // ★ 一正一負：被排除的沒出去，沒被排除的照樣出去 ★
+                  assertThat(output).doesNotContain("HEALTH_CHECK");
+                  assertThat(output).contains("CANCEL_ORDER");
+              });
+    }
+
     // ── 測試用的自訂實作 ──
     static class CustomRecorder implements AuditRecorder {
-        @Override public void record(com.example.audit.AuditEvent event) { }
+        @Override public void record(AuditEvent event) { }
     }
 
     @Configuration(proxyBeanMethods = false)

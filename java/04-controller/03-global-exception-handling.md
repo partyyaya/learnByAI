@@ -7,7 +7,7 @@
 > 監控要能區分「使用者填錯」和「我們掛了」。
 >
 > 03-rest-api 第 04 章設計了一份約 60 個 `code` 的錯誤目錄。這一章要把它**全部落地**，
-> 而且達成一個具體目標：**70 條端點、一個 advice 類別、零個 try-catch。**
+> 而且達成一個具體目標：**83 條端點、一個 advice 類別、零個 try-catch。**
 
 ---
 
@@ -31,7 +31,7 @@
 
 ---
 
-## 3.2 先看見痛：70 個 try-catch 的系統
+## 3.2 先看見痛：213 個 try-catch 的系統
 
 ### 3.2.1 現場
 
@@ -139,7 +139,7 @@ catch (Exception e) {
 
 **損失 4：漏掉的路徑回 HTML。**
 
-新加的第 71 條端點忘了包 try-catch → 例外逃到 Tomcat →
+新加的第 84 條端點忘了包 try-catch → 例外逃到 Tomcat →
 Spring Boot 的 Whitelabel Error Page（HTML）→ 前端 `res.json()`：
 
 ```
@@ -2155,7 +2155,7 @@ api:
 
 | # | 事情 | 為什麼 |
 |---|---|---|
-| 1 | `type` 從 `ErrorCode.typeSlug()` + 設定的前綴組成 | 不會有 70 個字串字面值 |
+| 1 | `type` 從 `ErrorCode.typeSlug()` + 設定的前綴組成 | 不會有 83 個字串字面值 |
 | 2 | `title` / `userMessage` 走 i18n 且**有 fallback** | 3.3.6：錯誤處理不能自己掛掉 |
 | 3 | **5xx 的 `detail` 一律固定文字** | 3.11.1：不洩漏內部資訊 |
 | 4 | 5xx 的 `userMessage` 自動帶短 traceId | 使用者可以提供給客服 |
@@ -5122,7 +5122,7 @@ $ grep -rc "catch" src/main/java/example/shop/ --include="*Controller.java" | aw
 0
 ```
 
-**70 條端點、0 個 try-catch。** 對照 3.2.1 的 213 個。
+**83 條端點、0 個 try-catch。** 對照 3.2.1 的 213 個。
 
 ### 3.13.2 一個端到端的追蹤
 
@@ -7181,7 +7181,7 @@ void 例外類別不可依賴entity() {
 - [ ] **我知道自訂指標的標籤只能用「自己定義的有限列舉」，也能估算時間序列數量。**
 - [ ] 我知道 Micrometer 的 `http_server_requests` 用路徑模板當 `uri` 標籤，所以基數安全。
 - [ ] 我能設計六種告警規則，包含「業務錯誤暴增」這種收件人不是後端團隊的告警。
-- [ ] 我知道「70 條端點、0 個 try-catch」是可以達成並用 `grep` 驗證的。
+- [ ] 我知道「83 條端點、0 個 try-catch」是可以達成並用 `grep` 驗證的。
 - [ ] 我能追蹤一個錯誤從 Service 拋出到使用者看到訊息、到客服查詢的完整鏈路。
 - [ ] 我知道 `ErrorCodeUsageTest.PLANNED_FOR_LATER` 清單本身就是待辦事項，也知道它必須**只有一份**（07 章 7.8.2 直接引用它），而且要有一個「已實作就從清單移除」的反向守門。
 - [ ] 我能回答「advice 自己壞掉時會怎樣」的四種情況，並知道每一種的防護方式。
@@ -7206,7 +7206,7 @@ void 例外類別不可依賴entity() {
 - **請求日誌**：怎麼記 body 而不破壞後續讀取（`ContentCachingRequestWrapper`）、
   怎麼遮蔽敏感欄位、怎麼取樣。
 - **`Pageable` 的硬上限**：在參數綁定「之前」驗證原始參數（03-rest-api 5.13.2 的實作）。
-- **冪等鍵的 Interceptor**：怎麼在不動 70 個 Controller 的前提下加上冪等保護。
+- **冪等鍵的 Interceptor**：怎麼在不動 83 個端點的前提下加上冪等保護。
 - 自訂 `HandlerMethodArgumentResolver`：把 `RequestContext` / `Actor` 注入方法參數。
 - Filter 的順序：Spring Boot 內建的六個 filter 的 order 值，以及你的該插在哪裡。
 - `OncePerRequestFilter` 為什麼存在（`forward` / `include` / 非同步 dispatch 的重複執行問題）。

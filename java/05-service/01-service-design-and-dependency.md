@@ -302,7 +302,7 @@ public class CancelOrderHandler {
 
 | 代價 | 說明 |
 |---|---|
-| **類別數暴增** | 70 條端點 → 40 個 handler。找東西變成搜尋而不是瀏覽 |
+| **類別數暴增** | 83 條端點 → 40 個 handler。找東西變成搜尋而不是瀏覽 |
 | **「相關的邏輯」被分開** | `cancel` 與 `expireUnpaid` 共用 `Order.cancel()`，但在兩個檔案裡 |
 | **`OrderService` 介面怎麼辦** | 04-controller 站的 Controller 注入的是 `OrderService`，一個介面對 8 個 handler → 需要一個 facade（而 facade 又是一層轉發） |
 
@@ -912,7 +912,7 @@ public class JdbcOrderRepository implements OrderRepository { … }
 
 | 類別 | 有介面？ | 理由 |
 |---|---|---|
-| `OrderApplicationService` | ⚠️ **有 `OrderService`，但保留是妥協** | 04-controller 站的 70 條端點與 350 個測試都注入它。改動成本 > 收益 |
+| `OrderApplicationService` | ⚠️ **有 `OrderService`，但保留是妥協** | 04-controller 站的 83 條端點與 415 個測試都注入它。改動成本 > 收益 |
 | `OrderQueryService` | ❌ 沒有 | ★ 本站新增，沒有既有包袱 → 直接寫類別 |
 | `OrderDataLoader` | ❌ 沒有 | 它是 `OrderApplicationService` 的內部細節（甚至可以是 package-private） |
 | `OrderFactory` | ❌ 沒有 | 同上 |
@@ -3445,8 +3445,8 @@ delete(id)                      cancel(CancelOrderCommand)
 
 **shop-service 的決定**（0.14.3 提過）：
 
-> **保留 `create()`**。改名會影響 04-controller 站的 70 條端點、
-> `OrderWebMapper`、350 個測試與 `orders-api.yaml` 的 `operationId`。
+> **保留 `create()`**。改名會影響 04-controller 站的 83 條端點、
+> `OrderWebMapper`、415 個測試與 `orders-api.yaml` 的 `operationId`。
 >
 > ⚠️ **但在 javadoc 的第一行寫下正確的語意**：
 
@@ -3457,7 +3457,7 @@ public interface OrderService {
      * <b>下單</b>（place an order）。
      *
      * <p>⚠️ 方法名是 {@code create} 而不是 {@code place} 是歷史原因
-     * （04-controller 的 70 條端點與 350 個測試都用它，見 1.8.5）。
+     * （04-controller 的 83 條端點與 415 個測試都用它，見 1.8.5）。
      * <b>它不是 CRUD 的 create</b> —— 它是一個有 8 條業務規則的 use case。
      */
     Order create(CreateOrderCommand command);

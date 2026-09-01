@@ -6,7 +6,7 @@
 > 這一章要補上它，以及所有「不屬於任何單一端點，但每個端點都需要」的東西：
 > 追蹤 ID、請求日誌、分頁硬上限、冪等鍵、參數注入。
 >
-> 這些東西的共同特徵是：**如果你在 70 個 Controller 裡各寫一次，就會有 70 份不一致的實作。**
+> 這些東西的共同特徵是：**如果你在 83 個端點裡各寫一次，就會有 83 份不一致的實作。**
 > 這一章要教的是把它們放進**正確的攔截層**，而「正確」有很具體的判準。
 
 ---
@@ -152,7 +152,7 @@ size = Math.min(requestedSize, maxPageSize);      // 1000000 → 100
 
 | 痛 | 如果寫在 Controller 裡 |
 |---|---|
-| traceId | 70 個方法各寫一次；漏掉的端點就查不到；而 404 / 401 根本沒進 Controller |
+| traceId | 83 個方法各寫一次；漏掉的端點就查不到；而 404 / 401 根本沒進 Controller |
 | 分頁上限 | 每個列表端點各寫一次；新端點忘了寫就沒防護 |
 | 冪等鍵 | 每個寫入端點各寫一次；而它需要包裝 request/response，Controller 做不到 |
 
@@ -3868,7 +3868,7 @@ public class OrderController {
 }
 ```
 
-**「不動 70 個 Controller 就加上冪等保護」達成了。**
+**「不動 83 個端點就加上冪等保護」達成了。**
 需要保護的端點加一個 `@Idempotent`，其他完全不變。
 
 ⚠️ **`idempotencyKey` 參數還留著嗎？** 兩種選擇：
@@ -3956,7 +3956,7 @@ public ResponseEntity<CreateOrderResponse> create(
 | 好處 | 說明 |
 |---|---|
 | Controller 不認識 Security 的型別 | `CurrentUser` 是 Security 的概念；`Actor` 是領域概念 |
-| 少一行樣板 | × 70 個方法 |
+| 少一行樣板 | × 83 個方法 |
 | 測試更容易 | 測試不需要建立 `CurrentUser`，直接給 `Actor` |
 | **編譯期保證** | `Actor` 是 `record`，不可能是 `null`（resolver 保證） |
 

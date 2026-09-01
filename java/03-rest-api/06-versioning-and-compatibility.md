@@ -1106,16 +1106,20 @@ Access-Control-Expose-Headers: Deprecation, Sunset, Link, Warning
 | Header | 標準狀態 | 格式 | 說明 |
 |---|---|---|---|
 | `Sunset` | **RFC 8594**（正式） | HTTP-date | 「何時停止提供」 |
-| `Deprecation` | IETF **draft**（`draft-ietf-httpapi-deprecation-header`） | `@<unix timestamp>` 或 HTTP-date | 「何時開始棄用」 |
-| `Link; rel="deprecation"` | 同上 draft | URI | 指向說明文件 |
+| `Deprecation` | **RFC 9745**（正式，2025-03） | `@<unix timestamp>`（Structured Field Date） | 「何時開始棄用」 |
+| `Link; rel="deprecation"` | RFC 9745 | URI | 指向說明文件 |
 | `Link; rel="sunset"` | RFC 8594 | URI | 同上 |
 | `Warning` | ⚠️ **RFC 9111 已廢除此 header** | — | 仍有人用；建議改用上面三個 |
 
-**⚠️ 要誠實**：`Deprecation` header 目前仍是 draft，
-所以不同工具的支援程度不一。但它是**業界事實慣例**（Zalando、IETF HTTP APIs 工作組推動），
-值得使用。
+**⚠️ 要誠實**：`Deprecation` 在 2025 年 3 月才升為正式標準（RFC 9745，Standards Track），
+在那之前它以 draft 的形式流通了很多年，所以**現有工具與函式庫的支援程度仍然不一**，
+你也會在舊文章裡看到 `draft-ietf-httpapi-deprecation-header` 的寫法。
 
-`Sunset` 是**正式 RFC**，一定要用。
+⚠️ **格式在標準化時收斂過**：RFC 9745 只保留 Structured Field 的 Date 形式
+（`Deprecation: @1755561600`，`@` 後面是 Unix 秒數），**舊 draft 允許的 HTTP-date 形式已經不是合法值**。
+本章的範例用的都是 RFC 9745 的形式。
+
+`Sunset`（RFC 8594）與 `Deprecation`（RFC 9745）現在都是正式 RFC，一定要用。
 
 **⚠️ `Warning` header 在 RFC 9111（2022）已被移除**（因為「幾乎沒有正確實作」）。
 不要依賴它，但加著也無害（作為給人看的線索）。
@@ -1791,8 +1795,8 @@ Stripe 13 年沒有 v2。
 6.8.1：需要 180 天流程 + 用量監控 + 通知 + brownout + `410` 過渡期。
 
 **誤區 6：「Deprecation header 是標準」**
-6.8.2：`Sunset` 是 RFC 8594（正式），`Deprecation` 仍是 IETF draft，
-`Warning` 已在 RFC 9111 被廢除。要誠實知道哪個是哪個。
+6.8.2：`Sunset` 是 RFC 8594、`Deprecation` 是 RFC 9745（2025-03 才正式，
+在那之前是 draft，所以工具支援度不一），`Warning` 已在 RFC 9111 被廢除。要誠實知道哪個是哪個。
 
 **誤區 7：「我們不知道還有誰在用，所以不敢移除」**
 6.8.3：這是**可以解決的問題**（consumer 識別 + 用量指標 + 影子移除）。
@@ -2925,7 +2929,7 @@ export default {
 - [ ] 我知道 Expand–Contract 的第 ⑥ 步（Contract）常常不執行是理性的。
 - [ ] 我知道 Expand-Contract 的風險在「新功能製造出舊視圖無法表達的資料」，所以新功能要灰度開放。
 - [ ] 我能設計完整的 180 天棄用流程，包含 `410` 過渡期（不是直接 `404`）。
-- [ ] 我知道 `Sunset` 是 RFC 8594（正式）、`Deprecation` 是 draft、`Warning` 已被 RFC 9111 廢除。
+- [ ] 我知道 `Sunset` 是 RFC 8594、`Deprecation` 是 RFC 9745（2025-03 正式）、`Warning` 已被 RFC 9111 廢除。
 - [ ] 我知道 `410` 回應要帶 `replacement` 與 `migrationGuide`，這能省下十封 email。
 - [ ] 我知道 consumer 識別是用量監控的前提，也知道用 token 反查、`User-Agent`、IP、呼叫模式四種手法。
 - [ ] 我知道「影子移除」是驗證「能不能安全移除」最可靠的方法，也知道它的三個限制。

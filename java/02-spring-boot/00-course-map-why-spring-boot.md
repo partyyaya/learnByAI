@@ -1225,11 +1225,15 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,env,beans,configprops,mappings,conditions
+        include: health,info,env,beans,configprops,mappings,conditions,startup
   endpoint:
     health:
       show-details: always
 ```
+
+> 🔑 **Spring Boot 3 的預設值只暴露 `/actuator/health`** ——
+> 連 `/info` 都要自己列進 `include`（Boot 2 預設是 `health,info`，第 09 章 9.17 有這張變更表）。
+> 「我明明加了 actuator 依賴，為什麼 `/actuator/beans` 是 404」的答案就是這一行設定。
 
 > ⚠️ 上面這組設定是**開發用**。第 05 章會講正式環境該怎麼收斂（只開 `health`、`info`、`prometheus`，
 > 並且用獨立 port + Security 保護）。現在先開起來看，因為它們是最好的學習工具。
@@ -1379,12 +1383,8 @@ echo $JAVA_HOME
 
 ### ⑥ 啟動突然變超慢
 
-```bash
-# 開啟啟動時間分析（Boot 3.x）
-./mvnw spring-boot:run -Dspring-boot.run.jvmArguments="-Dspring.jmx.enabled=true"
-```
-
-更實用的是 `ApplicationStartup` 追蹤：
+先看啟動日誌最後那一行的兩個數字（0.11 節那張表），判斷慢在 JVM 還是 Spring。
+要細分到「哪一個 Bean 慢」，就用 `ApplicationStartup` 追蹤：
 
 ```java
 public static void main(String[] args) {
@@ -1394,7 +1394,17 @@ public static void main(String[] args) {
 }
 ```
 
-然後打 `/actuator/startup`（POST，只能取一次）：
+然後打 `/actuator/startup`（**POST**，而且資料只能取一次，取完就清空）。
+記得 `startup` 也要列進 `include`，否則會 404：
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,env,beans,configprops,mappings,conditions,startup
+```
+
 
 ```bash
 curl -s -X POST localhost:8080/actuator/startup | jq \

@@ -3152,8 +3152,7 @@ class AutoConfigurationRegistrationTest {
 
 ---
 
-> ⚠️ 課程中的程式碼與設定均經逐行檢閱，但**尚未在本機編譯執行驗證**
-> （這台機器上沒有安裝 JDK 與 Maven）。若你在實作時遇到與課文不符的輸出，請以你的環境為準。
-> 各版本的行為差異也請對照你實際使用的 Spring Boot 版本的官方 Release Notes。
+> ⚠️ 課程中的程式碼與設定已在 JDK 21 + Maven 3.9 + Spring Boot 3.5 上抽出實際編譯與執行驗證，
+> 但各版本的行為仍有差異。若你的輸出與課文不符，請以你的環境與該版本的官方 Release Notes 為準。
 
 完成後請前往 [../03-rest-api/](../03-rest-api/)。

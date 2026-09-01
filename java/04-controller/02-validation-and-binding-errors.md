@@ -4976,7 +4976,7 @@ private static JsonNullable<String> normalizeEmptyToNull(JsonNullable<String> v)
 - **Filter 層的例外**（不會進 advice）與 **Security 的 401 / 403** 怎麼統一格式。
 - 5xx 的 `detail` 為什麼必須是固定文字，以及怎麼防止 stack trace 洩漏。
 - 錯誤日誌的分級（4xx 用 `warn` 不印 stack trace、5xx 用 `error`）與指標。
-- 一個 advice、70 條端點、零個 try-catch 的完整證明。
+- 一個 advice、83 條端點、零個 try-catch 的完整證明。
 
 ---
 

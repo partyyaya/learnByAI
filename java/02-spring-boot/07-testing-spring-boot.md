@@ -1485,6 +1485,25 @@ class MaskingConverterTest {
 }
 ```
 
+> ⚠️ **這個測試需要一份測試用的 logback 設定才會通過** ——
+> `OutputCaptureExtension` 抓的是「實際輸出的那一行」，
+> 而預設 pattern 用的是 `%msg`（沒有經過遮蔽 converter）。
+> 一定要在 `src/test/resources/logback-test.xml` 註冊 conversion rule：
+>
+> ```xml
+> <configuration>
+>     <conversionRule conversionWord="maskedMsg"
+>                     class="com.example.shop.observability.MaskingMessageConverter"/>
+>     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+>         <encoder><pattern>%d %-5level %logger{36} : %maskedMsg%n</pattern></encoder>
+>     </appender>
+>     <root level="INFO"><appender-ref ref="CONSOLE"/></root>
+> </configuration>
+> ```
+>
+> 少了這個檔案，測試會紅在「`contains("4532********0366")`」那一行 ——
+> 而且你會以為是 converter 寫錯，其實是它根本沒被套用。
+
 > **這種測試很值得寫**。「不要把敏感資料寫進日誌」如果只是口頭約定，
 > 遲早會有人違反。變成測試之後，CI 會擋下來。
 
@@ -1531,14 +1550,14 @@ class ArchitectureTest {
 
     /** ③ 注入方式：不可以用欄位注入（第 01 章 1.7） */
     @ArchTest
-    static final ArchRule不可使用欄位注入 =
+    static final ArchRule 不可使用欄位注入 =
             fields().should().notBeAnnotatedWith(
                             org.springframework.beans.factory.annotation.Autowired.class)
                     .because("一律用建構子注入，欄位注入無法寫測試也不能用 final");
 
     /** ④ 不要用 System.out（第 05 章） */
     @ArchTest
-    static final ArchRule不可使用System_out =
+    static final ArchRule 不可使用System_out =
             noClasses().should().accessField(System.class, "out")
                     .orShould().accessField(System.class, "err")
                     .because("一律用 SLF4J，System.out 不受日誌設定管理");
@@ -1557,6 +1576,64 @@ class ArchitectureTest {
 > 新人第一次違反時，CI 就會告訴他為什麼不行（`because` 那段訊息會印出來）。
 >
 > 01-java-core 第 11 章有 ArchUnit 的完整介紹。
+
+### ⚠️ 兩個會讓 ArchUnit 規則「靜靜不生效」的陷阱
+
+**陷阱 1：`@ArchTest` 欄位在 Maven Surefire 下可能一個都沒跑。**
+
+上面這種 `@AnalyzeClasses` + `@ArchTest static final ArchRule` 的寫法，
+靠的是 ArchUnit 自己的 JUnit Platform **引擎**。
+在 `spring-boot-starter-parent` 3.5 + Surefire 3.5 的組合下，實測會得到：
+
+```
+[INFO] Running com.example.shop.arch.ArchitectureTest
+[INFO] Tests run: 0, Failures: 0, Errors: 0, Skipped: 0     ← ★ 0 個 ★
+[INFO] BUILD SUCCESS
+```
+
+**規則一條都沒執行，而 CI 是綠的** —— 這正是這一站反覆在講的「靜默失效」。
+（同一批規則用 JUnit Platform 的 console launcher 跑起來是正常的，
+所以規則本身沒問題，是 Surefire 沒有把工作交給 ArchUnit 的引擎。）
+
+**驗證方式：先寫一條「一定會失敗」的規則，確認它真的紅。**
+
+```java
+@ArchTest
+static final ArchRule 自我檢查_這條一定要紅 =
+        noClasses().should().haveNameMatching(".*");
+```
+
+看到綠燈就代表你的規則根本沒在跑。**確認完記得刪掉這條。**
+
+**如果它沒跑，改用第 04 章 4.18 那種寫法**（普通 `@Test` + `rule.check(classes)`）——
+實測在同一個環境下正常執行：
+
+```java
+class ArchitectureTest {
+
+    private final JavaClasses classes = new ClassFileImporter()
+            .withImportOption(ImportOption.Predefined.DO_NOT_INCLUDE_TESTS)
+            .importPackages("com.example.shop");
+
+    @Test
+    void controller不可直接依賴repository() {
+        noClasses().that().areAnnotatedWith(RestController.class)
+                .should().dependOnClassesThat().areAnnotatedWith(Repository.class)
+                .because("Controller 只該呼叫 Service")
+                .check(classes);          // ★ 明確 check，不依賴 ArchUnit 的引擎 ★
+    }
+}
+```
+
+**陷阱 2：規則沒比對到任何東西時，ArchUnit 會判定失敗。**
+
+```
+Rule '...' failed to check any classes.
+```
+
+專案還沒有 `@Transactional` 方法、還沒有 `@RestController` 時就會遇到。
+單一規則加 `.allowEmptyShould(true)`，或設 `archRule.failOnEmptyShould=false`
+（後者不建議 —— 它會連「規則打錯字所以什麼都沒比對到」一起放過）。
 
 ---
 
@@ -1903,6 +1980,31 @@ class OrderAmountCalculatorTest {
     }
 }
 ```
+
+> 📌 **這一節把 `Order` 的 `status` 從 `String` 升級成 `OrderStatus` enum**
+> （第 01 章 1.16 的版本是 `String`）：
+>
+> ```java
+> public enum OrderStatus {
+>     CREATED, PAID, SHIPPED, COMPLETED, CANCELLED, REFUNDED;
+>
+>     public boolean canTransitionTo(OrderStatus target) { /* 允許的轉換表 */ }
+> }
+> ```
+>
+> **為什麼在測試這一章才換**：`String status` 的合法值散在程式各處，
+> 你**沒辦法窮舉**，只能挑幾個 case 亂測。
+> 換成 enum 之後，「所有狀態 × 所有狀態」是一張有限的表，
+> 於是 `@CsvSource` 可以把它整張測完 —— 下面這個測試就是這樣寫的。
+>
+> **「為了好測試而改設計」不是本末倒置**，它通常代表原本的設計把資訊丟掉了。
+>
+> ⚠️ 所以 7.12 的實戰程式碼用的是**累積後的模型**
+> （`Order(id, customerId, amount, paymentMethod, OrderStatus status, createdAt)`，
+> 含第 06 章的 `customerId`）。
+> 而 7.7 的 Web 層範例刻意沿用 1.16 的原始版本 ——
+> 因為那一節在講「JSON 欄位長什麼樣」，換成 enum 會讓重點跑掉。
+> **看到兩種簽章時，以「那一節在教什麼」為準。**
 
 ```java
 package com.example.shop.order;
@@ -2838,7 +2940,7 @@ class TestArchitectureTest {
                     .because("純計算邏輯應該用單元測試，啟動 Spring 是浪費");
 
     @ArchTest
-    static final ArchRule不可再新增DirtiesContext =
+    static final ArchRule 不可再新增DirtiesContext =
             noClasses().should().beAnnotatedWith(DirtiesContext.class)
                     .because("@DirtiesContext 破壞 context 快取，改用 @AfterEach 清理狀態");
 }

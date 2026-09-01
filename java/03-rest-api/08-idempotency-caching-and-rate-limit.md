@@ -2467,16 +2467,26 @@ rate-limit:
     expose-in-cors: true
 ```
 
-### 8.7.4 新增的錯誤碼（補充第 04、05 章）
+### 8.7.4 本章用到的錯誤碼
+
+**真正新增的只有 2 個**（其餘 4 個第 04 章 4.13 已經登記過，這裡只是把擴充欄位補完）：
+
+| `code` | 狀態碼 | `title` | 擴充欄位 |
+|---|---|---|---|
+| `INVALID_IDEMPOTENCY_KEY` | 400 | 冪等鍵格式無效 | `pattern` |
+| `IDEMPOTENT_REQUEST_IN_PROGRESS` | 409 | 相同的請求正在處理中 | `originalTraceId`, `retryAfterSeconds` |
+
+**第 04 章已有、本章補上擴充欄位的**：
 
 | `code` | 狀態碼 | `title` | 擴充欄位 |
 |---|---|---|---|
 | `IDEMPOTENCY_KEY_REQUIRED` | 400 | 缺少冪等鍵 | `hint` |
-| `INVALID_IDEMPOTENCY_KEY` | 400 | 冪等鍵格式無效 | `pattern` |
 | `IDEMPOTENCY_KEY_REUSED` | 409 | 冪等鍵已用於不同的請求 | `originalRequestAt`, `originalTraceId` |
-| `IDEMPOTENT_REQUEST_IN_PROGRESS` | 409 | 相同的請求正在處理中 | `originalTraceId`, `retryAfterSeconds` |
 | `RATE_LIMIT_EXCEEDED` | 429 | 請求過於頻繁 | `bucket`, `limit`, `windowSeconds`, `remaining`, `resetAt`, `retryAfterSeconds`, `otherBuckets[]`, `hint` |
 | `PAYMENT_GATEWAY_UNAVAILABLE` | 503 | 付款服務暫時無法使用 | `retryAfterSeconds`, `alternativeAction` |
+
+> 📌 **這件事本身就是錯誤目錄的價值**：如果沒有 4.13 那張註冊表，
+> 你很可能會為「冪等鍵已被用過」再發明一個新碼，最後同一個問題有兩個碼（第 04 章 4.5.5 的問題）。
 
 ---
 
@@ -3701,7 +3711,7 @@ app:
 - [ ] 我知道 `retryable` 不是端點的靜態屬性，而是「這一次請求有沒有冪等鍵」的屬性。
 - [ ] 我知道限流 Filter 必須在最前面，也知道「按 consumer 限流需要認證後」造成的兩段式設計。
 - [ ] 我知道桶對映要有啟動檢查（未對映的端點應該讓啟動失敗，不是靜默用 default）。
-- [ ] 我完成了 shop-service 的冪等、快取、限流完整規格與 6 個新錯誤碼。
+- [ ] 我完成了 shop-service 的冪等、快取、限流完整規格與 2 個新錯誤碼（另有 4 個是補完第 04 章既有碼的擴充欄位）。
 
 ---
 

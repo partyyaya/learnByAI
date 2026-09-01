@@ -41,7 +41,7 @@
 | 04 | [04-business-exception-design.md](./04-business-exception-design.md) | 業務例外設計 | 三個事故（500 讓客戶重複下單七次、客服的「系統壞了」、退款靜默失敗三週）、**98 個 `ErrorCode` 的分區守門**、兩層例外 + 三個標記介面、**「誰能修好它」的判準**、**一個例外兩個狀態碼**、`MessageFormat` 的五個實測行為、`safeToRetryBlindly` |
 | 05 | [05-caching-in-service-layer.md](./05-caching-in-service-layer.md) | 服務層快取 | 三個事故（rollback 後快取有不存在的價格、兩個方法共用一個項目、`allEntries` 清掉 40 萬筆）、**`@Cacheable` 的四種失效情境**、**交易裡的 `@Cacheable`（實測：髒值永久留著）**、key 設計的四個陷阱、**授權與快取不相容**、擊穿／雪崩／穿透、序列化 |
 | 06 | [06-async-and-external-api-calls.md](./06-async-and-external-api-calls.md) | 非同步與外部呼叫 | 三個事故（部署丟掉 3,000 封信、ERP 逾時打成 503、逾時重試重複扣款）、**`@Async` 的六種失效**、**`maxPoolSize` 完全沒作用**、**四個 ThreadLocal 全消失**、graceful shutdown、**交易與非同步的四個衝突**、`RestClient` 的四個逾時、**失敗的 A/B/C 三類**、熔斷與隔艙、**outbox**、Saga |
-| 07 | [07-service-testing-with-mockito.md](./07-service-testing-with-mockito.md) | Service 層測試 | 三個事故（350 綠燈卻超賣 47 筆、captor 讓錯的稽核紀錄過關、`@InjectMocks` 造成生產 NPE）、**「mock 掉的東西就是沒被測到的東西」**、不用 `@InjectMocks` 的三個理由、**41 個例外用 5 個測試測完**、五種測試替身與契約測試、**併發測試**、**突變測試**、探針不是測試 |
+| 07 | [07-service-testing-with-mockito.md](./07-service-testing-with-mockito.md) | Service 層測試 | 三個事故（415 綠燈卻超賣 47 筆、captor 讓錯的稽核紀錄過關、`@InjectMocks` 造成生產 NPE）、**「mock 掉的東西就是沒被測到的東西」**、不用 `@InjectMocks` 的三個理由、**41 個例外用 5 個測試測完**、五種測試替身與契約測試、**併發測試**、**突變測試**、探針不是測試 |
 
 ### 怎麼讀
 
@@ -80,7 +80,7 @@
 | 「加 `@Cacheable` 只是變快」 | 交易裡的未提交值進了快取，rollback 之後**它永久留著** | 05 章 5.3.3 |
 | 「設了 `max-size` 執行緒池就有上限」 | 沒同時設 `queue-capacity` 的話它**完全沒有作用** | 06 章 6.2.4 |
 | 「逾時了就重試」 | 讀取逾時的意思是「不知道」，不是「失敗」→ 重複扣款 | 06 章 6.6.1 |
-| 「350 個測試全綠、覆蓋率 92% 就夠了」 | 100% 覆蓋率仍然漏掉 `>=` 與 `>` 的差別 | 07 章 7.16.2 |
+| 「415 個測試全綠、覆蓋率 92% 就夠了」 | 100% 覆蓋率仍然漏掉 `>=` 與 `>` 的差別 | 07 章 7.16.2 |
 
 **每一條都有一個跑得起來的實驗把它拆掉**，而不是一段「應該要注意」的說明。
 每一章最後都有一份「常見誤區」的完整清單。
@@ -102,7 +102,7 @@
 | `03-rest-api 第 04 章 4.9` | 更早的站 |
 
 > 📌 這一站會**大量**回頭引用 04-controller 的程式碼
-> （`OrderWebMapper`、`ErrorCode`、`Actor`、70 條端點…），
+> （`OrderWebMapper`、`ErrorCode`、`Actor`、83 條端點…），
 > 而「這個 3.5.2 是哪一站的」讀錯一次就會找不到東西。
 
 ---

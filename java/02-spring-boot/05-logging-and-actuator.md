@@ -154,12 +154,13 @@ Tomcat           → 用 JUL
 ### 橋接器：把別人的日誌抓過來
 
 ```
-   Log4j 1.x 的呼叫  ──▶  log4j-over-slf4j     ──┐
-   JUL 的呼叫        ──▶  jul-to-slf4j         ──┼──▶  SLF4J  ──▶  Logback
-   Commons Logging   ──▶  jcl-over-slf4j       ──┘
+   Log4j 2 API 的呼叫 ──▶  log4j-to-slf4j      ──┐
+   JUL 的呼叫         ──▶  jul-to-slf4j        ──┼──▶  SLF4J  ──▶  Logback
+   Log4j 1.x 的呼叫   ──▶  log4j-over-slf4j    ──┘（要自己加，Boot 沒帶）
 ```
 
-Spring Boot 的 `spring-boot-starter-logging` **預設就幫你裝好這三個橋接器**：
+Spring Boot 的 `spring-boot-starter-logging` **預設帶了前兩個橋接器**
+（Commons Logging 不需要橋接器：Spring 自己的 `spring-jcl` 已經把它導向 SLF4J）：
 
 ```bash
 $ ./mvnw dependency:tree -Dincludes=org.slf4j,ch.qos.logback
@@ -168,7 +169,11 @@ $ ./mvnw dependency:tree -Dincludes=org.slf4j,ch.qos.logback
 [INFO] |  |  \- ch.qos.logback:logback-core:jar:1.5.x
 [INFO] |  +- org.apache.logging.log4j:log4j-to-slf4j:jar:2.24.x   ← Log4j2 → SLF4J
 [INFO] |  \- org.slf4j:jul-to-slf4j:jar:2.0.x                     ← JUL → SLF4J
+[INFO] +- org.springframework:spring-jcl:jar:6.2.x                 ← Commons Logging → SLF4J
 ```
+
+> **只有兩個橋接器 jar**。如果你的專案還有函式庫在用 **Log4j 1.x**（不是 Log4j 2），
+> 才需要自己加 `org.slf4j:log4j-over-slf4j`。
 
 > ⚠️ **橋接器與實作不能同時存在同一個系統**。
 > 例如同時有 `log4j-over-slf4j`（Log4j → SLF4J）和 `slf4j-log4j12`（SLF4J → Log4j），
@@ -2340,7 +2345,9 @@ HTTP/1.1 201
 X-Trace-Id: a3f8c21b9d4e5f60      ← ★ 使用者回報問題時就報這個 ★
 
 # 用 traceId 撈出這次請求的所有日誌
-$ grep 'a3f8c21b9d4e5f60' logs/shop-service.log | jq -r \
+# （上面那份設定只寫 stdout —— 本機驗證時把輸出導到檔案：
+#    java -jar shop-service.jar > /tmp/shop.json 2>&1 ）
+$ grep 'a3f8c21b9d4e5f60' /tmp/shop.json | jq -r \
     '"\(.["@timestamp"]) \(.["log.level"]) \(.["log.logger"]) \(.message)"'
 2026-08-18T04:12:44.102Z INFO  c.e.shop.order.OrderService  訂單已建立，準備付款 amount=1280 method=LINE_PAY
 2026-08-18T04:12:44.318Z INFO  c.e.shop.order.OrderService  訂單成立 status=PAID
@@ -2686,19 +2693,28 @@ public class OrderService {
 
 ```java
 @Test
-void 指標標籤數量不應超過門檻() {
-    // 打一批模擬流量後檢查
-    registry.getMeters().forEach(meter -> {
-        long distinctTagValues = registry.getMeters().stream()
-                .filter(m -> m.getId().getName().equals(meter.getId().getName()))
-                .count();
-        assertThat(distinctTagValues)
-                .as("指標 %s 的時間序列數量過多，檢查是否用了高基數標籤",
-                        meter.getId().getName())
-                .isLessThan(100);
-    });
+void 指標的時間序列數量不應隨業務量成長() {
+    // ① 用「明顯超過任何合理標籤組合」的資料量打一批流量
+    for (int i = 0; i < 500; i++) {
+        orderService.placeOrder(anOrder().withId((long) i).build());
+    }
+
+    // ② 依「指標名稱」分組，數每個名稱底下有幾條時間序列
+    Map<String, Long> seriesPerName = registry.getMeters().stream()
+            .collect(Collectors.groupingBy(m -> m.getId().getName(), Collectors.counting()));
+
+    // ③ 500 筆訂單只該產生「標籤組合數」條序列（付款方式 × 通道），不是 500 條
+    assertThat(seriesPerName)
+            .as("時間序列數量隨資料量成長 = 有高基數標籤")
+            .allSatisfy((name, count) -> assertThat(count)
+                    .as("指標 %s 有 %d 條時間序列", name, count)
+                    .isLessThan(50));
 }
 ```
+
+> **這個測試的關鍵是「打 500 筆」**：高基數標籤的症狀就是
+> **序列數量跟著資料量長**。只打一筆的話，`orderId` 當標籤也只會有一條序列，
+> 測試照樣綠 —— 那就完全沒有防護作用。
 
 </details>
 

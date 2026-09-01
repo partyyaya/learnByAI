@@ -16,7 +16,7 @@
 - 說出「手寫文件一定會過期」的三個結構性原因，以及「文件即契約」如何解決它。
 - 完整說明 OpenAPI 3.1 的結構，以及 3.0 → 3.1 的五個關鍵差異。
 - 在 Design-first 與 Code-first 之間做出有理由的選擇，並設計混合流程。
-- 用 `components` 把共用的參數、回應、schema 抽出來，讓 70 條端點的契約不到 2000 行。
+- 用 `components` 把共用的參數、回應、schema 抽出來，讓 83 條端點的契約不到 2000 行。
 - 用 `oneOf` + `discriminator` 描述「同一個端點的多種回應形狀」（分頁模式、錯誤型別）。
 - 寫出讓人真正看得懂的 `description` 與 `examples`，而不是重複欄位名。
 - 用 springdoc-openapi 從程式碼產生契約，並知道十個「讓產出不要爛」的設定。
@@ -385,7 +385,7 @@ api/
     └── order-state-machine.md
 ```
 
-**為什麼要拆檔案**：一個 70 條端點的契約，單一檔案會是 4000+ 行 —— 無法 review。
+**為什麼要拆檔案**：一個 83 條端點的契約，單一檔案會是 4000+ 行 —— 無法 review。
 
 **⚠️ 拆檔案的代價**：
 - 有些工具對外部 `$ref` 支援不完整（尤其是相對路徑）。
@@ -1887,7 +1887,7 @@ public class OpenApiConfig {
 ### 7.6.3 全域註冊共用參數與回應（`OpenApiCustomizer`）
 
 **問題**：如果每個 Controller 方法都要寫一遍 `@ApiResponse(responseCode = "401", ...)`，
-70 條端點會有 500 行重複的註解。
+83 條端點會有 500 行重複的註解。
 
 **解法**：用 `OpenApiCustomizer` 批次加上。
 
@@ -3058,7 +3058,7 @@ done
 |---|---|---|---|
 | 可以直接發請求（Try it out） | ★★★ | ❌（唯讀） | ★★★ |
 | 排版與可讀性 | ⚠️ 普通 | ★★★ 最好（三欄式） | ★★★ |
-| 大型契約的效能 | ⚠️ 慢（70 端點會卡） | ★★ | ★★ |
+| 大型契約的效能 | ⚠️ 慢（83 端點會卡） | ★★ | ★★ |
 | 範例的呈現 | ★★ | ★★★（右欄常駐） | ★★★ |
 | 客製化 | ★★（有限） | ★★（付費版更多） | ★★★ |
 | 深色模式 | ⚠️ 需外掛 | ✅ | ✅ |
@@ -3367,7 +3367,7 @@ paths:
         - $ref: '#/components/parameters/OrderSort'
       responses:
         '200':
-          description: 查詢成功。空結果也回 `200` + `items: []`。
+          description: "查詢成功。空結果也回 `200` + `items: []`。"
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OrderListResponse' }
@@ -4043,7 +4043,7 @@ rules:
 
   # 反向檢查：以 At 結尾的欄位必須是 date-time
   at-suffix-must-be-date-time:
-    description: 以 At 結尾的欄位必須是 format: date-time（避免誤導）
+    description: "以 At 結尾的欄位必須是 format: date-time（避免誤導）"
     severity: error
     given: "$.components.schemas..properties[?(@property.match(/At$/))]"
     then:
@@ -4054,7 +4054,7 @@ rules:
 
   # 純日期欄位的命名
   date-property-naming:
-    description: format: date 的欄位名必須以 Date 或 On 結尾
+    description: "format: date 的欄位名必須以 Date 或 On 結尾"
     severity: warn
     given: "$.components.schemas..properties[?(@.format === 'date')]~"
     then:
@@ -4279,7 +4279,7 @@ expiresAt:
 ═══ 階段 0：一次性準備（2 週） ═══════════════════════════
 
 W1  □ 把現有的 API 寫成 orders-api.yaml
-       - 不要一次寫完 70 條！先寫 3 條最常用的（訂單列表、詳情、建立）
+       - 不要一次寫完 83 條！先寫 3 條最常用的（訂單列表、詳情、建立）
        - ★ 用 springdoc 產生初版，再手動補 description 與 examples
     □ 建立 CI：Spectral lint（先全部 severity: info）
     □ 部署 mock server（Prism）到 https://mock.shop.example
@@ -4344,7 +4344,7 @@ Day 9  【驗收 + Retro】
 
 □ 試點成功 → 所有新功能都走這個流程
 □ Spectral 規則逐步從 info → warn → error（7.9.2）
-□ 逐步把既有的 70 條端點補進契約（每個 sprint 補 5～10 條）
+□ 逐步把既有的 83 條端點補進契約（每個 sprint 補 5～10 條）
 □ 加入 drift 檢查（7.4.4）確保契約與實作一致
 □ 廠商對接改成「先給契約 + mock，再給正式環境」
 
@@ -4435,7 +4435,7 @@ Day 9  【驗收 + Retro】
 | **強調 mock 的好處** | 「你們可以在我們寫完之前就開始測試」（這對廠商是實質好處） |
 | **不要求他們用工具** | 他們只要拿到文件和 mock URL，不需要碰 YAML |
 
-**阻力 6：「舊的 70 條端點怎麼辦」**
+**阻力 6：「舊的 83 條端點怎麼辦」**
 
 ```
 說法：「補完全部要花好久」
@@ -4477,7 +4477,7 @@ Day 9  【驗收 + Retro】
 >
 > 三個關鍵：
 > 1. **用數字說服**（不是「最佳實踐」）
-> 2. **從小開始**（3 條端點、1 個功能的試點，不是 70 條全補）
+> 2. **從小開始**（3 條端點、1 個功能的試點，不是 83 條全補）
 > 3. **靠機制不靠紀律**（CI 檢查，不是「大家記得更新契約」）
 
 </details>

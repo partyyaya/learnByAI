@@ -1,6 +1,6 @@
 # 04 — Controller（Web 層）
 
-> 上一站（03-rest-api）你把**契約**設計完了：70 條 URL、22 個 DTO、一份 `orders-api.yaml`。
+> 上一站（03-rest-api）你把**契約**設計完了：83 條 URL、22 個 DTO、一份 `orders-api.yaml`。
 > **這一站要把那份契約變成會動的 Java。**
 >
 > 而 Controller 只該做三件事：**把請求翻譯成參數、驗證輸入、把結果翻譯成回應**。
@@ -12,7 +12,7 @@
 ## 學完你可以
 
 - 講清楚哪些程式碼屬於 Controller、哪些該往下推到 Service，並用**五個問題**當場判斷。
-- 把 70 條 URL 對映成方法簽章，並說出路由衝突時 Spring 用什麼規則選。
+- 把 83 條 URL 對映成方法簽章，並說出路由衝突時 Spring 用什麼規則選。
 - 熟練參數綁定：路徑變數、查詢參數、請求主體、標頭、檔案，
   以及 `required` / `defaultValue` / `Optional` 之間**哪三種組合是 bug**。
 - 用 Bean Validation 驗證輸入，說出**每個註解對 `null` 的行為**，並把錯誤轉成一致的回應格式。
@@ -40,7 +40,7 @@
 | **00** | [課程地圖與 Web 層職責](./00-course-map-web-layer-role.md) | 這段程式碼該放哪一層？800 行的 Controller 是怎麼長出來的 |
 | **01** | [路由與參數綁定](./01-request-mapping-and-binding.md) | HTTP 的字串怎麼變成 Java 物件，以及沿路會掉什麼 |
 | **02** | [輸入驗證與綁定錯誤](./02-validation-and-binding-errors.md) | 壞資料怎麼在進入 Service 之前被擋下來 |
-| **03** ★ | [全域例外處理](./03-global-exception-handling.md) | 一個 advice、70 條端點、零個 try-catch 怎麼做到 |
+| **03** ★ | [全域例外處理](./03-global-exception-handling.md) | 一個 advice、83 條端點、零個 try-catch 怎麼做到 |
 | **04** | [請求生命週期](./04-filter-interceptor-and-lifecycle.md) | 橫切的需求（追蹤、日誌、限流、冪等）該掛在哪一層 |
 | **05** | [檔案上傳下載與 SSE](./05-file-upload-download-and-sse.md) | 「不是 JSON 的東西」與「大到放不進記憶體的東西」 |
 | **06** | [跨來源與序列化](./06-cors-content-negotiation-and-json.md) | 為什麼前端只看得到 `Network Error`；錢與時間怎麼變成 JSON |
@@ -85,7 +85,7 @@
 | 「回應是對的就等於前端拿得到」 | 錯誤回應少了 CORS 標頭 → 前端只看到 `Network Error` | 06 章 6.2.1、6.3.5 |
 | 「`new ObjectMapper()` 只是拿一個 mapper」 | 你拿到的是**沒有任何設定**的那一個 | 06 章 6.5.2 |
 | 「新增一個 enum 值是相容的變更」 | 舊 App 大量閃退 —— 除非你先做過準備 | 06 章 6.5.8 |
-| 「測試全綠就是對的」 | `addFilters = false` 讓 350 個測試跑在沒有授權的世界裡 | 07 章 7.2.1 |
+| 「測試全綠就是對的」 | `addFilters = false` 讓 415 個測試跑在沒有授權的世界裡 | 07 章 7.2.1 |
 | 「斷言 `status().isOk()` 就夠了」 | mock 沒 stub 回 `null` → 200 + 空 body，測試照樣綠 | 07 章 7.2.3 |
 
 **每一條都有一段跑得起來的程式碼把它拆掉**，而不是一句「應該要注意」。
@@ -97,7 +97,7 @@
 
 依照 03-rest-api 的 `orders-api.yaml` 契約，實作出一組**完整的訂單 Web 層**：
 
-- **路由與綁定**：70 條 URL 的方法簽章、14 個查詢參數綁成一個 `OrderFilter` record、
+- **路由與綁定**：83 條 URL 的方法簽章、14 個查詢參數綁成一個 `OrderFilter` record、
   `PATCH` 的三態語意、自訂 `Converter`。
 - **驗證**：Bean Validation + 七個自訂驗證註解 + 四層 DoS 防護，錯誤一律變成 `errors[]`。
 - **一套錯誤格式**：83 個 `ErrorCode` 的註冊表、一個 advice、
@@ -107,7 +107,7 @@
   `StreamingResponseBody` 匯出、`202` + 輪詢的非同步工作、SSE 推播。
 - **序列化**：CORS 設定、Jackson 全域設定、金額與時間的最終決策、enum 的演進策略、`ETag`。
 - **測試**：`@WebMvcTest` 切片、`ArgumentCaptor`、一個測試涵蓋 83 個 code、
-  **70 × 5 的授權矩陣**、OpenAPI 契約測試、CI 分層與突變測試。
+  **83 × 5 的授權矩陣**、OpenAPI 契約測試、CI 分層與突變測試。
 
 **商業邏輯全部以介面呼叫下一層** —— `OrderService` 之後的東西是
 [05-service/](../05-service/) 的事。

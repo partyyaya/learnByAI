@@ -1,6 +1,6 @@
 # 第 01 章：路由與參數綁定
 
-> 這一章要做的事很具體：把 03-rest-api 定案的 **70 條 URL** 變成 Java 方法簽章。
+> 這一章要做的事很具體：把 03-rest-api 定案的 **83 條 URL** 變成 Java 方法簽章。
 >
 > 聽起來像是「查一下 `@GetMapping` 怎麼寫」就結束了。
 > 但參數綁定是 Web 層**最多陷阱**的地方 ——
@@ -97,7 +97,7 @@ would dispatch back to the current handler URL again.
 
 ### 1.2.3 一個 Controller 該有多大
 
-shop-service 的 70 條端點不會放在一個類別裡。切分規則：
+shop-service 的 83 條端點不會放在一個類別裡。切分規則：
 
 | 切法 | 例子 | 何時用 |
 |---|---|---|
@@ -443,7 +443,7 @@ public class TrailingSlashRedirectFilter extends OncePerRequestFilter {
 @GetMapping({"/orders", "/orders/"})
 ```
 
-- ❌ 70 條端點要寫 140 個路徑，一定會漏。
+- ❌ 83 條端點要寫 166 個路徑，一定會漏。
 - ❌ 違反「一個資源一個 URL」—— 兩個 URL 回同樣的東西，SEO 與快取都會分裂。
 
 **shop-service 的選擇：方式 B（Filter + 308）**，並在 07 章寫一個測試守住它：
@@ -488,10 +488,10 @@ spring:
 
 ### 1.3.7 路徑前綴：不要寫在每個 Controller 上
 
-如果所有端點都要 `/api/v1` 前綴，**不要**在 70 個 Controller 上各寫一次：
+如果所有端點都要 `/api/v1` 前綴，**不要**在每一個 Controller 上各寫一次：
 
 ```java
-// ❌ 70 個檔案都要改
+// ❌ 每一個 Controller 檔案都要改
 @RequestMapping("/api/v1/orders")
 ```
 
@@ -606,7 +606,7 @@ public OrderDetail get(@PathVariable("orderId") String orderId) { }
 | 問題 | 說明 |
 |---|---|
 | **錯誤訊息變差** | 格式錯誤回 404「路徑不存在」，而不是 422「識別碼格式錯誤」。客戶端不知道自己哪裡錯 |
-| **模式散落在 70 個地方** | ID 格式改了要改 70 處 |
+| **模式散落在 83 個地方** | ID 格式改了要改 83 處 |
 | **不容易測試** | 正規表示式寫錯（少一個 `-`）只會在特定 ID 上失敗 |
 | **可讀性差** | `@GetMapping("/orders/{orderId:ord_[0-9A-HJKMNP-TV-Z]{26}}")` 這行沒人想讀 |
 
@@ -1881,7 +1881,7 @@ public OrderDetail get(@PathVariable("orderId") String orderId,
 
 **但這不是好做法。** 兩個問題：
 
-1. 每個需要 `traceId` 的方法都要多一個參數（70 條端點 × 1 個參數）。
+1. 每個需要 `traceId` 的方法都要多一個參數（83 條端點 × 1 個參數）。
 2. 「這個 attribute 一定存在」是隱含契約，Filter 沒跑（測試時）就 400。
 
 👉 **更好的做法**：`traceId` 放進 **MDC**（04 章 4.4），
@@ -2277,7 +2277,7 @@ public void initBinder(WebDataBinder binder) {
 
 1. `PropertyEditor` 是 Java Beans 時代的 API，**不是執行緒安全的**，
    而且 Spring 必須為每個請求建新的 binder。
-2. 它只作用在**這個 Controller**，70 個 Controller 要寫 70 次。
+2. 它只作用在**這個 Controller**，每一個 Controller 都要再寫一次。
 3. `Converter` / `Formatter`（Spring 3 起）功能更強、可測試、可全域註冊。
 
 **`@InitBinder` 剩下的正當用途只有一個**：`setDisallowedFields`。

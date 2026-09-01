@@ -4513,7 +4513,7 @@ common/
 | 00 章 0.14.1 | `toCreateResponse(Order, Actor, Instant, Locale)` | **`toCreateResponse(OrderResultView, Locale)`** | 同上 |
 | 04-controller 0.10.2 | `var order = orderService.create(cmd)` | `var view = orderService.create(cmd)` | 同上 |
 
-⚠️ **影響範圍**：04-controller 的 70 條端點裡有 **9 條**回傳 `Order`，
+⚠️ **影響範圍**：04-controller 的 83 條端點裡有 **9 條**回傳 `Order`，
 以及約 **40 個**測試的 `when(orderService.create(any())).thenReturn(anOrder)`。
 
 **這是這一章最大的一個修正，所以要說清楚它為什麼值得**：

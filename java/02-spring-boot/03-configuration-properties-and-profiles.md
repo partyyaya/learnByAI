@@ -2316,8 +2316,13 @@ class ShopPropertiesTest {
         runner.withPropertyValues("shop.notification.email-from=not-an-email")
               .run(context -> {
                   assertThat(context).hasFailed();
+                  // ★ 注意兩件事：
+                  //   ① 要用 hasStackTraceContaining，不是 hasMessageContaining
+                  //      （最外層例外只說「Could not bind properties to 'ShopProperties'」，
+                  //        欄位名在巢狀的 BindValidationException 裡）
+                  //   ② 字串是 camelCase 的 emailFrom，不是設定檔裡的 email-from
                   assertThat(context).getFailure()
-                          .hasMessageContaining("email-from");
+                          .hasStackTraceContaining("emailFrom");
               });
     }
 

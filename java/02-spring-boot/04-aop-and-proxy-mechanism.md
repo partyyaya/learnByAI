@@ -511,7 +511,7 @@ public class CglibProxyDemo {
 輸出：
 
 ```
-代理的類別：com.example.proxydemo.InventoryService$$EnhancerBySpringCGLIB$$1a2b3c4d
+代理的類別：com.example.proxydemo.InventoryService$$EnhancerByCGLIB$$1a2b3c4d
 父類別：com.example.proxydemo.InventoryService
 是 InventoryService 嗎？ true          ← ★ 與 JDK 代理不同 ★
 
@@ -547,19 +547,33 @@ public class Counter {
 }
 ```
 
+**關鍵在於「代理跟目標是同一個物件，還是兩個物件」——這兩種模型的結果不一樣。**
+
 ```java
+// 模型 A：純 CGLIB + invokeSuper —— 代理「就是」目標（子類別實例，只有一份欄位）
+enhancer.setCallback((MethodInterceptor) (obj, m, args, mp) -> mp.invokeSuper(obj, args));
 Counter proxy = (Counter) enhancer.create();
 proxy.increment();
-System.out.println(proxy.count);               // 0 ！不是 1
+System.out.println(proxy.count);        // 1  ✅ 符合直覺
 ```
 
-**原因**：CGLIB 代理是**子類別的實例**，它有自己的 `count` 欄位（初始值 0）。
-`increment()` 被攔截後委派給父類別的實作——但 `this` 指向的是**代理物件**，
-所以改的是代理的欄位……實際上依 Spring 的實作方式（`invokeSuper`）會改到代理物件的欄位，
-而 Spring 的做法（委派給獨立的 target 實例）則會改到 target 的欄位，兩邊的 `count` 是**兩份**。
+```java
+// 模型 B：委派給獨立的 target —— ★ 這才是 Spring AOP 的模型 ★
+Counter target = new Counter();
+enhancer.setCallback((MethodInterceptor) (obj, m, args, mp) -> m.invoke(target, args));
+Counter proxy = (Counter) enhancer.create();
+proxy.increment();
+System.out.println(proxy.count);        // 0  ★ 被改的是 target，不是你手上的 proxy ★
+System.out.println(target.count);       // 1
+```
+
+**原因**：模型 B 裡有**兩個實例**——代理（子類別）與目標，各有自己的 `count`。
+方法呼叫被轉送到目標，所以目標的欄位變了；但你手上拿的是代理，
+讀 `proxy.count` 讀到的是代理那一份**永遠沒被動過**的欄位。
 
 > **實務結論：不要在 Bean 上用 public 欄位，一律用方法存取。**
-> 這在有 AOP 的環境下不只是封裝問題，是正確性問題。
+> Spring AOP 用的是模型 B，所以在有 AOP 的環境下這不只是封裝問題，是正確性問題。
+> （這也是「為什麼 `@Value` 不能注入到 `static` 欄位」之外，另一個「欄位與代理不合」的例子。）
 
 ---
 
@@ -1307,10 +1321,11 @@ TracingAspect  後
 ### 一個真實的順序 bug
 
 ```java
-@Aspect @Component @Order(100)     // 交易切面（Spring 內建，預設 Ordered.LOWEST_PRECEDENCE）
-// @Transactional
+// 交易切面不是你寫的，它由 Spring 註冊，預設順序是 Ordered.LOWEST_PRECEDENCE（最內層）
 
-@Aspect @Component @Order(50)      // 你的重試切面
+@Aspect
+@Component
+@Order(50)                         // 你的重試切面 —— 數字小 = 外層
 public class RetryAspect { }
 ```
 
@@ -1323,9 +1338,11 @@ public class RetryAspect { }
 > Spring 的交易切面順序是 `Ordered.LOWEST_PRECEDENCE`（最內層），
 > 所以你的切面只要有明確的 `@Order` 數字就會在外面。
 >
-> 可以用 `spring.transaction.default-timeout` 旁邊那組設定調整交易切面的順序：
+> 真的需要調整交易切面自己的順序時，用 `@EnableTransactionManagement` 的 `order`：
 > ```java
-> @EnableTransactionManagement(order = 100)
+> @SpringBootApplication
+> @EnableTransactionManagement(order = 100)   // 預設是 Ordered.LOWEST_PRECEDENCE
+> public class ShopServiceApplication { }
 > ```
 
 ### 同一個切面內的多個 Advice
@@ -1906,9 +1923,38 @@ public @interface Auditable {
 }
 ```
 
+這個切面會用到三個東西。前兩個直接**沿用第 02 章那個 starter** 的
+`AuditRecorder` 與 `AuditEvent`（`com.example.audit` 套件）；
+第三個是你自己的一行介面：
+
 ```java
 package com.example.shop.audit;
 
+/** 從目前的安全上下文取出操作者。09-spring-security 之前先回傳固定值。 */
+public interface CurrentUserProvider {
+    String currentUser();
+}
+```
+
+```java
+package com.example.shop.audit;
+
+import org.springframework.stereotype.Component;
+
+@Component
+public class StubCurrentUserProvider implements CurrentUserProvider {
+    @Override
+    public String currentUser() {
+        return "system";      // 09-spring-security 會換成 SecurityContextHolder
+    }
+}
+```
+
+```java
+package com.example.shop.audit;
+
+import com.example.audit.AuditEvent;        // ★ 第 02 章 starter 的型別 ★
+import com.example.audit.AuditRecorder;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -1952,12 +1998,12 @@ public class AuditAspect {
 
         try {
             Object result = pjp.proceed();
-            record(actor, auditable.action(), resource, "SUCCESS", Map.of());
+            record(actor, auditable.action(), resource, AuditEvent.Outcome.SUCCESS, Map.of());
             return result;
 
         } catch (Throwable t) {
             // ★ 失敗也要記錄 —— 「誰嘗試做了什麼但失敗了」往往比成功紀錄更重要 ★
-            record(actor, auditable.action(), resource, "FAILURE",
+            record(actor, auditable.action(), resource, AuditEvent.Outcome.FAILURE,
                     Map.of("error", t.getClass().getSimpleName(),
                            "message", String.valueOf(t.getMessage())));
             throw t;
@@ -1965,7 +2011,7 @@ public class AuditAspect {
     }
 
     private void record(String actor, String action, String resource,
-                        String outcome, Map<String, Object> details) {
+                        AuditEvent.Outcome outcome, Map<String, Object> details) {
         try {
             recorder.record(new AuditEvent(Instant.now(), actor, action, resource, outcome, details));
         } catch (Exception e) {
@@ -2351,6 +2397,31 @@ class AopSafetyArchTest {
 
 > **這個測試很值得加**。它把「AOP 的限制」變成 CI 會擋下來的規則，
 > 而不是靠每個人記得。ArchUnit 的用法在 01-java-core 第 11 章有完整介紹。
+>
+> ⚠️ **但它現在就會紅一次**，訊息是：
+>
+> ```
+> Rule 'methods that are annotated with @Transactional should be public ...'
+> failed to check any classes.
+> ```
+>
+> 原因是這一站的 `shop-service` **還沒有任何 `@Transactional` 方法**
+> （交易要到 05-service 才正式接上），而 ArchUnit 1.x 預設把
+> 「規則沒有比對到任何東西」視為失敗 —— 這是刻意的設計，
+> 因為「規則寫錯了字所以什麼都沒比對到」比「沒有違規」常見得多。
+>
+> 兩種處理方式：
+>
+> ```java
+> // ① 單一規則放寬（推薦：意圖明確，之後有 @Transactional 了就把這行刪掉）
+> .allowEmptyShould(true)
+> .check(classes);
+> ```
+>
+> ```properties
+> # ② src/test/resources/archunit.properties —— 全域放寬（不建議，會蓋掉打錯字的規則）
+> archRule.failOnEmptyShould=false
+> ```
 
 ---
 

@@ -765,11 +765,11 @@ static String money(BigDecimal v) {
 ```javascript
 // 後端回 { "orderId": 1725088331234567890 }
 const res = await fetch('/orders/1').then(r => r.json());
-console.log(res.orderId);              // 1725088331234567900   ← 最後 2 位被改了
+console.log(res.orderId);              // 1725088331234568000   ← 最後幾位被改掉了
 console.log(res.orderId === 1725088331234567890);  // true（因為兩邊都被截斷了）
 
 // 然後你用這個 ID 去查
-await fetch(`/orders/${res.orderId}`); // → GET /orders/1725088331234567900 → 404
+await fetch(`/orders/${res.orderId}`); // → GET /orders/1725088331234568000 → 404
 ```
 
 **而且不會有任何錯誤訊息。** JSON.parse 不會警告，型別是 number，看起來完全正常。
@@ -2519,7 +2519,7 @@ public record OrderDetailForSupport(
 | `PageResponse<T>` | 所有集合回應 | 2 |
 | `ProblemDetail` | 所有錯誤（第 04 章） | 5 + 擴充 |
 
-**總計約 22 個 DTO**。對 70 條端點來說是合理的比例
+**總計約 22 個 DTO**。對 83 條端點來說是合理的比例
 （大量端點共用同一組 DTO，這正是「不要過度拆分」的結果，3.3.3）。
 
 ---

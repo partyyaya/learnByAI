@@ -157,13 +157,24 @@ fixedRate = 5000（上次開始 → 等 5 秒 → 下次開始）
 * * * * * *
 ```
 
+> ⚠️ **「週」欄位的編號是最容易抄錯的地方**：
+> Spring 是 **0/7 = 週日、1 = 週一 …… 6 = 週六**，
+> 而 **Quartz 是 1 = 週日、2 = 週一 …… 6 = 週五**。
+> 網路上大量 cron 範例其實是 Quartz 的，**同一個 `6` 差了一天**。
+> 不確定時直接用英文縮寫（`FRI`）或自己驗一次：
+>
+> ```java
+> CronExpression.parse("0 0 12 ? * 5#3").next(LocalDateTime.now());
+> // 2026-09-18T12:00（週五）—— 用 6#3 會得到 09-19（週六）
+> ```
+
 ```java
 "0 0 2 * * *"        每天 02:00:00
 "0 */15 * * * *"     每 15 分鐘（在 0、15、30、45 分）
 "0 0 9-18 * * MON-FRI"   週一到週五，9 點到 18 點的整點
 "0 30 8 1 * *"       每月 1 號 08:30
 "0 0 0 L * *"        每月最後一天午夜（L = last）
-"0 0 12 ? * 6#3"     每月第三個週五中午（#n = 第 n 個）
+"0 0 12 ? * 5#3"     每月第三個週五中午（#n = 第 n 個）
 "0 0 4 * * *"        每天 04:00
 ```
 
@@ -1548,6 +1559,30 @@ public class OrderService {
 
 ### 用事件重寫
 
+> 📌 **本章的 `Order` 比第 01 章 1.16 多了一個欄位、換掉一個欄位**，
+> 因為「事件」對資料的要求跟「Service 內部傳遞」不一樣：
+>
+> ```java
+> public record Order(Long id,
+>                     String customerId,      // ★ 從 customerName 換成 customerId ★
+>                     BigDecimal amount,
+>                     String paymentMethod,
+>                     String status,
+>                     Instant createdAt) {
+>
+>     public Order withId(Long newId) { /* 同 1.16 */ }
+>     public Order withStatus(String newStatus) { /* 同 1.16 */ }
+> }
+> ```
+>
+> **為什麼要換**：事件會被**別的模組**消費（給點數、開發票、更新索引），
+> 而顯示用的名字是會變的（客戶改名、同名同姓），**識別碼才是穩定的**。
+> 「事件裡放 name 而不是 id」是實務上常見的錯誤 ——
+> 三個月後有人要用這個事件去查客戶資料，就會發現查不到。
+>
+> 需要名字的監聽者（例如寄信）應該**自己用 `customerId` 去查**，
+> 或由發布方在事件裡另外帶一份「當下的快照」並明確標示它是快照。
+
 ```java
 package com.example.shop.order;
 
@@ -2042,9 +2077,12 @@ public class OrderService {
 
     @Transactional
     public Order placeOrder(Order order) {
-        // ① 必須在同一個交易裡完成的事：直接呼叫，不用事件
-        inventoryService.decrease(order.sku(), order.quantity());
         Order saved = repository.save(order);
+
+        // ① 必須在同一個交易裡完成的事：直接呼叫，不用事件
+        //    （這個 demo 的 Order 只有金額、沒有品項明細 ——
+        //      品項扣減要等 08-jpa-mybatis 才接得完整，這裡讓 InventoryService 自己解析訂單）
+        inventoryService.decreaseFor(saved);
 
         // ② 其他事情用事件解耦
         publisher.publishEvent(OrderPlacedEvent.from(saved));
@@ -2995,11 +3033,16 @@ CREATE TABLE export_run (
     started_at     TIMESTAMP(3) NOT NULL,
     finished_at    TIMESTAMP(3),
     error_message  TEXT,
-    -- ★ 同一天只能有一筆成功的紀錄 → 冪等的關鍵 ★
-    UNIQUE KEY uk_date_success (target_date, status)
+    KEY idx_date_status (target_date, status),
+    -- ★ 「同一天只能有一筆 SUCCESS」用 generated column + UNIQUE 表達 ★
+    --   只有 status='SUCCESS' 時這一欄才有值，其餘是 NULL；
+    --   而 MySQL 的 UNIQUE 允許多個 NULL → FAILED 可以有很多筆（重試才跑得下去）
+    success_date DATE GENERATED ALWAYS AS
+        (CASE WHEN status = 'SUCCESS' THEN target_date END) STORED,
+    UNIQUE KEY uk_success_date (success_date)
 ) ;
--- 註：MySQL 的 UNIQUE 允許多個 NULL，所以這裡改用應用層檢查會更彈性。
---     實務上常見做法是加一個 generated column 只在 SUCCESS 時有值。
+-- ⚠️ 千萬不要寫成 UNIQUE (target_date, status)：
+--    那會讓「同一天的第二次 FAILED」insert 失敗，重試邏輯直接壞掉。
 ```
 
 ```java

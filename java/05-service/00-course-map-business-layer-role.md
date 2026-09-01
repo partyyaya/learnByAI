@@ -1,7 +1,7 @@
 # 第 00 章：課程地圖與商業邏輯層定位
 
-> 上一站（04-controller 站）你把 70 條端點實作完了：綁定、驗證、83 個錯誤碼、traceId、
-> 檔案與串流、CORS 與序列化、350 個 MockMvc 測試。
+> 上一站（04-controller 站）你把 83 條端點實作完了：綁定、驗證、83 個錯誤碼、traceId、
+> 檔案與串流、CORS 與序列化、415 個 MockMvc 測試。
 > **而每一個 Controller 方法的最後一行都長得一樣**：
 >
 > ```java
@@ -49,7 +49,7 @@
                 ↓
            03-rest-api      介面契約設計（已完成，產出 orders-api.yaml）
                 ↓
-           04-controller    Web 層：接請求、驗參數、回錯誤（已完成，70 條端點）
+           04-controller    Web 層：接請求、驗參數、回錯誤（已完成，83 條端點）
                 ↓
 [你在這裡] 05-service       商業邏輯層：交易、不變量、快取、非同步 ← 把規則實作出來
                 ↓
@@ -648,9 +648,9 @@ public class ProductServiceImpl implements ProductService {
 > 📌 這也解釋了為什麼 04-controller 站的 `CreateOrderCommand` 要叫 command 而不是 DTO ——
 > **它是一個「意圖」而不是「一包資料」**。
 > ⚠️ 但 shop-service 的介面已經叫 `create()` 了（04-controller 站一路用到 07 章的
-> 350 個測試都在呼叫它）。**這一站不改它** ——
+> 415 個測試都在呼叫它）。**這一站不改它** ——
 > 1.8.5 會討論 `create` / `place` / `submit` 的命名取捨，
-> 以及「為了命名純度去改 350 個測試」值不值得。
+> 以及「為了命名純度去改 415 個測試」值不值得。
 
 ---
 ## 0.5 貧血模型 vs 充血模型 ★
@@ -3922,7 +3922,7 @@ src/main/java/example/shop/
 它在 `order.domain`，但 `common.web` 的 resolver 與 `stock`、`coupon` 都用它。
 **正確的位置是 `common.domain`（或一個 `shared-kernel` 模組）。**
 
-> 👉 **這一站不搬它**，理由與 04-controller 站一致：搬動會影響 9 處 import 與 350 個測試，
+> 👉 **這一站不搬它**，理由與 04-controller 站一致：搬動會影響 9 處 import 與 415 個測試，
 > 而收益是「套件名比較合理」。**但這一站會把它記進 ArchUnit 的例外清單**，
 > 讓「跨領域依賴」這件事至少是**明確被承認**的，而不是被忽略的。
 
@@ -5892,7 +5892,7 @@ cancelReason.PAYMENT_TIMEOUT=超過付款期限，訂單已自動取消
 
 ⚠️ **`OrderService` 介面與 `command` 套件刻意留在 `order.service`。**
 
-理由：改動它們會影響 04-controller 站的 70 條端點與 350 個測試的 import，
+理由：改動它們會影響 04-controller 站的 83 條端點與 415 個測試的 import，
 而收益只是「套件名比較一致」。
 
 > 📌 **但要誠實承認代價**：現在有 `order.service`（介面 + command）

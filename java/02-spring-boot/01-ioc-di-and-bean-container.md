@@ -2161,8 +2161,23 @@ public record Order(Long id,
     public Order withId(Long newId) {
         return new Order(newId, customerName, amount, paymentMethod, status, createdAt);
     }
+
+    /** 狀態轉換也用「回傳新物件」的寫法（第 05、06 章會用到） */
+    public Order withStatus(String newStatus) {
+        return new Order(id, customerName, amount, paymentMethod, newStatus, createdAt);
+    }
 }
 ```
+
+> 📌 **這個 record 在後面章節會演進 —— 課程刻意標出來，不回頭改寫這一章**：
+>
+> | 章節 | 改了什麼 | 為什麼 |
+> |---|---|---|
+> | 06 章 6.8 | `customerName` → **`customerId`** | 事件要被別的模組消費，**識別碼才穩定**，顯示名稱會變 |
+> | 07 章 7.12 | `String status` → **`OrderStatus` enum** + `transitionTo()` | 讓「已出貨不能取消」這種規則變成**可以用參數化測試窮舉**的東西 |
+>
+> 每一次演進都是「下游的需求推翻了上游的決定」，
+> 而**先看見痛、再給解法**需要痛留在原處 —— 這也是 04-controller 與 05-service 兩站的做法。
 
 ```java
 package com.example.shop.order;
@@ -2333,6 +2348,33 @@ public class EmailNotifier implements Notifier {
     @Override
     public void send(String to, String message) {
         log.info("[EMAIL] to={} | {}", to, message);
+    }
+}
+```
+
+```java
+package com.example.shop.notification;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
+
+/**
+ * 開發用的通知實作：只寫 log，不寄真的信。
+ *
+ * <p>因為有兩個 `Notifier` 實作，`EmailNotifier` 上的 `@Primary` 才有意義 ——
+ * 在 dev profile 下容器裡有兩個候選，注入時會拿到 `@Primary` 的那個；
+ * 想改用這一個就在注入點加 `@Qualifier("logNotifier")`。
+ */
+@Component
+@Profile("dev")
+public class LogNotifier implements Notifier {
+    private static final Logger log = LoggerFactory.getLogger(LogNotifier.class);
+
+    @Override
+    public void send(String to, String message) {
+        log.info("[LOG-ONLY] 假裝通知 {}：{}", to, message);
     }
 }
 ```

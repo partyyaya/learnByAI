@@ -1,6 +1,6 @@
 # 第 00 章：課程地圖與 Web 層職責
 
-> 上一站（03-rest-api）你把**契約**設計完了：70 條 URL、22 個 DTO、約 60 個錯誤碼、一份 `orders-api.yaml`。
+> 上一站（03-rest-api）你把**契約**設計完了：83 條 URL、22 個 DTO、78 個錯誤碼、一份 `orders-api.yaml`。
 > 這一站要把它**實作出來**。
 >
 > 但這一章先不寫 `@GetMapping`。
@@ -94,7 +94,7 @@ HTTP 請求
 
 ```
 第 00 章  專案骨架 + 職責判準 + 一個 800→40 行的重構
-第 01 章  路由與參數綁定：把 70 條 URL 對映成方法簽章
+第 01 章  路由與參數綁定：把 83 條 URL 對映成方法簽章
 第 02 章  Bean Validation：把 DTO 上的驗證全部落地
 第 03 章  @RestControllerAdvice：把第 04 章的錯誤目錄落地成 79 個 code ← 最關鍵的一章
 第 04 章  Filter / Interceptor：traceId、請求日誌、分頁參數硬上限
@@ -1316,7 +1316,7 @@ public class OrderController {
 綁定 → 驗證（註解做的）→ 轉 Command → 呼叫 Service → 轉 Response → 決定狀態碼
 ```
 
-**這個結構之後 70 條端點都一樣。** 這就是「瘦 Controller」的實際樣子 ——
+**這個結構之後 83 條端點都一樣。** 這就是「瘦 Controller」的實際樣子 ——
 不是「行數少」，而是**「每個方法都長得一樣，沒有一個特例」**。
 
 ### 0.10.3 Mapper 長什麼樣
@@ -1436,7 +1436,7 @@ Spring 4.3+ 起，**只有一個建構子時可以省略 `@Autowired`**。
 ```
 ❌ package-by-layer（按技術分層）
 example.shop
-├── controller     ← 70 個 Controller 全部塞這裡
+├── controller     ← 所有 Controller 全部塞這裡
 ├── service
 ├── repository
 ├── dto
@@ -1792,7 +1792,7 @@ management:
 
 ### 0.11.5 這一站要實作的端點（對照 03-rest-api 的契約）
 
-從 70 條端點裡挑出這一站要做的（其餘在 10-capstone 補完）：
+從 83 條端點裡挑出這一站要做的（其餘在 10-capstone 補完）：
 
 | 章節 | 實作的端點 |
 |---|---|
@@ -1979,8 +1979,8 @@ DomainService → Repository → Mapper → Entity → DTO → VO`，
 **誤區 4：「錯誤處理當然要 try-catch，不然怎麼回錯誤訊息」**
 
 這是把「例外處理」和「例外處理的位置」搞混了。
-例外當然要處理，但處理它的地方應該是**一個**地方（advice），不是 70 個地方。
-（03 章會證明這件事：70 條端點，一個 advice 類別。）
+例外當然要處理，但處理它的地方應該是**一個**地方（advice），不是 83 個地方。
+（03 章會證明這件事：83 條端點，一個 advice 類別。）
 
 **誤區 5：「我們是小專案 / MVP，先塞在一起，以後再拆」**
 
@@ -2658,7 +2658,7 @@ public record ChangeShippingAddressCommand(
 
 ## 0.16 下一章預告
 
-01 章要把 03-rest-api 的 **70 條 URL** 變成方法簽章。內容包括：
+01 章要把 03-rest-api 的 **83 條 URL** 變成方法簽章。內容包括：
 
 - `@RequestMapping` 家族的完整語意，以及**路由衝突時 Spring 怎麼選**（優先順序規則）。
 - `@PathVariable` / `@RequestParam` / `@RequestBody` / `@RequestHeader` / `@CookieValue` / `@ModelAttribute` 的完整行為與陷阱。

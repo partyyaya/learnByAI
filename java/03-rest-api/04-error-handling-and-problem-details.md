@@ -2278,7 +2278,7 @@ public class ErrorMetrics {
 
 ```
 ✅ code = INSUFFICIENT_STOCK          約 30 個值
-✅ uri = /orders/{orderId}/payments   約 70 個值
+✅ uri = /orders/{orderId}/payments   約 55 個值（相異 URI 模板數）
 ❌ productId = P-1001                 可能幾萬個值 → 指標爆炸
 ❌ traceId = 4f2c...                  每次都不同 → 直接把 Prometheus 打掛
 ```
@@ -4173,7 +4173,7 @@ class ErrorHandlingTest {
 | 章 | 產出 |
 |---|---|
 | 00 | 領域盤點、訂單狀態機、動詞→資源對照表、六個 API 判準 |
-| 01 | 70 條端點的完整 URL 表、識別碼方案、非 CRUD 動作的五種手法 |
+| 01 | 83 條端點的完整 URL 表、識別碼方案、非 CRUD 動作的五種手法 |
 | 02 | 每條端點的方法／狀態碼契約、全域規則清單、契約冒煙測試腳本 |
 | 03 | 22 個 DTO 的全家族、JSON 命名／金額／時間規範、列舉演進三層防護 |
 | 04 | 錯誤目錄（約 60 個 `code`）、Problem Details 格式、前端消費程式碼 |

@@ -636,7 +636,7 @@ console.log(response.headers.get('Retry-After'));      // → null 🔴
 
 | 問題 | 說明 |
 |---|---|
-| **設定散落在 70 個端點上** | 要改允許的 origin 就得改 70 個檔案 |
+| **設定散落在 83 個端點上** | 要改允許的 origin 就得改 83 個檔案 |
 | **漏掉一個就是一個 bug** | 而且是「某一支 API 在正式環境不能用」這種難查的 bug |
 | **在 Security 之後才生效** | 未認證的請求（401）不會有 CORS 標頭 |
 | **對 Filter 產生的錯誤無效** | 6.2.1 的問題 |
@@ -4710,7 +4710,7 @@ import java.math.BigDecimal;
  * </ul>
  *
  * <p><b>shop-service 沒有採用它</b>，因為 03-rest-api 3.5.3 已經定案用
- * 「扁平的字串 + 一個 currency 欄位」，而改動那個決定會影響 70 條端點的契約。
+ * 「扁平的字串 + 一個 currency 欄位」，而改動那個決定會影響 83 條端點的契約。
  * <b>這一段留在課程裡是因為新專案值得考慮它。</b>
  */
 public record Money(BigDecimal amount, String currency) implements Comparable<Money> {
@@ -11956,7 +11956,7 @@ LIMIT 100;
 - **契約測試**：從 `orders-api.yaml` 自動驗證實作
   （03-rest-api 第 07 章的落地），以及 **Spring REST Docs**
   讓「文件與測試是同一份東西」。
-- **授權矩陣測試** ★：`70 條端點 × 5 種角色 = 350 個組合`，
+- **授權矩陣測試** ★：`83 條端點 × 5 種角色 = 415 個組合`，
   怎麼用一個表格驅動的測試涵蓋它們 ——
   以及**為什麼這是最值得寫的一組測試**（IDOR 是最常見的 API 漏洞）。
 - **測試的反模式**：斷言 `status().isOk()` 卻沒斷言 body、

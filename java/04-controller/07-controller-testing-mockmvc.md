@@ -43,7 +43,7 @@
 - 用 `ArgumentCaptor` 驗證「Controller 真的把 HTTP 翻譯對了」——**這是 Controller 測試的核心價值**。
 - 說出「一個 `createOrder()` 輔助方法」為什麼會在第 40 個測試時崩塌，以及 Object Mother 與 Test Data Builder 的取捨。
 - 用一個 `@MethodSource` 覆蓋 **83 個 `ErrorCode`**、所有 enum 值、所有端點。
-- **設計授權矩陣測試**（70 個端點 × 5 種角色），並說明為什麼那是最值得寫的一組測試 ★★
+- **設計授權矩陣測試**（83 個端點 × 5 種角色），並說明為什麼那是最值得寫的一組測試 ★★
 - 寫一個「新端點忘記加授權就紅燈」的守門測試。
 - 說明資源層級授權（IDOR）為什麼**不能**用授權矩陣涵蓋，以及要怎麼補。
 - 用 `orders-api.yaml` 自動驗證實作（03-rest-api 第 07 章的落地）。
@@ -60,7 +60,7 @@
 這五個事故有一個共同特徵：**它們都有測試**。
 而且測試都是綠的。
 
-### 7.2.1 事故一：350 個測試全綠，客戶看到別人的訂單
+### 7.2.1 事故一：415 個測試全綠，客戶看到別人的訂單
 
 **時間**：上線後第 11 天。
 **回報者**：一位客戶在客服信裡附了截圖 —— 訂單明細裡是別人的姓名、電話、地址。
@@ -137,7 +137,7 @@ addFilters = false 關掉了：
   ✗ IdempotencyFilter    (-99)
 ```
 
-**於是 350 個測試測的是「一個沒有認證、沒有授權、沒有追蹤、沒有限流的 Controller」。**
+**於是 415 個測試測的是「一個沒有認證、沒有授權、沒有追蹤、沒有限流的 Controller」。**
 
 而真正的 bug 在哪？在 Controller 裡：
 
@@ -1067,7 +1067,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 守門：不可以隨便用 addFilters = false。
  *
  * <p>★ 這個測試會掃描 test source set —— 也就是「測試在測試測試」。
- *    這聽起來奇怪，但 7.2.1 的損失是「350 個測試同時失效」，
+ *    這聽起來奇怪，但 7.2.1 的損失是「415 個測試同時失效」，
  *    值得一個這樣的守門。
  */
 class NoBlanketFilterDisablingTest {
@@ -1238,7 +1238,7 @@ public @interface WithActor {
             //        roles.stream().map(r -> new SimpleGrantedAuthority("ROLE_" + r))
             //    ⚠️ 傳 "ROLE_CUSTOMER" 進來會變成 ROLE_ROLE_CUSTOMER
             //       → hasRole("CUSTOMER") 全部失敗
-            //       → 7.9.3 的 350 個授權斷言【每一格都是 403】
+            //       → 7.9.3 的 415 個授權斷言【每一格都是 403】
             //    而症狀看起來像「SecurityConfig 壞了」，其實是多了三個字。
             var principal = new CurrentUser(
                     ann.id(),
@@ -5098,7 +5098,7 @@ class AllExposedEnumsHaveLabelsTest {
  *
  * <p>★ 為什麼這個結構有價值：CI 的測試報表會照這個結構呈現，
  *    於是「哪一個端點的哪一個角色壞了」一眼就看得到。
- *    用 @ParameterizedTest 的話是 350 筆平坦的清單。
+ *    用 @ParameterizedTest 的話是 415 筆平坦的清單。
  */
 @TestFactory
 Stream<DynamicNode> 授權矩陣() {
@@ -5116,7 +5116,7 @@ Stream<DynamicNode> 授權矩陣() {
 ⚠️ **`@TestFactory` 的兩個代價**：
 - **不能用 `@MockitoBean` 的 per-test 重設** ——
   一個 `@TestFactory` 方法在 Spring 眼中是**一個**測試方法，
-  所以裡面的 350 個動態測試共用同一份 mock 狀態。
+  所以裡面的 415 個動態測試共用同一份 mock 狀態。
 - IDE 對它的支援比 `@ParameterizedTest` 差（不能單獨重跑一個案例）。
 
 **所以 shop-service 的授權矩陣用 `@ParameterizedTest`**（7.9.3），
@@ -5124,7 +5124,7 @@ Stream<DynamicNode> 授權矩陣() {
 
 ### 7.8.5 失敗訊息的可讀性
 
-**參數化測試最常見的抱怨：「350 個案例，我不知道是哪一個失敗」。**
+**參數化測試最常見的抱怨：「415 個案例，我不知道是哪一個失敗」。**
 
 **三個層次的解法。**
 
@@ -5196,7 +5196,7 @@ assertThat(actual)
  *
  * <p>取捨：
  *   ✅ 一次看到全貌，能看出「所有 SUPPORT 的規則都壞了」這種模式
- *   🔴 只會有一個測試（一紅一綠），CI 的報表沒有 350 筆
+ *   🔴 只會有一個測試（一紅一綠），CI 的報表沒有 415 筆
  *
  * <p>shop-service 的做法：**兩個都留** ——
  *   @ParameterizedTest 給 CI 的報表，這一個給人看。
@@ -5298,10 +5298,10 @@ API5:2023  Broken Function Level Authorization    ← 「客戶能呼叫客服�
 **理由三：它的組合數大到「手寫測試」不可行，但參數化之後很便宜。**
 
 ```
-shop-service：70 個端點 × 5 種角色 = 350 個組合
+shop-service：83 個端點 × 5 種角色 = 415 個組合
 
-手寫：350 個測試方法 → 沒有人會做
-參數化：1 個測試方法 + 1 個 CSV → 350 個案例，約 8 秒
+手寫：415 個測試方法 → 沒有人會做
+參數化：1 個測試方法 + 1 個 CSV → 415 個案例，約 9 秒
 ```
 
 **而且新增一個端點時**，7.9.4 的守門測試會強迫你在矩陣裡加一列 ——
@@ -5433,7 +5433,7 @@ void 產生授權矩陣的骨架() {
 }
 ```
 
-### 7.9.3 一張表覆蓋 70 × 5
+### 7.9.3 一張表覆蓋 83 × 5
 
 **`src/test/resources/authz-matrix.csv`**（節錄）：
 
@@ -5729,8 +5729,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * ★★ 這是整套授權測試的**守門人**。
  *
- * <p>它比 350 個授權斷言更重要 ——
- * 因為它保證「那 350 個斷言涵蓋了所有端點」。
+ * <p>它比 415 個授權斷言更重要 ——
+ * 因為它保證「那 415 個斷言涵蓋了所有端點」。
  *
  * <p>沒有它的話，7.9.3 的測試會永遠是綠的，
  * 而新增的端點永遠不在裡面。
@@ -5825,7 +5825,7 @@ class AuthzMatrixCompletenessTest {
 
                     兩個選擇：
                       1. 在 authz-matrix.csv 加一欄，並為【每一個端點】填上期望值
-                         （70 列 —— 但那正是「新增一種角色」該付的代價）
+                         （83 列 —— 但那正是「新增一種角色」該付的代價）
                       2. 加進 EXCLUDED_ACTOR_TYPES，並在 PR 說明
                          「為什麼這個角色不需要授權矩陣」
                     """, uncovered)
@@ -6037,7 +6037,7 @@ class ObjectLevelAuthorizationTest {
 
 **理由一：`@WebMvcTest` 裡的 `SecurityFilterChain` 可能不是你的**（7.4.3 事實二）。
 
-如果是自動設定的預設 chain，那 350 個斷言測的是「Boot 的預設值」，
+如果是自動設定的預設 chain，那 415 個斷言測的是「Boot 的預設值」，
 **與你的 `SecurityConfig` 完全無關**。
 
 **理由二：filter 的順序在切片裡不保證與正式環境一致。**
@@ -6063,10 +6063,10 @@ SecurityFilterChain filterChain(HttpSecurity http,
                                  CustomAuthoritiesMapper mapper) // @Component
 ```
 
-**理由四（最實際的）：一個 context 跑 350 個案例，比什麼都快。**
+**理由四（最實際的）：一個 context 跑 415 個案例，比什麼都快。**
 
 ```
-@SpringBootTest：一次啟動 4.2 s + 350 × 12 ms = 8.4 s
+@SpringBootTest：一次啟動 4.2 s + 415 × 12 ms = 9.2 s
 @WebMvcTest：    如果每個 Controller 一個 context，14 個 context × 1.9 s = 26.6 s
 ```
 
@@ -6505,7 +6505,7 @@ include::{snippets}/orders-get-404/http-response.adoc[]
 
 | 缺點 | 影響 |
 |---|---|
-| **每個端點要寫 30～60 行 descriptor** | 70 個端點 = 3,000 行文件測試 → **所以只做核心的 12 個** |
+| **每個端點要寫 30～60 行 descriptor** | 83 個端點 = 3,500 行文件測試 → **所以只做核心的 12 個** |
 | 產出的是 HTML 而不是 OpenAPI | 客戶端產生器要 OpenAPI → 需要 `restdocs-api-spec` 這個第三方套件 |
 | `.optional()` 忘了加就失敗 | 而失敗訊息是「payload 沒有這個欄位」，不太直覺 |
 | 學習曲線比 springdoc 陡 | 團隊要願意投入 |
@@ -8942,7 +8942,7 @@ src/test/java/example/shop/
 │   └── SensitiveFieldScanTest.java             （06 章）
 │
 ├── security/                                   ★★ 這一章最重要的目錄
-│   ├── AuthorizationMatrixTest.java            ★★ 70 × 5（7.9.3）
+│   ├── AuthorizationMatrixTest.java            ★★ 83 × 5（7.9.3）
 │   ├── AuthzMatrixCompletenessTest.java        ★★ 端點與 ActorType 都要涵蓋（7.9.4）
 │   ├── ObjectLevelAuthorizationTest.java       ★★ IDOR（7.9.5）
 │   └── JsonBombTest.java                       （06 章）
@@ -8980,7 +8980,7 @@ src/test/java/example/shop/
         └── ETagsTest.java
 
 src/test/resources/
-├── authz-matrix.csv                            ★★ 70 端點 × 5 角色（7.9.3）
+├── authz-matrix.csv                            ★★ 83 端點 × 5 角色（7.9.3）
 ├── junit-platform.properties                   ★ 平行執行（7.13.2）
 ├── application-test.yml                        測試的設定（7.14.2）
 ├── logback-test.xml
@@ -9559,7 +9559,7 @@ public class AllServicesStubbedToSucceed {
 
     /**
      * ⚠️ 這個類別會長到 200 行，而那是可以接受的 ——
-     * 它換來的是「350 個授權斷言的結果只反映授權，不反映業務邏輯」。
+     * 它換來的是「415 個授權斷言的結果只反映授權，不反映業務邏輯」。
      *
      * <p>★ 如果覺得太長：用一個 {@code Answer} 一次處理所有方法
      * <pre>
@@ -11075,7 +11075,7 @@ class OrderEventStreamIntegrationTest { ... }
 - [ ] **我知道授權是最值得寫的測試，也能說出三個理由。**
 - [ ] 我知道 `EndpointInventory` 要用 `getPathPatternsCondition()`（Boot 3）。
 - [ ] **我知道授權矩陣的骨架預設值要全填 403（保守的方向）。**
-- [ ] **我知道 `AuthzMatrixCompletenessTest` 比那 350 個斷言更重要。**
+- [ ] **我知道 `AuthzMatrixCompletenessTest` 比那 415 個斷言更重要。**
 - [ ] 我知道「對匿名開放的端點」要用 `containsExactlyInAnyOrder` 而不是 `isEmpty`。
 - [ ] **我知道功能層級授權與資源層級授權（IDOR）是兩件事，而後者是 OWASP 第一名。**
 - [ ] 我知道 IDOR 的防護分三層：Controller 傳 actor、Service 判斷、ArchUnit 守簽名。
