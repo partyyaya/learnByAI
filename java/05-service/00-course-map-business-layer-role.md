@@ -6793,8 +6793,9 @@ public class PaymentServiceImpl implements PaymentService {
 ✅ stock/StockInvariantTest.java               ★ 20 執行緒併發測試
 ```
 
-⚠️ 課程中的程式碼、YAML 與設定均經逐行檢閱，但**尚未在本機編譯執行驗證**
-（這台機器上沒有安裝 JDK 與 Maven）。基準版本延續 04-controller 站：
+⚠️ 這一章的程式碼**沒有整章編譯執行過**，抄進專案之前請自己編一次
+（各章的驗證程度見[本站 README](./README.md)的表；04～07 章是編譯執行過的）。
+基準版本延續 04-controller 站：
 **Java 21 / Spring Boot 3.2.5 / Spring Framework 6.1 / Jackson 2.17 / ArchUnit 1.3**。
 若你的版本不同，課程會標註差異，但仍請以你的環境實測為準。
 

@@ -227,8 +227,8 @@ var arr2 = new int[]{1, 2, 3};   // ✅ 這樣可以
 
 ```java
 // 型別在右邊重複了一次，是純粹的雜訊
-JsonFileTodoRepository repository = new JsonFileTodoRepository(path, json);
-var repository = new JsonFileTodoRepository(path, json);          // ✅ 更好
+JsonFileTodoRepository repository = new JsonFileTodoRepository(store);
+var repository = new JsonFileTodoRepository(store);              // ✅ 更好
 
 ByteArrayOutputStream buffer = new ByteArrayOutputStream();
 var buffer = new ByteArrayOutputStream();                          // ✅
@@ -327,7 +327,7 @@ String s = list.get(0);             // ❌ 編譯錯誤：Object 不能轉 Strin
 
 ```java
 // ✅ 用 var
-var repository = new JsonFileTodoRepository(path, json);   // 右邊有型別
+var repository = new JsonFileTodoRepository(store);        // 右邊有型別
 var grouped = todos.stream().collect(groupingBy(...));     // 型別很長
 for (var todo : todos) { }                                  // 迴圈變數
 try (var lines = Files.lines(path)) { }                     // 資源
@@ -2908,6 +2908,13 @@ public record Todo(
         return new Todo(id, title, priority, createdAt, completion, merged);
     }
 
+    /** CLI 顯示用的一行（和第 02 章相同，只是資料來源換成 completion） */
+    public String toDisplayLine() {
+        String tagPart = tags.isEmpty() ? "" : " " + tags;
+        return "%s #%-3d [%s] %s%s".formatted(
+                isDone() ? "[x]" : "[ ]", id, priority.label(), title, tagPart);
+    }
+
     /** 不印出全部元件——tags 可能很長，log 會很吵（12.5 節） */
     @Override
     public String toString() {
@@ -3419,6 +3426,24 @@ public sealed interface Completion {
 ```
 
 **其他 79 個測試一行都沒改就通過了**——這證明重構沒有意外的副作用。
+
+### 除了測試，還有四個檔案要跟著改
+
+`Todo` 從可變類別變成 record，**編譯器會直接把所有需要改的地方指出來**。
+完整清單只有四處，而且每一處的修法都是同一個模式：
+**「就地修改」變成「產生新物件」，「可能是 null」變成「問 `completion`」。**
+
+| 檔案 | 編譯錯誤 | 修法 |
+|---|---|---|
+| `ConcurrentTodoImporter`（第 08 章） | `addTag(String)` 找不到 | `todo.addTag(t)` → `todo = todo.withTag(t)`（回傳值要接住！） |
+| `TodoBuilder`（第 11 章） | `tags.forEach(todo::addTag)` 不是合法方法參考 | `for (String t : tags) todo = todo.withTag(t);` |
+| `TodoAssert`（第 11 章） | `completedAt()` 找不到 | `actual.completion().finishedAt()`（回傳 `Optional<Instant>`） |
+| `TodoServiceTest` / `TodoServiceWithFakeTest`（第 11 章） | 同上 | 同上 |
+
+> 🔑 **注意這四個都是編譯錯誤，不是執行期錯誤。**
+> 這就是 12.12 節那句話的實際兌現：**把「可能忘記」變成「編不過」。**
+> 如果 `Todo` 還是可變的、`completedAt` 還是可能為 null，
+> 這四處會安靜地繼續編譯 —— 然後在某個沒有測到的路徑上回傳 `null`。
 
 > 🔑 **這一節真正想示範的不是「怎麼用 record」，
 > 是「怎麼在有安全網的情況下做行為改變」：**

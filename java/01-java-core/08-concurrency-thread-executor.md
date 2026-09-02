@@ -4108,6 +4108,7 @@ import com.example.todo.repository.TodoRepository;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -4294,7 +4295,7 @@ public class ConcurrentTodoImporter {
 
         Priority priority = row.length >= 2 && !row[1].isBlank()
                 ? Priority.parse(row[1])              // 無效值會丟 InvalidTodoException
-                : Priority.NORMAL;
+                : Priority.MEDIUM;
 
         List<String> tags = row.length >= 3 && !row[2].isBlank()
                 ? List.of(row[2].split("\\|"))        // 記得跳脫 |（第 01 章 1.9 節）
@@ -4394,7 +4395,7 @@ public class HttpSource implements TodoSource {
         List<String[]> rows = new ArrayList<>(rowCount);
         for (int i = 1; i <= rowCount; i++) {
             String priority = switch (i % 4) {
-                case 0 -> "URGENT";
+                case 0 -> "HIGH";
                 case 1 -> "HIGH";
                 case 2 -> "NORMAL";
                 default -> "LOW";
@@ -4456,8 +4457,8 @@ public class JsonFileTodoRepository implements TodoRepository {
             cache.clear();
             long max = 0;
             for (Todo todo : store.load()) {
-                cache.put(todo.getId(), todo);
-                max = Math.max(max, todo.getId());
+                cache.put(todo.id(), todo);
+                max = Math.max(max, todo.id());
             }
             sequence.set(max);
         } finally {
@@ -4470,7 +4471,7 @@ public class JsonFileTodoRepository implements TodoRepository {
         Objects.requireNonNull(todo, "todo 不可為 null");
         write.lock();
         try {
-            cache.put(todo.getId(), todo);
+            cache.put(todo.id(), todo);
             flushLocked();
             return todo;
         } finally {
@@ -4485,7 +4486,7 @@ public class JsonFileTodoRepository implements TodoRepository {
         write.lock();
         try {
             for (Todo todo : todos) {
-                cache.put(todo.getId(), todo);
+                cache.put(todo.id(), todo);
             }
             flushLocked();
         } finally {
@@ -4564,11 +4565,11 @@ public class ImportDemo {
         // 準備兩個 CSV 檔
         Files.writeString(dir.resolve("work.csv"), """
                 title,priority,tags
-                寫第 08 章,URGENT,寫作|java
+                寫第 08 章,HIGH,寫作|java
                 Code review,HIGH,團隊
                 ,HIGH,壞資料沒有標題
                 重構匯入器,NORMAL,java|重構
-                無效優先度,SUPER_URGENT,測試
+                無效優先度,SUPER_HIGH,測試
                 """);
 
         Files.writeString(dir.resolve("life.csv"), """
@@ -4617,7 +4618,7 @@ public class ImportDemo {
 
         // ===== 驗證併發下 id 不撞號 =====
         System.out.println("\n=== 驗證 id 唯一性 ===");
-        long distinct = repo.findAll().stream().map(t -> t.getId()).distinct().count();
+        long distinct = repo.findAll().stream().map(t -> t.id()).distinct().count();
         System.out.println("總筆數: " + repo.findAll().size() + "，不同 id 數: " + distinct);
         System.out.println(distinct == repo.findAll().size() ? "✅ 沒有撞號" : "❌ 有重複 id");
 
@@ -4657,7 +4658,7 @@ public class ImportDemo {
 
 --- 失敗的列（前 10 筆）---
   [file:work.csv:2] ,HIGH,壞資料沒有標題 → 標題不可為空
-  [file:work.csv:4] 無效優先度,SUPER_URGENT,測試 → 無效的優先度，可用值: URGENT, HIGH, NORMAL, LOW
+  [file:work.csv:4] 無效優先度,SUPER_HIGH,測試 → 無效的優先度，可用值: HIGH, MEDIUM, LOW
   [http:api.example.com/team-a:19] ,LOW,遠端 → 標題不可為空
   ...
   …還有 3 筆
@@ -5603,6 +5604,15 @@ public class BankTransferFixed {
 ### 練習 4：預測輸出
 
 ```java
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 public class Quiz {
 
     static int counter = 0;

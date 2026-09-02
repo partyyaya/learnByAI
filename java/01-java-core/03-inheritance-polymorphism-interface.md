@@ -670,6 +670,9 @@ public class ConstructorTrapFixed {
 ### `final` 的三種位置
 
 ```java
+import java.util.ArrayList;
+import java.util.List;
+
 public class FinalDemo {
 
     // ① final 類別：不可被繼承
@@ -1835,11 +1838,10 @@ demo/src/main/java/com/example/todo/
 ├── repository/
 │   ├── TodoRepository.java    ← 新增：介面
 │   └── InMemoryTodoRepository.java  ← 新增：實作
-├── notify/
+├── service/
 │   ├── Notifier.java          ← 新增：介面
 │   ├── ConsoleNotifier.java   ← 新增
-│   └── CompositeNotifier.java ← 新增：組合模式
-├── service/
+│   ├── CompositeNotifier.java ← 新增：組合模式
 │   └── TodoService.java       ← 新增：商業邏輯
 └── App.java
 ```
@@ -1908,7 +1910,7 @@ public class InMemoryTodoRepository implements TodoRepository {
     @Override
     public Todo save(Todo todo) {
         Objects.requireNonNull(todo, "todo 不可為 null");
-        storage.put(todo.getId(), todo);
+        storage.put(todo.id(), todo);
         return todo;
     }
 
@@ -1940,21 +1942,43 @@ public class InMemoryTodoRepository implements TodoRepository {
 ### `Notifier.java` / `ConsoleNotifier.java` / `CompositeNotifier.java`
 
 ```java
-package com.example.todo.notify;
+package com.example.todo.service;
 
+import com.example.todo.model.Todo;
+
+/**
+ * 事件通知。實作可以是 console、email、webhook…
+ *
+ * ⚠️ 注意它收的是「發生了什麼事」（`notifyCreated`／`notifyDone`），
+ *    而不是一個已經拼好的字串。**訊息長怎樣是通知管道自己的事** ——
+ *    email 要 HTML、Slack 要 markdown、簡訊只能純文字。
+ *    介面若收 `String`，這個決定就被鎖死在呼叫端了。
+ */
 public interface Notifier {
 
-    void notify(String message);
+    void notifyCreated(Todo todo);
+
+    void notifyDone(Todo todo);
 
     /** 什麼都不做的實作，測試或關閉通知時用 */
     static Notifier noop() {
-        return message -> { };
+        return new Notifier() {
+            @Override public void notifyCreated(Todo todo) { }
+            @Override public void notifyDone(Todo todo) { }
+        };
     }
 }
 ```
 
+> ⚠️ **這裡有一個取捨**：介面從一個方法變成兩個，就**不再是函式介面**，
+> `Notifier.noop()` 沒辦法再寫成 lambda（`message -> { }`），只能用匿名類別。
+> 換來的是「新增一種事件時，編譯器會叫所有實作補上」。
+> 本章練習 2 的裝飾器則刻意保留單方法版本 —— 兩種設計各有適用場合。
+
 ```java
-package com.example.todo.notify;
+package com.example.todo.service;
+
+import com.example.todo.model.Todo;
 
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
@@ -1964,17 +1988,29 @@ public class ConsoleNotifier implements Notifier {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("HH:mm:ss");
 
     @Override
-    public void notify(String message) {
+    public void notifyCreated(Todo todo) {
+        print("新增待辦 #" + todo.id() + "：" + todo.title());
+    }
+
+    @Override
+    public void notifyDone(Todo todo) {
+        print("完成待辦 #" + todo.id() + "：" + todo.title());
+    }
+
+    private void print(String message) {
         System.out.println("🔔 [" + LocalTime.now().format(TIME) + "] " + message);
     }
 }
 ```
 
 ```java
-package com.example.todo.notify;
+package com.example.todo.service;
+
+import com.example.todo.model.Todo;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 /**
  * 組合模式：一個 Notifier 內含多個 Notifier。
@@ -1989,10 +2025,20 @@ public class CompositeNotifier implements Notifier {
     }
 
     @Override
-    public void notify(String message) {
+    public void notifyCreated(Todo todo) {
+        fanOut(n -> n.notifyCreated(todo));
+    }
+
+    @Override
+    public void notifyDone(Todo todo) {
+        fanOut(n -> n.notifyDone(todo));
+    }
+
+    /** 兩個方法唯一的差別只有「呼叫哪一個」，所以把它當參數傳進來（第 06 章 6.6 節） */
+    private void fanOut(Consumer<Notifier> action) {
         for (Notifier delegate : delegates) {
             try {
-                delegate.notify(message);
+                action.accept(delegate);
             } catch (RuntimeException e) {
                 // 一個通道失敗不該讓其他通道也收不到
                 System.err.println("通知失敗 (" + delegate.getClass().getSimpleName()
@@ -2010,7 +2056,6 @@ package com.example.todo.service;
 
 import com.example.todo.model.Priority;
 import com.example.todo.model.Todo;
-import com.example.todo.notify.Notifier;
 import com.example.todo.repository.TodoRepository;
 
 import java.time.LocalDateTime;
@@ -2032,28 +2077,23 @@ public class TodoService {
     public Todo add(String title, Priority priority) {
         Todo todo = new Todo(repository.nextId(), title, priority, LocalDateTime.now());
         repository.save(todo);
-        notifier.notify("新增待辦 #" + todo.getId() + "：" + todo.getTitle());
+        notifier.notifyCreated(todo);
         return todo;
     }
 
-    public Todo complete(long id) {
+    public Todo markDone(long id) {
         Todo todo = repository.getById(id);
-        todo.complete(LocalDateTime.now());
+        todo.markDone(LocalDateTime.now());
         repository.save(todo);
-        notifier.notify("完成待辦 #" + id + "：" + todo.getTitle());
+        notifier.notifyDone(todo);
         return todo;
     }
 
-    public boolean delete(long id) {
-        Todo todo = repository.getById(id);
-        boolean removed = repository.deleteById(id);
-        if (removed) {
-            notifier.notify("刪除待辦 #" + id + "：" + todo.getTitle());
-        }
-        return removed;
+    public boolean remove(long id) {
+        return repository.deleteById(id);
     }
 
-    public List<Todo> pending() {
+    public List<Todo> findPending() {
         List<Todo> result = new ArrayList<>();
         for (Todo todo : repository.findAll()) {
             if (!todo.isDone()) result.add(todo);
@@ -2061,14 +2101,14 @@ public class TodoService {
         return result;
     }
 
-    public List<Todo> all() {
+    public List<Todo> findAll() {
         return repository.findAll();
     }
 
     public double completionRate() {
         List<Todo> all = repository.findAll();
         if (all.isEmpty()) return 0.0;
-        long done = all.size() - pending().size();
+        long done = all.size() - findPending().size();
         return (double) done / all.size() * 100;
     }
 }
@@ -2081,11 +2121,11 @@ package com.example.todo;
 
 import com.example.todo.model.Priority;
 import com.example.todo.model.Todo;
-import com.example.todo.notify.CompositeNotifier;
-import com.example.todo.notify.ConsoleNotifier;
-import com.example.todo.notify.Notifier;
 import com.example.todo.repository.InMemoryTodoRepository;
 import com.example.todo.repository.TodoRepository;
+import com.example.todo.service.CompositeNotifier;
+import com.example.todo.service.ConsoleNotifier;
+import com.example.todo.service.Notifier;
 import com.example.todo.service.TodoService;
 
 import java.util.List;
@@ -2098,19 +2138,25 @@ public class App {
         TodoRepository repository = new InMemoryTodoRepository();
         Notifier notifier = new CompositeNotifier(List.of(
                 new ConsoleNotifier(),
-                message -> System.out.println("📝 [Audit] " + message)   // Lambda 就是一個實作
+                new Notifier() {                          // 稽核用的第二個通道
+                    @Override public void notifyCreated(Todo t) { audit("新增", t); }
+                    @Override public void notifyDone(Todo t) { audit("完成", t); }
+                    private void audit(String what, Todo t) {
+                        System.out.println("📝 [Audit] " + what + "待辦 #" + t.id() + "：" + t.title());
+                    }
+                }
         ));
         TodoService service = new TodoService(repository, notifier);
 
         // ===== 使用階段：只透過 service，不知道背後是誰 =====
-        service.add("寫第 03 章", Priority.URGENT);
-        service.add("Code review", Priority.HIGH);
+        service.add("寫第 03 章", Priority.HIGH);
+        service.add("Code review", Priority.MEDIUM);
         Todo coffee = service.add("買咖啡", Priority.LOW);
 
-        service.complete(coffee.getId());
+        service.markDone(coffee.id());
 
         System.out.println("\n=== 未完成 ===");
-        for (Todo todo : service.pending()) {
+        for (Todo todo : service.findPending()) {
             System.out.println(todo.toDisplayLine());
         }
         System.out.printf("完成率 %.1f%%%n", service.completionRate());
@@ -2118,8 +2164,8 @@ public class App {
         // ===== 換掉通知實作，其他程式碼完全不用改 =====
         System.out.println("\n=== 靜音模式 ===");
         TodoService quiet = new TodoService(new InMemoryTodoRepository(), Notifier.noop());
-        quiet.add("這次不會有通知", Priority.NORMAL);
-        System.out.println("已新增，共 " + quiet.all().size() + " 筆（沒有任何通知輸出）");
+        quiet.add("這次不會有通知", Priority.MEDIUM);
+        System.out.println("已新增，共 " + quiet.findAll().size() + " 筆（沒有任何通知輸出）");
     }
 }
 ```
@@ -2137,8 +2183,8 @@ public class App {
 📝 [Audit] 完成待辦 #3：買咖啡
 
 === 未完成 ===
-[ ] #1   [緊急] 寫第 03 章
-[ ] #2   [高] Code review
+[ ] #1   [高] 寫第 03 章
+[ ] #2   [中] Code review
 完成率 33.3%
 
 === 靜音模式 ===

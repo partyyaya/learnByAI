@@ -2098,7 +2098,7 @@ public class Todo {
         setTitle(title);
     }
 
-    public void complete(LocalDateTime when) {
+    public void markDone(LocalDateTime when) {
         if (done) {
             throw new TodoAlreadyDoneException(id, title);
         }
@@ -2152,19 +2152,19 @@ public class Todo {
     }
 
     /** ✅ 回傳不可變拷貝，外部改不到內部集合（5.8 節） */
-    public Set<String> getTags() { return Set.copyOf(tags); }
+    public Set<String> tags() { return Set.copyOf(tags); }
 
-    public long getId() { return id; }
-    public String getTitle() { return title; }
-    public Priority getPriority() { return priority; }
+    public long id() { return id; }
+    public String title() { return title; }
+    public Priority priority() { return priority; }
     public boolean isDone() { return done; }
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public LocalDateTime getCompletedAt() { return completedAt; }
+    public LocalDateTime createdAt() { return createdAt; }
+    public LocalDateTime completedAt() { return completedAt; }
 
     public String toDisplayLine() {
         String tagPart = tags.isEmpty() ? "" : " " + tags;
         return "%s #%-3d [%s] %s%s".formatted(
-                done ? "[x]" : "[ ]", id, priority.getLabel(), title, tagPart);
+                done ? "[x]" : "[ ]", id, priority.label(), title, tagPart);
     }
 
     /**
@@ -2201,26 +2201,25 @@ import java.util.stream.Collectors;
 
 public enum Priority {
 
-    URGENT(1, "緊急"),
-    HIGH(2, "高"),
-    NORMAL(3, "普通"),
-    LOW(4, "低");
+    HIGH("高", 3),
+    MEDIUM("中", 2),
+    LOW("低", 1);
 
-    private final int level;
     private final String label;
+    private final int weight;
 
-    Priority(int level, String label) {
-        this.level = level;
+    Priority(String label, int weight) {
         this.label = label;
+        this.weight = weight;
     }
 
-    public int getLevel() { return level; }
+    public String label() { return label; }
 
-    public String getLabel() { return label; }
+    public int weight() { return weight; }
 
     public static Priority parse(String input) {
         if (input == null || input.isBlank()) {
-            return NORMAL;
+            return MEDIUM;
         }
         String normalized = input.strip().toUpperCase();
         for (Priority p : values()) {
@@ -2272,37 +2271,37 @@ public class IndexedTodoRepository implements TodoRepository {
         Objects.requireNonNull(todo, "todo 不可為 null");
 
         // 更新前先移除舊索引（標籤/優先度可能被改過）
-        Todo existing = byId.get(todo.getId());
+        Todo existing = byId.get(todo.id());
         if (existing != null) {
             removeFromIndexes(existing);
         }
 
-        byId.put(todo.getId(), todo);
+        byId.put(todo.id(), todo);
         addToIndexes(todo);
         return todo;
     }
 
     private void addToIndexes(Todo todo) {
-        for (String tag : todo.getTags()) {
+        for (String tag : todo.tags()) {
             // computeIfAbsent：一行取代「取不到就建一個」的五行（5.6 節）
-            byTag.computeIfAbsent(tag, k -> new HashSet<>()).add(todo.getId());
+            byTag.computeIfAbsent(tag, k -> new HashSet<>()).add(todo.id());
         }
-        byPriority.computeIfAbsent(todo.getPriority(), k -> new HashSet<>()).add(todo.getId());
+        byPriority.computeIfAbsent(todo.priority(), k -> new HashSet<>()).add(todo.id());
     }
 
     private void removeFromIndexes(Todo todo) {
-        for (String tag : todo.getTags()) {
+        for (String tag : todo.tags()) {
             Set<Long> ids = byTag.get(tag);
             if (ids != null) {
-                ids.remove(todo.getId());
+                ids.remove(todo.id());
                 // ✅ 空集合要移除，否則 byTag 會無限成長（記憶體洩漏，第 09 章）
                 if (ids.isEmpty()) byTag.remove(tag);
             }
         }
-        Set<Long> ids = byPriority.get(todo.getPriority());
+        Set<Long> ids = byPriority.get(todo.priority());
         if (ids != null) {
-            ids.remove(todo.getId());
-            if (ids.isEmpty()) byPriority.remove(todo.getPriority());
+            ids.remove(todo.id());
+            if (ids.isEmpty()) byPriority.remove(todo.priority());
         }
     }
 
@@ -2391,7 +2390,7 @@ public class TodoStatistics {
     public Map<Priority, Integer> countByPriority() {
         Map<Priority, Integer> result = new EnumMap<>(Priority.class);
         for (Todo todo : todos) {
-            result.merge(todo.getPriority(), 1, Integer::sum);      // merge：計數器標準寫法
+            result.merge(todo.priority(), 1, Integer::sum);      // merge：計數器標準寫法
         }
         return result;
     }
@@ -2411,7 +2410,7 @@ public class TodoStatistics {
     public List<Map.Entry<String, Integer>> topTags(int limit) {
         Map<String, Integer> counts = new HashMap<>();
         for (Todo todo : todos) {
-            for (String tag : todo.getTags()) {
+            for (String tag : todo.tags()) {
                 counts.merge(tag, 1, Integer::sum);
             }
         }
@@ -2425,7 +2424,7 @@ public class TodoStatistics {
     public Map<java.time.LocalDate, Integer> countByDate() {
         Map<java.time.LocalDate, Integer> result = new TreeMap<>();
         for (Todo todo : todos) {
-            result.merge(todo.getCreatedAt().toLocalDate(), 1, Integer::sum);
+            result.merge(todo.createdAt().toLocalDate(), 1, Integer::sum);
         }
         return result;
     }
@@ -2437,8 +2436,9 @@ public class TodoStatistics {
             if (!todo.isDone()) pending.add(todo);
         }
         pending.sort(Comparator
-                .comparingInt((Todo t) -> t.getPriority().getLevel())   // 數字小 = 優先度高
-                .thenComparing(Todo::getCreatedAt));
+                // ⚠️ weight 是「數字大 = 優先度高」，所以要 reversed()
+                .comparingInt((Todo t) -> t.priority().weight()).reversed()
+                .thenComparing(Todo::createdAt));
         return pending;
     }
 
@@ -2469,11 +2469,11 @@ public class CollectionsDemo {
 
         LocalDateTime base = LocalDateTime.of(2026, 8, 15, 9, 0);
 
-        Todo t1 = new Todo(repo.nextId(), "寫第 05 章", Priority.URGENT, base);
+        Todo t1 = new Todo(repo.nextId(), "寫第 05 章", Priority.HIGH, base);
         t1.addTag("寫作"); t1.addTag("java");
         repo.save(t1);
 
-        Todo t2 = new Todo(repo.nextId(), "Code review", Priority.HIGH, base.plusHours(1));
+        Todo t2 = new Todo(repo.nextId(), "Code review", Priority.MEDIUM, base.plusHours(1));
         t2.addTag("java"); t2.addTag("團隊");
         repo.save(t2);
 
@@ -2481,13 +2481,13 @@ public class CollectionsDemo {
         t3.addTag("生活");
         repo.save(t3);
 
-        Todo t4 = new Todo(repo.nextId(), "重構 Repository", Priority.HIGH, base.plusDays(1).plusHours(2));
+        Todo t4 = new Todo(repo.nextId(), "重構 Repository", Priority.MEDIUM, base.plusDays(1).plusHours(2));
         t4.addTag("java"); t4.addTag("重構");
         repo.save(t4);
 
-        Todo t5 = new Todo(repo.nextId(), "回信", Priority.NORMAL, base.plusDays(2));
+        Todo t5 = new Todo(repo.nextId(), "回信", Priority.LOW, base.plusDays(2));
         t5.addTag("團隊");
-        t5.complete(base.plusDays(2).plusHours(1));
+        t5.markDone(base.plusDays(2).plusHours(1));
         repo.save(t5);
 
         System.out.println("=== 全部 ===");
@@ -2496,8 +2496,8 @@ public class CollectionsDemo {
         System.out.println("\n=== 依標籤 java（O(1) 索引查詢）===");
         repo.findByTag("java").forEach(t -> System.out.println("  " + t.toDisplayLine()));
 
-        System.out.println("\n=== 依優先度 HIGH ===");
-        repo.findByPriority(Priority.HIGH).forEach(t -> System.out.println("  " + t.toDisplayLine()));
+        System.out.println("\n=== 依優先度 MEDIUM ===");
+        repo.findByPriority(Priority.MEDIUM).forEach(t -> System.out.println("  " + t.toDisplayLine()));
 
         System.out.println("\n=== 所有標籤（TreeSet 排序）===");
         System.out.println("  " + repo.allTags());
@@ -2508,7 +2508,7 @@ public class CollectionsDemo {
         TodoStatistics stats = new TodoStatistics(repo.findAll());
 
         System.out.println("\n=== 依優先度統計（EnumMap 順序 = enum 宣告順序）===");
-        stats.countByPriority().forEach((p, c) -> System.out.printf("  %-4s %d%n", p.getLabel(), c));
+        stats.countByPriority().forEach((p, c) -> System.out.printf("  %-4s %d%n", p.label(), c));
 
         System.out.println("\n=== 依日期統計（TreeMap 自動排序）===");
         stats.countByDate().forEach((d, c) -> System.out.printf("  %s  %d%n", d, c));
@@ -2523,7 +2523,7 @@ public class CollectionsDemo {
 
         System.out.println("\n=== 驗證索引在刪除後正確維護 ===");
         System.out.println("  刪除前 java 標籤: " + repo.findByTag("java").size() + " 筆");
-        repo.deleteById(t4.getId());
+        repo.deleteById(t4.id());
         System.out.println("  刪除後 java 標籤: " + repo.findByTag("java").size() + " 筆");
         System.out.println("  重構標籤是否還在: " + repo.allTags().contains("重構"));
     }
@@ -2534,36 +2534,35 @@ public class CollectionsDemo {
 
 ```
 === 全部 ===
-  [ ] #1   [緊急] 寫第 05 章 [寫作, java]
-  [ ] #2   [高] Code review [java, 團隊]
+  [ ] #1   [高] 寫第 05 章 [寫作, java]
+  [ ] #2   [中] Code review [java, 團隊]
   [ ] #3   [低] 買咖啡 [生活]
-  [ ] #4   [高] 重構 Repository [java, 重構]
-  [x] #5   [普通] 回信 [團隊]
+  [ ] #4   [中] 重構 Repository [java, 重構]
+  [x] #5   [低] 回信 [團隊]
 
 === 依標籤 java（O(1) 索引查詢）===
-  [ ] #1   [緊急] 寫第 05 章 [寫作, java]
-  [ ] #2   [高] Code review [java, 團隊]
-  [ ] #4   [高] 重構 Repository [java, 重構]
+  [ ] #1   [高] 寫第 05 章 [寫作, java]
+  [ ] #2   [中] Code review [java, 團隊]
+  [ ] #4   [中] 重構 Repository [java, 重構]
 
-=== 依優先度 HIGH ===
-  [ ] #2   [高] Code review [java, 團隊]
-  [ ] #4   [高] 重構 Repository [java, 重構]
+=== 依優先度 MEDIUM ===
+  [ ] #2   [中] Code review [java, 團隊]
+  [ ] #4   [中] 重構 Repository [java, 重構]
 
 === 所有標籤（TreeSet 排序）===
   [java, 團隊, 寫作, 生活, 重構]
 
 === 標籤使用次數 ===
   java   3
-  團隊    2
-  寫作    1
-  生活    1
-  重構    1
+  團隊     2
+  寫作     1
+  生活     1
+  重構     1
 
 === 依優先度統計（EnumMap 順序 = enum 宣告順序）===
-  緊急   1
-  高    2
-  普通   1
-  低    1
+  高    1
+  中    2
+  低    2
 
 === 依日期統計（TreeMap 自動排序）===
   2026-08-15  2
@@ -2571,15 +2570,15 @@ public class CollectionsDemo {
   2026-08-17  1
 
 === 待處理（優先度 → 建立時間）===
-  [ ] #1   [緊急] 寫第 05 章 [寫作, java]
-  [ ] #2   [高] Code review [java, 團隊]
-  [ ] #4   [高] 重構 Repository [java, 重構]
+  [ ] #1   [高] 寫第 05 章 [寫作, java]
+  [ ] #2   [中] Code review [java, 團隊]
+  [ ] #4   [中] 重構 Repository [java, 重構]
   [ ] #3   [低] 買咖啡 [生活]
 
 === 熱門標籤 Top 3 ===
   java   3 次
-  團隊    2 次
-  寫作    1 次
+  團隊     2 次
+  寫作     1 次
 
 完成率: 20.0%
 
@@ -2645,6 +2644,13 @@ public class CollectionsDemo {
 ### 練習 1：找出所有問題
 
 ```java
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
 public class Buggy {
     public static void main(String[] args) {
         List<String> list = Arrays.asList("a", "b", "c");
@@ -2674,6 +2680,16 @@ public class Buggy {
             return o instanceof Point p && p.x == x && p.y == y;
         }
         @Override public int hashCode() { return Objects.hash(x, y); }
+    }
+
+    record Employee(String name, int salary) {
+        int getSalary() { return salary; }
+    }
+
+    static List<Employee> getEmployees() {
+        return List.of(new Employee("小華", 95_000),
+                       new Employee("小明", 80_000),
+                       new Employee("小強", Integer.MIN_VALUE + 100));
     }
 }
 ```

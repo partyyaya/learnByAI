@@ -4606,9 +4606,11 @@ import com.example.todo.exception.TodoException;
 import com.example.todo.model.Priority;
 import com.example.todo.model.Todo;
 import com.example.todo.repository.JsonFileTodoRepository;
+import com.example.todo.service.ConsoleNotifier;
 import com.example.todo.service.TodoService;
 import com.example.todo.support.BuildInfo;
 import com.example.todo.support.Json;
+import com.example.todo.support.TodoFileStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -4674,9 +4676,11 @@ public final class App {
 
         // 第 07 章：注入 Clock，讓時間可測
         // 第 07、08 章：JSON 檔案儲存 + 執行緒安全
+        Clock clock = Clock.systemDefaultZone();
         return new TodoService(
-                new JsonFileTodoRepository(dataFile, new Json()),
-                Clock.systemDefaultZone());
+                new JsonFileTodoRepository(new TodoFileStore(dataFile, clock)),
+                clock,
+                new ConsoleNotifier());
     }
 
     // ══════════════════════════════════════════════════════════
@@ -4988,7 +4992,7 @@ java -jar todo-cli/target/todo-cli.jar done 999; echo "exit=$?"
 ```
 
 ```
-錯誤 [TODO-404] 找不到 id 為 999 的待辦事項
+錯誤 [T2001] 找不到待辦事項
 exit=1
 ```
 

@@ -2967,7 +2967,7 @@ for (int i = 0; i < sorted.size(); i++) {
 ⚠️ **這一行 `sorted(...)` 是 00 章 0.9.4 / 01 章 1.2.5 那段程式碼的一個缺口**，
 👉 **本章補上它**（2.14 的政策表有記錄）。
 
-⚠️ **但排序之後 `itemIndex` 就不對了**（00 章複查修過的那個 bug 的變體）：
+⚠️ **但排序之後 `itemIndex` 就不對了** —— 這是「排序破壞了原本的索引」這個經典陷阱：
 
 ```java
 // ✅ 排序時保留原始索引
@@ -4556,8 +4556,9 @@ var body  = mapper.toCreateResponse(order);  // ← 存取 order 的欄位
 ✅ CouponUsageRepository + coupon_usage 表（練習 4）
 ```
 
-⚠️ 課程中的程式碼、YAML 與設定均經逐行檢閱，但**尚未在本機編譯執行驗證**
-（這台機器上沒有安裝 JDK 與 Maven）。基準版本延續 04-controller：
+⚠️ 這一章的程式碼**沒有整章編譯執行過**，抄進專案之前請自己編一次
+（各章的驗證程度見[本站 README](./README.md)的表；04～07 章是編譯執行過的）。
+基準版本延續 04-controller：
 **Java 21 / Spring Boot 3.2.5 / Spring Framework 6.1 / MySQL 8.0 / Testcontainers 1.19**。
 
 ⚠️⚠️ **而這一章比前兩章更需要你實測** ——

@@ -1392,52 +1392,55 @@ public class NameClash {
 public enum Priority {
 
     // 每個常數都是 Priority 的一個實例
-    URGENT(1, "緊急", "🔴"),
-    HIGH(2, "高", "🟠"),
-    NORMAL(3, "普通", "🟡"),
-    LOW(4, "低", "⚪");
+    HIGH("高", 3, "🔴"),
+    MEDIUM("中", 2, "🟡"),
+    LOW("低", 1, "⚪");
 
-    private final int level;
     private final String label;
+    private final int weight;      // 數字大 = 優先度高，排序時直接比大小
     private final String icon;
 
     // enum 的建構子一定是 private（寫不寫都是）
-    Priority(int level, String label, String icon) {
-        this.level = level;
+    Priority(String label, int weight, String icon) {
         this.label = label;
+        this.weight = weight;
         this.icon = icon;
     }
 
-    public int getLevel() { return level; }
-    public String getLabel() { return label; }
-    public String getIcon() { return icon; }
+    // ⚠️ 本課的取值方法一律不加 `get` 前綴（`label()` 而不是 `getLabel()`）。
+    //    這是為了和第 12 章的 `record` 對齊 —— record 自動產生的存取器就是這個形式。
+    //    JavaBean 的 `getXxx` 慣例在框架（JSP、舊版 Jackson）裡仍然重要，
+    //    但在自己的領域模型上，簡潔的形式現在更常見。
+    public String label() { return label; }
+    public int weight() { return weight; }
+    public String icon() { return icon; }
 
     public boolean needsAttentionToday() {
-        return this == URGENT || this == HIGH;
+        return this == HIGH;
     }
 
     /** 從外部輸入（API 參數、CSV）安全轉換 */
-    public static Priority fromLevel(int level) {
+    public static Priority fromWeight(int weight) {
         for (Priority p : values()) {
-            if (p.level == level) return p;
+            if (p.weight == weight) return p;
         }
-        throw new IllegalArgumentException("無效的優先度: " + level);
+        throw new IllegalArgumentException("無效的優先度: " + weight);
     }
 
     public static void main(String[] args) {
-        Priority p = Priority.URGENT;
+        Priority p = Priority.HIGH;
 
-        System.out.println(p);                        // URGENT       ← 預設 toString 是常數名
-        System.out.println(p.name());                 // URGENT
+        System.out.println(p);                        // HIGH         ← 預設 toString 是常數名
+        System.out.println(p.name());                 // HIGH
         System.out.println(p.ordinal());              // 0            ← 宣告順序（別存進資料庫！）
-        System.out.println(p.getIcon() + p.getLabel()); // 🔴緊急
+        System.out.println(p.icon() + p.label());     // 🔴高
         System.out.println(p.needsAttentionToday());  // true
 
-        System.out.println(Priority.valueOf("HIGH")); // HIGH（找不到會丟 IllegalArgumentException）
-        System.out.println(Priority.fromLevel(3));    // NORMAL
+        System.out.println(Priority.valueOf("LOW"));  // LOW（找不到會丟 IllegalArgumentException）
+        System.out.println(Priority.fromWeight(2));   // MEDIUM
 
         for (Priority each : Priority.values()) {
-            System.out.printf("%s %s (level=%d)%n", each.getIcon(), each.getLabel(), each.getLevel());
+            System.out.printf("%s %s (weight=%d)%n", each.icon(), each.label(), each.weight());
         }
     }
 }
@@ -1452,8 +1455,8 @@ public enum Priority {
 int stored = priority.ordinal();
 
 // ✅ 存 name() 或自訂的穩定編碼
-String stored = priority.name();          // "URGENT"
-int stored2 = priority.getLevel();        // 1（自己定義的、不會因宣告順序改變）
+String stored = priority.name();          // "HIGH"
+int stored2 = priority.weight();          // 3（自己定義的、不會因宣告順序改變）
 ```
 
 這在第 08 站（JPA）會對應到 `@Enumerated(EnumType.STRING)` vs `EnumType.ORDINAL`——
@@ -1554,28 +1557,27 @@ package com.example.todo.model;
 
 public enum Priority {
 
-    URGENT(1, "緊急"),
-    HIGH(2, "高"),
-    NORMAL(3, "普通"),
-    LOW(4, "低");
+    HIGH("高", 3),
+    MEDIUM("中", 2),
+    LOW("低", 1);
 
-    private final int level;
     private final String label;
+    private final int weight;      // 數字大 = 優先度高
 
-    Priority(int level, String label) {
-        this.level = level;
+    Priority(String label, int weight) {
         this.label = label;
+        this.weight = weight;
     }
 
-    public int getLevel() { return level; }
+    public String label() { return label; }
 
-    public String getLabel() { return label; }
+    public int weight() { return weight; }
 
-    public static Priority fromLevel(int level) {
+    public static Priority fromWeight(int weight) {
         for (Priority p : values()) {
-            if (p.level == level) return p;
+            if (p.weight == weight) return p;
         }
-        throw new IllegalArgumentException("無效的優先度: " + level);
+        throw new IllegalArgumentException("無效的優先度: " + weight);
     }
 }
 ```
@@ -1609,7 +1611,7 @@ public class Todo {
     }
 
     /** 標記完成：狀態與時間一起更新，呼叫端不可能只做一半 */
-    public void complete(LocalDateTime when) {
+    public void markDone(LocalDateTime when) {
         if (done) {
             throw new IllegalStateException("待辦 #" + id + " 已經完成，不需重複標記");
         }
@@ -1640,17 +1642,19 @@ public class Todo {
         this.priority = Objects.requireNonNull(priority, "priority 不可為 null");
     }
 
-    public long getId() { return id; }
-    public String getTitle() { return title; }
-    public Priority getPriority() { return priority; }
+    // 取值方法不加 `get` 前綴（2.14 節說明過理由）。
+    // 例外是 boolean 的 `isDone()` —— `done()` 讀起來不像在問問題。
+    public long id() { return id; }
+    public String title() { return title; }
+    public Priority priority() { return priority; }
     public boolean isDone() { return done; }
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public LocalDateTime getCompletedAt() { return completedAt; }
+    public LocalDateTime createdAt() { return createdAt; }
+    public LocalDateTime completedAt() { return completedAt; }
 
     /** 給 CLI 顯示用的一行文字 */
     public String toDisplayLine() {
         return "%s #%-3d [%s] %s".formatted(done ? "[x]" : "[ ]", id,
-                                            priority.getLabel(), title);
+                                            priority.label(), title);
     }
 
     @Override
@@ -1703,7 +1707,7 @@ public class TodoList {
 
     public Optional<Todo> findById(long id) {
         for (Todo todo : todos) {
-            if (todo.getId() == id) return Optional.of(todo);
+            if (todo.id() == id) return Optional.of(todo);
         }
         return Optional.empty();
     }
@@ -1714,12 +1718,12 @@ public class TodoList {
                 () -> new IllegalArgumentException("找不到待辦 #" + id));
     }
 
-    public void complete(long id) {
-        getById(id).complete(LocalDateTime.now());
+    public void markDone(long id) {
+        getById(id).markDone(LocalDateTime.now());
     }
 
     public boolean remove(long id) {
-        return todos.removeIf(t -> t.getId() == id);
+        return todos.removeIf(t -> t.id() == id);
     }
 
     /** 回傳唯讀視圖，外部無法直接增刪內部集合 */
@@ -1769,11 +1773,11 @@ public class App {
     public static void main(String[] args) {
         TodoList list = new TodoList();
 
-        list.add("寫第 02 章", Priority.URGENT);
-        list.add("Code review", Priority.HIGH);
+        list.add("寫第 02 章", Priority.HIGH);
+        list.add("Code review", Priority.MEDIUM);
         list.add("買咖啡", Priority.LOW);
 
-        list.complete(3);
+        list.markDone(3);
 
         System.out.println("=== 全部 ===");
         for (Todo todo : list.all()) {
@@ -1797,7 +1801,7 @@ public class App {
 
         // 業務規則驗證
         try {
-            list.complete(3);
+            list.markDone(3);
         } catch (IllegalStateException e) {
             System.out.println("錯誤: " + e.getMessage());
         }
@@ -1814,12 +1818,12 @@ public class App {
 
 ```
 === 全部 ===
-[ ] #1   [緊急] 寫第 02 章
-[ ] #2   [高] Code review
+[ ] #1   [高] 寫第 02 章
+[ ] #2   [中] Code review
 [x] #3   [低] 買咖啡
 === 未完成 ===
-[ ] #1   [緊急] 寫第 02 章
-[ ] #2   [高] Code review
+[ ] #1   [高] 寫第 02 章
+[ ] #2   [中] Code review
 完成率: 33.3% (1/3)
 all() 是唯讀的，不能從外面亂加
 錯誤: 待辦 #3 已經完成，不需重複標記

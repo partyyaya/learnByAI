@@ -1936,8 +1936,8 @@ public enum ErrorCode {
         this.defaultMessage = defaultMessage;
     }
 
-    public String getCode() { return code; }
-    public String getDefaultMessage() { return defaultMessage; }
+    public String code() { return code; }
+    public String defaultMessage() { return defaultMessage; }
 }
 ```
 
@@ -1970,18 +1970,18 @@ public class TodoException extends RuntimeException {
         return this;
     }
 
-    public ErrorCode getErrorCode() { return errorCode; }
+    public ErrorCode errorCode() { return errorCode; }
 
-    public Map<String, Object> getContext() { return Map.copyOf(context); }
+    public Map<String, Object> context() { return Map.copyOf(context); }
 
     /** 給使用者看的訊息：不含技術細節 */
     public String toUserMessage() {
-        return "[%s] %s".formatted(errorCode.getCode(), getMessage());
+        return "[%s] %s".formatted(errorCode.code(), getMessage());
     }
 
     /** 給 log 用的訊息：含完整上下文 */
     public String toLogMessage() {
-        return "[%s] %s %s".formatted(errorCode.getCode(), getMessage(), context);
+        return "[%s] %s %s".formatted(errorCode.code(), getMessage(), context);
     }
 }
 ```
@@ -2003,9 +2003,16 @@ public class TodoNotFoundException extends TodoException {
 package com.example.todo.exception;
 
 public class TodoAlreadyDoneException extends TodoException {
+
     public TodoAlreadyDoneException(long id, String title) {
         super(ErrorCode.TODO_ALREADY_DONE, "此待辦已完成，無需重複標記");
         with("id", id).with("title", title);
+    }
+
+    /** 拿不到標題時用（例如在 Repository 層） */
+    public TodoAlreadyDoneException(long id) {
+        super(ErrorCode.TODO_ALREADY_DONE, "此待辦已完成，無需重複標記");
+        with("id", id);
     }
 }
 ```
@@ -2014,9 +2021,15 @@ public class TodoAlreadyDoneException extends TodoException {
 package com.example.todo.exception;
 
 public class InvalidTodoException extends TodoException {
+
     public InvalidTodoException(String field, Object value, String reason) {
         super(ErrorCode.INVALID_INPUT, reason);
         with("field", field).with("value", value);
+    }
+
+    /** 說不出是哪個欄位時用 */
+    public InvalidTodoException(String reason) {
+        super(ErrorCode.INVALID_INPUT, reason);
     }
 }
 ```
@@ -2054,7 +2067,7 @@ public class Todo {
         setTitle(title);
     }
 
-    public void complete(LocalDateTime when) {
+    public void markDone(LocalDateTime when) {
         if (done) {
             throw new TodoAlreadyDoneException(id, title);      // ← 帶上 id 與 title
         }
@@ -2087,16 +2100,16 @@ public class Todo {
         this.priority = Objects.requireNonNull(priority, "priority 不可為 null");
     }
 
-    public long getId() { return id; }
-    public String getTitle() { return title; }
-    public Priority getPriority() { return priority; }
+    public long id() { return id; }
+    public String title() { return title; }
+    public Priority priority() { return priority; }
     public boolean isDone() { return done; }
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public LocalDateTime getCompletedAt() { return completedAt; }
+    public LocalDateTime createdAt() { return createdAt; }
+    public LocalDateTime completedAt() { return completedAt; }
 
     public String toDisplayLine() {
         return "%s #%-3d [%s] %s".formatted(done ? "[x]" : "[ ]", id,
-                                            priority.getLabel(), title);
+                                            priority.label(), title);
     }
 
     @Override
@@ -2129,27 +2142,26 @@ import java.util.stream.Collectors;
 
 public enum Priority {
 
-    URGENT(1, "緊急"),
-    HIGH(2, "高"),
-    NORMAL(3, "普通"),
-    LOW(4, "低");
+    HIGH("高", 3),
+    MEDIUM("中", 2),
+    LOW("低", 1);
 
-    private final int level;
     private final String label;
+    private final int weight;
 
-    Priority(int level, String label) {
-        this.level = level;
+    Priority(String label, int weight) {
         this.label = label;
+        this.weight = weight;
     }
 
-    public int getLevel() { return level; }
+    public String label() { return label; }
 
-    public String getLabel() { return label; }
+    public int weight() { return weight; }
 
     /** 從使用者輸入解析，失敗時給出「合法值有哪些」——好的錯誤訊息（4.7 節） */
     public static Priority parse(String input) {
         if (input == null || input.isBlank()) {
-            return NORMAL;
+            return MEDIUM;
         }
         String normalized = input.strip().toUpperCase();
         for (Priority p : values()) {
@@ -2230,13 +2242,13 @@ public class InMemoryTodoRepository implements TodoRepository {
                 // 模擬底層技術例外（實務上是 SQLException / IOException）
                 throw new java.io.IOException("Disk quota exceeded");
             }
-            storage.put(todo.getId(), todo);
+            storage.put(todo.id(), todo);
             return todo;
         } catch (java.io.IOException e) {
             // ✅ Repository 的職責：包成統一例外，保留 cause 與上下文
             throw new TodoException(ErrorCode.STORAGE_ERROR, "寫入待辦失敗", e)
-                    .with("id", todo.getId())
-                    .with("title", todo.getTitle());
+                    .with("id", todo.id())
+                    .with("title", todo.title());
         }
     }
 
@@ -2259,25 +2271,40 @@ public class InMemoryTodoRepository implements TodoRepository {
 ### `Notifier`（第 03 章原樣搬來）
 
 ```java
-package com.example.todo.notify;
+package com.example.todo.service;
+
+import com.example.todo.model.Todo;
 
 public interface Notifier {
 
-    void notify(String message);
+    void notifyCreated(Todo todo);
+
+    void notifyDone(Todo todo);
 
     static Notifier noop() {
-        return message -> { };
+        return new Notifier() {
+            @Override public void notifyCreated(Todo todo) { }
+            @Override public void notifyDone(Todo todo) { }
+        };
     }
 }
 ```
 
 ```java
-package com.example.todo.notify;
+package com.example.todo.service;
+
+import com.example.todo.model.Todo;
 
 public class ConsoleNotifier implements Notifier {
+
     @Override
-    public void notify(String message) {
-        System.out.println("🔔 " + message);
+    public void notifyCreated(Todo todo) {
+        System.out.println("🔔 新增待辦 #" + todo.id() + "：" + todo.title());
+    }
+
+    @Override
+    public void notifyDone(Todo todo) {
+        System.out.println("🔔 完成待辦 #" + todo.id() + "：" + todo.title());
     }
 }
 ```
@@ -2289,13 +2316,13 @@ package com.example.todo.service;
 
 import com.example.todo.model.Priority;
 import com.example.todo.model.Todo;
-import com.example.todo.notify.Notifier;
 import com.example.todo.repository.TodoRepository;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 
 public class TodoService {
 
@@ -2311,28 +2338,24 @@ public class TodoService {
         // 驗證在 Todo 建構子裡（規則跟資料放在一起，第 02 章 2.5 節）
         Todo todo = new Todo(repository.nextId(), title, priority, LocalDateTime.now());
         repository.save(todo);
-        safeNotify("新增待辦 #" + todo.getId() + "：" + todo.getTitle());
+        safeNotify(n -> n.notifyCreated(todo));
         return todo;
     }
 
-    public Todo complete(long id) {
+    public Todo markDone(long id) {
         Todo todo = repository.getById(id);        // 找不到 → TodoNotFoundException
-        todo.complete(LocalDateTime.now());        // 已完成 → TodoAlreadyDoneException
+        todo.markDone(LocalDateTime.now());        // 已完成 → TodoAlreadyDoneException
         repository.save(todo);
-        safeNotify("完成待辦 #" + id + "：" + todo.getTitle());
+        safeNotify(n -> n.notifyDone(todo));
         return todo;
     }
 
-    public boolean delete(long id) {
-        Todo todo = repository.getById(id);
-        boolean removed = repository.deleteById(id);
-        if (removed) {
-            safeNotify("刪除待辦 #" + id + "：" + todo.getTitle());
-        }
-        return removed;
+    public boolean remove(long id) {
+        repository.getById(id);                    // 找不到 → TodoNotFoundException
+        return repository.deleteById(id);
     }
 
-    public List<Todo> pending() {
+    public List<Todo> findPending() {
         List<Todo> result = new ArrayList<>();
         for (Todo todo : repository.findAll()) {
             if (!todo.isDone()) result.add(todo);
@@ -2340,15 +2363,15 @@ public class TodoService {
         return result;
     }
 
-    public List<Todo> all() { return repository.findAll(); }
+    public List<Todo> findAll() { return repository.findAll(); }
 
     /**
      * ✅ 這是「合理的 catch」：通知失敗不該讓新增待辦失敗。
      * 注意有記 log、有寫註解說明為什麼可以吞——不是無聲吞掉（4.12 反模式 1）。
      */
-    private void safeNotify(String message) {
+    private void safeNotify(Consumer<Notifier> action) {
         try {
-            notifier.notify(message);
+            action.accept(notifier);
         } catch (RuntimeException e) {
             System.err.println("[WARN] 通知發送失敗（不影響主流程）: " + e.getMessage());
         }
@@ -2395,15 +2418,15 @@ public class TodoCli {
             // 參數問題
             logWarn("參數錯誤: " + e.getMessage());
             return "❌ [%s] %s".formatted(
-                    ErrorCode.INVALID_INPUT.getCode(), e.getMessage());
+                    ErrorCode.INVALID_INPUT.code(), e.getMessage());
 
         } catch (RuntimeException e) {
             // 最後防線：未預期的例外，記完整堆疊，對外只給固定文案
             String traceId = Long.toHexString(System.nanoTime());
             logError("未預期的例外，traceId=" + traceId, e);
             return "❌ [%s] %s（追蹤碼 %s，請提供給客服）".formatted(
-                    ErrorCode.INTERNAL_ERROR.getCode(),
-                    ErrorCode.INTERNAL_ERROR.getDefaultMessage(), traceId);
+                    ErrorCode.INTERNAL_ERROR.code(),
+                    ErrorCode.INTERNAL_ERROR.defaultMessage(), traceId);
         }
     }
 
@@ -2416,23 +2439,23 @@ public class TodoCli {
                 if (parts.length < 2) {
                     throw new IllegalArgumentException("用法: add <標題> [優先度]");
                 }
-                Priority p = parts.length >= 3 ? Priority.parse(parts[2]) : Priority.NORMAL;
+                Priority p = parts.length >= 3 ? Priority.parse(parts[2]) : Priority.MEDIUM;
                 Todo todo = service.add(parts[1], p);
                 yield "✅ 已新增 " + todo.toDisplayLine();
             }
             case "done" -> {
                 long id = parseId(parts);
-                Todo todo = service.complete(id);
+                Todo todo = service.markDone(id);
                 yield "✅ 已完成 " + todo.toDisplayLine();
             }
             case "delete" -> {
                 long id = parseId(parts);
-                service.delete(id);
+                service.remove(id);
                 yield "✅ 已刪除 #" + id;
             }
             case "list" -> {
                 StringBuilder sb = new StringBuilder();
-                for (Todo todo : service.all()) {
+                for (Todo todo : service.findAll()) {
                     sb.append(todo.toDisplayLine()).append('\n');
                 }
                 yield sb.isEmpty() ? "（沒有待辦）" : sb.toString().stripTrailing();
@@ -2471,8 +2494,8 @@ public class TodoCli {
 package com.example.todo;
 
 import com.example.todo.cli.TodoCli;
-import com.example.todo.notify.ConsoleNotifier;
 import com.example.todo.repository.InMemoryTodoRepository;
+import com.example.todo.service.ConsoleNotifier;
 import com.example.todo.service.TodoService;
 
 import java.util.List;
@@ -2484,7 +2507,7 @@ public class App {
                 new InMemoryTodoRepository(), new ConsoleNotifier()));
 
         List<String> commands = List.of(
-                "add 寫第04章 URGENT",
+                "add 寫第04章 HIGH",
                 "add 買咖啡",
                 "list",
                 "done 1",
@@ -2507,21 +2530,21 @@ public class App {
 輸出（`[WARN]` / `[ERROR]` 走 stderr，實際終端機會交錯）：
 
 ```
-$ add 寫第04章 URGENT
+$ add 寫第04章 HIGH
 🔔 新增待辦 #1：寫第04章
-✅ 已新增 [ ] #1   [緊急] 寫第04章
+✅ 已新增 [ ] #1   [高] 寫第04章
 
 $ add 買咖啡
 🔔 新增待辦 #2：買咖啡
-✅ 已新增 [ ] #2   [普通] 買咖啡
+✅ 已新增 [ ] #2   [中] 買咖啡
 
 $ list
-[ ] #1   [緊急] 寫第04章
-[ ] #2   [普通] 買咖啡
+[ ] #1   [高] 寫第04章
+[ ] #2   [中] 買咖啡
 
 $ done 1
 🔔 完成待辦 #1：寫第04章
-✅ 已完成 [x] #1   [緊急] 寫第04章
+✅ 已完成 [x] #1   [高] 寫第04章
 
 $ done 1
 [WARN] [T2002] 此待辦已完成，無需重複標記 {id=1, title=寫第04章}
@@ -2540,8 +2563,8 @@ $ add
 ❌ [T1001] 用法: add <標題> [優先度]
 
 $ add x SUPER_URGENT
-[WARN] [T1001] 無效的優先度，可用值: URGENT, HIGH, NORMAL, LOW {field=priority, value=SUPER_URGENT}
-❌ [T1001] 無效的優先度，可用值: URGENT, HIGH, NORMAL, LOW
+[WARN] [T1001] 無效的優先度，可用值: HIGH, MEDIUM, LOW {field=priority, value=SUPER_URGENT}
+❌ [T1001] 無效的優先度，可用值: HIGH, MEDIUM, LOW
 
 $ fly
 [WARN] 參數錯誤: 未知指令: fly（可用: add / done / delete / list）

@@ -440,6 +440,7 @@ public class RegexPerformance {
 ### 常用操作
 
 ```java
+import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -478,7 +479,7 @@ public class RegexOperations {
         // 找出全部比對結果（Java 9+）
         Pattern.compile("\\d+").matcher("a1b22c333")
                 .results()
-                .map(Matcher.MatchResult::group)
+                .map(MatchResult::group)          // MatchResult 在 java.util.regex，不是 Matcher 的巢狀類別
                 .forEach(g -> System.out.print(g + " "));       // 1 22 333
         System.out.println();
 
@@ -1909,10 +1910,18 @@ public class Formatting {
 
         // ===== 本地化 =====
         System.out.println("\n--- 本地化（要傳 Locale）---");
-        var localized = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.LONG);
+        // ⚠️ 只能用 SHORT / MEDIUM：LONG 與 FULL 的樣式含有時區欄位，
+        //    套在沒有時區資訊的 LocalDateTime 上會丟
+        //    DateTimeException: Unable to extract ZoneId from temporal ...
+        var localized = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM);
         System.out.println("台灣: " + dt.format(localized.withLocale(Locale.TAIWAN)));
         System.out.println("美國: " + dt.format(localized.withLocale(Locale.US)));
         System.out.println("日本: " + dt.format(localized.withLocale(Locale.JAPAN)));
+
+        // 要用 LONG / FULL，就得先給它時區
+        var longStyle = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.LONG);
+        ZonedDateTime zoned = dt.atZone(ZoneId.of("Asia/Taipei"));
+        System.out.println("台灣(LONG): " + zoned.format(longStyle.withLocale(Locale.TAIWAN)));
 
         System.out.println("星期（中文）: " + dt.format(DateTimeFormatter.ofPattern("EEEE", Locale.TAIWAN)));
         System.out.println("星期（英文）: " + dt.format(DateTimeFormatter.ofPattern("EEEE", Locale.US)));
@@ -2602,6 +2611,8 @@ Java 沒有內建 JSON 支援，實務標準是 **Jackson**（Spring Boot 預設
 ### `ObjectMapper` 的正確用法
 
 ```java
+package com.example.todo.support;
+
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -3201,7 +3212,7 @@ public class Todo {
         this(id, title, priority, createdAt, false, null, null);
     }
 
-    public void complete(Instant when) {
+    public void markDone(Instant when) {
         if (done) {
             throw new TodoAlreadyDoneException(id, title);
         }
@@ -3254,20 +3265,23 @@ public class Todo {
         return tag != null && tags.contains(tag.strip().toLowerCase());
     }
 
-    public long getId() { return id; }
-    public String getTitle() { return title; }
-    public Priority getPriority() { return priority; }
-    public boolean isDone() { return done; }
-    public Instant getCreatedAt() { return createdAt; }
-    public Instant getCompletedAt() { return completedAt; }
-    public Set<String> getTags() { return Set.copyOf(tags); }
+    // ⚠️ 存取子沒有 `get` 前綴時，Jackson 的預設內省**找不到任何屬性** ——
+    //    序列化會直接丟 InvalidDefinitionException（"no properties discovered"）。
+    //    所以每一個都要用 @JsonProperty 明講欄位名。理由見下方說明。
+    @JsonProperty("id")          public long id() { return id; }
+    @JsonProperty("title")       public String title() { return title; }
+    @JsonProperty("priority")    public Priority priority() { return priority; }
+    @JsonProperty("done")        public boolean isDone() { return done; }
+    @JsonProperty("createdAt")   public Instant createdAt() { return createdAt; }
+    @JsonProperty("completedAt") public Instant completedAt() { return completedAt; }
+    @JsonProperty("tags")        public Set<String> tags() { return Set.copyOf(tags); }
 
     /** @JsonIgnore：這是顯示用的衍生資料，不要寫進檔案 */
     @JsonIgnore
     public String toDisplayLine() {
         String tagPart = tags.isEmpty() ? "" : " " + tags;
         return "%s #%-3d [%s] %s%s".formatted(
-                done ? "[x]" : "[ ]", id, priority.getLabel(), title, tagPart);
+                done ? "[x]" : "[ ]", id, priority.label(), title, tagPart);
     }
 
     @Override
@@ -3287,6 +3301,27 @@ public class Todo {
     }
 }
 ```
+
+> ⚠️ **`getXxx` 不見了，Jackson 就瞎了。**
+>
+> 本課的 `Todo` 用的是 `id()` / `title()` 這種不加 `get` 的存取子（第 02 章 2.14 節說明過理由）。
+> 但 Jackson 的**預設內省規則是找 `getXxx()` / `isXxx()`**，所以它在 `Todo` 上
+> 一個屬性都找不到，序列化時直接丟：
+>
+> ```
+> InvalidDefinitionException: No serializer found for class com.example.todo.model.Todo
+> and no properties discovered to create BeanSerializer
+> ```
+>
+> **三種解法**：
+>
+> | 解法 | 寫法 | 適用 |
+> |---|---|---|
+> | ① 每個存取子標 `@JsonProperty` | 上面用的做法 | 少數幾個類別，最明確 |
+> | ② 改用 `record` | 第 12 章 12.5 節 | **Jackson 2.12+ 原生支援 record**，不用任何註解 |
+> | ③ 改欄位可見度規則 | `mapper.setVisibility(FIELD, ANY)` 直接讀欄位、不看方法 | 整個專案統一時 |
+>
+> **這正是第 12 章把 `Todo` 改成 `record` 的其中一個好處** —— 這七行 `@JsonProperty` 會全部消失。
 
 ### `TodoFileStore.java`：原子寫入 + 自動備份
 
@@ -3467,15 +3502,15 @@ public class JsonFileTodoRepository implements TodoRepository {
         cache.clear();
         List<Todo> loaded = store.load();
         for (Todo todo : loaded) {
-            cache.put(todo.getId(), todo);
-            sequence = Math.max(sequence, todo.getId());     // ✅ 避免重啟後 id 撞號
+            cache.put(todo.id(), todo);
+            sequence = Math.max(sequence, todo.id());     // ✅ 避免重啟後 id 撞號
         }
     }
 
     @Override
     public Todo save(Todo todo) {
         Objects.requireNonNull(todo, "todo 不可為 null");
-        cache.put(todo.getId(), todo);
+        cache.put(todo.id(), todo);
         flush();
         return todo;
     }
@@ -3505,7 +3540,7 @@ public class JsonFileTodoRepository implements TodoRepository {
     /** 批次寫入：一次存多筆時，只寫檔一次（避免 N 次 IO） */
     public void saveAll(List<Todo> todos) {
         for (Todo todo : todos) {
-            cache.put(todo.getId(), todo);
+            cache.put(todo.id(), todo);
         }
         flush();
     }
@@ -3523,7 +3558,7 @@ package com.example.todo;
 
 import com.example.todo.model.Priority;
 import com.example.todo.model.Todo;
-import com.example.todo.notify.ConsoleNotifier;
+import com.example.todo.service.ConsoleNotifier;
 import com.example.todo.repository.JsonFileTodoRepository;
 import com.example.todo.support.TodoFileStore;
 import com.example.todo.service.TodoService;
@@ -3556,7 +3591,7 @@ public class App {
 
         System.out.println("載入筆數: " + repo.findAll().size());          // 0
 
-        Todo t1 = service.add("寫第 07 章", Priority.URGENT);
+        Todo t1 = service.add("寫第 07 章", Priority.HIGH);
         t1.addTag("寫作"); t1.addTag("java");
         repo.save(t1);
 
@@ -3565,7 +3600,7 @@ public class App {
         repo.save(t2);
 
         Todo t3 = service.add("買咖啡 ☕", Priority.LOW);
-        service.complete(t3.getId());
+        service.markDone(t3.id());
 
         System.out.println("\n檔案內容:");
         System.out.println(Files.readString(dataFile));
@@ -3579,9 +3614,9 @@ public class App {
         for (Todo todo : repo2.findAll()) {
             System.out.printf("  %s  建立於 %s%s%n",
                     todo.toDisplayLine(),
-                    DISPLAY.format(todo.getCreatedAt()),
-                    todo.getCompletedAt() == null ? ""
-                            : "，完成於 " + DISPLAY.format(todo.getCompletedAt()));
+                    DISPLAY.format(todo.createdAt()),
+                    todo.completedAt() == null ? ""
+                            : "，完成於 " + DISPLAY.format(todo.completedAt()));
         }
 
         // ✅ id 沒有撞號（sequence 對齊到最大 id）
@@ -3590,8 +3625,8 @@ public class App {
         // ===== 備份機制 =====
         System.out.println("\n=== 備份 ===");
         var service2 = new TodoService(repo2, new ConsoleNotifier(), clock);
-        service2.add("觸發第二次寫入", Priority.NORMAL);
-        service2.add("觸發第三次寫入", Priority.NORMAL);
+        service2.add("觸發第二次寫入", Priority.MEDIUM);
+        service2.add("觸發第三次寫入", Priority.MEDIUM);
 
         store2.listBackups().forEach(p ->
                 System.out.println("  " + p.getFileName()));
@@ -3600,8 +3635,8 @@ public class App {
         System.out.println("\n=== 用固定 Clock 顯示相對時間 ===");
         Clock future = Clock.offset(clock, Duration.ofHours(26));
         for (Todo todo : repo2.findAll()) {
-            System.out.printf("  #%d %s → %s%n", todo.getId(), todo.getTitle(),
-                    humanize(todo.getCreatedAt(), future.instant()));
+            System.out.printf("  #%d %s → %s%n", todo.id(), todo.title(),
+                    humanize(todo.createdAt(), future.instant()));
         }
 
         // ===== 壞掉的檔案 =====
@@ -3642,7 +3677,6 @@ package com.example.todo.service;
 
 import com.example.todo.model.Priority;
 import com.example.todo.model.Todo;
-import com.example.todo.notify.Notifier;
 import com.example.todo.repository.TodoRepository;
 
 import java.time.Clock;
@@ -3665,28 +3699,24 @@ public class TodoService {
     public Todo add(String title, Priority priority) {
         Todo todo = new Todo(repository.nextId(), title, priority, clock.instant());
         repository.save(todo);
-        safeNotify("新增待辦 #" + todo.getId() + "：" + todo.getTitle());
+        safeNotify(n -> n.notifyCreated(todo));
         return todo;
     }
 
-    public Todo complete(long id) {
+    public Todo markDone(long id) {
         Todo todo = repository.getById(id);
-        todo.complete(clock.instant());
+        todo.markDone(clock.instant());
         repository.save(todo);
-        safeNotify("完成待辦 #" + id + "：" + todo.getTitle());
+        safeNotify(n -> n.notifyDone(todo));
         return todo;
     }
 
-    public boolean delete(long id) {
-        Todo todo = repository.getById(id);
-        boolean removed = repository.deleteById(id);
-        if (removed) {
-            safeNotify("刪除待辦 #" + id + "：" + todo.getTitle());
-        }
-        return removed;
+    public boolean remove(long id) {
+        repository.getById(id);
+        return repository.deleteById(id);
     }
 
-    public List<Todo> pending() {
+    public List<Todo> findPending() {
         List<Todo> result = new ArrayList<>();
         for (Todo todo : repository.findAll()) {
             if (!todo.isDone()) result.add(todo);
@@ -3694,12 +3724,12 @@ public class TodoService {
         return result;
     }
 
-    public List<Todo> all() { return repository.findAll(); }
+    public List<Todo> findAll() { return repository.findAll(); }
 
     /** 通知失敗不該讓主流程失敗（第 04 章 4.12 反模式 1） */
-    private void safeNotify(String message) {
+    private void safeNotify(java.util.function.Consumer<Notifier> action) {
         try {
-            notifier.notify(message);
+            action.accept(notifier);
         } catch (RuntimeException e) {
             System.err.println("[WARN] 通知發送失敗（不影響主流程）: " + e.getMessage());
         }
@@ -3721,30 +3751,30 @@ public class TodoService {
 [ {
   "id" : 1,
   "title" : "寫第 07 章",
-  "priority" : "URGENT",
-  "done" : false,
+  "priority" : "HIGH",
   "createdAt" : "2026-08-17T06:30:00.123456Z",
-  "tags" : [ "寫作", "java" ]
+  "done" : false,
+  "tags" : [ "java", "寫作" ]
 }, {
   "id" : 2,
   "title" : "整理 IO 筆記 📝",
   "priority" : "HIGH",
-  "done" : false,
   "createdAt" : "2026-08-17T06:30:00.234567Z",
+  "done" : false,
   "tags" : [ "java" ]
 }, {
   "id" : 3,
   "title" : "買咖啡 ☕",
   "priority" : "LOW",
-  "done" : true,
   "createdAt" : "2026-08-17T06:30:00.245678Z",
+  "done" : true,
   "completedAt" : "2026-08-17T06:30:00.256789Z",
   "tags" : [ ]
 } ]
 
 === 重新啟動（從檔案載入）===
 載入筆數: 3
-  [ ] #1   [緊急] 寫第 07 章 [寫作, java]  建立於 2026-08-17 14:30
+  [ ] #1   [高] 寫第 07 章 [java, 寫作]  建立於 2026-08-17 14:30
   [ ] #2   [高] 整理 IO 筆記 📝 [java]  建立於 2026-08-17 14:30
   [x] #3   [低] 買咖啡 ☕  建立於 2026-08-17 14:30，完成於 2026-08-17 14:30
 下一個 id: 4
@@ -3778,6 +3808,161 @@ public class TodoService {
 | `TypeReference<List<Todo>>` | `TodoFileStore.load` | 泛型抹除（7.17 節） |
 | `sequence = max(id)` | `reload()` | 重啟後 id 不撞號 |
 | 備份輪替 | `pruneOldBackups` | 檔案不無限成長 |
+
+### ⚠️ 換成 `Instant` 之後，第 06 章的 `TodoStatistics` 編不過了
+
+`createdAt` 從 `LocalDateTime` 變成 `Instant`，第 06 章那個「依日期分組」的方法就壞了：
+
+```java
+// ❌ 編不過：Instant 沒有 toLocalDate()
+return todos.stream().collect(Collectors.groupingBy(
+        t -> t.createdAt().toLocalDate(), TreeMap::new, Collectors.counting()));
+```
+
+**這不是打錯字，是型別在提醒你一件事**：`Instant` 是時間軸上的一個點，
+它**沒有「日期」這個概念** —— 同一個 `Instant`，在台北是 8/16，在紐約是 8/15（7.11 節）。
+所以「這是哪一天的待辦」這個問題，**一定要先講定用誰的日曆**：
+
+完整的更新版（其餘方法與第 06 章相同，只有兩個用到「日期」的地方要加 `.atZone(zone)`）：
+
+```java
+package com.example.todo.service;
+
+import com.example.todo.model.Priority;
+import com.example.todo.model.Todo;
+
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.Comparator;
+import java.util.EnumMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
+
+public class TodoStatistics {
+
+    private final List<Todo> todos;
+    private final ZoneId zone;          // ✅ 時區變成明確的依賴，和 Clock 一樣（7.15 節）
+
+    public TodoStatistics(List<Todo> todos, ZoneId zone) {
+        this.todos = List.copyOf(todos);
+        this.zone = Objects.requireNonNull(zone, "zone 不可為 null");
+    }
+
+    public Map<Priority, Long> countByPriority() {
+        return todos.stream().collect(Collectors.groupingBy(
+                Todo::priority, () -> new EnumMap<>(Priority.class), Collectors.counting()));
+    }
+
+    public Map<Boolean, List<Todo>> partitionByDone() {
+        return todos.stream().collect(Collectors.partitioningBy(Todo::isDone));
+    }
+
+    public Map<String, Long> topTags(int limit) {
+        return todos.stream()
+                .flatMap(t -> t.tags().stream())
+                .collect(Collectors.groupingBy(tag -> tag, Collectors.counting()))
+                .entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(limit)
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
+                        (a, b) -> a, LinkedHashMap::new));
+    }
+
+    /** ★ 改動點 1／2 */
+    public Map<LocalDate, Long> countByDate() {
+        return todos.stream().collect(Collectors.groupingBy(
+                t -> t.createdAt().atZone(zone).toLocalDate(),   // ← 明確指定時區
+                TreeMap::new, Collectors.counting()));
+    }
+
+    public List<Todo> pendingSorted() {
+        return todos.stream()
+                .filter(t -> !t.isDone())
+                .sorted(Comparator.comparingInt((Todo t) -> t.priority().weight()).reversed()
+                        .thenComparing(Todo::createdAt))
+                .toList();
+    }
+
+    public double completionRate() {
+        if (todos.isEmpty()) return 0.0;
+        return todos.stream().filter(Todo::isDone).count() * 100.0 / todos.size();
+    }
+
+    public Map<Priority, String> completionRateByPriority() {
+        return todos.stream().collect(Collectors.groupingBy(
+                Todo::priority,
+                () -> new EnumMap<>(Priority.class),
+                Collectors.collectingAndThen(Collectors.toList(), list -> {
+                    long done = list.stream().filter(Todo::isDone).count();
+                    return "%d/%d (%.0f%%)".formatted(done, list.size(),
+                            done * 100.0 / list.size());
+                })));
+    }
+
+    public String summary() {
+        return todos.stream().collect(Collectors.teeing(
+                Collectors.filtering(Todo::isDone, Collectors.counting()),
+                Collectors.counting(),
+                (done, total) -> total == 0
+                        ? "沒有待辦"
+                        : "%d / %d 完成 (%.1f%%)".formatted(done, total, done * 100.0 / total)));
+    }
+
+    public Map<String, List<String>> pendingTitlesByTag() {
+        return todos.stream()
+                .flatMap(t -> t.tags().stream().map(tag -> Map.entry(tag, t)))
+                .collect(Collectors.groupingBy(Map.Entry::getKey, TreeMap::new,
+                        Collectors.mapping(Map.Entry::getValue,
+                                Collectors.filtering(t -> !t.isDone(),
+                                        Collectors.mapping(Todo::title, Collectors.toList())))));
+    }
+
+    public Optional<Todo> oldestPending() {
+        return todos.stream()
+                .filter(t -> !t.isDone())
+                .min(Comparator.comparing(Todo::createdAt));
+    }
+
+    public String render() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 待辦統計 ===\n");
+        sb.append("總覽: ").append(summary()).append('\n');
+
+        sb.append("\n依優先度:\n");
+        Map<Priority, String> rates = completionRateByPriority();     // 提到迴圈外（6.17 節）
+        countByPriority().forEach((p, c) ->
+                sb.append("  %-4s %d 筆  完成 %s%n".formatted(p.label(), c, rates.get(p))));
+
+        sb.append("\n依日期:\n");
+        countByDate().forEach((d, c) -> sb.append("  %s  %d 筆%n".formatted(d, c)));
+
+        sb.append("\n熱門標籤:\n");
+        topTags(5).forEach((tag, c) -> sb.append("  %-8s %d 次%n".formatted(tag, c)));
+
+        sb.append("\n待處理（優先度序）:\n");
+        pendingSorted().forEach(t -> sb.append("  ").append(t.toDisplayLine()).append('\n'));
+
+        /** ★ 改動點 2／2 */
+        oldestPending().ifPresentOrElse(
+                t -> sb.append("\n⚠️ 最久未處理: ").append(t.toDisplayLine())
+                        .append(" (建立於 ").append(t.createdAt().atZone(zone).toLocalDate())
+                        .append(")\n"),
+                () -> sb.append("\n✅ 沒有待處理的項目\n"));
+
+        return sb.toString();
+    }
+}
+```
+
+> **不要用 `ZoneId.systemDefault()` 當預設值。** 那是把問題藏起來 ——
+> 同一份報表在你的筆電和正式機（通常是 UTC）會跑出不同結果，而且不會有任何警告。
+> **讓呼叫端明講**：報表要給台灣使用者看，就傳 `ZoneId.of("Asia/Taipei")`。
 
 > **這一版還有兩個問題留給後面章節：**
 > - 每次變更都寫整個檔案 → 資料量大時很慢。第 08 章會加上「批次匯入時只寫一次」。
@@ -4391,6 +4576,15 @@ public class LogAnalyzer {
 ### 練習 4：預測輸出
 
 ```java
+import java.nio.file.Path;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.Period;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+
 public class Quiz {
     public static void main(String[] args) {
         // ①

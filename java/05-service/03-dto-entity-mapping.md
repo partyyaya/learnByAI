@@ -5958,8 +5958,9 @@ LocalDate deliveryDate;   // 日期（「8 月 30 日到貨」與時區無關）
 ✅ cancel() 回傳 CancellationResultView            ★ 3.10.3 ⑨
 ```
 
-⚠️ 課程中的程式碼、YAML 與設定均經逐行檢閱，但**尚未在本機編譯執行驗證**
-（這台機器上沒有安裝 JDK 與 Maven）。基準版本延續前三章：
+⚠️ 這一章的程式碼**沒有整章編譯執行過**，抄進專案之前請自己編一次
+（各章的驗證程度見[本站 README](./README.md)的表；04～07 章是編譯執行過的）。
+基準版本延續前三章：
 **Java 21 / Spring Boot 3.2.5 / Spring Framework 6.1 / Jackson 2.17 /
 MapStruct 1.5.5.Final / ArchUnit 1.3**。
 

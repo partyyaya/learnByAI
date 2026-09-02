@@ -3549,8 +3549,8 @@ void 規則4_TimeLimiter必須回CompletableFuture() {
 
 ⚠️⚠️ **四條規則都加了 `allowEmptyShould(true)`，而那正是它們的危險之處。**
 
-**00 章 0.11.2 的複查抓過同一個問題**（`allowEmptyShould` 被誤用成例外機制）。
-**這一次的問題不同**：`allowEmptyShould(true)` 讓「一個 `@Async` 方法都沒有」時
+**00 章 0.11.2 講過 `allowEmptyShould` 的另一個誤用**：拿它當例外機制用。
+**這裡的問題不同**：`allowEmptyShould(true)` 讓「一個 `@Async` 方法都沒有」時
 規則變成綠燈 —— 而那是對的，但它也代表**規則本身可能寫錯了卻永遠是綠的**。
 
 **所以這四條規則必須被「證明它會紅燈」。**
@@ -4410,7 +4410,7 @@ public class OrderExpirationJob {
 
 | # | 缺口 | 為什麼不修 | 替代 |
 |---|---|---|---|
-| 1 | 🔴 **沒有真的 MQ**（Kafka / RabbitMQ） | 這台機器沒有 Docker | outbox 直接打 HTTP；6.9.2 的相容性規則對 MQ 一樣適用 |
+| 1 | 🔴 **沒有真的 MQ**（Kafka / RabbitMQ） | 本課的環境沒有跑 broker | outbox 直接打 HTTP；6.9.2 的相容性規則對 MQ 一樣適用 |
 | 2 | 🔴 **`SKIP LOCKED` 只在 H2 2.2.224 上驗過【語法】** | 沒有真的 MySQL | ⚠️ **shop-service 選的是條件式 UPDATE，它不依賴這個** |
 | 3 | ⚠️ **`RequestSentMarkerInterceptor` 沒有實測** | 需要一個「收到請求後才斷線」的伺服器 | ⏳ 6.15 練習之外的延伸 |
 | 4 | ⚠️ **Saga 的程式碼是設計，不是完整實作** | 完整的 Saga 引擎超出一章的篇幅 | 狀態機與補償順序的規則是完整的 |
@@ -4510,7 +4510,8 @@ public class OrderExpirationJob {
 **完成本章後**，請確認 6.16 的清單。
 
 ⚠️ **最後一件事**：這一章有 **9 個已知缺口**，其中 **4 個**
-（真的 MQ、真的 MySQL、K8s、壓測）都是**「這台機器上做不到」**。
+（真的 MQ、真的 MySQL、K8s、壓測）**需要這門課沒有的基礎設施**，
+所以它們是「做不到」，不是「沒做」。
 
 > 📌 **而 05 章說過的那句話在這裡要再說一次**：
 > **「沒做」是一個決定，「做不到」是一個限制。**

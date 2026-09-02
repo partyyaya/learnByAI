@@ -437,12 +437,16 @@ surefire 的設定（第 10 章 10.10 節，這裡補上 Mockito 的 agent 設�
 為了讓後面所有測試都能直接看懂，先把受測的類別完整列出（**從第 02～08 章原樣搬來**，
 只在 `TodoService` 多了一個 `Notifier` 參數，理由見下方說明）。
 
-**`Priority.java`**（第 02 章）
+**`Priority.java`**（第 02 章，第 04 章加上 `parse`）
 
 ```java
 package com.example.todo.model;
 
-/** 優先度。附帶顯示用的標籤與排序權重（第 02 章 2.14 節：帶欄位的 enum）。 */
+import com.example.todo.exception.InvalidTodoException;
+
+import java.util.Arrays;
+import java.util.stream.Collectors;
+
 public enum Priority {
 
     HIGH("高", 3),
@@ -457,12 +461,20 @@ public enum Priority {
         this.weight = weight;
     }
 
-    public String label() {
-        return label;
-    }
+    public String label() { return label; }
 
-    public int weight() {
-        return weight;
+    public int weight() { return weight; }
+
+    public static Priority parse(String input) {
+        if (input == null || input.isBlank()) {
+            return MEDIUM;
+        }
+        String normalized = input.strip().toUpperCase();
+        for (Priority p : values()) {
+            if (p.name().equals(normalized)) return p;
+        }
+        String allowed = Arrays.stream(values()).map(Enum::name).collect(Collectors.joining(", "));
+        throw new InvalidTodoException("priority", input, "無效的優先度，可用值: " + allowed);
     }
 }
 ```
@@ -475,6 +487,10 @@ package com.example.todo.model;
 import com.example.todo.exception.InvalidTodoException;
 import com.example.todo.exception.TodoAlreadyDoneException;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.Objects;
@@ -482,48 +498,84 @@ import java.util.Set;
 
 public class Todo {
 
-    public static final int MAX_TITLE_LENGTH = 100;
-    public static final int MAX_TAGS = 5;
+    private static final int MAX_TITLE_LENGTH = 100;
+    private static final int MAX_TAGS = 5;
 
     private final long id;
-    private final Instant createdAt;
     private String title;
     private Priority priority;
     private boolean done;
+    // ✅ 事件時刻用 Instant，不是 LocalDateTime（7.11 節）
+    private final Instant createdAt;
     private Instant completedAt;
     private final Set<String> tags = new LinkedHashSet<>();
 
-    public Todo(long id, String title, Priority priority, Instant createdAt) {
+    /**
+     * Jackson 用這個建構子反序列化。
+     * @JsonProperty 標出每個參數對應的 JSON 欄位名。
+     */
+    @JsonCreator
+    public Todo(@JsonProperty("id") long id,
+                @JsonProperty("title") String title,
+                @JsonProperty("priority") Priority priority,
+                @JsonProperty("createdAt") Instant createdAt,
+                @JsonProperty("done") boolean done,
+                @JsonProperty("completedAt") Instant completedAt,
+                @JsonProperty("tags") Set<String> tags) {
         if (id <= 0) {
-            throw new InvalidTodoException("id 必須是正整數，收到：" + id);
+            throw new InvalidTodoException("id", id, "id 必須大於 0");
         }
         this.id = id;
-        this.createdAt = Objects.requireNonNull(createdAt, "createdAt 不可為 null");
         this.priority = Objects.requireNonNull(priority, "priority 不可為 null");
-        setTitle(title);      // 走同一套驗證，不要在建構子重複寫
+        this.createdAt = Objects.requireNonNull(createdAt, "createdAt 不可為 null");
+        this.done = done;
+        this.completedAt = completedAt;
+        setTitle(title);
+        if (tags != null) {
+            tags.forEach(this::addTag);
+        }
+        // 一致性檢查：反序列化的資料也可能是壞的（手改過的檔案、舊版格式）
+        if (done && completedAt == null) {
+            throw new InvalidTodoException("completedAt", null, "已完成的待辦必須有完成時間");
+        }
+        if (!done && completedAt != null) {
+            throw new InvalidTodoException("completedAt", completedAt, "未完成的待辦不應有完成時間");
+        }
     }
 
-    // ── 行為方法（第 02 章 2.9 節：不要只給 setter） ──
+    /** 一般程式碼用的建構子 */
+    public Todo(long id, String title, Priority priority, Instant createdAt) {
+        this(id, title, priority, createdAt, false, null, null);
+    }
 
-    /** 標記完成。已完成再標記會丟例外——冪等性交由 Service 層決定（11.2 節）。 */
-    public void markDone(Instant at) {
+    public void markDone(Instant when) {
         if (done) {
-            throw new TodoAlreadyDoneException(id);
+            throw new TodoAlreadyDoneException(id, title);
+        }
+        Objects.requireNonNull(when, "完成時間不可為 null");
+        if (when.isBefore(createdAt)) {
+            throw new InvalidTodoException("completedAt", when, "完成時間不可早於建立時間");
         }
         this.done = true;
-        this.completedAt = Objects.requireNonNull(at, "完成時間不可為 null");
+        this.completedAt = when;
+    }
+
+    public void reopen() {
+        this.done = false;
+        this.completedAt = null;
     }
 
     public void setTitle(String title) {
-        String trimmed = title == null ? "" : title.strip();
-        if (trimmed.isEmpty()) {
-            throw new InvalidTodoException("標題不可為空白");
+        if (title == null || title.isBlank()) {
+            throw new InvalidTodoException("title", title, "標題不可為空");
         }
-        if (trimmed.length() > MAX_TITLE_LENGTH) {
-            throw new InvalidTodoException(
-                    "標題不可超過 %d 字，收到 %d 字".formatted(MAX_TITLE_LENGTH, trimmed.length()));
+        String stripped = title.strip();
+        // ✅ 用碼點數判斷長度，emoji 才不會被當成兩個字（7.4 節）
+        if (stripped.codePointCount(0, stripped.length()) > MAX_TITLE_LENGTH) {
+            throw new InvalidTodoException("title", stripped.length(),
+                    "標題長度不可超過 " + MAX_TITLE_LENGTH + " 字");
         }
-        this.title = trimmed;
+        this.title = stripped;
     }
 
     public void changePriority(Priority priority) {
@@ -531,64 +583,57 @@ public class Todo {
     }
 
     public void addTag(String tag) {
-        String trimmed = tag == null ? "" : tag.strip().toLowerCase();
-        if (trimmed.isEmpty()) {
-            throw new InvalidTodoException("標籤不可為空白");
+        if (tag == null || tag.isBlank()) {
+            throw new InvalidTodoException("tag", tag, "標籤不可為空");
         }
-        if (!tags.contains(trimmed) && tags.size() >= MAX_TAGS) {
-            throw new InvalidTodoException("標籤最多 " + MAX_TAGS + " 個");
+        String normalized = tag.strip().toLowerCase();
+        if (tags.size() >= MAX_TAGS && !tags.contains(normalized)) {
+            throw new InvalidTodoException("tags", tags.size(), "標籤最多 " + MAX_TAGS + " 個");
         }
-        tags.add(trimmed);
+        tags.add(normalized);
     }
 
-    // ── 查詢 ──
-
-    public long id() {
-        return id;
+    public boolean removeTag(String tag) {
+        return tag != null && tags.remove(tag.strip().toLowerCase());
     }
 
-    public String title() {
-        return title;
+    public boolean hasTag(String tag) {
+        return tag != null && tags.contains(tag.strip().toLowerCase());
     }
 
-    public Priority priority() {
-        return priority;
-    }
+    // ⚠️ 存取子沒有 `get` 前綴時，Jackson 的預設內省**找不到任何屬性** ——
+    //    序列化會直接丟 InvalidDefinitionException（"no properties discovered"）。
+    //    所以每一個都要用 @JsonProperty 明講欄位名。理由見下方說明。
+    @JsonProperty("id")          public long id() { return id; }
+    @JsonProperty("title")       public String title() { return title; }
+    @JsonProperty("priority")    public Priority priority() { return priority; }
+    @JsonProperty("done")        public boolean isDone() { return done; }
+    @JsonProperty("createdAt")   public Instant createdAt() { return createdAt; }
+    @JsonProperty("completedAt") public Instant completedAt() { return completedAt; }
+    @JsonProperty("tags")        public Set<String> tags() { return Set.copyOf(tags); }
 
-    public boolean isDone() {
-        return done;
-    }
-
-    public Instant createdAt() {
-        return createdAt;
-    }
-
-    /** 未完成時為 null。第 12 章會改成 Optional 或 record + sealed。 */
-    public Instant completedAt() {
-        return completedAt;
-    }
-
-    /** 防禦性複製（第 02 章 2.12 節）：外部拿不到內部集合的參考 */
-    public Set<String> tags() {
-        return Set.copyOf(tags);
+    /** @JsonIgnore：這是顯示用的衍生資料，不要寫進檔案 */
+    @JsonIgnore
+    public String toDisplayLine() {
+        String tagPart = tags.isEmpty() ? "" : " " + tags;
+        return "%s #%-3d [%s] %s%s".formatted(
+                done ? "[x]" : "[ ]", id, priority.label(), title, tagPart);
     }
 
     @Override
     public boolean equals(Object o) {
-        if (this == o) {
-            return true;
-        }
-        return o instanceof Todo other && id == other.id;
+        if (this == o) return true;
+        if (!(o instanceof Todo other)) return false;
+        return id == other.id;
     }
 
     @Override
-    public int hashCode() {
-        return Long.hashCode(id);
-    }
+    public int hashCode() { return Long.hashCode(id); }
 
     @Override
     public String toString() {
-        return "Todo[id=%d, title=%s, priority=%s, done=%s]".formatted(id, title, priority, done);
+        return "Todo{id=%d, title='%s', priority=%s, done=%s}"
+                .formatted(id, title, priority, done);
     }
 }
 ```
@@ -598,13 +643,14 @@ public class Todo {
 ```java
 package com.example.todo.exception;
 
-/** 錯誤碼。每個都對應一個明確的使用者可見訊息（第 04 章 4.8 節）。 */
+/** 錯誤碼（第 04 章 4.9 節）。 */
 public enum ErrorCode {
 
-    TODO_NOT_FOUND("TODO-404", "找不到指定的待辦事項"),
-    TODO_ALREADY_DONE("TODO-409", "此待辦事項已經完成"),
-    INVALID_TODO("TODO-400", "待辦事項資料不合法"),
-    STORAGE_FAILURE("TODO-500", "儲存失敗");
+    INVALID_INPUT("T1001", "輸入不合法"),
+    TODO_NOT_FOUND("T2001", "待辦不存在"),
+    TODO_ALREADY_DONE("T2002", "待辦已完成"),
+    STORAGE_ERROR("T9001", "儲存失敗"),
+    INTERNAL_ERROR("T9999", "系統內部錯誤");
 
     private final String code;
     private final String defaultMessage;
@@ -614,36 +660,50 @@ public enum ErrorCode {
         this.defaultMessage = defaultMessage;
     }
 
-    public String code() {
-        return code;
-    }
-
-    public String defaultMessage() {
-        return defaultMessage;
-    }
+    public String code() { return code; }
+    public String defaultMessage() { return defaultMessage; }
 }
 ```
 
 ```java
 package com.example.todo.exception;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /** 所有業務例外的基底。unchecked——呼叫方通常無法在當場處理（第 04 章 4.5 節）。 */
-public abstract class TodoException extends RuntimeException {
+public class TodoException extends RuntimeException {
 
     private final ErrorCode errorCode;
+    private final Map<String, Object> context = new LinkedHashMap<>();
 
-    protected TodoException(ErrorCode errorCode, String message) {
+    public TodoException(ErrorCode errorCode, String message) {
         super(message);
         this.errorCode = errorCode;
     }
 
-    protected TodoException(ErrorCode errorCode, String message, Throwable cause) {
+    public TodoException(ErrorCode errorCode, String message, Throwable cause) {
         super(message, cause);
         this.errorCode = errorCode;
     }
 
-    public ErrorCode errorCode() {
-        return errorCode;
+    public TodoException with(String key, Object value) {
+        context.put(key, value);
+        return this;
+    }
+
+    public ErrorCode errorCode() { return errorCode; }
+
+    public Map<String, Object> context() { return Map.copyOf(context); }
+
+    /** 給使用者看的訊息：不含技術細節 */
+    public String toUserMessage() {
+        return "[%s] %s".formatted(errorCode.code(), getMessage());
+    }
+
+    /** 給 log 用的訊息：含完整上下文 */
+    public String toLogMessage() {
+        return "[%s] %s %s".formatted(errorCode.code(), getMessage(), context);
     }
 }
 ```
@@ -653,7 +713,8 @@ package com.example.todo.exception;
 
 public class TodoNotFoundException extends TodoException {
     public TodoNotFoundException(long id) {
-        super(ErrorCode.TODO_NOT_FOUND, "找不到 id 為 " + id + " 的待辦事項");
+        super(ErrorCode.TODO_NOT_FOUND, "找不到待辦事項");
+        with("id", id);
     }
 }
 ```
@@ -662,8 +723,15 @@ public class TodoNotFoundException extends TodoException {
 package com.example.todo.exception;
 
 public class TodoAlreadyDoneException extends TodoException {
+
+    public TodoAlreadyDoneException(long id, String title) {
+        super(ErrorCode.TODO_ALREADY_DONE, "此待辦已完成，無需重複標記");
+        with("id", id).with("title", title);
+    }
+
     public TodoAlreadyDoneException(long id) {
-        super(ErrorCode.TODO_ALREADY_DONE, "待辦事項 " + id + " 已經完成了");
+        super(ErrorCode.TODO_ALREADY_DONE, "此待辦已完成，無需重複標記");
+        with("id", id);
     }
 }
 ```
@@ -672,8 +740,14 @@ public class TodoAlreadyDoneException extends TodoException {
 package com.example.todo.exception;
 
 public class InvalidTodoException extends TodoException {
-    public InvalidTodoException(String message) {
-        super(ErrorCode.INVALID_TODO, message);
+
+    public InvalidTodoException(String field, Object value, String reason) {
+        super(ErrorCode.INVALID_INPUT, reason);
+        with("field", field).with("value", value);
+    }
+
+    public InvalidTodoException(String reason) {
+        super(ErrorCode.INVALID_INPUT, reason);
     }
 }
 ```
@@ -793,7 +867,7 @@ public class TodoService {
 >
 > ```java
 > return new TodoService(
->         new JsonFileTodoRepository(dataFile, new Json()),
+>         new JsonFileTodoRepository(new TodoFileStore(dataFile, clock)),
 >         Clock.systemDefaultZone(),
 >         new ConsoleNotifier());          // ← 新增
 > ```
@@ -2103,6 +2177,8 @@ void validatesTitle(String title, boolean valid, String description) {
 ```java
 package com.example.todo.service;
 
+import com.example.todo.model.Priority;
+import com.example.todo.model.Todo;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -3667,6 +3743,7 @@ package com.example.todo.repository;
 import com.example.todo.model.Priority;
 import com.example.todo.model.Todo;
 import com.example.todo.support.Json;
+import com.example.todo.support.TodoFileStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -3675,14 +3752,18 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.time.Instant;
+import java.time.ZoneOffset;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @DisplayName("JsonFileTodoRepository")
 class JsonFileTodoRepositoryTest {
 
     private static final Instant NOW = Instant.parse("2026-08-17T10:00:00Z");
+    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
     /** JUnit 建立臨時目錄，測試結束後自動遞迴刪除 */
     @TempDir
@@ -3693,11 +3774,11 @@ class JsonFileTodoRepositoryTest {
     void persistsAcrossInstances() {
         Path file = tempDir.resolve("todos.json");
 
-        JsonFileTodoRepository first = new JsonFileTodoRepository(file, new Json());
+        JsonFileTodoRepository first = new JsonFileTodoRepository(new TodoFileStore(file, CLOCK));
         first.save(new Todo(1L, "買牛奶", Priority.HIGH, NOW));
 
         // 全新的實例，只靠檔案讀取
-        JsonFileTodoRepository second = new JsonFileTodoRepository(file, new Json());
+        JsonFileTodoRepository second = new JsonFileTodoRepository(new TodoFileStore(file, CLOCK));
 
         assertThat(second.findById(1L)).get()
                 .extracting(Todo::title, Todo::priority)
@@ -3709,7 +3790,7 @@ class JsonFileTodoRepositoryTest {
     void treatsMissingFileAsEmpty() {
         Path missing = tempDir.resolve("does-not-exist.json");
 
-        JsonFileTodoRepository repo = new JsonFileTodoRepository(missing, new Json());
+        JsonFileTodoRepository repo = new JsonFileTodoRepository(new TodoFileStore(missing, CLOCK));
 
         assertThat(repo.findAll()).isEmpty();
     }
@@ -3718,7 +3799,7 @@ class JsonFileTodoRepositoryTest {
     @DisplayName("寫入是原子的：寫完後沒有殘留的暫存檔")
     void writesAtomically() throws IOException {
         Path file = tempDir.resolve("todos.json");
-        JsonFileTodoRepository repo = new JsonFileTodoRepository(file, new Json());
+        JsonFileTodoRepository repo = new JsonFileTodoRepository(new TodoFileStore(file, CLOCK));
 
         repo.save(new Todo(1L, "買牛奶", Priority.HIGH, NOW));
 
@@ -3733,7 +3814,7 @@ class JsonFileTodoRepositoryTest {
     @DisplayName("檔案內容是 UTF-8，中文不會變亂碼")
     void writesUtf8() throws IOException {
         Path file = tempDir.resolve("todos.json");
-        JsonFileTodoRepository repo = new JsonFileTodoRepository(file, new Json());
+        JsonFileTodoRepository repo = new JsonFileTodoRepository(new TodoFileStore(file, CLOCK));
 
         repo.save(new Todo(1L, "買牛奶🥛", Priority.HIGH, NOW));
 
@@ -3747,7 +3828,7 @@ class JsonFileTodoRepositoryTest {
         Path file = tempDir.resolve("todos.json");
         Files.writeString(file, "{ 這不是合法的 JSON", StandardCharsets.UTF_8);
 
-        assertThatThrownBy(() -> new JsonFileTodoRepository(file, new Json()).findAll())
+        assertThatThrownBy(() -> new JsonFileTodoRepository(new TodoFileStore(file, CLOCK)).findAll())
                 .hasMessageContaining("todos.json");     // 訊息要能讓人找到檔案
     }
 }
@@ -4172,11 +4253,12 @@ class InMemoryTodoRepositoryTest extends TodoRepositoryContract {
 ```java
 package com.example.todo.repository;
 
-import com.example.todo.support.Json;
+import com.example.todo.support.TodoFileStore;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Path;
+import java.time.Clock;
 
 @DisplayName("JsonFileTodoRepository")
 class JsonFileTodoRepositoryContractTest extends TodoRepositoryContract {
@@ -4189,7 +4271,8 @@ class JsonFileTodoRepositoryContractTest extends TodoRepositoryContract {
     @Override
     protected TodoRepository createRepository() {
         // 每次呼叫給一個新檔案，確保「乾淨的 repository」
-        return new JsonFileTodoRepository(tempDir.resolve("todos-" + counter++ + ".json"), new Json());
+        return new JsonFileTodoRepository(new TodoFileStore(
+                tempDir.resolve("todos-" + counter++ + ".json"), Clock.systemUTC()));
     }
 }
 ```
@@ -4281,6 +4364,7 @@ JUnit 5 支援**介面上的 `@Test`**（配 `default` 方法）。
 ```java
 package com.example.todo.repository;
 
+import com.example.todo.model.Todo;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -4603,6 +4687,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ConcurrentTodoImporterTest {
 
     private static final Instant NOW = Instant.parse("2026-08-17T10:00:00Z");
+    private static final Duration TIMEOUT = Duration.ofSeconds(5);   // 第 08 章的 perSourceTimeout
 
     FakeTodoRepository repository;
     Clock clock;
@@ -4645,7 +4730,7 @@ class ConcurrentTodoImporterTest {
         @Test
         @DisplayName("合併所有來源的資料")
         void mergesAllSources() {
-            var importer = new ConcurrentTodoImporter(repository, clock, 10);
+            var importer = new ConcurrentTodoImporter(repository, clock, 10, TIMEOUT);
 
             ImportResult result = importer.importFrom(List.of(
                     new StaticSource("A", rows("A1", "A2")),
@@ -4662,7 +4747,7 @@ class ConcurrentTodoImporterTest {
         @Test
         @DisplayName("單一來源失敗不影響其他來源（第 08 章的部分失敗策略）")
         void partialFailureDoesNotStopOthers() {
-            var importer = new ConcurrentTodoImporter(repository, clock, 10);
+            var importer = new ConcurrentTodoImporter(repository, clock, 10, TIMEOUT);
 
             ImportResult result = importer.importFrom(List.of(
                     new StaticSource("A", rows("A1", "A2")),
@@ -4674,8 +4759,8 @@ class ConcurrentTodoImporterTest {
             assertThat(result.errors())
                     .hasSize(1)
                     .allSatisfy(e -> {
-                        assertThat(e.sourceName()).isEqualTo("B");
-                        assertThat(e.message()).contains("連線逾時");
+                        assertThat(e.source()).isEqualTo("B");
+                        assertThat(e.reason()).contains("連線逾時");
                     });
             assertThat(repository.findAll()).hasSize(3);
         }
@@ -4690,7 +4775,7 @@ class ConcurrentTodoImporterTest {
         @Timeout(5)
         @DisplayName("五個各需 200ms 的來源，總時間應遠小於 1 秒（證明是併發不是循序）")
         void runsSourcesConcurrently() {
-            var importer = new ConcurrentTodoImporter(repository, clock, 10);
+            var importer = new ConcurrentTodoImporter(repository, clock, 10, TIMEOUT);
             List<TodoSource> slow = java.util.stream.IntStream.rangeClosed(1, 5)
                     .mapToObj(i -> (TodoSource) new SlowSource(
                             "S" + i, Duration.ofMillis(200), rows("T" + i)))
@@ -4732,7 +4817,7 @@ class ConcurrentTodoImporterTest {
                     })
                     .toList();
 
-            new ConcurrentTodoImporter(repository, clock, 3).importFrom(counting);
+            new ConcurrentTodoImporter(repository, clock, 3, TIMEOUT).importFrom(counting);
 
             assertThat(peak.get())
                     .as("同時執行的來源數不該超過 Semaphore 的許可數")
@@ -5146,6 +5231,7 @@ import com.example.todo.repository.JsonFileTodoRepository;
 import com.example.todo.service.ConsoleNotifier;
 import com.example.todo.service.TodoService;
 import com.example.todo.support.Json;
+import com.example.todo.support.TodoFileStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -5190,9 +5276,10 @@ class AppIT {
         outBuffer = new ByteArrayOutputStream();
         errBuffer = new ByteArrayOutputStream();
 
+        Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
         TodoService service = new TodoService(
-                new JsonFileTodoRepository(tempDir.resolve("todos.json"), new Json()),
-                Clock.fixed(NOW, ZoneOffset.UTC),
+                new JsonFileTodoRepository(new TodoFileStore(tempDir.resolve("todos.json"), clock)),
+                clock,
                 new ConsoleNotifier());
 
         app = new App(service, ZoneId.of("Asia/Taipei"),
@@ -5271,7 +5358,7 @@ class AppIT {
         void unknownIdExitsWithUserError() {
             assertThat(app.run(new String[]{"done", "999"})).isEqualTo(1);
 
-            assertThat(stderr()).contains("TODO-404").contains("999");
+            assertThat(stderr()).contains("T2001").contains("999");
             assertThat(stdout()).as("錯誤不該污染 stdout").isEmpty();
         }
 
@@ -5296,7 +5383,7 @@ class AppIT {
         void blankTitleDoesNotPersist() {
             assertThat(app.run(new String[]{"add", "   "})).isEqualTo(1);
 
-            assertThat(stderr()).contains("TODO-400");
+            assertThat(stderr()).contains("T1001");
             assertThat(tempDir.resolve("todos.json"))
                     .as("驗證失敗時不該產生資料檔")
                     .doesNotExist();
@@ -7005,6 +7092,8 @@ void findAllCompletes() {
 ```java
 package com.example.todo.report;
 
+import com.example.todo.model.Todo;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -7168,7 +7257,7 @@ public class DailyReportWriter {
 
     public static class ReportWriteException extends TodoException {
         public ReportWriteException(Path path, Throwable cause) {
-            super(ErrorCode.STORAGE_FAILURE, "報表寫入失敗：" + path, cause);
+            super(ErrorCode.STORAGE_ERROR, "報表寫入失敗：" + path, cause);
         }
     }
 }
@@ -7320,6 +7409,13 @@ class DailyReportTest {
 （`InMemoryCache`、`CaffeineCache`、`RedisCache`）：
 
 ```java
+package com.example.todo.cache;
+
+import com.example.todo.model.Todo;
+
+import java.time.Duration;
+import java.util.Optional;
+
 public interface TodoCache {
 
     /** 放入快取，並設定存活時間 */

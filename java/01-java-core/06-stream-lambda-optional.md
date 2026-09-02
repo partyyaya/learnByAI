@@ -622,8 +622,16 @@ public class CheckedFunction {
         R apply(T t) throws E;
     }
 
-    /** 把 ThrowingFunction 包成普通 Function，checked 例外轉成 unchecked */
-    static <T, R> Function<T, R> unchecked(ThrowingFunction<T, R, ? extends Exception> f) {
+    /**
+     * 把 ThrowingFunction 包成普通 Function，checked 例外轉成 unchecked。
+     *
+     * ⚠️ 第三個型別參數要寫死成 `Exception`，不能寫 `? extends Exception`
+     *    也不能宣告成方法的型別參數 `<E extends Exception>`：
+     *    那樣 `f.apply(t)` 在編譯器眼中丟的是「型別變數 E」，
+     *    而 `IOException` 不是 `E` 的子型別 →
+     *    `catch (IOException e)` 會被判定成「這個 try 區塊不可能丟出 IOException」而編不過。
+     */
+    static <T, R> Function<T, R> unchecked(ThrowingFunction<T, R, Exception> f) {
         return t -> {
             try {
                 return f.apply(t);
@@ -1429,16 +1437,16 @@ public class GroupingBy {
 
         // ⑨ filtering【Java 9+】：分組後過濾（保留空組）
         System.out.println("\n⑨ 每部門薪資 > 80000 的人（filtering vs 先 filter）");
-        System.out.println("  filtering : " + new TreeMap<>(employees.stream()
+        System.out.println("  filtering : " + employees.stream()
                 .collect(Collectors.groupingBy(Employee::dept, TreeMap::new,
                         Collectors.filtering(e -> e.salary() > 80_000,
-                                Collectors.mapping(Employee::name, Collectors.toList()))))));
+                                Collectors.mapping(Employee::name, Collectors.toList())))));
         // {工程=[小華, 小龍], 業務=[小強], 設計=[]}  ← 設計部保留了空清單
 
-        System.out.println("  先 filter : " + new TreeMap<>(employees.stream()
+        System.out.println("  先 filter : " + employees.stream()
                 .filter(e -> e.salary() > 80_000)
                 .collect(Collectors.groupingBy(Employee::dept, TreeMap::new,
-                        Collectors.mapping(Employee::name, Collectors.toList())))));
+                        Collectors.mapping(Employee::name, Collectors.toList()))));
         // {工程=[小華, 小龍], 業務=[小強]}  ← 設計部整組消失
 
         // ⑩ partitioningBy：分成 true / false 兩組（比 groupingBy 快，且保證兩個 key 都存在）
@@ -2556,7 +2564,7 @@ public class TodoStatistics {
     /** 對照第 05 章：6 行 → 2 行 */
     public Map<Priority, Long> countByPriority() {
         return todos.stream().collect(Collectors.groupingBy(
-                Todo::getPriority, () -> new EnumMap<>(Priority.class), Collectors.counting()));
+                Todo::priority, () -> new EnumMap<>(Priority.class), Collectors.counting()));
     }
 
     public Map<Boolean, List<Todo>> partitionByDone() {
@@ -2567,7 +2575,7 @@ public class TodoStatistics {
     /** 熱門標籤：flatMap 攤平標籤 → 計數 → 排序 → 取 N */
     public Map<String, Long> topTags(int limit) {
         return todos.stream()
-                .flatMap(t -> t.getTags().stream())
+                .flatMap(t -> t.tags().stream())
                 .collect(Collectors.groupingBy(tag -> tag, Collectors.counting()))
                 .entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
@@ -2580,15 +2588,16 @@ public class TodoStatistics {
 
     public Map<LocalDate, Long> countByDate() {
         return todos.stream().collect(Collectors.groupingBy(
-                t -> t.getCreatedAt().toLocalDate(), TreeMap::new, Collectors.counting()));
+                t -> t.createdAt().toLocalDate(), TreeMap::new, Collectors.counting()));
     }
 
     /** 未完成，依優先度 → 建立時間排序 */
     public List<Todo> pendingSorted() {
         return todos.stream()
                 .filter(t -> !t.isDone())
-                .sorted(Comparator.comparingInt((Todo t) -> t.getPriority().getLevel())
-                        .thenComparing(Todo::getCreatedAt))
+                // ⚠️ weight 是「數字大 = 優先度高」，所以要 reversed()
+                .sorted(Comparator.comparingInt((Todo t) -> t.priority().weight()).reversed()
+                        .thenComparing(Todo::createdAt))
                 .toList();
     }
 
@@ -2600,7 +2609,7 @@ public class TodoStatistics {
     /** 每個優先度的完成率（兩層統計） */
     public Map<Priority, String> completionRateByPriority() {
         return todos.stream().collect(Collectors.groupingBy(
-                Todo::getPriority,
+                Todo::priority,
                 () -> new EnumMap<>(Priority.class),
                 Collectors.collectingAndThen(Collectors.toList(), list -> {
                     long done = list.stream().filter(Todo::isDone).count();
@@ -2622,18 +2631,18 @@ public class TodoStatistics {
     /** 標籤 → 未完成的待辦標題（filtering 保留空組） */
     public Map<String, List<String>> pendingTitlesByTag() {
         return todos.stream()
-                .flatMap(t -> t.getTags().stream().map(tag -> Map.entry(tag, t)))
+                .flatMap(t -> t.tags().stream().map(tag -> Map.entry(tag, t)))
                 .collect(Collectors.groupingBy(Map.Entry::getKey, TreeMap::new,
                         Collectors.mapping(Map.Entry::getValue,
                                 Collectors.filtering(t -> !t.isDone(),
-                                        Collectors.mapping(Todo::getTitle, Collectors.toList())))));
+                                        Collectors.mapping(Todo::title, Collectors.toList())))));
     }
 
     /** 最舊的未完成待辦（該優先處理的） */
     public Optional<Todo> oldestPending() {
         return todos.stream()
                 .filter(t -> !t.isDone())
-                .min(Comparator.comparing(Todo::getCreatedAt));
+                .min(Comparator.comparing(Todo::createdAt));
     }
 
     /** 給 CLI 顯示的完整報表 */
@@ -2645,7 +2654,7 @@ public class TodoStatistics {
         sb.append("\n依優先度:\n");
         countByPriority().forEach((p, c) ->
                 sb.append("  %-4s %d 筆  完成 %s%n".formatted(
-                        p.getLabel(), c, completionRateByPriority().get(p))));
+                        p.label(), c, completionRateByPriority().get(p))));
 
         sb.append("\n依日期:\n");
         countByDate().forEach((d, c) -> sb.append("  %s  %d 筆%n".formatted(d, c)));
@@ -2658,7 +2667,7 @@ public class TodoStatistics {
 
         oldestPending().ifPresentOrElse(
                 t -> sb.append("\n⚠️ 最久未處理: ").append(t.toDisplayLine())
-                        .append(" (建立於 ").append(t.getCreatedAt().toLocalDate()).append(")\n"),
+                        .append(" (建立於 ").append(t.createdAt().toLocalDate()).append(")\n"),
                 () -> sb.append("\n✅ 沒有待處理的項目\n"));
 
         return sb.toString();
@@ -2683,25 +2692,25 @@ public class StreamStatsDemo {
         IndexedTodoRepository repo = new IndexedTodoRepository();
         LocalDateTime base = LocalDateTime.of(2026, 8, 12, 9, 0);
 
-        Todo t1 = new Todo(repo.nextId(), "寫第 06 章", Priority.URGENT, base);
+        Todo t1 = new Todo(repo.nextId(), "寫第 06 章", Priority.HIGH, base);
         t1.addTag("寫作"); t1.addTag("java");
         repo.save(t1);
 
-        Todo t2 = new Todo(repo.nextId(), "Code review", Priority.HIGH, base.plusDays(1));
+        Todo t2 = new Todo(repo.nextId(), "Code review", Priority.MEDIUM, base.plusDays(1));
         t2.addTag("java"); t2.addTag("團隊");
-        t2.complete(base.plusDays(1).plusHours(3));
+        t2.markDone(base.plusDays(1).plusHours(3));
         repo.save(t2);
 
         Todo t3 = new Todo(repo.nextId(), "買咖啡", Priority.LOW, base.plusDays(2));
         t3.addTag("生活");
-        t3.complete(base.plusDays(2).plusHours(1));
+        t3.markDone(base.plusDays(2).plusHours(1));
         repo.save(t3);
 
-        Todo t4 = new Todo(repo.nextId(), "重構 Repository", Priority.HIGH, base.plusDays(3));
+        Todo t4 = new Todo(repo.nextId(), "重構 Repository", Priority.MEDIUM, base.plusDays(3));
         t4.addTag("java"); t4.addTag("重構");
         repo.save(t4);
 
-        Todo t5 = new Todo(repo.nextId(), "回信", Priority.NORMAL, base.plusDays(4));
+        Todo t5 = new Todo(repo.nextId(), "回信", Priority.LOW, base.plusDays(4));
         t5.addTag("團隊");
         repo.save(t5);
 
@@ -2722,10 +2731,9 @@ public class StreamStatsDemo {
 總覽: 2 / 5 完成 (40.0%)
 
 依優先度:
-  緊急   1 筆  完成 0/1 (0%)
-  高    2 筆  完成 1/2 (50%)
-  普通   1 筆  完成 0/1 (0%)
-  低    1 筆  完成 1/1 (100%)
+  高    1 筆  完成 0/1 (0%)
+  中    2 筆  完成 1/2 (50%)
+  低    2 筆  完成 1/2 (50%)
 
 依日期:
   2026-08-12  1 筆
@@ -2736,24 +2744,24 @@ public class StreamStatsDemo {
 
 熱門標籤:
   java     3 次
-  團隊      2 次
-  寫作      1 次
-  生活      1 次
-  重構      1 次
+  團隊       2 次
+  寫作       1 次
+  生活       1 次
+  重構       1 次
 
 待處理（優先度序）:
-  [ ] #1   [緊急] 寫第 06 章 [寫作, java]
-  [ ] #4   [高] 重構 Repository [java, 重構]
-  [ ] #5   [普通] 回信 [團隊]
+  [ ] #1   [高] 寫第 06 章 [寫作, java]
+  [ ] #4   [中] 重構 Repository [java, 重構]
+  [ ] #5   [低] 回信 [團隊]
 
-⚠️ 最久未處理: [ ] #1   [緊急] 寫第 06 章 [寫作, java] (建立於 2026-08-12)
+⚠️ 最久未處理: [ ] #1   [高] 寫第 06 章 [寫作, java] (建立於 2026-08-12)
 
 === 標籤 → 未完成標題（filtering 保留空組）===
   java     [寫第 06 章, 重構 Repository]
-  團隊      [回信]
-  寫作      [寫第 06 章]
-  生活      []
-  重構      [重構 Repository]
+  團隊       [回信]
+  寫作       [寫第 06 章]
+  生活       []
+  重構       [重構 Repository]
 ```
 
 **注意 `生活` 那一列是空清單而不是消失**——這就是 `Collectors.filtering` 的價值（6.10 節第 ⑨ 點）。
@@ -2772,7 +2780,7 @@ Map<Priority, String> rates = completionRateByPriority();
 countByPriority().forEach((p, c) -> sb.append(...rates.get(p)));
 ```
 
-只有 4 個優先度時看不出來，但如果是 10 萬筆訂單分成 1000 個群組，這就是 1000 倍的浪費。
+只有 3 個優先度時看不出來，但如果是 10 萬筆訂單分成 1000 個群組，這就是 1000 倍的浪費。
 
 > **這是 Stream 常見的隱藏成本**：方法呼叫看起來很便宜（`completionRateByPriority()` 只是個名字），
 > 實際上它走訪了整個集合。**在迴圈裡呼叫「會走訪集合的方法」之前，先想一下。**
@@ -3594,6 +3602,14 @@ public class FunctionalToolsDemo {
 ### 練習 4：預測輸出
 
 ```java
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 public class Quiz {
     public static void main(String[] args) {
         // ①

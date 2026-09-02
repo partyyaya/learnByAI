@@ -1639,13 +1639,13 @@ public class LeakyTodoService {
         // 洩漏 3：每次建立都註冊一個新監聽器（而且是匿名類別，持有外層 this）
         listeners.add(changed -> {
             // 這個 lambda 捕捉了 todo，讓它永遠不死
-            if (changed.getId() == todo.getId()) {
-                queryCache.remove("byTitle:" + todo.getTitle());
+            if (changed.id() == todo.id()) {
+                queryCache.remove("byTitle:" + todo.title());
             }
         });
 
         // 洩漏 4：放進 ThreadLocal 但沒人清
-        REQUEST_SCOPE.get().put(todo.getId(), todo);
+        REQUEST_SCOPE.get().put(todo.id(), todo);
 
         return todo;
     }
@@ -1687,7 +1687,7 @@ public class LeakReproducer {
             while (true) {
                 round++;
                 for (int i = 0; i < 5_000; i++) {
-                    service.create("待辦-" + round + "-" + i, Priority.NORMAL);
+                    service.create("待辦-" + round + "-" + i, Priority.MEDIUM);
                 }
 
                 // 強制 Full GC，看「谷底」是否升高 —— 這是判斷洩漏的關鍵（9.10 節）
@@ -1920,7 +1920,7 @@ public class FixedTodoService {
         recordAudit("CREATE", todo);
         putCache("byTitle:" + title, List.of(todo));
         notifyListeners(todo);
-        REQUEST_SCOPE.get().put(todo.getId(), todo);
+        REQUEST_SCOPE.get().put(todo.id(), todo);
 
         return todo;
     }
@@ -1931,7 +1931,7 @@ public class FixedTodoService {
                 AUDIT_LOG.pollFirst();                     // 丟最舊的
             }
             AUDIT_LOG.addLast(new AuditEntry(
-                    clock.instant(), action, todo.getId(), todo.getTitle()));
+                    clock.instant(), action, todo.id(), todo.title()));
         }
     }
 
@@ -2005,7 +2005,7 @@ public class FixVerification {
             // 模擬一批請求
             try (var unregister = service.register(todo -> { })) {
                 for (int i = 0; i < 5_000; i++) {
-                    service.create("待辦-" + round + "-" + i, Priority.NORMAL);
+                    service.create("待辦-" + round + "-" + i, Priority.MEDIUM);
                 }
             } catch (Exception e) {
                 throw new IllegalStateException(e);
