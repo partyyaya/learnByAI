@@ -3143,7 +3143,7 @@ class AutoConfigurationRegistrationTest {
 
 **下一站 [03-rest-api](../03-rest-api/) 會切換視角**：
 暫時放下 Spring，先把「一組別人看得懂、改得動、不會一改就破壞相容」的 API 契約設計清楚。
-產出是一份 `orders-api.yaml`，之後 04-controller 與 10-capstone 都拿它當實作目標。
+產出是一份 `orders-api.yaml`，之後 04-controller 與 12-capstone 都拿它當實作目標。
 
 > **為什麼要先脫離框架？**
 > 因為 API 設計的好壞跟用什麼框架無關。

@@ -2448,7 +2448,7 @@ void 每個測試結束都要檢查連線有還回去() {
 | `SHOW PROCESSLIST` 與 `performance_schema` | 1.9.6 | 07-mysql 05 章 |
 | AWS NAT Gateway 的 350 秒 | 1.7.4 | — |
 | **真實 JDBC 驅動在虛擬執行緒下的 pinning** | 1.6.8 | 07-mysql 站 |
-| K8s 的健康檢查級聯故障 | 1.12.4 | 10-capstone |
+| K8s 的健康檢查級聯故障 | 1.12.4 | 12-capstone |
 
 > 📌 **最後一句話**：
 >

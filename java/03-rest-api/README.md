@@ -107,7 +107,7 @@
 檔案結構、`securitySchemes`、共用參數與錯誤回應、`oneOf` 多形回應、webhooks，
 以及一條**從頭寫到尾的完整端點**（`GET /orders`）當作其餘端點的樣板。
 外加 25 條 Spectral 規則、五個 job 的 CI pipeline、以及一整套契約測試（第 09 章）。
-後續 04-controller 與 10-capstone 都會拿它當實作目標。
+後續 04-controller 與 12-capstone 都會拿它當實作目標。
 
 ---
 

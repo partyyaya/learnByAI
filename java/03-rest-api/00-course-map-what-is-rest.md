@@ -64,7 +64,7 @@
 ### 這一站的產出
 
 本站結束時會有一份完整的 **訂單系統 OpenAPI 契約** `orders-api.yaml`，
-04-controller 會拿它當實作目標，10-capstone 會把它變成可上線的服務。
+04-controller 會拿它當實作目標，12-capstone 會把它變成可上線的服務。
 
 ```
 第 00 章  領域盤點：把需求動詞翻成資源清單

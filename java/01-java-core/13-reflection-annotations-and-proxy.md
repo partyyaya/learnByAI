@@ -1902,10 +1902,11 @@ Full GC 谷底升高、log 打包後消失、100% 覆蓋率下的差一錯誤、
                        - TransactionTemplate = 第 06 章 6.6 節的高階函式
                        - Actuator /info = 第 10 章 10.6 節的 BuildInfo
     ↓
-03～09           ── REST API、Controller、Service、Repository、
-                    MySQL、JPA/MyBatis、Spring Security
+03～11           ── REST API、Controller、Service、Repository、
+                    MySQL、JPA/MyBatis、Spring Security、
+                    Redis、訊息佇列
     ↓
-10-capstone      ── 把全部組起來
+12-capstone      ── 把全部組起來
 ```
 
 > **這一站刻意不用框架，就是為了讓你在第 02 站能分辨
