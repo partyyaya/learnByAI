@@ -85,8 +85,8 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 05 | [05-service/](./05-service/) ✅ | 商業邏輯層 | 8 | 商業邏輯層定位與**不變量**、貧血 vs 充血、Service 設計與**循環依賴**、交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
 | 06 | [06-repository/](./06-repository/) ✅ | 資料存取層 | 7 | 資料層定位與**介面設計的七個判準**、**不變量的第四個位置**、DataSource 與連線池、JdbcTemplate、Spring Data 抽象、**分頁與動態查詢**、**交易邊界與批次**、**資料層測試（H2 vs 真 MySQL 的 21 根探針）** |
 | 07 | [07-mysql/](./07-mysql/) ✅ | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢調校、Flyway 與線上大表變更、備份／複製／讀寫分離 |
-| 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) | JPA / Hibernate 與 MyBatis | 10 | Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL |
-| 09 | [09-spring-security/](./09-spring-security/) | 認證與授權 | 9 | Filter Chain、UserDetails、方法層權限、Session vs Token、JWT、OAuth2 |
+| 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) ✅ | JPA / Hibernate 與 MyBatis | 10 | **ORM vs SQL Mapper 的六條分歧軸**、Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL、**選型與混用** |
+| 09 | [09-spring-security/](./09-spring-security/) 🚧 | 認證與授權 | 9 | **認證 vs 授權的三層**、Filter Chain、UserDetails 與密碼雜湊、方法層權限、Session vs Token、JWT、OAuth2 |
 | 10 | [10-redis/](./10-redis/) | Redis 應用（Spring 視角） | 9 | 序列化與 Lettuce 逾時、快取抽象接 Redis、**故障降級**、分散式鎖、限流與冪等、Session 與 Token 撤銷、預扣庫存 |
 | 11 | [11-messaging/](./11-messaging/) | 訊息佇列：RabbitMQ 與 Kafka | 12 | 可靠投遞三段、**Outbox**、冪等消費、RabbitMQ 拓撲與 DLX、Kafka 分區與 offset、精確一次、死信與 lag 監控、選型 |
 | 12 | [12-capstone/](./12-capstone/) | 期末專題：訂單系統 | 10 | 把上面全部串成一個可部署、有測試、有監控的服務 |
@@ -115,7 +115,9 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 05-service | ✅ 完成（00～07 章，約 42,400 行） |
 | 06-repository | ✅ 完成（00～06 章，約 20,150 行） |
 | 07-mysql | ✅ 完成（00～07 章，8 章） |
-| 08～13 | ⏳ 未開始 |
+| 08-jpa-mybatis | ✅ 完成（00～09 章，10 章） |
+| 09-spring-security | 🚧 進行中（00～02 章可讀） |
+| 10～13 | ⏳ 未開始 |
 
 ---
 
@@ -243,6 +245,25 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 兩個單欄索引，`EXPLAIN` 出現 `Using intersect` | [07-mysql/](./07-mysql/) 03（3.8.2 的 68 倍） |
 | 同一種寫法在 A 查詢快 19 倍、在 B 查詢慢 135 倍 | [07-mysql/](./07-mysql/) 03（3.10.3）、02（2.6.8） |
 | 查詢很慢、log 一堆 SQL | [08-jpa-mybatis/](./08-jpa-mybatis/) 04、[07-mysql/](./07-mysql/) 03 |
+| 登入做完了，使用者還是讀得到別人的訂單 | [09-spring-security/](./09-spring-security/) 00（0.3.1） |
+| 「先讓它跑起來」的 `permitAll()` 活到上線，而且沒有任何訊號 | [09-spring-security/](./09-spring-security/) 00（0.3.2、0.8.4） |
+| 密碼用 MD5 存，說不出「到底有多不安全」 | [09-spring-security/](./09-spring-security/) 00（0.3.3、0.7.2） |
+| 登入失敗的回應一模一樣，帳號還是被列舉出去 | [09-spring-security/](./09-spring-security/) 00（0.3.4 的 22873 倍） |
+| Filter 裡拋的例外，`@RestControllerAdvice` 接不到，前端只看到空的 401 | [09-spring-security/](./09-spring-security/) 00（0.3.5）、01（1.8） |
+| 升級 Boot 3 之後，登入回 200 但下一個請求說沒登入 | [09-spring-security/](./09-spring-security/) 00（0.3.6）、01（1.5） |
+| 401 該回還是 403 該回，講不出判準 | [09-spring-security/](./09-spring-security/) 00（0.4） |
+| BCrypt 的 `cost` 要設多少，只會抄「設 10」 | [09-spring-security/](./09-spring-security/) 00（0.7.4） |
+| 「我的 Security 設定好像沒生效」 | [09-spring-security/](./09-spring-security/) 01（1.3.3、1.4.4） |
+| 自訂的 Filter 每個請求跑了兩次 | [09-spring-security/](./09-spring-security/) 01（1.6.4） |
+| 兩條 `SecurityFilterChain`，第二條永遠不生效（而且啟動不報錯） | [09-spring-security/](./09-spring-security/) 01（1.7.3、1.7.4） |
+| `@Async` 的方法拿不到登入者身分 | [09-spring-security/](./09-spring-security/) 01（1.9.2、1.9.5） |
+| 非同步通知寄錯人 / 稽核日誌全記成同一個帳號 | [09-spring-security/](./09-spring-security/) 01（1.9.4 的身分外洩） |
+| 自己寫的 `UserDetailsService` 讓「帳號存不存在」被時間差洩漏 | [09-spring-security/](./09-spring-security/) 02（2.5.3） |
+| 帳密明明正確卻一直回 401（Entity 當 `UserDetails`） | [09-spring-security/](./09-spring-security/) 02（2.7.3） |
+| 應用程式啟得起來，第一次登入卻 `StackOverflowError` | [09-spring-security/](./09-spring-security/) 02（2.6.3） |
+| 帳號停用了，那個人的 session 卻還能用 | [09-spring-security/](./09-spring-security/) 02（2.7.7） |
+| 用 HTTP Basic 保護的 API，QPS 一過七十就開始逾時 | [09-spring-security/](./09-spring-security/) 02（2.3.5） |
+| 換密碼演算法要不要叫五十萬個使用者改密碼 | [09-spring-security/](./09-spring-security/) 02（2.8） |
 | 不知道 JWT 該怎麼做才安全 | [09-spring-security/](./09-spring-security/) 05 |
 | `redis-cli` 看到一串亂碼，改個套件名整個快取都讀不回來 | [10-redis/](./10-redis/) 01 |
 | 「Redis 只是快取」，但它一卡，整站的執行緒全堵住 | [10-redis/](./10-redis/) 01、03 |

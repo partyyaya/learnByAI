@@ -101,7 +101,11 @@ app.whenReady().then(() => {
   registerShortcuts(mainWindow); // 第五章
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      return;
+    }
+    createMainWindow();
   });
 });
 ```
@@ -118,7 +122,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 // 第三章：應用資訊
 contextBridge.exposeInMainWorld("appInfo", {
   getVersion() {
-    return "1.0.0-course-demo";
+    return ipcRenderer.invoke("app:get-version");
   },
   getPlatform() {
     return process.platform;
@@ -203,41 +207,45 @@ const store = new Store({
     theme: "light",
     language: "zh-Hant",
     autoLaunch: false,
-    windowBounds: { width: 1200, height: 800 } // 首次啟動的預設大小
+    windowState: {
+      bounds: { width: 1200, height: 800 }, // 首次啟動的預設大小
+      maximized: false
+    }
   }
 });
 
 // ...原本的 getSetting / setSetting 保留不動
 
-function getWindowBounds() {
-  return store.get("windowBounds");
+function getWindowState() {
+  return store.get("windowState");
 }
 
-function saveWindowBounds(bounds) {
-  store.set("windowBounds", bounds);
+function saveWindowState(state) {
+  store.set("windowState", state);
 }
 
 module.exports = {
   getSetting,
   setSetting,
-  getWindowBounds, // 本節新增
-  saveWindowBounds // 本節新增
+  getWindowState, // 本節新增
+  saveWindowState // 本節新增
 };
 ```
 
 再改第五章的 `createMainWindow`，開窗時套用存下來的尺寸、關窗前把當前尺寸寫回：
 
 ```javascript
-const { getWindowBounds, saveWindowBounds } = require("./store/settings.store");
+const { getWindowState, saveWindowState } = require("./store/settings.store");
 
 function createMainWindow() {
-  const bounds = getWindowBounds(); // 讀取上次的 { x, y, width, height }
+  const windowState = getWindowState(); // { bounds: { x, y, width, height }, maximized }
 
   mainWindow = new BrowserWindow({
-    ...bounds, // 套用上次的寬高與位置（首次啟動時只有 width/height，會自動置中）
+    ...windowState.bounds, // 首次啟動時只有 width/height，會自動置中
     minWidth: 900,
     minHeight: 600,
     title: "Learn Electron",
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, "../preload/preload.js"),
       contextIsolation: true,
@@ -247,14 +255,24 @@ function createMainWindow() {
 
   mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
 
-  // 關閉前記住目前的視窗大小與位置；getBounds() 會回傳 { x, y, width, height }
+  mainWindow.once("ready-to-show", () => {
+    if (windowState.maximized) mainWindow.maximize();
+    mainWindow.show();
+  });
+
+  // 關閉前記住「未最大化時」的大小與位置，以及目前是否最大化
   mainWindow.on("close", () => {
-    saveWindowBounds(mainWindow.getBounds());
+    saveWindowState({
+      bounds: mainWindow.getNormalBounds(),
+      maximized: mainWindow.isMaximized()
+    });
   });
 }
 ```
 
-> 進階提醒：如果使用者上次在第二個螢幕、下次卻只剩一個螢幕，還原的位置可能落在畫面外。正式產品可用 `screen.getDisplayMatching(bounds)` 檢查存下來的座標是否仍在可見範圍，超出就退回置中。這裡先示範最常用的寬高還原即可。
+> 為什麼不用 `getBounds()`？視窗最大化時，`getBounds()` 會回傳接近整個螢幕的尺寸；下次啟動若直接套用，會變成「跟螢幕一樣大，但不是最大化狀態」的視窗。`getNormalBounds()` 會回傳最大化前的正常尺寸，再搭配 `isMaximized()` 還原狀態，體驗才一致。
+>
+> 進階提醒：如果使用者上次在第二個螢幕、下次卻只剩一個螢幕，還原的位置可能落在畫面外。正式產品可用 `screen.getDisplayMatching(windowState.bounds)` 檢查存下來的座標是否仍在可見範圍，超出就退回置中。這裡先示範最常用的寬高還原即可。
 
 ---
 
@@ -269,8 +287,9 @@ npm run dev
 
 1. 切換主題為 dark
 2. 拖曳調整視窗大小與位置
-3. 關閉應用程式
-4. 重新啟動後確認主題仍是 dark，且視窗維持上次的大小與位置
+3. 最大化視窗，再關閉應用程式
+4. 重新啟動後確認主題仍是 dark、視窗仍是最大化
+5. 取消最大化後確認會回到原本的正常尺寸，而不是整個螢幕大小
 
 ---
 
@@ -291,14 +310,69 @@ console.log("settings file:", store.path);
 
 這個目錄就是 Electron 的 `userData` 路徑（`app.getPath("userData")`），應用程式的本機資料（設定、快取、IndexedDB 等）都存放於此。
 
+有一個很容易在上線前才踩到的坑：`userData` 預設會跟著 App 名稱走，而 `app.getName()` 又會優先使用 `package.json` 的 `productName`。如果你開發時叫 `electron-course-app`，發佈前才把 `productName` 改成正式中文名稱，使用者原本的設定可能看起來像整批消失，實際上只是資料夾換了。
+
+若產品已經有固定資料路徑，可以在 main process 最前面、建立 store 之前釘住：
+
+```javascript
+const path = require("node:path");
+const { app } = require("electron");
+
+app.setPath("userData", path.join(app.getPath("appData"), "electron-course-app"));
+```
+
+notepad-app 實戰專案就用了這個做法，避免之後調整 `productName` 影響既有記事資料。
+
 ---
 
-## 6.10 本章小結
+## 6.10 用 safeStorage 保存敏感字串（補充）
+
+設定檔可以放主題、語言、視窗大小，但不適合明文存 token、refresh token 或 API key。這類「需要重開 App 後仍存在」的敏感字串，應該在 Main 端用 Electron 的 `safeStorage` 加密後再寫進 `userData`。
+
+`src/main/store/token.store.js`（概念範例，請在 `app.whenReady()` 之後使用）：
+
+```javascript
+const fs = require("node:fs/promises");
+const path = require("node:path");
+const { app, safeStorage } = require("electron");
+
+function tokenFile() {
+  return path.join(app.getPath("userData"), "auth-token.bin");
+}
+
+async function saveToken(token) {
+  if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+    throw new Error("ENCRYPTION_NOT_AVAILABLE");
+  }
+  const encrypted = await safeStorage.encryptStringAsync(token);
+  await fs.writeFile(tokenFile(), encrypted);
+}
+
+async function loadToken() {
+  try {
+    const encrypted = await fs.readFile(tokenFile());
+    const { result, shouldReEncrypt } = await safeStorage.decryptStringAsync(encrypted);
+    if (shouldReEncrypt) await saveToken(result);
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+module.exports = { saveToken, loadToken };
+```
+
+`safeStorage` 不是萬能保險箱：它保護的是「磁碟上的明文不要裸奔」，但 App 執行中拿到 token 後仍要小心 XSS、IPC 白名單與 log 外洩。admin-dashboard 的延伸練習會把目前只存在記憶體的 token 改成這種做法。
+
+---
+
+## 6.11 本章小結
 
 - 你學會使用 `electron-store` 保存設定
 - 你完成了設定存取的 IPC 封裝
 - 你建立了可持久化的使用者偏好機制
 - 你用同一套 store 記住視窗大小與位置，讓 App 更貼近原生體驗
+- 你知道 `userData` 路徑與 `productName` 的關係，也知道敏感字串應交給 `safeStorage`
 
 ---
 

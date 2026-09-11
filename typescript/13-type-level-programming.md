@@ -1122,4 +1122,4 @@ type _cases = [
 
 ---
 
-> 下一章：[第十四章 — TypeScript Compiler API](./14-compiler-api.md)
+> 下一章：[第十四章 — 型別體操](./14-type-gymnastics.md)

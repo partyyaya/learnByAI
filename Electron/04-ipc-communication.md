@@ -25,9 +25,11 @@ touch src/main/ipc/system.ipc.js
 
 ```javascript
 const os = require("node:os");
-const { ipcMain } = require("electron");
+const { app, ipcMain } = require("electron");
 
 function registerSystemIpc() {
+  ipcMain.handle("app:get-version", async () => app.getVersion());
+
   ipcMain.handle("system:get-info", async () => {
     return {
       platform: os.platform(),
@@ -87,15 +89,15 @@ app.on("window-all-closed", () => {
 
 ## 4.4 在 Preload 開放安全 API
 
-`src/preload/preload.js`（完整檔案，保留第三章的 `appInfo`，新增 `systemApi`）：
+`src/preload/preload.js`（完整檔案，保留第三章的 `appInfo`，但把示範版號改成向 Main 讀真實版號；另新增 `systemApi`）：
 
 ```javascript
 const { contextBridge, ipcRenderer } = require("electron");
 
-// 第三章建立的 appInfo API，保留不動
+// 第三章建立的 appInfo API；版本號從本章起改向 Main 讀真實 app 版本
 contextBridge.exposeInMainWorld("appInfo", {
   getVersion() {
-    return "1.0.0-course-demo";
+    return ipcRenderer.invoke("app:get-version");
   },
   getPlatform() {
     return process.platform;
@@ -128,8 +130,8 @@ const message = document.getElementById("message");
 const helloBtn = document.getElementById("helloBtn");
 
 // 第三章的按鈕行為，保留不動
-helloBtn.addEventListener("click", () => {
-  const version = window.appInfo.getVersion();
+helloBtn.addEventListener("click", async () => {
+  const version = await window.appInfo.getVersion();
   const platform = window.appInfo.getPlatform();
 
   message.textContent = `版本：${version}，平台：${platform}`;
@@ -147,7 +149,83 @@ systemInfoBtn.addEventListener("click", async () => {
 
 ---
 
-## 4.6 執行驗證
+## 4.6 單向通知：Renderer → Main
+
+`invoke` / `handle` 適合「問一件事、等一個結果」。如果 Renderer 只是要通知 Main，不需要等回覆，就用 `ipcRenderer.send` 搭配 `ipcMain.on`。admin-dashboard 的自訂標題列主題就是這種情境：畫面已經先切主題，順手通知 Main 更新 Windows / Linux 的系統控制鈕底色。
+
+`src/preload/preload.js`：
+
+```javascript
+contextBridge.exposeInMainWorld("appWindow", {
+  setTitleBarTheme(theme) {
+    ipcRenderer.send("titlebar:theme", theme);
+  }
+});
+```
+
+`src/main/ipc/window.ipc.js`：
+
+```javascript
+const { BrowserWindow, ipcMain } = require("electron");
+
+const TITLEBAR_THEMES = {
+  dark: { color: "#161b22", symbolColor: "#e6edf3" },
+  light: { color: "#ffffff", symbolColor: "#16202c" }
+};
+
+function registerWindowIpc() {
+  ipcMain.on("titlebar:theme", (event, theme) => {
+    const overlay = TITLEBAR_THEMES[theme];
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!overlay || !win || typeof win.setTitleBarOverlay !== "function") return;
+    win.setTitleBarOverlay({ height: 32, ...overlay });
+  });
+}
+
+module.exports = { registerWindowIpc };
+```
+
+重點一樣是白名單：Renderer 傳來的 `theme` 不是 CSS 顏色，而是 `dark` / `light` 這種有限字串，Main 端查表後才使用。
+
+---
+
+## 4.7 推送事件：Main → Renderer
+
+另一個常見模式是 Main 主動推送事件給畫面，例如第七章的深層連結：作業系統把 `myapp://...` 交給 Main，Main 再通知 Renderer 更新 UI。這時 Main 用 `webContents.send`，preload 用 `ipcRenderer.on` 包成安全的訂閱函式，並回傳取消訂閱函式。
+
+Main 端：
+
+```javascript
+mainWindow.webContents.send("deeplink:received", url);
+```
+
+Preload 端：
+
+```javascript
+contextBridge.exposeInMainWorld("deeplinkApi", {
+  onReceived(callback) {
+    const listener = (_event, url) => callback(url);
+    ipcRenderer.on("deeplink:received", listener);
+    return () => ipcRenderer.off("deeplink:received", listener);
+  }
+});
+```
+
+Renderer 端：
+
+```javascript
+const unsubscribe = window.deeplinkApi.onReceived((url) => {
+  console.log("收到深層連結：", url);
+});
+
+window.addEventListener("beforeunload", unsubscribe);
+```
+
+不要把 `event` 物件傳給 Renderer，因為它帶著 Electron 內部能力；只把你要給前端的資料抽出來傳入 callback。
+
+---
+
+## 4.8 執行驗證
 
 ```bash
 # 重新啟動應用程式，讓新的 IPC 註冊與 preload 變更生效
@@ -158,20 +236,23 @@ npm run dev
 
 ---
 
-## 4.7 IPC 安全守則
+## 4.9 IPC 安全守則
 
 - 通道名稱要語意化，例如 `system:get-info`
 - 僅在 preload 暴露「必要」功能，不要直接暴露 `ipcRenderer`
 - Main 端對輸入參數做驗證，避免惡意資料
 - `nodeIntegration` 維持 `false`、`contextIsolation` 維持 `true`
+- IPC 參數與回傳值要能被結構化複製；不要傳 DOM 物件、函式、class 實例或帶複雜 prototype 的物件，否則常會遇到 `An object could not be cloned`
+- `ipcMain.handle` 裡若直接拋錯，Renderer 端收到的錯誤會被 Electron 包裝，message 可能變成 `Error invoking remote method ...`，自訂欄位也可能遺失；正式 API 可改回 `{ ok, code, data }` 這類信封格式
 
 ---
 
-## 4.8 本章小結
+## 4.10 本章小結
 
 - 你已完成完整的 IPC 流程（Renderer → Preload → Main → Renderer）
 - 你已將系統資訊讀取封裝成可維護的通道
-- 你掌握了 IPC 的基本安全原則
+- 你掌握了 `invoke` / `send` / `webContents.send` 三種常用通訊模式
+- 你知道 IPC 資料傳遞與錯誤傳遞的限制
 
 ---
 

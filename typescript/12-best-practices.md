@@ -1057,7 +1057,8 @@ const n: number = store.getters.doubleCount; // ✅ 推斷為 number
 
 ## 想更進一步？
 
-以下兩章屬於**進階補充**，帶你深入 TypeScript 型別系統的深水區與工具開發：
+以下章節屬於**進階補充**，帶你深入 TypeScript 型別系統的深水區與工具開發：
 
 - [第十三章 — 型別層級程式設計](./13-type-level-programming.md)：把型別當成程式語言，用泛型、條件型別與遞迴做編譯期運算。
-- [第十四章 — TypeScript Compiler API](./14-compiler-api.md)：用程式操作編譯器本身，開發 codemod、linter 與程式碼產生器。
+- [第十四章 — 型別體操](./14-type-gymnastics.md)：解題手冊，對應 type-challenges 反覆出現的手法。
+- [第十五章 — TypeScript Compiler API](./15-compiler-api.md)：用程式操作編譯器本身，開發 codemod、linter 與程式碼產生器。

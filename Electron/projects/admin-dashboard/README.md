@@ -861,8 +861,8 @@ KPI 卡的漲跌用**顏色 + 箭頭 + 百分比**三重表示。紅綠在色盲
 | 排序欄位用白名單對照，不直接索引物件 | `server.js` | `params.sort` 是外部輸入，不能拿去當 key |
 | 回應不含 `password` | `server.js` | `publicProfile()` 剝掉敏感欄位 |
 | token 只存記憶體 | `client.js` | 不放 `localStorage`，XSS 也讀不走 |
-| `will-navigate` 白名單 | `main.js` | 只允許 dev server 與本機檔案，其餘丟給系統瀏覽器 |
-| `setWindowOpenHandler` → `shell.openExternal` | `main.js` | 外部連結不在 App 內開視窗 |
+| `will-navigate` 白名單 | `main.js` | 只允許 dev server 與本機檔案，其餘依外部 URL 白名單處理 |
+| `setWindowOpenHandler` → `isSafeExternalUrl()` → `shell.openExternal` | `main.js` | 只有白名單內的外部連結可用系統瀏覽器開，不在 App 內開視窗 |
 | 打包版 CSP `connect-src 'none'` | `vite.config.mjs` | 這個 App 完全不發網路請求 |
 | `handler` 例外包成 500 | `server.js` | mock 自己有 bug 也不會讓 IPC 通道爆掉 |
 
@@ -873,8 +873,8 @@ KPI 卡的漲跌用**顏色 + 箭頭 + 百分比**三重表示。紅綠在色盲
 ## 12. 打包
 
 ```bash
-npm run pack    # vite build + electron-builder --dir → release/mac-arm64/後台管理.app
-npm run dist    # vite build + electron-builder       → release/後台管理-1.0.0-arm64.dmg
+npm run pack    # vite build + electron-builder --dir → release/mac-universal/後台管理.app
+npm run dist    # vite build + electron-builder       → release/後台管理-1.0.0-universal.dmg + .zip
 ```
 
 `files` 只收執行時真的用到的東西——`src/`（原始碼）與 `scripts/` 都不進 asar：
@@ -886,6 +886,7 @@ npm run dist    # vite build + electron-builder       → release/後台管理-1
 兩個容易忘的點：
 
 - **打包前一定要先 `vite build`**，所以 `pack` / `dist` 兩個指令都把它串在前面了。忘了的話 `dist-renderer/` 是舊的，或者根本不存在，打出來的 App 一開就白畫面。
+- **macOS 產物指定 universal + zip**：universal 同時支援 Intel 與 Apple Silicon；zip 是之後若接上 electron-updater 時的 macOS 更新包格式。
 - **`identity: null` 是「不簽章」**。自己在本機跑沒問題，發給別人會被 Gatekeeper 擋。要散佈得申請 Apple Developer ID 憑證再加 notarize，見第八章。
 
 > `npm install` 時 `node-abi` 會警告需要 Node 22.12+。那是 `electron-builder` 的相依套件，只在**打包**時才會用到；`npm run dev` 與 `npm run build` 在 Node 20.19 上完全正常。真的要打包再切到 Node 22 以上。

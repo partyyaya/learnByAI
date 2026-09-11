@@ -24,6 +24,8 @@ npm install --save-dev electron-builder
 {
   "name": "electron-course-app",
   "version": "1.0.0",
+  "description": "Electron 課程示範 App",
+  "author": "LearnByAI <team@example.com>",
   "main": "src/main/main.js",
   "scripts": {
     "dev": "electron .",
@@ -45,7 +47,16 @@ npm install --save-dev electron-builder
       "package.json"
     ],
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["universal"]
+        },
+        {
+          "target": "zip",
+          "arch": ["universal"]
+        }
+      ],
       "category": "public.app-category.developer-tools"
     },
     "win": {
@@ -64,6 +75,8 @@ npm install --save-dev electron-builder
 
 - `directories.output` 統一輸出到 `release/`：第九章（上傳 GitHub Release）與第十一章（Steam 上傳）都沿用這個路徑，請勿任意更名
 - mac 的 target 除了 `dmg` 外還有 `zip`：這是第九章 `electron-updater` 在 macOS 上做自動更新的**必要格式**，缺少 zip 會導致更新檢查失敗
+- mac 的 `arch` 不要省略：electron-builder 若沒有指定架構，會依目前打包機器的架構輸出。例如在 Apple Silicon 上只會得到 arm64，Intel Mac 使用者裝不起來。上面用 `universal` 產出 Intel + Apple Silicon 都能跑的包；若你的 App 有原生模組，也可以在 CI 裡分別建 `x64` / `arm64`，但要確認第九章的更新檔不會互相覆蓋。
+- `description` 與 `author` 建議一開始就寫：electron-builder 會檢查這些欄位，Linux 的 deb / rpm 類 target 對 maintainer 資訊也更嚴格；`author` 最好包含 email。
 - `files` 除了 `src/**/*` 外**務必列入 `assets/**/*`**：第五章的系統匣圖示放在專案根目錄的 `assets/`（`assets/trayTemplate.png`），它既不在 `src/` 下、也不是 node_modules。`files` 是「白名單」——沒被列到的目錄不會打進 `app.asar`。少了這行，`npm run dev` 一切正常，但 `npm run dist` 後啟動就會**載入不到圖示**，重演第五章 5.2 警告過的「隱形系統匣」問題。
   - 反之，production 相依套件（第六章 `electron-store`、第九章 `electron-updater`）與 `package.json` 由 electron-builder 依 `dependencies` 自動含入，不必列在 `files`；`build/` 底下的 icon 也會自動偵測。真正需要你手動補的是這類「非程式碼的資源目錄」。
 
@@ -87,7 +100,7 @@ npm run dev
 # 只打包成可執行資料夾，不產生安裝程式（適合快速驗證）
 npm run pack
 
-# 依目前系統平台產生正式發佈檔（例如 mac 會產生 dmg）
+# 依目前系統平台產生正式發佈檔（例如 mac 會產生 dmg + zip）
 npm run dist
 
 # 只打包 mac 版本（通常需在 macOS 環境執行）

@@ -27,6 +27,7 @@
 | 專案 | 說明 | 主要涵蓋章節 |
 |------|------|--------------|
 | [projects/notepad-app](./projects/notepad-app/) | 本機記事本：左側清單 + 右側撰寫區，內容可貼上文字與圖片，全部離線儲存 | 03 / 04 / 06 / 09 |
+| [projects/admin-dashboard](./projects/admin-dashboard/) | React 後台管理：登入、側邊欄、導航列、Mock API 與權限流程，示範前端框架如何放進 Electron | 03 / 04 / 08 / 09 |
 
 ---
 

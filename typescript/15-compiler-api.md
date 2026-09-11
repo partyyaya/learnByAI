@@ -1,8 +1,8 @@
-# 第十四章：TypeScript Compiler API
+# 第十五章：TypeScript Compiler API
 
 > 本章屬於進階補充章節。它探討的是「用程式操作 TypeScript 編譯器本身」，屬於工具開發者的領域。若你的目標是寫應用程式，這章可以當作視野拓展；若你想開發 lint 規則、codemod、程式碼產生器，這章是必修。
 
-## 14.1 什麼是 Compiler API？
+## 15.1 什麼是 Compiler API？
 
 `tsc` 這個編譯器本身就是用 TypeScript 寫成的，而且它把內部能力透過 `typescript` 這個 npm 套件**完整公開**出來。也就是說，你安裝的 `typescript` 不只是命令列工具，還是一個可以在程式裡 `import` 的函式庫，讓你能夠：
 
@@ -27,23 +27,23 @@
 
 ---
 
-## 14.2 核心概念與架構
+## 15.2 核心概念與架構
 
 在寫任何程式之前，先建立整體心智模型。Compiler API 有幾個核心角色：
 
 ```
                  ┌─────────────────────────────────────────┐
-   原始碼字串 ──▶ │  SourceFile（AST 根節點）                 │
-                 │    └─ Node（每個語法結構都是一個節點）      │
+   原始碼字串 ──▶  │  SourceFile（AST 根節點）                 │
+                 │    └─ Node（每個語法結構都是一個節點）       │
                  └─────────────────────────────────────────┘
                                     │
-   一組檔案 + 設定 ──▶  ┌──────────────────────┐
+   一組檔案 + 設定 ──▶   ┌──────────────────────┐
                        │  Program（整個編譯專案）│
-                       │    └─ TypeChecker      │──▶ 型別資訊、診斷
+                       │    └─ TypeChecker    │──▶ 型別資訊、診斷
                        └──────────────────────┘
                                     │
                        ┌──────────────────────┐
-                       │  Transformer + Printer│──▶ 修改後的原始碼
+                       │ Transformer + Printer│──▶ 修改後的原始碼
                        └──────────────────────┘
 ```
 
@@ -59,7 +59,7 @@
 
 ---
 
-## 14.3 環境設定
+## 15.3 環境設定
 
 ```bash
 # 只需要安裝 typescript 本身，Compiler API 就在裡面
@@ -84,7 +84,7 @@ console.log(ts.version); // 例如 "5.4.5"
 
 ---
 
-## 14.4 建立 SourceFile 與走訪 AST
+## 15.4 建立 SourceFile 與走訪 AST
 
 最基礎的操作：把一段原始碼字串解析成 AST，然後遞迴走訪每個節點。這一步**不需要**檔案系統，也不需要 Program。
 
@@ -166,7 +166,7 @@ console.log("變數：", variableNames); // ["a", "b"]
 
 ---
 
-## 14.5 使用 Program 與 TypeChecker 取得型別資訊
+## 15.5 使用 Program 與 TypeChecker 取得型別資訊
 
 要問「型別」相關的問題，就必須建立 Program。以下範例假設同目錄有一個 `sample.ts` 檔案。
 
@@ -251,7 +251,7 @@ greet(name: string): string
 
 ---
 
-## 14.6 型別檢查與診斷：做一個 mini tsc
+## 15.6 型別檢查與診斷：做一個 mini tsc
 
 Compiler API 最直接的用途就是「跑一次編譯、收集所有錯誤」。這也是理解 `tsc` 運作的最佳方式。
 
@@ -357,7 +357,7 @@ console.log(
 
 ---
 
-## 14.7 轉換 AST（Transformer API）
+## 15.7 轉換 AST（Transformer API）
 
 Transformer 讓你在編譯過程中**修改 AST**——這是 codemod 與自訂編譯外掛的核心。一個 transformer 是「接收 context、回傳一個處理 SourceFile 的函式」。
 
@@ -458,7 +458,7 @@ const incrementNumbers: ts.TransformerFactory<ts.SourceFile> = (context) => {
 
 ---
 
-## 14.8 從零產生程式碼（Code Generation）
+## 15.8 從零產生程式碼（Code Generation）
 
 `ts.factory` 提供上百個 `createXxx` 方法，可以完全用程式建構 AST，再用 Printer 印成字串。以下從一份欄位定義產生 TypeScript `interface`。
 
@@ -539,7 +539,7 @@ export interface User {
 
 ---
 
-## 14.9 實戰案例
+## 15.9 實戰案例
 
 ### 案例一：找出所有未被使用的 export
 
@@ -668,7 +668,7 @@ console.log(renameCall(`oldApi(1, 2); const x = oldApi(3);`, "oldApi", "newApi")
 
 ---
 
-## 14.10 相關工具生態
+## 15.10 相關工具生態
 
 直接操作 Compiler API 很底層、也很囉嗦。多數情況下，用社群封裝好的工具會更有效率：
 
@@ -963,12 +963,14 @@ export function createUser(): User {
 
 ## 課程結語
 
-恭喜你走到這裡！從 [第一章](./01-introduction.md) 的環境安裝，到 [第七章](./07-advanced-types.md) 的進階型別、[第十三章](./13-type-level-programming.md) 的型別層級程式設計，再到本章「用程式操作編譯器本身」——你已經看過 TypeScript 從「使用者」到「工具開發者」的完整光譜。
+恭喜你走到這裡！從 [第一章](./01-introduction.md) 的環境安裝，到 [第七章](./07-advanced-types.md) 的進階型別、[第十三章](./13-type-level-programming.md) 的型別層級程式設計與 [第十四章](./14-type-gymnastics.md) 的型別體操，再到本章「用程式操作編譯器本身」——你已經看過 TypeScript 從「使用者」到「工具開發者」的完整光譜。
 
-型別系統的深水區（第 13、14 章）不是每天都會用到，但理解它們能讓你：
+型別系統的深水區（第 13、14、15 章）不是每天都會用到，但理解它們能讓你：
 
 - 讀懂並善用 `zod`、`tRPC`、`Prisma` 等函式庫背後的型別魔法。
 - 在需要時，自己動手寫 codemod、lint 規則或程式碼產生器。
 - 真正把 TypeScript 當成一門語言來理解，而不只是「加了型別的 JavaScript」。
 
+> 上一章：[第十四章 — 型別體操](./14-type-gymnastics.md)
+>
 > 回到 [課程首頁](./README.md) 複習其他章節，或挑一個練習題動手實作吧！

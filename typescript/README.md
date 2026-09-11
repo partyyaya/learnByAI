@@ -21,7 +21,8 @@
 | 11 | [11-decorators.md](./11-decorators.md) | 裝飾器（Decorators） |
 | 12 | [12-best-practices.md](./12-best-practices.md) | 最佳實踐與常見模式 |
 | 13 | [13-type-level-programming.md](./13-type-level-programming.md) | 型別層級程式設計（進階補充） |
-| 14 | [14-compiler-api.md](./14-compiler-api.md) | TypeScript Compiler API（進階補充） |
+| 14 | [14-type-gymnastics.md](./14-type-gymnastics.md) | 型別體操解題手冊（進階補充） |
+| 15 | [15-compiler-api.md](./15-compiler-api.md) | TypeScript Compiler API（進階補充） |
 
 ---
 
@@ -68,7 +69,7 @@
   10 框架整合 → 11 裝飾器 → 12 最佳實踐
 
 進階補充（選修 / 挑戰）
-  13 型別層級程式設計 → 14 Compiler API
+  13 型別層級程式設計 → 14 型別體操 → 15 Compiler API
 ```
 
 ## 環境需求

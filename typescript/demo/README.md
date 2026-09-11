@@ -29,7 +29,7 @@ npm run check
 # 型別檢查 + 監看模式
 npm run check:watch
 
-# 執行 Compiler API 範例（第 14 章）
+# 執行 Compiler API 範例（第 15 章）
 npm run capi
 ```
 
@@ -57,7 +57,7 @@ demo/
     ├── playground.ts     # 👈 你的主要測試場，隨便改
     ├── type-utils.ts     # 型別測試工具（Equal / Expect / expectType）
     ├── type-testing.ts   # 型別層級程式設計的斷言範例（第 13 章精簡版）
-    ├── compiler-api.ts   # Compiler API 遊樂場（第 14 章精簡版）
+    ├── compiler-api.ts   # Compiler API 遊樂場（第 15 章精簡版）
     └── chapters/         # 👈 各章完整程式碼範例（見下方「章節範例」）
 ```
 
@@ -78,7 +78,7 @@ demo/
 | `11-decorators.ts` | 📖 參考 | 裝飾器與 NestJS/TypeORM/Angular（`@ts-nocheck`，見下方裝飾器說明） |
 | `12-best-practices.ts` | ✅ | 錯誤處理、不可變、事件系統、型別安全 API、陷阱、zod |
 | `13-type-level-programming.ts` | ✅ | 型別層級程式設計 + 型別斷言（正確性由 tsc 保證） |
-| `14-compiler-api.ts` | ✅ | Compiler API（會發出網路/讀檔的範例包成不呼叫的函式） |
+| `15-compiler-api.ts` | ✅ | Compiler API（會發出網路/讀檔的範例包成不呼叫的函式） |
 
 - **✅ 可執行**：用 `npx tsx src/chapters/07-advanced-types.ts` 直接跑，會印出範例輸出並以 `... 範例載入完成 ✅` 結尾。
 - **📖 參考**：這些章節依賴外部框架、路徑別名或舊版裝飾器，無法在此單檔環境編譯／執行，故加了 `// @ts-nocheck` 只供閱讀（不納入型別檢查、也不要用 tsx 執行）。

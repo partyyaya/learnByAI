@@ -1,22 +1,22 @@
 // ============================================================
-// 第 14 章：TypeScript Compiler API — 範例整理（可編譯 + 可執行）
-// 來源：typescript/14-compiler-api.md
+// 第 15 章：TypeScript Compiler API — 範例整理（可編譯 + 可執行）
+// 來源：typescript/15-compiler-api.md
 // 說明：
 //   - 「解析字串 + 走訪 AST + transformer + printer + factory」等
 //     不碰檔案系統、不 process.exit 的安全範例，會實際呼叫並 console.log。
 //   - 「createProgram 去讀不存在的 sample.ts / emit / getPreEmitDiagnostics /
 //     讀 tsconfig / ts.sys.*」等有副作用的範例，一律包進「定義了但不呼叫」
 //     的具名函式（demoXxx / findUnusedExports），避免用 tsx 執行整檔時崩潰。
-//   - 14.10 的 ts-morph 範例因未安裝套件，以區塊註解保留為參考。
+//   - 15.10 的 ts-morph 範例因未安裝套件，以區塊註解保留為參考。
 // ============================================================
 
 import * as ts from "typescript";
 import * as path from "path";
 
-// ===== 14.3 環境設定：印出 TypeScript 版本（安全，直接執行） =====
-console.log("14.3 TypeScript 版本：", ts.version); // 例如 "5.9.3"
+// ===== 15.3 環境設定：印出 TypeScript 版本（安全，直接執行） =====
+console.log("15.3 TypeScript 版本：", ts.version); // 例如 "5.9.3"
 
-// ===== 14.4 建立 SourceFile 與走訪 AST（安全，直接執行） =====
+// ===== 15.4 建立 SourceFile 與走訪 AST（安全，直接執行） =====
 function demoWalkAst(): void {
   const code = `
 const greeting: string = "Hello";
@@ -43,12 +43,12 @@ function add(a: number, b: number): number {
     node.forEachChild((child) => printNode(child, depth + 1));
   }
 
-  console.log("14.4 走訪 AST：");
+  console.log("15.4 走訪 AST：");
   printNode(sourceFile);
 }
 demoWalkAst();
 
-// ===== 14.4 用型別守衛函式判斷節點種類（安全，直接執行） =====
+// ===== 15.4 用型別守衛函式判斷節點種類（安全，直接執行） =====
 function demoTypeGuards(): void {
   const sourceFile = ts.createSourceFile(
     "example.ts",
@@ -71,12 +71,12 @@ function demoTypeGuards(): void {
   }
 
   visit(sourceFile);
-  console.log("14.4 函式：", functionNames); // ["foo"]
-  console.log("14.4 變數：", variableNames); // ["a", "b"]
+  console.log("15.4 函式：", functionNames); // ["foo"]
+  console.log("15.4 變數：", variableNames); // ["a", "b"]
 }
 demoTypeGuards();
 
-// ===== 14.5 使用 Program 與 TypeChecker 取得型別資訊（有副作用：讀 sample.ts，定義但不呼叫） =====
+// ===== 15.5 使用 Program 與 TypeChecker 取得型別資訊（有副作用：讀 sample.ts，定義但不呼叫） =====
 function demoTypeChecker(): void {
   // analyze.ts
   // 1. 建立 Program（傳入進入點檔案與編譯選項）
@@ -138,7 +138,7 @@ export function greet(name: string): string {
 // greet(name: string): string
 */
 
-// ===== 14.6 型別檢查與診斷：做一個 mini tsc（有副作用：emit + 讀 sample.ts，定義但不呼叫） =====
+// ===== 15.6 型別檢查與診斷：做一個 mini tsc（有副作用：emit + 讀 sample.ts，定義但不呼叫） =====
 function demoMiniTsc(): void {
   // mini-tsc.ts
   function compile(fileNames: string[], options: ts.CompilerOptions): void {
@@ -182,7 +182,7 @@ function demoMiniTsc(): void {
   });
 }
 
-// ===== 14.6 讀取專案的 tsconfig.json（有副作用：ts.sys 讀檔，定義但不呼叫） =====
+// ===== 15.6 讀取專案的 tsconfig.json（有副作用：ts.sys 讀檔，定義但不呼叫） =====
 function demoLoadTsConfig(): void {
   function loadTsConfig(configPath: string): ts.ParsedCommandLine {
     // 1. 讀取並解析 JSON（會處理註解、尾逗號）
@@ -210,7 +210,7 @@ function demoLoadTsConfig(): void {
   void program;
 }
 
-// ===== 14.6 更漂亮的錯誤輸出（有副作用：ts.sys + 讀 sample.ts，定義但不呼叫） =====
+// ===== 15.6 更漂亮的錯誤輸出（有副作用：ts.sys + 讀 sample.ts，定義但不呼叫） =====
 function demoFormatDiagnostics(): void {
   const formatHost: ts.FormatDiagnosticsHost = {
     getCanonicalFileName: (fileName) => fileName,
@@ -227,7 +227,7 @@ function demoFormatDiagnostics(): void {
   );
 }
 
-// ===== 14.7 轉換 AST（Transformer）：移除所有 console.log(...)（安全，直接執行） =====
+// ===== 15.7 轉換 AST（Transformer）：移除所有 console.log(...)（安全，直接執行） =====
 function demoRemoveConsole(): void {
   // remove-console.ts
   const code = `
@@ -280,7 +280,7 @@ function greet(name: string) {
   // 用 Printer 印回字串
   const printer = ts.createPrinter({ newLine: ts.NewLineKind.LineFeed });
   const output = printer.printFile(transformed);
-  console.log("14.7 移除 console.log 後：\n" + output);
+  console.log("15.7 移除 console.log 後：\n" + output);
   result.dispose(); // 記得釋放資源
 
   /*
@@ -292,7 +292,7 @@ function greet(name: string) {
 }
 demoRemoveConsole();
 
-// ===== 14.7 用 factory 修改節點：把所有數字字面值 +1（安全，直接執行） =====
+// ===== 15.7 用 factory 修改節點：把所有數字字面值 +1（安全，直接執行） =====
 function demoIncrementNumbers(): void {
   const incrementNumbers: ts.TransformerFactory<ts.SourceFile> = (context) => {
     const { factory } = context; // 建議用 context.factory
@@ -318,14 +318,14 @@ function demoIncrementNumbers(): void {
   const result = ts.transform(sourceFile, [incrementNumbers]);
   const printer = ts.createPrinter();
   console.log(
-    "14.7 數字 +1 後：",
+    "15.7 數字 +1 後：",
     printer.printFile(result.transformed[0]).trim(),
   );
   result.dispose();
 }
 demoIncrementNumbers();
 
-// ===== 14.8 從零產生程式碼（Code Generation）：產生 interface（安全，直接執行） =====
+// ===== 15.8 從零產生程式碼（Code Generation）：產生 interface（安全，直接執行） =====
 interface FieldDef {
   name: string;
   type: "string" | "number" | "boolean";
@@ -386,7 +386,7 @@ function demoCodegen(): void {
     { name: "email", type: "string", optional: true },
   ]);
 
-  console.log("14.8 產生的 interface：\n" + output);
+  console.log("15.8 產生的 interface：\n" + output);
   /*
   export interface User {
       id: number;
@@ -397,7 +397,7 @@ function demoCodegen(): void {
 }
 demoCodegen();
 
-// ===== 14.9 實戰案例一：找出所有未被使用的 export（有副作用：createProgram，定義但不呼叫） =====
+// ===== 15.9 實戰案例一：找出所有未被使用的 export（有副作用：createProgram，定義但不呼叫） =====
 function findUnusedExports(fileNames: string[], options: ts.CompilerOptions) {
   const program = ts.createProgram(fileNames, options);
   const checker = program.getTypeChecker();
@@ -428,7 +428,7 @@ function findUnusedExports(fileNames: string[], options: ts.CompilerOptions) {
   return unused;
 }
 
-// ===== 14.9 實戰案例二：抽取 JSDoc 註解產生 API 文件（安全，直接執行） =====
+// ===== 15.9 實戰案例二：抽取 JSDoc 註解產生 API 文件（安全，直接執行） =====
 function demoJSDoc(): void {
   const code = `
 /** 計算兩數之和 */
@@ -446,7 +446,7 @@ export function add(a: number, b: number): number {
       const doc = jsDocs
         .map((d) => (typeof d.comment === "string" ? d.comment : ""))
         .join(" ");
-      console.log(`14.9 ### ${node.name.text}`);
+      console.log(`15.9 ### ${node.name.text}`);
       console.log(doc || "（無說明）");
     }
     ts.forEachChild(node, visit);
@@ -460,7 +460,7 @@ export function add(a: number, b: number): number {
 }
 demoJSDoc();
 
-// ===== 14.9 實戰案例三：簡易 codemod — 重新命名 API 呼叫（安全，直接執行） =====
+// ===== 15.9 實戰案例三：簡易 codemod — 重新命名 API 呼叫（安全，直接執行） =====
 function renameCall(code: string, from: string, to: string): string {
   const sourceFile = ts.createSourceFile(
     "input.ts",
@@ -501,7 +501,7 @@ function renameCall(code: string, from: string, to: string): string {
 
 function demoRenameCall(): void {
   console.log(
-    "14.9 rename 結果：\n" +
+    "15.9 rename 結果：\n" +
       renameCall(`oldApi(1, 2); const x = oldApi(3);`, "oldApi", "newApi"),
   );
   // newApi(1, 2);
@@ -509,7 +509,7 @@ function demoRenameCall(): void {
 }
 demoRenameCall();
 
-// ===== 14.10 相關工具生態：ts-morph（未安裝，僅保留為註解參考，不 import/不執行） =====
+// ===== 15.10 相關工具生態：ts-morph（未安裝，僅保留為註解參考，不 import/不執行） =====
 // 注意：這段刻意用「行註解」而非 /* ... */ 區塊註解，因為 glob "src/**/*.ts"
 //       內含 */ 序列會提前結束區塊註解；語意上同樣是「整段註解掉、不執行」。
 //
@@ -525,6 +525,6 @@ demoRenameCall();
 //   }
 // }
 
-console.log("第 14 章 Compiler API 範例載入完成 ✅");
+console.log("第 15 章 Compiler API 範例載入完成 ✅");
 
 export {};

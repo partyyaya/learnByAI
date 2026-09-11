@@ -160,11 +160,15 @@ touch steam/scripts/depot_build_123456_windows.vdf
 }
 ```
 
+上面 VDF 內的 `../content`、`../output` 是**相對於 VDF 檔案位置**（`steam/scripts/`）來解析；而執行 `steamcmd +run_app_build` 時，建議傳入 App build VDF 的絕對路徑，避免 steamcmd 安裝目錄、目前 shell 工作目錄與專案根目錄混在一起。
+
 ---
 
 ## 11.9 首次上傳流程（完整命令）
 
 ```bash
+# 以下命令都從專案根目錄執行，不需要 cd steam
+
 # 1) 打包 Steam 用的 Windows 內容（輸出到 release/win-unpacked，沿用第八章 directories.output 設定）
 npm run build:steam:win
 
@@ -180,14 +184,14 @@ cp -R release/win-unpacked/. steam/content/windows/
 # 5) 確認執行檔是否存在（避免上傳後無法啟動）
 ls -la steam/content/windows
 
-# 6) 進入 steamcmd 執行目錄（若你的 steamcmd 在其他路徑請調整）
-cd steam
+# 6) 建立 App build VDF 的絕對路徑
+APP_BUILD_SCRIPT="$(pwd)/steam/scripts/app_build_123456.vdf"
 
 # 7) 第一次先互動式登入，完成 Steam Guard 驗證
 steamcmd +login "$STEAM_USERNAME" +quit
 
 # 8) 執行 App build 上傳（讀取 app_build_123456.vdf）
-steamcmd +login "$STEAM_USERNAME" +run_app_build "scripts/app_build_123456.vdf" +quit
+steamcmd +login "$STEAM_USERNAME" +run_app_build "$APP_BUILD_SCRIPT" +quit
 ```
 
 > 建議：不要把密碼直接寫在命令列，避免 shell history 外洩。
@@ -209,13 +213,14 @@ mkdir -p steam/content/windows
 cp -R release/win-unpacked/. steam/content/windows/
 
 # 4) 重新上傳到 Steam（建議先上 beta 分支）
-steamcmd +login "$STEAM_USERNAME" +run_app_build "steam/scripts/app_build_123456.vdf" +quit
+APP_BUILD_SCRIPT="$(pwd)/steam/scripts/app_build_123456.vdf"
+steamcmd +login "$STEAM_USERNAME" +run_app_build "$APP_BUILD_SCRIPT" +quit
 ```
 
 建議迭代策略：
 
 - 開發中版本都先 `SetLive: beta`
-- QA 驗證通過後，再切到 `default`（正式分支）
+- QA 驗證通過後，到 Steamworks App Admin 的 Builds 頁面手動把該 build 設為 `default`（正式分支）。`SetLive` 只能自動切到 beta 分支；`SetLive "default"` 不會把 default 分支自動上線。
 - 每次上傳前更新 `Desc`（例如 `v1.0.3 hotfix login`），方便後台追蹤
 
 ---
@@ -261,7 +266,8 @@ steamcmd +login "$STEAM_USERNAME" +app_info_print 123456 +quit
 rm -rf steam/output/*
 
 # 重新上傳
-steamcmd +login "$STEAM_USERNAME" +run_app_build "steam/scripts/app_build_123456.vdf" +quit
+APP_BUILD_SCRIPT="$(pwd)/steam/scripts/app_build_123456.vdf"
+steamcmd +login "$STEAM_USERNAME" +run_app_build "$APP_BUILD_SCRIPT" +quit
 ```
 
 ### 問題二：上傳成功但 Steam 啟動失敗
@@ -312,6 +318,12 @@ set -euo pipefail
 # 檢查必要環境變數，避免上傳到錯誤帳號
 : "${STEAM_USERNAME:?STEAM_USERNAME is required}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_BUILD_SCRIPT="$PROJECT_ROOT/steam/scripts/app_build_123456.vdf"
+
+cd "$PROJECT_ROOT"
+
 # 打包 Steam 版
 npm run build:steam:win
 
@@ -321,7 +333,7 @@ mkdir -p steam/content/windows
 cp -R release/win-unpacked/. steam/content/windows/
 
 # 執行上傳
-steamcmd +login "$STEAM_USERNAME" +run_app_build "steam/scripts/app_build_123456.vdf" +quit
+steamcmd +login "$STEAM_USERNAME" +run_app_build "$APP_BUILD_SCRIPT" +quit
 ```
 
 執行方式：

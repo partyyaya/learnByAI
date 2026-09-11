@@ -3,7 +3,7 @@
 // ├─────────────────────────────────────────────────────────────┤
 // │  執行： npm run capi   （或 npx tsx src/compiler-api.ts）     │
 // │                                                               │
-// │  搭配課程第 14 章「TypeScript Compiler API」閱讀。            │
+// │  搭配課程第 15 章「TypeScript Compiler API」閱讀。            │
 // └─────────────────────────────────────────────────────────────┘
 
 import * as ts from "typescript";

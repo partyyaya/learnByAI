@@ -34,6 +34,10 @@ const win = new BrowserWindow({
 });
 ```
 
+`sandbox: true` 從 Electron 20 起已經是 renderer process 的預設值；這裡明寫出來，是為了讓安全基線一眼可見。要注意它的副作用：sandboxed preload 沒有完整 Node.js 環境，只能 `require("electron")` 與少數內建模組（例如 `events`、`timers`、`url`），不能直接 `require("node:fs")` 去讀寫檔案。需要檔案系統、子程序或作業系統能力時，請放在 Main process，透過第四章的 IPC 白名單呼叫。
+
+如果 preload 開始變大，需要拆檔或使用 npm 套件，建議用 Vite / webpack 之類的 bundler 把 preload 打成單一檔案，再交給 `BrowserWindow` 載入。
+
 ---
 
 ## 9.4 前端 CSP（Content Security Policy）
@@ -82,27 +86,45 @@ const win = new BrowserWindow({
 
 ```javascript
 const { app, shell, session } = require("electron");
+const { isSafeExternalUrl } = require("./utils/url-guard"); // 第七章 7.2
 
 // 額外允許導航的 http(s) 來源（例如 dev server）；App 自己的 file:// 頁面預設放行。
 // 注意：file:// 的 URL origin 在標準裡是 "null"，不是 "file://"，所以不能靠 origin 比對，
 // 要另外判斷 protocol === "file:"。
 const ALLOWED_ORIGINS = new Set([]); // 例如 dev 階段可加 "http://localhost:5173"
 
+function isAllowedNavigation(rawUrl) {
+  try {
+    const { origin, protocol } = new URL(rawUrl);
+    return protocol === "file:" || ALLOWED_ORIGINS.has(origin);
+  } catch {
+    return false;
+  }
+}
+
+function openExternalIfSafe(rawUrl) {
+  if (!isSafeExternalUrl(rawUrl)) {
+    console.warn("已阻擋外部開啟：", rawUrl);
+    return;
+  }
+  shell.openExternal(rawUrl).catch((error) => {
+    console.warn("外部開啟失敗：", error);
+  });
+}
+
 function hardenWebContents() {
   app.on("web-contents-created", (_event, contents) => {
     // 1) 阻止導航到非白名單來源（例如頁面被 XSS 塞了 location.href = 'https://evil...'）
     contents.on("will-navigate", (event, url) => {
-      const { origin, protocol } = new URL(url);
-      const isAllowed = protocol === "file:" || ALLOWED_ORIGINS.has(origin);
-      if (!isAllowed) {
+      if (!isAllowedNavigation(url)) {
         event.preventDefault();
         console.warn("已阻擋導航：", url);
       }
     });
 
-    // 2) 不讓頁面自行開新視窗；需要外開的網址改走第七章驗證過的 shell.openExternal
+    // 2) 不讓頁面自行開新視窗；需要外開的網址一律重用第七章的白名單驗證
     contents.setWindowOpenHandler(({ url }) => {
-      if (url.startsWith("https://")) shell.openExternal(url);
+      openExternalIfSafe(url);
       return { action: "deny" };
     });
   });
@@ -135,6 +157,8 @@ app.whenReady().then(() => {
 ```
 
 > 為什麼是 `web-contents-created` 而不是只針對主視窗？因為 `<webview>`、開發者工具、被開出來的子視窗都各自有 `webContents`。用這個事件才能一次涵蓋「所有」渲染內容，不會漏掉。
+>
+> 也不要把 `url.startsWith("https://")` 當成足夠驗證。`https` 只能保證協定，不代表那個網域可信；外開連結請集中走第七章的 `isSafeExternalUrl()`，依你的產品需求維護允許清單。
 
 ---
 
@@ -159,6 +183,8 @@ app.whenReady().then(() => {
 ---
 
 ## 9.7 Main 整合自動更新流程
+
+自動更新比對的是打包後 App 的真實版本，因此不要讓第三章的 `"1.0.0-course-demo"` 留到這裡。第四章已經把 `window.appInfo.getVersion()` 改成透過 IPC 讀 `app.getVersion()`；發版時請用 `npm version patch --no-git-tag-version` 或手動更新 `package.json.version`，讓 UI、log 與更新機制看到同一個版本。
 
 `src/main/updater.js`：
 
@@ -247,6 +273,7 @@ gh release list
 
 1. **App 必須經過程式碼簽章**（Apple Developer 憑證）。未簽章的版本呼叫 autoUpdater 會拋出錯誤，這也是很多人「本機測試更新一直失敗」的原因。
 2. `build.mac.target` 需包含 `zip`（第八章已設定），macOS 的更新實際透過 zip 包進行，`dmg` 只用於首次安裝。
+3. macOS 架構要和更新檔對得上。第八章範例用 `universal` 同時支援 Intel 與 Apple Silicon；若你分開發佈 `x64` / `arm64`，要確認 GitHub Release 上的 `latest-mac.yml` 與檔名不會讓某個架構抓到另一個架構的包。
 
 簽章與公證（notarization）需要 Apple Developer 帳號。**簽章**證明「這個 App 出自你」，**公證**則是把 App 送交 Apple 掃描惡意程式；少了公證，使用者在較新的 macOS 下載後會看到「無法打開，因為 Apple 無法檢查是否包含惡意軟體」而完全打不開——這是比簽章更常被漏掉的一步。
 

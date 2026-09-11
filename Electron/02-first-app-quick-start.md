@@ -77,6 +77,18 @@ app.on("window-all-closed", () => {
 
 另外那行 `if (!app.isPackaged) win.webContents.openDevTools();` 是開發便利設定：`app.isPackaged` 在 `npm run dev` 時為 `false`、打包後為 `true`，所以 DevTools 只會在開發時自動打開，正式版本不會把開發者工具塞給使用者。之後幾章的 `main.js` 都會沿用這個慣例。
 
+> 產品化時常會再加兩行，避免視窗先閃出一塊空白再載入 UI：
+>
+> ```javascript
+> const win = new BrowserWindow({
+>   show: false,
+>   backgroundColor: "#f6f7fb"
+> });
+> win.once("ready-to-show", () => win.show());
+> ```
+>
+> `show: false` 代表內容還沒準備好前先不要顯示視窗；`ready-to-show` 觸發後再顯示。若 App 有深色主題，`backgroundColor` 要設成接近初始畫面的顏色，才不會看到白色閃爍。後面的 admin-dashboard 實戰專案會完整使用這個模式。
+
 ---
 
 ## 2.4 建立前端畫面

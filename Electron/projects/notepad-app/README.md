@@ -616,7 +616,7 @@ applyTheme(window.appInfo?.initialTheme);
 | 讀寫哪個檔案由系統對話框決定 | `backup.ipc.js` | renderer 只傳顯示文字，指定不了路徑 |
 | 匯入的備份檔逐筆驗證後才落地 | `backup.store.js` | 型別、長度、圖片檔名白名單；有一筆壞掉就整個拒絕 |
 | CSP `default-src 'self'; img-src 'self' note-image:` | `index.html` | 擋掉外部腳本與外部圖片追蹤 |
-| `setWindowOpenHandler` → `shell.openExternal` | `main.js` | 外部連結用系統瀏覽器開，不在 App 內開視窗 |
+| `setWindowOpenHandler` → `isSafeExternalUrl()` → `shell.openExternal` | `main.js` | 只有白名單內的外部連結可用系統瀏覽器開，不在 App 內開視窗 |
 | `dragover` / `drop` 一律 `preventDefault()` | `app.js` | 避免把檔案拖進視窗時直接導航離開頁面 |
 | main 端檢查型別、長度、MIME、檔名 | `notes.store.js` | renderer 傳來的資料一律視為不可信 |
 | 樣式與語言比對白名單後才寫檔 | `settings.store.js` | 同上，白名單以外一律丟錯 |
@@ -629,11 +629,11 @@ applyTheme(window.appInfo?.initialTheme);
 用 `electron-builder`（第八章），設定寫在 `package.json` 的 `build` 欄位：
 
 ```bash
-npm run pack    # 只做 App 本體 → dist/mac-arm64/記事本.app
-npm run dist    # 做安裝檔     → dist/記事本-1.0.0-arm64.dmg
+npm run pack    # 只做 App 本體 → dist/mac-universal/記事本.app
+npm run dist    # 做安裝檔     → dist/記事本-1.0.0-universal.dmg + .zip
 ```
 
-打包只會平台自己那一份：在 macOS 上跑就出 `.dmg`，Windows 出 NSIS 安裝檔，Linux 出 `AppImage`。`dist/` 已經在 `.gitignore` 裡（一次 dmg 大約 110MB）。
+打包只會平台自己那一份：在 macOS 上跑就出 universal 的 `.dmg` + `.zip`，Windows 出 NSIS 安裝檔，Linux 出 `AppImage`。`dist/` 已經在 `.gitignore` 裡。
 
 ```jsonc
 "build": {
@@ -641,7 +641,14 @@ npm run dist    # 做安裝檔     → dist/記事本-1.0.0-arm64.dmg
   "directories": { "output": "dist", "buildResources": "build" },
   // 只打包執行時真的會用到的東西：scripts/ 與 build/ 都不進 asar
   "files": ["src/**/*", "package.json"],
-  "mac": { "target": "dmg", "icon": "build/icon.png", "identity": null },
+  "mac": {
+    "target": [
+      { "target": "dmg", "arch": ["universal"] },
+      { "target": "zip", "arch": ["universal"] }
+    ],
+    "icon": "build/icon.png",
+    "identity": null
+  },
   "win": { "target": "nsis", "icon": "build/icon.png" },
   "linux": { "target": "AppImage", "icon": "build/icon.png" }
 }

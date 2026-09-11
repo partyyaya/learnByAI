@@ -116,7 +116,11 @@ app.whenReady().then(() => {
   registerShortcuts(mainWindow); // 第五章
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      return;
+    }
+    createMainWindow();
   });
 });
 ```
@@ -129,7 +133,7 @@ const { contextBridge, ipcRenderer } = require("electron");
 // 第三章：應用資訊
 contextBridge.exposeInMainWorld("appInfo", {
   getVersion() {
-    return "1.0.0-course-demo";
+    return ipcRenderer.invoke("app:get-version");
   },
   getPlatform() {
     return process.platform;
@@ -271,8 +275,9 @@ function handleDeepLink(url, mainWindow) {
   if (!url) return;
   console.log("收到深層連結：", url);
   // 這裡依需求解析 url（例如 new URL(url) 取 query/path）並更新畫面
-  if (mainWindow) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
     mainWindow.webContents.send("deeplink:received", url);
   }
@@ -299,8 +304,9 @@ if (!gotTheLock) {
 } else {
   app.on("second-instance", (_event, argv) => {
     // Windows / Linux：App 已在執行時，網址從第二份程序的 argv 送達
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
       mainWindow.focus();
     }
     handleDeepLink(findDeepLink(argv), mainWindow); // 深層連結
@@ -331,7 +337,7 @@ if (!gotTheLock) {
 > 兩個實務注意點：
 >
 > 1. **macOS 冷啟動**：若 App 沒在跑就被協定喚起，`open-url` 可能在視窗建立前就觸發，此時 `mainWindow` 還不存在。正式專案可先把網址暫存成 `pendingDeepLink`，等 `whenReady` 建好視窗再處理。
-> 2. **要讓 Renderer 收到 `deeplink:received`**，記得比照第四章的原則在 preload 用 `ipcRenderer.on` 轉一層（例如 `onDeepLink(cb)`），不要直接把 `ipcRenderer` 暴露給前端。
+> 2. **要讓 Renderer 收到 `deeplink:received`**，做法就是第四章 4.7 的 Main → Renderer 推送模式：preload 用 `ipcRenderer.on` 轉成 `onDeepLink(cb)`，回傳取消訂閱函式，而且不要把 `event` 或 `ipcRenderer` 暴露給前端。
 
 ---
 

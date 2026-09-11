@@ -271,11 +271,18 @@ jobs:
         env:
           # electron-builder 讀取 GH_TOKEN，把安裝檔與 latest*.yml 上傳到 GitHub Release
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 若第九章已開啟 macOS 簽章與 notarize，這些 secrets 必須一起設定
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 ```
 
 流程重點：
 
 - `--publish always`：electron-builder 打包完會直接把產物與 `latest*.yml` 上傳到 GitHub Release。第九章的自動更新讀取的正是這些檔案，這一步把「發版 → 使用者收到更新」整條鏈路接起來；少了它，建置產物會隨 CI 執行環境一起消失。
+- 這份 workflow 和第九章的 macOS 自動更新前提是一組：若 `build.mac.notarize: true`，GitHub repo 必須設定 `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` secrets。若只是課程本機練習、還沒有 Apple Developer 憑證，請先保留 `identity: null`、不要把未簽章 mac 版上傳成 auto-update 正式發佈。
 - 此範例只在 macOS runner 上打包 mac 版。若要同時發佈 Windows / Linux 版，可用 `strategy.matrix` 在各自平台的 runner 上執行同一組步驟（electron-builder 的簽章與部分安裝檔格式無法跨平台產生）。
 
 ---

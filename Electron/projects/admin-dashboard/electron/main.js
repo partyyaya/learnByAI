@@ -8,6 +8,7 @@ const { registerApiIpc } = require("./mock/api.ipc");
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const IS_DEV = Boolean(DEV_SERVER_URL);
 const IS_MAC = process.platform === "darwin";
+const ALLOWED_EXTERNAL_ORIGINS = new Set(["https://www.electronjs.org", "https://github.com"]);
 
 // 自己畫的標題列高度。這個值 CSS 那邊也要有一份（global.css 的 --titlebar-h），
 // 因為紅綠燈／系統控制鈕的位置是 main 決定的，版面留白是 renderer 決定的。
@@ -23,6 +24,34 @@ const TITLEBAR_THEMES = {
 };
 
 let mainWindow = null;
+
+function isSafeExternalUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "https:" && ALLOWED_EXTERNAL_ORIGINS.has(url.origin);
+  } catch {
+    return false;
+  }
+}
+
+function openExternalIfSafe(rawUrl) {
+  if (!isSafeExternalUrl(rawUrl)) {
+    console.warn("Blocked external URL:", rawUrl);
+    return;
+  }
+  shell.openExternal(rawUrl).catch((error) => {
+    console.warn("Failed to open external URL:", error);
+  });
+}
+
+function isAllowedAppNavigation(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return IS_DEV ? rawUrl.startsWith(DEV_SERVER_URL) : url.protocol === "file:";
+  } catch {
+    return false;
+  }
+}
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -67,9 +96,9 @@ function createMainWindow() {
     mainWindow.loadFile(path.join(__dirname, "../dist-renderer/index.html"));
   }
 
-  // 後台裡的外部連結一律交給系統瀏覽器，不在 App 內開新視窗
+  // 後台裡的外部連結需先過白名單，再交給系統瀏覽器
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalIfSafe(url);
     return { action: "deny" };
   });
 
@@ -77,10 +106,9 @@ function createMainWindow() {
   // 少了這一層，只要頁面上有一個 <a href="https://…"> 被點到，整個 App 就會
   // 變成一個沒有網址欄的瀏覽器，而且那個外部頁面跟 preload 共用同一個 window。
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    const allowed = IS_DEV ? url.startsWith(DEV_SERVER_URL) : url.startsWith("file://");
-    if (!allowed) {
+    if (!isAllowedAppNavigation(url)) {
       event.preventDefault();
-      shell.openExternal(url);
+      openExternalIfSafe(url);
     }
   });
 

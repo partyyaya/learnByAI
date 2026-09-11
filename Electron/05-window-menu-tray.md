@@ -152,14 +152,26 @@ function createTray(mainWindow) {
   tray = new Tray(path.join(__dirname, "../../assets/trayTemplate.png"));
   tray.setToolTip("Learn Electron");
 
+  function showMainWindow() {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }
+
+  function hideMainWindow() {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.hide();
+  }
+
   const contextMenu = Menu.buildFromTemplate([
     {
       label: "顯示主視窗",
-      click: () => mainWindow.show()
+      click: showMainWindow
     },
     {
       label: "隱藏主視窗",
-      click: () => mainWindow.hide()
+      click: hideMainWindow
     },
     { type: "separator" },
     { role: "quit", label: "離開" }
@@ -169,6 +181,32 @@ function createTray(mainWindow) {
 }
 
 module.exports = { createTray };
+```
+
+有系統匣的 App 通常不把「按視窗關閉鈕」視為結束程式，而是把主視窗藏到背景。否則在 macOS 上關窗後 App 仍活著，但 Tray 選單手上拿的是已銷毀的 `BrowserWindow`，下一次點「顯示主視窗」就會丟出 `Object has been destroyed`。
+
+因此 `main.js` 要加上這段生命週期控制：
+
+```javascript
+let isQuitting = false;
+
+function createMainWindow() {
+  // ...建立 BrowserWindow 與 loadFile
+
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
+}
+
+app.on("before-quit", () => {
+  isQuitting = true;
+});
 ```
 
 ---
@@ -213,7 +251,7 @@ if (!gotTheLock) {
 } else {
   // 有人又啟動了一次（例如再點一次圖示）：把既有視窗叫回前景
   app.on("second-instance", () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       if (!mainWindow.isVisible()) mainWindow.show();
       mainWindow.focus();
@@ -246,6 +284,7 @@ const { createTray } = require("./tray");
 const { registerShortcuts, unregisterShortcuts } = require("./shortcut");
 
 let mainWindow;
+let isQuitting = false;
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
@@ -267,6 +306,17 @@ function createMainWindow() {
   if (!app.isPackaged) {
     mainWindow.webContents.openDevTools({ mode: "detach" });
   }
+
+  // 有系統匣時，按視窗關閉鈕只隱藏；真正離開由選單/托盤的 quit 觸發
+  mainWindow.on("close", (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow.hide();
+  });
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 }
 
 // 5.7：單一實例鎖——拿不到鎖代表已有一份在跑，直接結束
@@ -277,7 +327,7 @@ if (!gotTheLock) {
 } else {
   // 使用者又啟動了一次：把既有視窗叫回前景，而不是開新視窗
   app.on("second-instance", () => {
-    if (mainWindow) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
       if (!mainWindow.isVisible()) mainWindow.show();
       mainWindow.focus();
@@ -292,7 +342,11 @@ if (!gotTheLock) {
     registerShortcuts(mainWindow); // 本章新增
 
     app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        return;
+      }
+      createMainWindow();
     });
   });
 }
@@ -304,6 +358,10 @@ app.on("window-all-closed", () => {
 // 離開前解除全域快捷鍵，避免殘留註冊
 app.on("will-quit", () => {
   unregisterShortcuts();
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
 });
 ```
 
@@ -319,7 +377,7 @@ npm run dev
 檢查項目：
 
 - 選單列是否可使用「重新整理」與「官方文件」，macOS 上是否出現 App 名稱選單與「編輯」選單
-- 系統匣是否可顯示/隱藏視窗
+- 系統匣是否可顯示/隱藏視窗，按視窗關閉鈕後是否能再從系統匣叫回
 - `Cmd/Ctrl + Shift + I` 是否可開關 DevTools
 - 重複啟動 App（再次 `npm run dev` 或再點一次圖示）時，是否只會把既有視窗帶回前景、而非開出第二份
 

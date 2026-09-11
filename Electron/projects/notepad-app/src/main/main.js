@@ -17,12 +17,32 @@ registerImageScheme();
 
 // App 圖示（橘白肥貓捧著一支筆）。原始檔是 build/icon.svg，PNG 用 `npm run icon` 產生。
 const ICON_FILE = path.join(__dirname, "../../build/icon.png");
+const ALLOWED_EXTERNAL_ORIGINS = new Set(["https://www.electronjs.org", "https://github.com"]);
 
 // 視窗標題只在「視窗開了、頁面還沒載入」那一瞬間看得到，
 // 之後 renderer 會用 i18n 的 app.title 覆蓋掉（見 src/renderer/i18n.js）。
 const WINDOW_TITLES = { "zh-Hant": "記事本", en: "Notepad" };
 
 let mainWindow = null;
+
+function isSafeExternalUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return url.protocol === "https:" && ALLOWED_EXTERNAL_ORIGINS.has(url.origin);
+  } catch {
+    return false;
+  }
+}
+
+function openExternalIfSafe(rawUrl) {
+  if (!isSafeExternalUrl(rawUrl)) {
+    console.warn("Blocked external URL:", rawUrl);
+    return;
+  }
+  shell.openExternal(rawUrl).catch((error) => {
+    console.warn("Failed to open external URL:", error);
+  });
+}
 
 function createMainWindow() {
   const { theme } = settingsStore.readSettings();
@@ -50,9 +70,9 @@ function createMainWindow() {
 
   if (!app.isPackaged) mainWindow.webContents.openDevTools({ mode: "detach" });
 
-  // 記事內容可能含外部連結：一律用系統瀏覽器開，不在 App 裡開新視窗
+  // 只有白名單內的外部連結能交給系統瀏覽器，不在 App 裡開新視窗
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    openExternalIfSafe(url);
     return { action: "deny" };
   });
 
