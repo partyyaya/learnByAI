@@ -12,7 +12,7 @@
 |----|------|--------|----------|
 | 🟢 **基礎橋接** | [basics/README.md](./basics/README.md) | 會 JS（或會 React）、想快速上手 Vue 3 | `<script setup>`、響應式、元件、表單、Router、Pinia、Vitest 測試 —— 學完能無縫進入下面兩門課 |
 | 🧩 **自訂指令** | [01-custom-directives.md](./01-custom-directives.md) | 已會 Vue、需要直接操作 DOM 的場景 | 指令生命週期、`binding`、事件/observer 清理、SSR 與 `getSSRProps` |
-| 🔬 **源碼解析** | [vue-source/README.md](./vue-source/README.md) | 想「看得懂、追得動、改得準」Vue 3 原始碼 | Reactivity（3.4 重寫）、Renderer/patch、Compiler、調試工作流與效能優化 |
+| 🔬 **源碼解析** | [vue-source/README.md](./vue-source/README.md) | 想「看得懂、追得動、改得準」Vue 3 原始碼 | Reactivity（3.5 重寫）、Renderer/patch、Compiler、調試工作流與效能優化 |
 | 🚀 **Nuxt 全端** | [nuxt/README.md](./nuxt/README.md) | 已有 Vue 3 基礎、想做可上線全端 | 檔案路由、SSR、資料抓取、Nitro API、Prisma、認證、SEO、部署 |
 
 ---

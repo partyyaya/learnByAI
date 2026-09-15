@@ -42,12 +42,16 @@ module.exports = { isSafeExternalUrl };
 `src/main/ipc/native.ipc.js`：
 
 ```javascript
-const { ipcMain, dialog, Notification, clipboard, shell } = require("electron");
+const { BrowserWindow, ipcMain, dialog, Notification, clipboard, shell } = require("electron");
 const { isSafeExternalUrl } = require("../utils/url-guard");
 
 function registerNativeIpc() {
-  ipcMain.handle("native:show-open-dialog", async () => {
-    const result = await dialog.showOpenDialog({
+  ipcMain.handle("native:show-open-dialog", async (event) => {
+    // 帶入發出請求的那個視窗，對話框才會「附著」在它身上（macOS 會變成下拉式 sheet，
+    // Windows / Linux 則會是該視窗的 modal）；不傳的話是 app 層級對話框，
+    // 多視窗時使用者會搞不清楚這個對話框屬於誰
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const result = await dialog.showOpenDialog(win, {
       properties: ["openFile", "multiSelections"]
     });
     return result;
@@ -105,10 +109,12 @@ module.exports = { registerNativeIpc };
 
 ```javascript
 const { registerNativeIpc } = require("./ipc/native.ipc");
+const { syncAutoLaunchOnStartup } = require("./store/auto-launch"); // 第六章 6.8
 
 app.whenReady().then(() => {
   registerSystemIpc(); // 第四章
   registerSettingsIpc(); // 第六章
+  syncAutoLaunchOnStartup(); // 第六章 6.8
   registerNativeIpc(); // 本章新增
   createMainWindow();
   buildAppMenu(mainWindow); // 第五章
@@ -147,13 +153,19 @@ contextBridge.exposeInMainWorld("systemApi", {
   }
 });
 
-// 第六章：設定存取
+// 第六章：設定存取與開機自動啟動
 contextBridge.exposeInMainWorld("settingsApi", {
   get(key) {
     return ipcRenderer.invoke("settings:get", key);
   },
   set(key, value) {
     return ipcRenderer.invoke("settings:set", key, value);
+  },
+  getAutoLaunch() {
+    return ipcRenderer.invoke("settings:get-auto-launch");
+  },
+  setAutoLaunch(enabled) {
+    return ipcRenderer.invoke("settings:set-auto-launch", enabled);
   }
 });
 

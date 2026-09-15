@@ -214,12 +214,34 @@ export default defineNuxtPlugin(() => {
         return new Date(d).toLocaleString('zh-TW', {
           year: 'numeric', month: '2-digit', day: '2-digit',
           hour: '2-digit', minute: '2-digit',
+          // ⚠️ 一定要釘死時區！沒有這行，伺服器（常是 UTC）與瀏覽器（使用者在地時區）
+          // 會把同一個時間格式成不同字串 → hydration mismatch。詳見下方說明。
+          timeZone: 'Asia/Taipei',
         })
       },
     },
   }
 })
 ```
+
+> ### ⚠️ 日期格式化是 hydration mismatch 的頭號來源
+>
+> 很多人以為「時間值固定就安全」——**不對**。`toLocaleString()` 不指定 `timeZone` 時，會用**執行環境的時區**。同一個 ISO 時間：
+>
+> ```text
+> TZ=UTC（正式環境的伺服器多半是這個） → 2026/01/15 上午09:30
+> TZ=Asia/Taipei（使用者的瀏覽器）      → 2026/01/15 下午05:30
+> ```
+>
+> 兩邊算出來的字串不一樣，hydration 就會警告、畫面閃一下。**本機開發看不出來**，因為你的 Node 和瀏覽器都在同一個時區——這個 bug 通常是上線後才冒出來。
+>
+> 三種解法，看需求挑：
+>
+> 1. **釘死時區**（上面的做法）：所有人都看同一個時區的時間。適合「活動開始時間」這類有官方時區的場景。
+> 2. **只輸出不受時區影響的格式**：例如只顯示日期 `YYYY-MM-DD`（自己組字串，不用 `toLocale*`）。
+> 3. **想顯示「使用者當地時間」**：那它本質上就是 client-only，用 `<ClientOnly>` 包起來（跟下面的「現在時間」一樣處理）。
+>
+> 同理，`toLocaleString` 的**語系**也建議明寫（`'zh-TW'`），別依賴環境預設。
 
 ### `app/components/FlakyWidget.vue`
 
@@ -247,8 +269,9 @@ if (props.broken) {
 <script setup>
 const { $formatDate } = useNuxtApp()
 
-// ✅ 用「穩定值」示範 $formatDate：這個時間 server / client 兩端一致，不會 mismatch。
+// ✅ 固定的時間值 + plugin 裡釘死了 timeZone → server / client 兩端算出同一個字串，不會 mismatch。
 // （實務上這裡通常是 post.createdAt 這種從資料抓來的固定時間。）
+// 注意：只有「值固定」還不夠，格式化時的時區也要固定——少了 timeZone 照樣會 mismatch。
 const publishedAt = '2026-01-15T09:30:00.000Z'
 
 // 「當下時間」是最經典的 hydration mismatch 陷阱：setup 在 server 跑一次、
@@ -311,7 +334,9 @@ h2 { font-size: 18px; margin-top: 24px; }
 跑起來後：
 
 - `$formatDate` 把 ISO 時間變成好讀的本地格式（plugin 注入成功，全站可用）。
-- 「文章發佈時間」用穩定值、直接 SSR 渲染沒問題；「現在時間」包在 `<ClientOnly>` 裡只在瀏覽器算，所以 console **不會**出現 hydration mismatch 警告。你可以試著把它從 `<ClientOnly>` 拿出來、改成在頂層 `new Date()`，就會看到警告——這正是第 4 章講的坑。
+- 「文章發佈時間」值固定、格式化時也釘死了 `timeZone`，直接 SSR 渲染沒問題；「現在時間」包在 `<ClientOnly>` 裡只在瀏覽器算，所以 console **不會**出現 hydration mismatch 警告。你可以試兩種破壞方式，都會看到警告：
+  - 把「現在時間」從 `<ClientOnly>` 拿出來、改成在頂層 `new Date()`（第 4 章講的坑）。
+  - 把 plugin 裡的 `timeZone: 'Asia/Taipei'` 拿掉，然後用 `TZ=UTC npm run dev` 啟動——伺服器變成 UTC、瀏覽器還是台北，同一個固定時間就對不起來了。
 - 勾「讓小工具壞掉」→ 只有那一塊變成紅色 fallback，標題與其他內容不受影響。
 - 按「重試」→ 小工具恢復正常（`clearError` 生效）。
 

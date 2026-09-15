@@ -13,7 +13,7 @@
 2. 用 `reactive` 管理物件狀態，並解釋「解構為什麼會失去響應式」以及用 `toRefs` / `toRef` 補救。
 3. 判斷什麼時候用 `ref`、什麼時候用 `reactive`。
 4. 用 `computed` 寫衍生狀態（唯讀與可寫兩種）。
-5. 用 `watch` 監看指定來源，並正確使用 `immediate`、`deep`、`onCleanup`。
+5. 用 `watch` 監看指定來源，並正確使用 `immediate`、`deep`（含 3.5 的 `deep: 數字`）、`onCleanup` / `onWatcherCleanup`。
 6. 用 `watchEffect` 自動追蹤依賴，並知道它與 `watch` 的取捨。
 7. 對照 React 的 `useState` / `useMemo` / `useEffect`，理解 Vue「自動追蹤、不用依賴陣列」的差別。
 
@@ -57,7 +57,17 @@ function inc() { count.value++ }   // script 裡：要 .value
 </template>
 ```
 
-> 一句話記：**`<script>` 裡碰 ref 一律 `.value`；`<template>` 裡直接寫名字。** 忘了 `.value` 是新手第一名的 bug——例如寫成 `count++`（其實是把整個 ref 物件加 1，得到 `NaN`）。
+> 一句話記：**`<script>` 裡碰 ref 一律 `.value`；`<template>` 裡直接寫名字。**
+>
+> 忘了 `.value` 是新手第一名的 bug，但**症狀跟你想的不一樣**。因為 ref 幾乎都用 `const` 宣告，寫成 `count++` 會直接丟：
+>
+> ```text
+> TypeError: Assignment to constant variable.
+> ```
+>
+> 不是拿到 `NaN`——`count++` 要先把 ref 物件轉成數字（得到 `NaN`）**再賦值回 `count`**，而 `const` 不給賦值，所以在賦值那一步就爆了。只有當你用 `let` 宣告 ref 時才會真的拿到 `NaN`（而且 ref 就這樣被整個換掉，畫面從此不再更新，更難查）。
+>
+> 看到 `Assignment to constant variable`，第一個念頭就該是「哪裡漏了 `.value`」。
 
 ---
 
@@ -287,6 +297,12 @@ function changeFont() {
 
 - `immediate: true`：建立 watch 時立刻執行一次 callback，之後照常。
 - `deep: true`：連物件內部深層屬性的變化也監看（有效能成本，物件大時要留意）。
+- `deep: 數字`（Vue 3.5+）：**限制遞迴深度**。`deep: true` 會把整棵物件走到底，大物件很貴；只需要監看一兩層時給數字更省：
+
+  ```js
+  // 只追蹤到第 1 層：settings.theme 變會觸發，settings.font.size 變不會
+  watch(settings, handler, { deep: 1 })
+  ```
 
 > 提醒：直接 `watch` 一個「裝物件的 ref」時，若你是**改內部屬性**（`settings.value.font.size++`），需要 `deep`；若你是**整包替換**（`settings.value = {...}`），不需要 `deep` 也會觸發。
 
@@ -317,6 +333,23 @@ watch(keyword, async (kw, _old, onCleanup) => {
   <p>{{ result }}</p>
 </template>
 ```
+
+### 5.5 `onWatcherCleanup`：3.5 的新寫法
+
+Vue 3.5 起多了一個 `onWatcherCleanup`，可以直接 import，不必從 callback 參數拿：
+
+```js
+import { watch, onWatcherCleanup } from 'vue'
+
+watch(keyword, async (kw) => {
+  const controller = new AbortController()
+  onWatcherCleanup(() => controller.abort())   // 不用再接第三個參數
+  const res = await fetch(`/api/search?q=${kw}`, { signal: controller.signal })
+  result.value = await res.text()
+})
+```
+
+⚠️ 它必須在 callback 裡**同步**呼叫——放在 `await` 之後就註冊不到了（跟生命週期 hook 一樣的限制）。兩種寫法效果相同，挑一種用即可；本課後面沿用參數版的 `onCleanup`，看到 `onWatcherCleanup` 知道是同一回事就好。
 
 ---
 
@@ -437,7 +470,7 @@ input { width: 100px; margin-left: 8px; }
 
 ## 常見陷阱
 
-1. **忘記 `.value`**：`<script>` 裡 `ref` 一律 `.value`。寫 `count++`（漏 `.value`）會把 ref 物件當數字加，得到 `NaN`。
+1. **忘記 `.value`**：`<script>` 裡 `ref` 一律 `.value`。`const` 宣告的 ref 寫成 `count++` 會丟 `TypeError: Assignment to constant variable.`（不是 `NaN`）；若用 `let` 宣告才會真的變成 `NaN` 並把 ref 整個蓋掉。見 §1.2。
 2. **解構 `reactive` 失去響應式**：`const { age } = state` 會斷連結。要嘛用 `toRefs` / `toRef`，要嘛整包用 `state.age` 不解構。
 3. **`watch` reactive 屬性沒用 getter**：`watch(state.age, ...)` 無效，必須 `watch(() => state.age, ...)`。
 4. **改物件內層卻沒設 `deep`**：`watch` 一個裝物件的來源、又只改內部屬性時，要 `{ deep: true }` 才會觸發。

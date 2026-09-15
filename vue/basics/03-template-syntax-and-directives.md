@@ -405,6 +405,11 @@ function submit() { console.log('送出：', text.value); text.value = '' }
 </template>
 ```
 
+兩個容易誤會的地方：
+
+- **`.delete` 同時涵蓋 Delete 與 Backspace 兩顆鍵**（這是 Vue 的別名設計，不是只有 Delete）。若你只想接其中一顆，得自己判斷 `event.key`。
+- 別名之外的按鍵，直接用 `event.key` 的 **kebab-case** 形式即可，例如 `@keyup.page-down`、`@keyup.arrow-up`。
+
 ---
 
 ## 8. `v-model`：雙向綁定（先認識，細節在第 6 章）

@@ -563,23 +563,37 @@ describe('SearchInput（defineModel）', () => {
 // src/composables/useFetch.js
 import { ref, watchEffect, toValue } from 'vue'
 
+// url 可以傳字串、ref、或 getter 函式（() => `.../${id.value}`）
 export function useFetch(url) {
   const data = ref(null)
   const error = ref(null)
   const loading = ref(false)
 
-  watchEffect(async () => {
+  // watchEffect 會自動追蹤裡面用到的響應式來源；
+  // 只要 toValue(url) 依賴的東西變了，就自動重跑（重新抓）
+  watchEffect(async (onCleanup) => {
+    // 每次重抓都開一個新的 AbortController，
+    // 並在「下次觸發前 / 元件卸載時」中止上一次還沒回來的請求（見第 2 章 5.4 的競態問題）
+    const controller = new AbortController()
+    const { signal } = controller
+    onCleanup(() => controller.abort())
+
     data.value = null
     error.value = null
     loading.value = true
     try {
-      const res = await fetch(toValue(url))
+      const res = await fetch(toValue(url), { signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      data.value = await res.json()
+      const json = await res.json()
+      // 關鍵：寫進 data 之前再確認一次「我還是最新的那個請求嗎」
+      if (signal.aborted) return
+      data.value = json
     } catch (e) {
+      if (signal.aborted) return      // 被我們自己取消的，不算錯誤
       error.value = e
     } finally {
-      loading.value = false
+      // 已被取代的舊請求不該把 loading 關掉——新的請求還在跑
+      if (!signal.aborted) loading.value = false
     }
   })
 
@@ -621,7 +635,8 @@ describe('useFetch', () => {
     expect(loading.value).toBe(true) // 同步階段就已經開始載入
     await flushPromises() // 等所有 pending 的 promise 跑完
 
-    expect(fetch).toHaveBeenCalledWith('/api/posts')
+    // useFetch 現在會多帶一個 { signal }（競態保護），所以用 objectContaining 比對
+    expect(fetch).toHaveBeenCalledWith('/api/posts', expect.objectContaining({ signal: expect.anything() }))
     expect(data.value).toEqual([{ id: 1, title: 'Hello' }])
     expect(error.value).toBe(null)
     expect(loading.value).toBe(false)
@@ -654,14 +669,35 @@ describe('useFetch', () => {
 
     const { data } = useFetch(() => `/api/posts/${id.value}`)
     await flushPromises()
-    expect(fetch).toHaveBeenLastCalledWith('/api/posts/1')
+    expect(fetch).toHaveBeenLastCalledWith('/api/posts/1', expect.anything())
 
     fetch.mockResolvedValue(jsonResponse({ id: 2 }))
     id.value = 2 // 改依賴
     await flushPromises() // watchEffect 重跑 + 新的請求完成
 
     expect(fetch).toHaveBeenCalledTimes(2)
-    expect(fetch).toHaveBeenLastCalledWith('/api/posts/2')
+    expect(fetch).toHaveBeenLastCalledWith('/api/posts/2', expect.anything())
+    expect(data.value).toEqual({ id: 2 })
+  })
+
+  it('競態保護：舊請求就算晚回來，也不會蓋掉新資料', async () => {
+    const id = ref(1)
+    // 第一個請求「很慢」，第二個請求馬上回來
+    let resolveSlow
+    fetch.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveSlow = () => resolve(jsonResponse({ id: 1 })) }),
+    )
+    fetch.mockResolvedValueOnce(jsonResponse({ id: 2 }))
+
+    const { data } = useFetch(() => `/api/posts/${id.value}`)
+    id.value = 2                 // 第一個還沒回來就切走
+    await flushPromises()
+    expect(data.value).toEqual({ id: 2 })
+
+    resolveSlow()                // 現在才讓「舊的」回來
+    await flushPromises()
+
+    // 沒有競態保護的話，這裡會變成 { id: 1 }——使用者看到的是上一篇文章
     expect(data.value).toEqual({ id: 2 })
   })
 })
@@ -1023,7 +1059,7 @@ jobs:
 
 ## 最後範例：一個完整可跑的測試專案
 
-把本章所有東西整理成一個可以直接跑的專案。原樣建立以下檔案，`npm install` 後 `npm run test:run` 就會看到 45 個測試全綠。
+把本章所有東西整理成一個可以直接跑的專案。原樣建立以下檔案，`npm install` 後 `npm run test:run` 就會看到 46 個測試全綠。
 
 專案結構：
 
@@ -1075,6 +1111,8 @@ vue-test-lab/
   }
 }
 ```
+
+> 這份版本組合是實測跑過的（本節最後的輸出就是它跑出來的）。生態一直在往前，你自己建專案時 `vue-router` 會裝到 5.x、`pinia` 會裝到 4.x、`vite` 會裝到 8.x——**本章所有測試寫法在新版都一樣能跑**，這裡把版本釘住只是為了讓你照抄時拿到跟課文一致的輸出。想用最新版就把版號拿掉重新 `npm install` 即可。
 
 ### `vite.config.js`
 
@@ -1151,23 +1189,37 @@ export function useForm(initial, rules = {}) {
 // src/composables/useFetch.js
 import { ref, watchEffect, toValue } from 'vue'
 
+// url 可以傳字串、ref、或 getter 函式（() => `.../${id.value}`）
 export function useFetch(url) {
   const data = ref(null)
   const error = ref(null)
   const loading = ref(false)
 
-  watchEffect(async () => {
+  // watchEffect 會自動追蹤裡面用到的響應式來源；
+  // 只要 toValue(url) 依賴的東西變了，就自動重跑（重新抓）
+  watchEffect(async (onCleanup) => {
+    // 每次重抓都開一個新的 AbortController，
+    // 並在「下次觸發前 / 元件卸載時」中止上一次還沒回來的請求（見第 2 章 5.4 的競態問題）
+    const controller = new AbortController()
+    const { signal } = controller
+    onCleanup(() => controller.abort())
+
     data.value = null
     error.value = null
     loading.value = true
     try {
-      const res = await fetch(toValue(url))
+      const res = await fetch(toValue(url), { signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      data.value = await res.json()
+      const json = await res.json()
+      // 關鍵：寫進 data 之前再確認一次「我還是最新的那個請求嗎」
+      if (signal.aborted) return
+      data.value = json
     } catch (e) {
+      if (signal.aborted) return      // 被我們自己取消的，不算錯誤
       error.value = e
     } finally {
-      loading.value = false
+      // 已被取代的舊請求不該把 loading 關掉——新的請求還在跑
+      if (!signal.aborted) loading.value = false
     }
   })
 
@@ -1395,7 +1447,7 @@ $ npm run test:run
  RUN  v3.2.7 /path/to/vue-test-lab
 
  ✓ src/stores/auth.spec.js (4 tests) 5ms
- ✓ src/composables/useFetch.spec.js (4 tests) 17ms
+ ✓ src/composables/useFetch.spec.js (5 tests) 20ms
  ✓ src/components/SearchInput.spec.js (3 tests) 25ms
  ✓ src/components/UserBar.spec.js (3 tests) 23ms
  ✓ src/components/PostCard.spec.js (5 tests) 40ms
@@ -1405,11 +1457,11 @@ $ npm run test:run
  ✓ src/composables/useForm.spec.js (6 tests) 3ms
 
  Test Files  9 passed (9)
-      Tests  45 passed (45)
-   Duration  1.48s
+      Tests  46 passed (46)
+   Duration  1.52s
 ```
 
-**45 個測試、1.5 秒。** 手動點完這些情境（四種表單狀態、收藏切換、v-model 雙向、四種請求結果、登入登出、三種守衛情境）至少要好幾分鐘，而且你不會每次改程式都重點一遍——但機器會。
+**46 個測試、1.5 秒。** 手動點完這些情境（四種表單狀態、收藏切換、v-model 雙向、五種請求結果含競態、登入登出、三種守衛情境）至少要好幾分鐘，而且你不會每次改程式都重點一遍——但機器會。
 
 ---
 

@@ -57,12 +57,111 @@ function createMainWindow() {
 
 ---
 
-## 5.4 建立應用選單
+## 5.4 開啟子視窗（多視窗控制）
+
+到目前為止整個 App 只有一個 `mainWindow`。真實的桌面產品幾乎都會有第二個視窗——偏好設定、關於、獨立的編輯器分頁。多視窗要處理的不是「怎麼 new 一個 BrowserWindow」（那很簡單），而是三件事：**不要重複開、要跟主視窗有從屬關係、關掉後要清乾淨**。
+
+`src/main/child-window.js`：
+
+```javascript
+const path = require("node:path");
+const { BrowserWindow } = require("electron");
+
+// 用模組層變數記住已開啟的子視窗，避免使用者連點選單開出一堆一樣的視窗
+let aboutWindow = null;
+
+function openAboutWindow(parent) {
+  // 已經開著就把它叫到前面，不要再開一個
+  if (aboutWindow && !aboutWindow.isDestroyed()) {
+    if (aboutWindow.isMinimized()) aboutWindow.restore();
+    aboutWindow.focus();
+    return aboutWindow;
+  }
+
+  aboutWindow = new BrowserWindow({
+    width: 420,
+    height: 320,
+    title: "關於本課程",
+    parent, // 從屬於主視窗：主視窗最小化時它會跟著收起、永遠疊在主視窗上方
+    modal: false, // 設 true 會變成「必須先關掉它才能操作主視窗」的強制對話框
+    resizable: false,
+    minimizable: false,
+    show: false,
+    webPreferences: {
+      // 子視窗一樣要帶完整的安全設定，不要因為「只是個小視窗」就省略
+      preload: path.join(__dirname, "../preload/preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  });
+
+  aboutWindow.setMenuBarVisibility(false); // Windows / Linux：子視窗不需要重複顯示選單列
+  aboutWindow.loadFile(path.join(__dirname, "../renderer/about.html"));
+  aboutWindow.once("ready-to-show", () => aboutWindow.show());
+
+  // 關掉後把參考清成 null，下次才會重新建立（少了這行，第二次開會撞到已銷毀的物件）
+  aboutWindow.on("closed", () => {
+    aboutWindow = null;
+  });
+
+  return aboutWindow;
+}
+
+module.exports = { openAboutWindow };
+```
+
+`src/renderer/about.html`：
+
+```html
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <title>關於本課程</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <!-- 子視窗比主視窗小很多，把 styles.css 為主畫面設計的外距調小一點 -->
+    <style>
+      main {
+        margin: 20px;
+        max-width: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Learn Electron</h1>
+      <p>這是一個由子視窗載入的獨立頁面。</p>
+      <p id="aboutPlatform"></p>
+    </main>
+    <script src="./about.js"></script>
+  </body>
+</html>
+```
+
+`src/renderer/about.js`：
+
+```javascript
+// 子視窗載入的是同一支 preload，所以第三章暴露的 appInfo 在這裡一樣可用
+document.getElementById("aboutPlatform").textContent = `平台：${window.appInfo.getPlatform()}`;
+```
+
+三個必須知道的觀念：
+
+- **每個 `BrowserWindow` 都是獨立的 renderer process**，彼此不共用 JavaScript 變數，也拿不到對方的 DOM。視窗之間要傳資料，只能透過 Main 轉手（第四章 4.7 的 `webContents.send` 模式）。
+- **`parent` 與 `modal` 是兩件事**：`parent` 決定視覺與生命週期的從屬（跟著主視窗最小化、永遠在上層、主視窗關閉時一起關閉）；`modal: true` 才會鎖住父視窗，適合「非做決定不可」的對話框。偏好設定這種應該用 `modal: false`。
+- **`BrowserWindow.getAllWindows()` 會列出所有視窗**，第二章 `window-all-closed` 判斷的就是這個清單。多視窗之後要小心：主視窗被隱藏、但子視窗還開著時，這個事件並不會觸發。
+
+> 想知道某個 IPC 是哪個視窗發出來的，用 `BrowserWindow.fromWebContents(event.sender)`——這在只有一個視窗時無所謂，多視窗之後就是必備寫法（第七章的對話框、4.6 的標題列主題都用了它）。
+
+---
+
+## 5.5 建立應用選單
 
 `src/main/menu.js`：
 
 ```javascript
 const { app, Menu, shell } = require("electron");
+const { openAboutWindow } = require("./child-window"); // 5.4
 
 const isMac = process.platform === "darwin";
 
@@ -113,6 +212,12 @@ function buildAppMenu(mainWindow) {
       label: "說明",
       submenu: [
         {
+          // 5.4 的子視窗：從選單開啟，不需要經過 preload / IPC
+          label: "關於本課程",
+          click: () => openAboutWindow(mainWindow)
+        },
+        { type: "separator" },
+        {
           // 這是 main 端寫死的可信網址，直接 openExternal 即可；
           // 第七章會處理「來自 Renderer 的網址」為何要先過白名單驗證。
           label: "官方文件",
@@ -138,7 +243,7 @@ module.exports = { buildAppMenu };
 
 ---
 
-## 5.5 建立系統匣（Tray）
+## 5.6 建立系統匣（Tray）
 
 `src/main/tray.js`：
 
@@ -211,7 +316,7 @@ app.on("before-quit", () => {
 
 ---
 
-## 5.6 全域快捷鍵
+## 5.7 全域快捷鍵
 
 `src/main/shortcut.js`：
 
@@ -233,11 +338,11 @@ module.exports = { registerShortcuts, unregisterShortcuts };
 
 > `globalShortcut` 是「**系統層級**」的快捷鍵：即使 App 不在前景、甚至視窗全部隱藏，按下組合鍵仍會被你的 App 攔截，並且會**蓋掉其他軟體對同一組合鍵的使用**。它適合「從背景喚出 App」這類場景。
 >
-> 如果只是想在 App 自己的視窗內提供快捷鍵，應改用選單項目的 `accelerator`（如 5.4 的 `CmdOrCtrl+R`），它只在 App 為前景視窗時生效，不會干擾其他程式。本例註冊 `CommandOrControl+Shift+I` 純粹為了示範 API；實務上「開關 DevTools」這種功能建議放在選單的 `accelerator`。
+> 如果只是想在 App 自己的視窗內提供快捷鍵，應改用選單項目的 `accelerator`（如 5.5 的 `CmdOrCtrl+R`），它只在 App 為前景視窗時生效，不會干擾其他程式。本例註冊 `CommandOrControl+Shift+I` 純粹為了示範 API；實務上「開關 DevTools」這種功能建議放在選單的 `accelerator`。
 
 ---
 
-## 5.7 確保只有一個實例（單一實例鎖）
+## 5.8 確保只有一個實例（單一實例鎖）
 
 桌面應用通常**不希望被開成好幾份**：使用者重複點圖示、或從系統匣又啟動一次時，正確行為是「把既有視窗叫回前景」，而不是再開一個新程序。Electron 用 `app.requestSingleInstanceLock()` 處理這件事——第一份程序拿到鎖，之後啟動的程序拿不到鎖就立刻結束，並把啟動事件轉交給第一份程序：
 
@@ -265,15 +370,15 @@ if (!gotTheLock) {
 }
 ```
 
-重點：**所有 `app.whenReady()` 的內容都要搬進 `else` 區塊**。如果拿不到鎖卻還是建了視窗，就等於沒鎖。下一節的完整 `main.js` 會把這個結構整合進來。
+重點：**所有 `app.whenReady()` 的內容都要搬進 `else` 區塊**。如果拿不到鎖卻還是建了視窗，就等於沒鎖。5.9 的完整 `main.js` 會把這個結構整合進來。
 
 > 補充：`second-instance` 事件的回呼還會收到 `(event, argv, workingDirectory)`，第二份程序的命令列參數會透過 `argv` 傳進來。第七章的「深層連結」會用到這個參數——在 Windows 上，`myapp://...` 這類自訂協定被點開時，網址就是夾在 `argv` 裡送達的。
 
 ---
 
-## 5.8 在 main.js 串接功能
+## 5.9 在 main.js 串接功能
 
-`src/main/main.js`（完整檔案，包含第四章的 IPC 註冊、本章的選單／系統匣／快捷鍵，以及 5.7 的單一實例鎖）：
+`src/main/main.js`（完整檔案，包含第四章的 IPC 註冊、本章的選單／系統匣／快捷鍵，以及 5.8 的單一實例鎖）：
 
 ```javascript
 const path = require("node:path");
@@ -319,7 +424,7 @@ function createMainWindow() {
   });
 }
 
-// 5.7：單一實例鎖——拿不到鎖代表已有一份在跑，直接結束
+// 5.8：單一實例鎖——拿不到鎖代表已有一份在跑，直接結束
 const gotTheLock = app.requestSingleInstanceLock();
 
 if (!gotTheLock) {
@@ -367,7 +472,7 @@ app.on("before-quit", () => {
 
 ---
 
-## 5.9 執行驗證
+## 5.10 執行驗證
 
 ```bash
 # 啟動應用，驗證視窗、選單、系統匣、快捷鍵是否都正常
@@ -377,15 +482,17 @@ npm run dev
 檢查項目：
 
 - 選單列是否可使用「重新整理」與「官方文件」，macOS 上是否出現 App 名稱選單與「編輯」選單
+- 「說明 → 關於本課程」是否開出子視窗；**連點多次是否只會有一個子視窗**、關掉後再點是否還能重新開啟
 - 系統匣是否可顯示/隱藏視窗，按視窗關閉鈕後是否能再從系統匣叫回
 - `Cmd/Ctrl + Shift + I` 是否可開關 DevTools
 - 重複啟動 App（再次 `npm run dev` 或再點一次圖示）時，是否只會把既有視窗帶回前景、而非開出第二份
 
 ---
 
-## 5.10 本章小結
+## 5.11 本章小結
 
 - 你已具備桌面應用核心互動能力
+- 你會開出從屬於主視窗的子視窗，並避免重複開啟與參考殘留
 - 你可用系統匣讓 App 在背景運作
 - 你可透過快捷鍵提升操作效率
 - 你用單一實例鎖避免 App 被重複開啟，並讓選單在 macOS 上行為正確

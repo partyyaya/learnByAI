@@ -75,19 +75,19 @@ Nuxt 4 是目前 `create nuxt` 的預設版本，API 與 Nuxt 3 **大致相容**
 
 ### 4.1 Node.js 版本
 
-Nuxt 4 需要較新的 Node，建議直接用 **Node 20 LTS 以上**。確認版本：
+Nuxt 4 需要較新的 Node，建議直接用 **Node 22 LTS 以上**（與 Vue 課一致；現在的官方腳手架多半要求 `^22.18.0 || >=24.12.0`）。確認版本：
 
 ```bash
-node -v   # 建議 v20 以上
+node -v   # 建議 v22.18 以上
 npm -v
 ```
 
-> ⚠️ 本機若預設是舊版 Node（例如 v12），用它跑 Nuxt 會直接失敗。請用 nvm 切到 20：
+> ⚠️ 本機若預設是舊版 Node（例如 v12），用它跑 Nuxt 會直接失敗。請用 nvm 切：
 
 ```bash
-nvm install 20
-nvm use 20
-node -v   # 例如 v20.19.5
+nvm install 22
+nvm use 22
+node -v   # 例如 v22.21.1
 ```
 
 ### 4.2 推薦工具
@@ -194,7 +194,7 @@ npm run preview    # 本機預覽 build 後的結果
 
 ## 8. 本章小練習
 
-1. 用 `nvm use 20` 確認 Node 版本，再用 `npm create nuxt@latest` 建立專案並成功啟動。
+1. 用 `nvm use 22` 確認 Node 版本，再用 `npm create nuxt@latest` 建立專案並成功啟動。
 2. 打開 Nuxt DevTools，找出目前有幾個 Pages、幾個 Components。
 3. 把 `app/app.vue` 的內容清空，改成自己的一行字，存檔看畫面是否即時更新（HMR）。
 4. 試著在專案根目錄（不是 `app/`）建立一個 `pages/` 資料夾放頁面，觀察 Nuxt 4 會不會理你——體會「原始碼要放 `app/`」。

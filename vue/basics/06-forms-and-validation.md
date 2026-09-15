@@ -9,7 +9,7 @@
 完成這一章後，你應該可以：
 
 1. 在文字框、`textarea`、`checkbox`、`radio`、`select`（單/多選）上正確使用 `v-model`。
-2. 用 `.lazy` / `.number` / `.trim` 修飾符調整綁定行為。
+2. 用 `.lazy` / `.number` / `.trim` 修飾符調整綁定行為，並知道中文輸入法（IME）組字期間 `v-model` 不會更新。
 3. 用 `reactive` 管理多欄位表單，並用 `computed` 算出即時錯誤。
 4. 做出「碰過才顯示錯誤（touched）」「送出前全面檢查」的驗證體驗。
 5. 把驗證抽成可重用的 `useForm`/`useField` composable。
@@ -208,6 +208,40 @@ const account = ref('')
 
 > `.number` 很重要：沒有它，`<input type="number">` 綁出來仍是**字串** `"18"`，做數字比較或送後端時容易踩雷。
 
+### 3.1 中文輸入法（IME）：`v-model` 在組字期間不會更新
+
+這一條對中文、日文、韓文使用者特別重要，但很多教學不會提。
+
+用注音、拼音這類輸入法打字時，瀏覽器會先進入「組字（composition）」狀態——你看到的是還沒選字的候選字串。**`v-model` 會刻意忽略這段期間的 `input` 事件**，直到你按下 Enter 或選完字、組字結束（`compositionend`）才把值同步回去。
+
+這是合理的預設（不然每按一個注音符號就觸發一次搜尋 API 很浪費），但會造成兩種「看起來像 bug」的情況：
+
+```vue
+<!-- 組字中 keyword 不會變 → 中文使用者邊打邊看的即時搜尋會「慢半拍」 -->
+<input v-model="keyword" />
+<p>你輸入了：{{ keyword }}</p>
+```
+
+- **即時預覽/搜尋**：使用者打「你好」的過程中，`keyword` 一直是空的，選完字才一次跳出來。
+- **字數統計**：組字中的字不算進去，計數器看起來卡住。
+
+真的需要「連組字中的內容都即時拿到」時，就不要用 `v-model`，自己綁 `:value` + `@input`：
+
+```vue
+<script setup>
+import { ref } from 'vue'
+const keyword = ref('')
+</script>
+
+<template>
+  <!-- 繞過 v-model 的 IME 處理：組字期間的每一次輸入都會同步 -->
+  <input :value="keyword" @input="keyword = $event.target.value" />
+  <p>即時（含組字中）：{{ keyword }}</p>
+</template>
+```
+
+> 判斷準則：**大多數表單維持 `v-model` 就好**（組字中不更新反而正確）；只有「即時搜尋、即時預覽、字數統計」這類需要逐字反應的場景，才手動綁 `:value` + `@input`。
+
 ---
 
 ## 4. 多欄位表單用 `reactive` 管理
@@ -321,13 +355,39 @@ function handleSubmit() {
       <small v-if="touched.password && errors.password">{{ errors.password }}</small>
     </div>
 
-    <!-- 有錯就禁用送出鈕 -->
-    <button type="submit" :disabled="!isValid">註冊</button>
+    <!-- 注意：送出鈕「不要」用 :disabled="!isValid" 綁，原因見下方說明 -->
+    <button type="submit">註冊</button>
   </form>
 </template>
 ```
 
 > 注意 `@submit.prevent`：`.prevent` 修飾符等同於 `event.preventDefault()`，擋掉表單送出時的整頁刷新（對照 React 的 `e.preventDefault()`）。
+
+### 5.3 ⚠️ 不要用 `:disabled="!isValid"` 鎖住送出鈕
+
+這是很直覺、但會**自相矛盾**的寫法：
+
+```vue
+<!-- ❌ 看起來很合理，其實把 handleSubmit 變成永遠跑不到的死碼 -->
+<button type="submit" :disabled="!isValid">註冊</button>
+```
+
+因為表單一開始必定無效（欄位都空的），按鈕從進頁面就是 `disabled` 狀態——**點它不會觸發 `submit` 事件**，`handleSubmit` 一次都不會執行。於是裡面那兩行「把所有欄位標記為碰過」永遠不會跑，**漏填的紅字也永遠不會亮**。
+
+使用者看到的是：一顆按不下去的灰色按鈕，畫面上沒有任何訊息告訴他為什麼。這比「按下去看到紅字」的體驗差很多，也是無障礙上的常見缺失。
+
+正確做法是**讓按鈕永遠可以按**，由 `handleSubmit` 負責擋：
+
+```js
+function handleSubmit() {
+  touched.email = true       // 先全部標記碰過 → 漏填的欄位這時才亮紅字
+  touched.password = true
+  if (!isValid.value) return // 再擋下送出
+  console.log('通過驗證，準備送出', { ...form })
+}
+```
+
+> 那 `:disabled` 什麼時候該用？**綁「送出中」，不要綁「表單有效性」**——`:disabled="submitting"` 防止重複送出，這才是它的正確用途（第 7 節與章末完整範例都是這樣寫）。
 
 ---
 
@@ -438,10 +498,12 @@ async function submit(payload) {
 1. **`<input type="number">` 忘了 `.number`**：綁出來是字串 `"18"` 不是數字 `18`，數字比較與送後端都會出錯。
 2. **把 errors 存成 state 再手動同步**：例如 `const [errors, setErrors] = ...` 然後每次 change 都 `setErrors(...)`。錯誤是衍生狀態，用 `computed` 算，讓它自己跟著資料變。
 3. **一進頁面就報一堆錯**：沒做 `touched`。應該「碰過（失焦）才顯示該欄錯誤」，送出時再 `touchAll` 把漏填的也亮出來。
-4. **忘了擋整頁刷新**：`<form>` 的預設送出會重新整理頁面，記得 `@submit.prevent`。
-5. **多個 checkbox 想收成陣列，卻忘了給每顆 `value`**：沒有 `value` 的 checkbox 綁陣列時無法辨識是哪一項。
-6. **`finally` 沒解除 `submitting`**：只在 `try` 成功時把 `submitting` 設回 false，一旦丟錯就會卡在「送出中」永遠點不了。把它放 `finally`。
-7. **`select` 沒放預設 disabled 選項**：使用者「還沒選」時會被當成選了第一項，必填驗證形同虛設。
+4. **用 `:disabled="!isValid"` 鎖送出鈕**：按鈕一開始就是 disabled、點不動，`handleSubmit` 永遠不會跑，`touchAll` 也就永遠不會亮紅字——使用者只看到一顆按不下去的灰按鈕（見 §5.3）。`:disabled` 請綁 `submitting`。
+5. **忘了擋整頁刷新**：`<form>` 的預設送出會重新整理頁面，記得 `@submit.prevent`。
+6. **多個 checkbox 想收成陣列，卻忘了給每顆 `value`**：沒有 `value` 的 checkbox 綁陣列時無法辨識是哪一項。
+7. **`finally` 沒解除 `submitting`**：只在 `try` 成功時把 `submitting` 設回 false，一旦丟錯就會卡在「送出中」永遠點不了。把它放 `finally`。
+8. **`select` 沒放預設 disabled 選項**：使用者「還沒選」時會被當成選了第一項，必填驗證形同虛設。
+9. **中文輸入法組字中拿不到值**：`v-model` 在 IME 組字期間不同步，即時搜尋／字數統計會慢半拍。需要逐字反應就改綁 `:value` + `@input`（見 §3.1）。
 
 ---
 

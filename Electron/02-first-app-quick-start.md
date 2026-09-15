@@ -77,6 +77,15 @@ app.on("window-all-closed", () => {
 
 另外那行 `if (!app.isPackaged) win.webContents.openDevTools();` 是開發便利設定：`app.isPackaged` 在 `npm run dev` 時為 `false`、打包後為 `true`，所以 DevTools 只會在開發時自動打開，正式版本不會把開發者工具塞給使用者。之後幾章的 `main.js` 都會沿用這個慣例。
 
+> DevTools 一打開，Console 就會看到一則黃底警告：
+>
+> ```text
+> Electron Security Warning (Insecure Content-Security-Policy)
+> This renderer process has either no Content Security Policy set or ...
+> ```
+>
+> **這不是你寫錯了**，而是 Electron 在開發模式主動提醒「這個頁面還沒設定 CSP」。我們會在第九章 9.4 正式補上 Content-Security-Policy，警告就會消失；在那之前看到它是正常的，不用理會。另外這個警告只在開發模式出現，打包後的正式版本不會顯示。
+
 > 產品化時常會再加兩行，避免視窗先閃出一塊空白再載入 UI：
 >
 > ```javascript

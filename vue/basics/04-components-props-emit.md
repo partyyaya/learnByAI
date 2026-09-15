@@ -16,6 +16,7 @@
 5. 用 slots 傳入內容：預設插槽、具名插槽（`#name`）、作用域插槽（scoped slot）。
 6. 用 `provide` / `inject` 跨層級傳資料，並搭配 `readonly` 保護。
 7. 理解 `$attrs` 透傳與 `inheritAttrs` 的行為。
+8. 用 Vue 3.5 穩定的 **reactive props destructure** 解構 props 而不失去響應式。
 
 ---
 
@@ -142,6 +143,21 @@ const props = defineProps({
 - **物件 / 陣列的 `default` 必須用工廠函式**（`() => []`），否則所有實例共用同一個參考。
 - `validator` 給你執行期的自訂檢查。
 
+### 2.2.1 `Boolean` prop 有特別的轉型規則
+
+宣告成 `type: Boolean` 的 prop，Vue 會比照 HTML 布林屬性（像 `<input disabled>`）幫你轉型，這是唯一會「自動變型」的 prop：
+
+```vue
+<!-- 子元件：defineProps({ disabled: { type: Boolean, default: false } }) -->
+
+<MyButton disabled />              <!-- 只寫屬性名 → disabled 是 true（不是空字串） -->
+<MyButton :disabled="true" />      <!-- true -->
+<MyButton />                       <!-- 沒寫 → 走 default，false -->
+<MyButton disabled="false" />      <!-- ⚠️ 陷阱：這是字串 "false"，轉型後是 true！ -->
+```
+
+最後一行是經典坑：**想傳 `false` 一定要加冒號**（`:disabled="false"`），沒冒號的 `disabled="false"` 是一個非空字串，結果會是 `true`。這跟 §2.1 「傳數字要加冒號」是同一個道理。
+
 ### 2.3 props 是唯讀的
 
 props 不能在子元件裡直接改（單向資料流）：
@@ -187,6 +203,52 @@ const props = withDefaults(
 ```
 
 > 本課前幾章用 JS 就好，這裡先讓你認得 TS 寫法——因為 vue-source 與 nuxt 都以 TS 為主，之後看到 `defineProps<{...}>()` 不會陌生。JS 用物件語法、TS 用型別宣告，兩者擇一，不要混用。
+
+### 2.5 解構 props：Vue 3.5 起不會失去響應式
+
+以前有一條鐵律：**props 不能解構**，因為解構出來就變成普通變數、跟著父層更新的連結就斷了。
+
+**Vue 3.5 把 reactive props destructure 穩定化之後，這條規則變了。** 現在編譯器會把解構出來的變數改寫成「讀取時走 `props.xxx`」，所以解構後仍然保有響應式：
+
+```vue
+<script setup>
+// ✅ Vue 3.5+：解構後 title / minutes 仍會跟著父層更新
+const { title, minutes } = defineProps(['title', 'minutes'])
+
+// 模板與 script 裡直接用 title，不用寫 props.title
+console.log(title)
+</script>
+```
+
+最有感的是**預設值**——可以直接用 JavaScript 原生的預設值語法，不用再寫 `default` 或 `withDefaults`：
+
+```vue
+<script setup lang="ts">
+// 以前要：withDefaults(defineProps<{...}>(), { minutes: 0, level: 'Beginner' })
+// 現在：
+const { title, minutes = 0, level = 'Beginner' } = defineProps<{
+  title: string
+  minutes?: number
+  level?: 'Beginner' | 'Intermediate' | 'Advanced'
+}>()
+</script>
+```
+
+兩個要注意的地方：
+
+- **這是編譯期魔法，不是執行期行為。** 編譯器把 `title` 改寫成 `props.title`，所以它只在 `<script setup>` 裡成立。一旦你把解構出來的變數**傳進函式或 composable**，傳過去的就只是「當下那個值」，響應式會斷掉。要傳就傳 getter：
+
+  ```js
+  const { minutes } = defineProps(['minutes'])
+
+  watch(() => minutes, handler)   // ✅ 用 getter 包起來
+  watch(minutes, handler)         // ❌ 傳的是當下的數字，不會觸發
+  useSomething(() => minutes)     // ✅ 傳 getter 給 composable
+  ```
+
+- **需要 Vue 3.5 以上**。舊專案（3.4 以前）解構 props 仍會失去響應式，別把這個寫法帶回去。
+
+> 本課後面的範例維持 `const props = defineProps(...)` 的寫法（相容性最好、也最容易看出「這是 prop」），但你在新專案或別人的程式碼看到解構寫法時，要知道它在 3.5 是安全的。
 
 ---
 
@@ -572,7 +634,7 @@ defineOptions({ inheritAttrs: false })
 
 ## 常見陷阱
 
-1. **傳數字 / 布林忘了加 `:`**：`minutes="30"` 傳的是字串 `"30"`；要傳數字得 `:minutes="30"`。
+1. **傳數字 / 布林忘了加 `:`**：`minutes="30"` 傳的是字串 `"30"`；要傳數字得 `:minutes="30"`。布林更陰險——`disabled="false"` 是非空字串，轉型後變成 **`true`**（見 §2.2.1）。
 2. **直接改 prop**：props 唯讀。要改請 emit 請父層改，或複製到本地狀態 / 用 computed 衍生。
 3. **物件 / 陣列 prop 的 `default` 沒用工廠函式**：`default: []` 會讓所有實例共用同一份，必須 `default: () => []`。
 4. **`v-model` 新舊寫法混用**：新專案用 `defineModel()`；別再手寫 `modelValue` + `update:modelValue`（除非維護舊碼）。兩者是同一回事。
@@ -590,6 +652,7 @@ defineOptions({ inheritAttrs: false })
 4. 做一個 `<DataList :items="...">` 用作用域插槽把每一項 `item` 綁出去，讓父層自訂每列外觀。
 5. 在 `App` 用 `provide` 提供 `readonly` 的 `currentUser` 與一個 `logout` 函式，在深層子元件 `inject` 出來顯示與使用。
 6. 做一個 `<BaseInput>` 包一層 `<div class="field">`，用 `inheritAttrs: false` + `v-bind="$attrs"` 讓父層傳的 `placeholder`、`@focus` 正確落到內部 `<input>`。
+7. 把第 1 題的 `<RatingStars>` 改用 §2.5 的解構寫法收 props（含預設值 `max = 5`），並驗證父層改 `max` 時畫面仍會更新。
 
 ---
 

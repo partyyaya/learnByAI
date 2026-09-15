@@ -304,8 +304,8 @@ function toggle() {
 import { z } from 'zod'
 
 const schema = z.object({
-  // email 正規化為小寫 + 去頭尾空白，避免大小寫造成重複帳號
-  email: z.string().email().trim().toLowerCase(),
+  // ⚠️ 順序很重要：先 trim/toLowerCase「正規化」，最後才驗 email 格式
+  email: z.string().trim().toLowerCase().email(),
   password: z.string().min(8, '密碼至少 8 碼'),
   name: z.string().min(1).optional(),
 })
@@ -325,6 +325,26 @@ export default defineEventHandler(async (event) => {
   return { ok: true }
 })
 ```
+
+**鏈式順序是會咬人的細節**：zod 的驗證與轉換是**照你寫的順序跑**的。若寫成 `z.string().email().trim().toLowerCase()`，`.email()` 會先拿到**還沒 trim 的原字串**去驗——使用者複製貼上多帶了一個空白（`"  foo@x.com  "`），就會直接被判定成「Email 格式錯誤」，而你以為自己有處理空白。實測：
+
+```js
+z.string().email().trim().toLowerCase().safeParse('  Foo@X.com  ')
+// → 失敗：Invalid email address     ← trim 根本沒機會執行
+
+z.string().trim().toLowerCase().email().safeParse('  Foo@X.com  ')
+// → 成功：'foo@x.com'
+```
+
+記法：**正規化（trim / toLowerCase）在前，驗證（email / min）在後。**
+
+> 版本註記：zod 4 起建議改用頂層的 `z.email()`（`z.string().email()` 已標記為 deprecated，但仍可用）。要注意 **`z.email().trim().toLowerCase()` 同樣會踩到順序問題**——它語法上合法、不會報錯，但 `z.email()` 的驗證一樣排在 `trim` 前面，padded 輸入照樣被判定格式錯誤。用 `z.email()` 時把正規化放前面、再 `pipe`：
+>
+> ```js
+> z.string().trim().toLowerCase().pipe(z.email())   // ✅
+> z.string().trim().toLowerCase().email()           // ✅ 舊寫法，也對
+> z.email().trim().toLowerCase()                    // ❌ 順序不對，padded 輸入會被擋
+> ```
 
 （登入 API 同理，也要把 email 正規化為小寫再查，否則使用者用不同大小寫登入會查不到帳號。）
 

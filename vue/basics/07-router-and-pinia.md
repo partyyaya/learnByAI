@@ -36,6 +36,8 @@
 npm install vue-router
 ```
 
+> 版本說明：`vue-router` 目前的 latest 已經是 **5.x**（peer 需要 Vite 7 以上，用第 1 章的新腳手架建的專案剛好符合）。本章用到的 `createRouter`、`createWebHistory`、`useRoute`、`useRouter`、`beforeEach` 在 4.x / 5.x 都一樣，程式碼照打即可。若你維護的是舊專案、Vite 還停在 6 以下，就釘 4.x：`npm install vue-router@^4`。
+
 建立路由設定檔，宣告「路徑 → 元件」的對應表：
 
 ```js
@@ -249,6 +251,8 @@ export const useCounter = defineStore('counter', () => {
 npm install pinia
 ```
 
+> 同樣提醒版本：`pinia` 的 latest 已是 **4.x**。本章用到的 `createPinia`、`defineStore`（setup 寫法）、`storeToRefs` 在 3.x / 4.x 寫法相同。
+
 ```js
 // src/main.js
 import { createApp } from 'vue'
@@ -368,23 +372,37 @@ src/
 ```js
 import { ref, watchEffect, toValue } from 'vue'
 
+// url 可以傳字串、ref、或 getter 函式（() => `.../${id.value}`）
 export function useFetch(url) {
   const data = ref(null)
   const error = ref(null)
   const loading = ref(false)
 
-  watchEffect(async () => {
+  // watchEffect 會自動追蹤裡面用到的響應式來源；
+  // 只要 toValue(url) 依賴的東西變了，就自動重跑（重新抓）
+  watchEffect(async (onCleanup) => {
+    // 每次重抓都開一個新的 AbortController，
+    // 並在「下次觸發前 / 元件卸載時」中止上一次還沒回來的請求（見第 2 章 5.4 的競態問題）
+    const controller = new AbortController()
+    const { signal } = controller
+    onCleanup(() => controller.abort())
+
     data.value = null
     error.value = null
     loading.value = true
     try {
-      const res = await fetch(toValue(url))
+      const res = await fetch(toValue(url), { signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      data.value = await res.json()
+      const json = await res.json()
+      // 關鍵：寫進 data 之前再確認一次「我還是最新的那個請求嗎」
+      if (signal.aborted) return
+      data.value = json
     } catch (e) {
+      if (signal.aborted) return      // 被我們自己取消的，不算錯誤
       error.value = e
     } finally {
-      loading.value = false
+      // 已被取代的舊請求不該把 loading 關掉——新的請求還在跑
+      if (!signal.aborted) loading.value = false
     }
   })
 

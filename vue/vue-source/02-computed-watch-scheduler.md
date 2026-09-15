@@ -1,13 +1,13 @@
 # 第 02 章：`computed` / `watch` / scheduler
 
-> 目標版本：**Vue 3.5.x**。本章沿用第 01 章的 3.4 reactivity 模型（`Dep`/`Link`/`version`/`globalVersion`、`activeSub`）。若還沒讀 [01 章的 1.3.1](./01-reactivity-core-track-trigger-effect.md)，先補。
+> 目標版本：**Vue 3.5.x**。本章沿用第 01 章的 3.5 reactivity 模型（`Dep`/`Link`/`version`/`globalVersion`、`activeSub`）。若還沒讀 [01 章的 1.3.1](./01-reactivity-core-track-trigger-effect.md)，先補——特別是那張「3.4 與 3.5 各重構過一次」的版本地圖。
 
 ## 2.1 本章目標
 
 這章要把「響應式系統的上層控制」打通：
 
-- `computed`：為什麼它是 lazy、為什麼有快取、3.4 起怎麼用「版本號」判斷要不要重算
-- `watch`：為什麼 callback 不一定立刻執行、如何做 cleanup、3.4/3.5 新增了什麼
+- `computed`：為什麼它是 lazy、為什麼有快取、3.5 起怎麼用「版本號」判斷要不要重算
+- `watch`：為什麼 callback 不一定立刻執行、如何做 cleanup、3.4 / 3.5 各新增了什麼
 - scheduler：同一個 tick 內多次變更，為什麼常只更新一次
 
 學完你應該能回答：
@@ -27,10 +27,10 @@
 2. 讀 `.value` 時：過期就執行 getter 並快取；沒過期就直接回傳快取值
 3. getter 的依賴被 `trigger` 時，不立刻重算，只把自己標記為可能過期，並通知**它自己的**下游
 
-### 最小概念版（教學簡化，真實 3.4 見 2.2.1）
+### 最小概念版（教學簡化，真實 3.5 見 2.2.1）
 
 ```ts
-// ⚠️ 教學簡化版：用 _dirty 布林幫你建立「標髒 / 重算」的直覺
+// ⚠️ 教學簡化版：用 _dirty 布林幫你建立「標髒 / 重算」的直覺（這是 3.3 以前的模型）
 class ComputedRefImpl<T> {
   private _value!: T;
   private _dirty = true;
@@ -63,14 +63,23 @@ class ComputedRefImpl<T> {
 
 ---
 
-## 2.2.1 3.4：從 `_dirty` 布林到「版本化髒判定」
+## 2.2.1 從 `_dirty` 布林到「版本化髒判定」：3.4 改行為、3.5 改機制
 
-> 上面的 `_dirty` 布林是 3.4 之前的模型。3.4 重寫後 `ComputedRefImpl` 有兩個關鍵改變，追原始碼（`packages/reactivity/src/computed.ts`）務必知道。
+> 這一節最容易被搞混，先把兩次改動分開講（呼應 [01 章 1.3.1](./01-reactivity-core-track-trigger-effect.md) 的版本地圖）：
+>
+> | 版本 | 改了什麼 |
+> |------|----------|
+> | **3.4** | 改的是**行為**：computed 重算後若值沒變，**不再觸發下游**。當時的實作是 `_dirtyLevel` + `_trackId`，還沒有版本號。 |
+> | **3.5** | 改的是**機制**：`_dirtyLevel` 整套換成 `dep.version` / `globalVersion` 版本比對，讀 `.value` 走 `refreshComputed()`。行為維持 3.4 的結果，但判定更便宜。 |
+>
+> 下面描述的 `refreshComputed`、`globalVersion`、link version 比對**都是 3.5 的實作**；`_dirty` 布林則是 3.3 以前。追原始碼（`packages/reactivity/src/computed.ts`）務必對準你手上的版本。
+
+3.5 重寫後 `ComputedRefImpl` 有兩個關鍵改變：
 
 **改變一：computed 同時是 `Subscriber` 也是 `Dep`。**
 它訂閱自己 getter 用到的那些 dep（所以有 `deps`/`depsTail`），同時它自己也是一個 `Dep`（所以讀它 `.value` 的 effect 會訂閱它）。它不再內含一個獨立的 `ReactiveEffect`。
 
-**改變二：髒判定改用版本比對，不是單一布林。**
+**改變二：髒判定改用版本比對，不是單一布林（3.5）。**
 讀 `.value` 會走 `refreshComputed(cRef)`，流程大致是：
 
 ```text
@@ -84,7 +93,7 @@ refreshComputed(c):
   4. 重算後：只有新值 hasChanged 才 c.dep.version++
 ```
 
-**改變三（最容易被考）：重算後值沒變，就不 bump `dep.version`，下游不會被觸發。**
+**改變三（最容易被考）：重算後值沒變，就不 bump `dep.version`，下游不會被觸發。**（這個**行為**從 3.4 就有了，3.5 只是換成用版本號實作。）
 
 ```ts
 const n = ref(1);
@@ -97,9 +106,9 @@ n.value = 3; // n 變了 → isEven 會重算，但結果還是 false（值沒�
 // → isEven.dep.version 不 bump → watchEffect 不會再跑
 ```
 
-3.4 之前的 `_dirty` 布林模型做不到這件事（依賴一變就標髒、下游就重跑）。這是 3.4 很實際的效能改善。
+3.3 以前的 `_dirty` 布林模型做不到這件事（依賴一變就標髒、下游就重跑）。這是 3.4 很實際的效能改善，3.5 再把它的實作換成版本比對。
 
-> 對照：第 11 章效能章若提到 computed 的 `_dirty` / `_cacheable`，那是舊欄位名；3.4 起以版本比對為準。
+> 對照：若你看到 computed 的 `_dirty` / `_cacheable`（3.3 以前）或 `_dirtyLevel`（3.4），那都是舊欄位名；3.5 起以版本比對為準。
 
 ---
 
@@ -298,7 +307,7 @@ count.value++;
 
 ### 錯誤一：`computed` 在依賴改變時立刻重算
 
-若你這樣實作，會失去快取優勢。正確做法是先標記過期，等 `.value` 被讀時再重算（3.4 是靠版本比對，見 2.2.1）。
+若你這樣實作，會失去快取優勢。正確做法是先標記過期，等 `.value` 被讀時再重算（3.5 是靠版本比對，見 2.2.1）。
 
 ### 錯誤二：`watch` cleanup 時機錯誤
 
@@ -316,7 +325,7 @@ cleanup 不是最後跑，而是「**下一次 callback 前**」先跑，避免�
 
 ## 2.11 本章驗收標準
 
-- 能清楚說出 `computed` 的髒判定：舊 `_dirty` 布林 vs 3.4 版本比對，以及「重算後值沒變不觸發下游」
+- 能清楚說出 `computed` 的髒判定演進：`_dirty` 布林（3.3）→ `_dirtyLevel`（3.4，帶來「值沒變不觸發下游」）→ 版本比對（3.5）
 - 能解釋 `watch` 三種 flush 的行為差異，並知道 3.5 後 watch 核心在 `@vue/reactivity`
 - 能示範 scheduler 用旗標去重：同 tick 多次 set 只執行一次主 job
 - 能講出 `nextTick` 為何要掛在 `currentFlushPromise` 後面

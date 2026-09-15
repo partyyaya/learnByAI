@@ -99,7 +99,7 @@ const state = reactive({
 const activeCount = computed(() => list.value.filter(i => i.active).length)
 ```
 
-對應源碼：`computed` 於 3.4 起改用**版本比對**（`dep.version` / `globalVersion`）判定是否重算，依賴未變時直接回傳快取值、不執行 getter；且**重算後值沒變也不會觸發下游**（見第 02 章 2.2.1）。（`_dirty` / `_cacheable` 是 3.4 前的舊欄位名，追新版源碼看不到。）
+對應源碼：`computed` 於 **3.5** 起改用**版本比對**（`dep.version` / `globalVersion`）判定是否重算，依賴未變時直接回傳快取值、不執行 getter；而**重算後值沒變也不會觸發下游**這個行為則從 **3.4** 就有（見第 02 章 2.2.1）。（`_dirty` / `_cacheable` 是 3.3 以前、`_dirtyLevel` 是 3.4 的舊欄位名，追 3.5 源碼都看不到。）
 
 ### 11.4.2 `watch` 別亂開 `deep: true`
 
@@ -181,22 +181,42 @@ watchDebounced(() => keyword.value, fetchResults, { debounce: 300 })
 
 第 07 章說過 Vue 用 patch flags / block tree 做精準更新。但有些寫法會讓編譯器**無法判定靜態**，或讓 runtime 每次都拿到新引用而誤判要更新。
 
-### 11.6.1 別在模板裡寫 inline 物件 / 陣列字面量
+### 11.6.1 小心「內容會變的」inline 物件 / 陣列字面量
+
+先破除一個很常見的誤解：**純常數的字面量其實不用擔心**。編譯器看得出 `{ color: 'red' }`、`[1, 2, 3]` 裡面沒有任何動態值，會把這個 vnode 判定為靜態——**不給 patch flag、不收進 block 的 `dynamicChildren`**，父層重繪時根本不會走到它：
 
 ```vue
-<!-- ❌ 每次 render 都新建一個 {} / [] ，引用都不同 -->
-<Child :style="{ color: 'red' }" :options="[1, 2, 3]" />
+<!-- 😐 看起來像反面教材，實際上沒問題：整個字面量都是常數 -->
+<Child :options="[1, 2, 3]" />
+```
 
-<!-- ✅ 提到外面成為穩定引用（或用 computed） -->
-<Child :style="redStyle" :options="staticOptions" />
+真正有成本的是**字面量裡包了動態值**——這時編譯器必須標成動態 prop，每次 render 都產生一個新物件，子元件就算拿到相同內容也會被喚醒：
+
+```vue
+<!-- ❌ 每次 render 都新建一個 {}，引用都不同 → 即使 a 沒變，子元件仍會重新 render -->
+<Child :opts="{ a: n, b: 'fixed' }" />
+
+<!-- ✅ 用 computed 包起來：n 沒變就回同一個引用，子元件不會被喚醒 -->
+<Child :opts="opts" />
 ```
 
 ```js
-const redStyle = { color: 'red' }      // 穩定引用
-const staticOptions = [1, 2, 3]
+const opts = computed(() => ({ a: n.value, b: 'fixed' }))
 ```
 
-成本來源：子組件收到的 prop 每次引用都變 → 即使值一樣也可能觸發子組件更新；對 `:style` / `:class` 也會走較重的比對路徑。
+注意解法是 **`computed`**，不是「提到外面變成模組常數」——會變的東西本來就沒辦法寫成常數。
+
+實測（父層因無關狀態重繪一次，數的是子元件 render 次數）：
+
+| 寫法 | 掛載後 | 父層重繪後 |
+|---|---|---|
+| `:opts="{ a: 1 }"`（純常數） | 1 | **1**（完全沒被喚醒） |
+| `:opts="{ a: n }"`（含動態值） | 1 | **2** ← 就算 `n` 沒變也重繪 |
+| `:opts="stable"`（穩定引用 / computed） | 1 | **1** |
+
+成本來源：子組件收到的 prop 每次引用都變 → 即使值一樣也會觸發子組件更新；對 `:style` / `:class` 也會走較重的比對路徑。
+
+> 想自己量：用 `@vue/compiler-dom` 的 `compile()` 看有沒有生出 patch flag——**沒有 flag 就代表這個節點是靜態的、不必擔心**。
 
 ### 11.6.2 行內函式也是新引用
 
@@ -312,7 +332,7 @@ const HeavyChart = defineAsyncComponent({
 | 列表 key | `:key="index"` | `:key="item.id"` | diff 複用與 LIS 失效 |
 | 靜態區塊 | 一般渲染 | `v-once` | 重複建立 + patch |
 | 大列表少變動 | 整列重渲染 | `v-memo` | 未變列的 re-render |
-| 行內物件 prop | `:opts="{...}"` | 穩定引用 / computed | 子組件多餘更新 |
+| 行內物件 prop（含動態值） | `:opts="{ a: n }"` | `computed` 包起來 | 子組件多餘更新（純常數字面量無此問題） |
 | 巨大組件 | 全塞一個組件 | 拆子組件 | 縮小 re-render 範圍 |
 | 萬列表格 | 一次全渲染 | 虛擬滾動 / 分頁 | 瀏覽器佈局繪製 |
 | 重組件首屏 | 同步 import | 懶載入 + Suspense | bundle / 首屏時間 |
@@ -334,7 +354,7 @@ const HeavyChart = defineAsyncComponent({
 - [ ] `v-for` 是否都用穩定唯一 key（非 index）？
 - [ ] 是否有同元素同時 `v-if` + `v-for`（應拆開或用 `<template>` 包）？
 - [ ] 大列表少變動是否考慮 `v-memo`？純靜態是否 `v-once`？
-- [ ] 模板裡有沒有 inline 物件 / 陣列 / 函式被當 prop 傳？
+- [ ] 模板裡有沒有**含動態值的** inline 物件 / 陣列 / 函式被當 prop 傳？（純常數字面量不用管）
 
 **組件 / 結構**
 - [ ] 高頻變動部分是否抽成獨立子組件？

@@ -28,19 +28,26 @@
 概念示意：
 
 ```ts
-const _hoisted_1 = /*#__PURE__*/ _createElementVNode("h1", null, "Title", -1);
-
+// Vue 3.5 實際輸出：靜態節點快取在 render function 的 _cache 陣列裡
 function render(_ctx, _cache) {
   return (_openBlock(), _createElementBlock("div", null, [
-    _hoisted_1,
-    _createElementVNode("span", null, _toDisplayString(_ctx.msg), 1)
+    _cache[0] || (_cache[0] = _createElementVNode("h1", null, "Title", -1 /* CACHED */)),
+    _createElementVNode("span", null, _toDisplayString(_ctx.msg), 1 /* TEXT */)
   ]))
 }
 ```
 
-結果：靜態節點只建立一次。
+結果：靜態節點只建立一次，之後每次 render 都從 `_cache` 取回同一個 vnode，並帶著 `-1 /* CACHED */` 讓 diff 直接略過。
 
-> 版本註記：上面的 `_hoisted_*` 輸出樣式**以 3.5.x 實際編譯輸出為準**；parser / transform 在 3.4 經過重寫（見 06 章），靜態提升與快取的細節（例如部分靜態內容改用 `_cache` 快取）在不同小版本可能略有差異。追碼時以你手上版本的實際輸出為準，別死背某一版的字面樣式。
+> ⚠️ **版本註記（很多教學還停在舊樣式）**：3.3 以前靜態提升是產生**模組層級常數** `const _hoisted_1 = /*#__PURE__*/ _createElementVNode(...)`，render function 裡直接引用它。**3.5 已全面改成 `_cache[n]` 形式**（`_cache` 由 `render(_ctx, _cache)` 帶入、跨 render 保留），所以你在 3.5 的輸出裡**找不到 `_hoisted_1`**。
+>
+> 自己驗證（不用建專案）：
+>
+> ```js
+> import { compile } from '@vue/compiler-dom'
+> console.log(compile('<div><h1>Title</h1><span>{{ msg }}</span></div>',
+>   { mode: 'module', hoistStatic: true, prefixIdentifiers: true }).code)
+> ```
 
 ---
 

@@ -499,3 +499,379 @@ app.use(directives);
 3. 為 `v-click-outside` 加上 `.exclude` modifier，可排除特定元素不視為「外部」
 
 > 完成後對照「注意事項」逐條檢查：副作用都清掉了嗎？`updated` 有比對嗎？用在元件上會不會有根節點問題？
+
+---
+
+## 14. 練習作業參考解答
+
+三題共用同一個骨架，也是本章最想讓你養成的習慣：
+
+```text
+mounted   → 建立副作用（事件、節點、計時器），把「之後還要用到的東西」存在 el 上
+updated   → 只同步會變的資料，不重建副作用
+unmounted → 把 mounted 建立的東西全部收乾淨
+```
+
+「把東西存在 `el` 上」不只是為了 `unmounted` 取得同一個參考（第 7 節已經講過），
+還有第二個理由：**`mounted` 收到的 `binding` 是那一次渲染的舊物件**。
+如果 handler 用閉包直接抓 `binding.value`，元件更新後指令仍然呼叫舊的 callback。
+所以下面三題都改成：狀態放 `el`，`updated` 時覆寫，事件處理器一律從 `el` 讀最新值。
+
+### 14.1 `v-longpress`
+
+需求：長按 800ms 後觸發 callback，`arg` 可自訂時間（`v-longpress:1500="fn"`）。
+
+```js
+// directives/longpress.js
+const DEFAULT_DURATION = 800;
+
+function resolveDuration(binding) {
+  // arg 一定是字串（v-longpress:1200 → arg === "1200"），要自己轉數字並檢查
+  const ms = Number(binding.arg);
+  return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_DURATION;
+}
+
+export const longpress = {
+  mounted(el, binding) {
+    // 把「會變動的東西」存成 state 放在 el 上，讓 handler 每次都讀最新值。
+    // 不要用閉包直接捕捉 mounted 當下的 binding：那是舊物件，元件更新後不會跟著變。
+    const state = {
+      handler: binding.value,
+      duration: resolveDuration(binding),
+      timer: null,
+      fired: false,
+    };
+    el.__longpress__ = state;
+
+    const clear = () => {
+      if (state.timer !== null) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+    };
+
+    state.onPointerDown = (event) => {
+      // 只認主鍵（滑鼠左鍵／觸控／觸控筆），右鍵與中鍵不算長按
+      if (event.button !== 0) return;
+      state.fired = false;
+      clear();
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        state.fired = true;
+        if (typeof state.handler === "function") state.handler(event);
+      }, state.duration);
+    };
+
+    // 放開、移出元素、被系統中斷（來電、捲動接管）都要取消計時
+    state.onCancel = () => clear();
+
+    // 長按觸發後放開，瀏覽器仍會補一個 click；用 capture 攔掉，避免同時觸發 @click
+    state.onClick = (event) => {
+      if (!state.fired) return;
+      state.fired = false;
+      event.stopPropagation();
+      event.preventDefault();
+    };
+
+    // 行動裝置長按預設會跳系統選單，一併擋掉
+    state.onContextMenu = (event) => event.preventDefault();
+
+    el.addEventListener("pointerdown", state.onPointerDown);
+    el.addEventListener("pointerup", state.onCancel);
+    el.addEventListener("pointerleave", state.onCancel);
+    el.addEventListener("pointercancel", state.onCancel);
+    el.addEventListener("click", state.onClick, true);
+    el.addEventListener("contextmenu", state.onContextMenu);
+    el.style.touchAction = "manipulation";
+    el.style.userSelect = "none";
+  },
+
+  updated(el, binding) {
+    const state = el.__longpress__;
+    if (!state) return;
+    // 同步最新的 callback 與時間，handler 讀到的永遠是新的
+    state.handler = binding.value;
+    state.duration = resolveDuration(binding);
+  },
+
+  unmounted(el) {
+    const state = el.__longpress__;
+    if (!state) return;
+    clearTimeout(state.timer);
+    el.removeEventListener("pointerdown", state.onPointerDown);
+    el.removeEventListener("pointerup", state.onCancel);
+    el.removeEventListener("pointerleave", state.onCancel);
+    el.removeEventListener("pointercancel", state.onCancel);
+    el.removeEventListener("click", state.onClick, true);
+    el.removeEventListener("contextmenu", state.onContextMenu);
+    delete el.__longpress__;
+  },
+};
+```
+
+使用：
+
+```vue
+<script setup>
+import { ref } from "vue";
+import { longpress as vLongpress } from "./directives/longpress";
+
+const log = ref("試試看按住不放");
+const ms = ref(1200);
+</script>
+
+<template>
+  <!-- 預設 800ms -->
+  <button v-longpress="() => (log = '長按 800ms 觸發')">預設長按</button>
+
+  <!-- arg 自訂 1500ms -->
+  <button v-longpress:1500="() => (log = '長按 1.5 秒觸發')">慢速長按</button>
+
+  <!-- arg 也可以是動態的 -->
+  <button v-longpress:[ms]="() => (log = `長按 ${ms}ms 觸發`)">動態時間</button>
+
+  <p>{{ log }}</p>
+</template>
+```
+
+幾個容易漏掉的點：
+
+- **`arg` 永遠是字串**：`v-longpress:1500` 拿到的是 `"1500"`，要自己 `Number()` 並檢查，
+  否則寫錯成 `v-longpress:abc` 會變成 `setTimeout(fn, NaN)`（等同 0ms，一按就觸發）。
+- **用 pointer 事件而不是 `mousedown` + `touchstart`**：後者在手機上會同時觸發，callback 跑兩次。
+- **一定要處理取消**：`pointerup`（放開）、`pointerleave`（滑走）、`pointercancel`（系統中斷，例如來電或捲動接管）三種都要清計時器。
+- **長按之後還會補一個 `click`**：如果同一顆按鈕又綁了 `@click`，短按長按都會觸發它。
+  用 capture 階段攔截並在 `fired` 為真時 `stopPropagation()`，長按就不會順帶按到。
+
+### 14.2 `v-tooltip`
+
+需求：`mounted` 建立提示框、`updated` 同步文字、`unmounted` 移除節點與事件。
+
+```js
+// directives/tooltip.js
+export const tooltip = {
+  mounted(el, binding) {
+    // 提示框掛在 body 底下，避免被父層 overflow: hidden 裁掉
+    const tip = document.createElement("div");
+    tip.className = "v-tooltip";
+    tip.textContent = binding.value ?? ""; // 用 textContent 不用 innerHTML，避免 XSS
+    tip.style.position = "absolute";
+    tip.style.display = "none";
+    tip.style.zIndex = "9999";
+    tip.style.pointerEvents = "none"; // 提示框自己不吃滑鼠事件，否則會擋住底下元素
+    document.body.appendChild(tip);
+
+    const state = { tip };
+    el.__tooltip__ = state;
+
+    const place = () => {
+      const rect = el.getBoundingClientRect();
+      const tipRect = tip.getBoundingClientRect();
+      // getBoundingClientRect 相對視窗；position: absolute 用的是文件座標，要加捲動量
+      tip.style.top = `${rect.top + window.scrollY - tipRect.height - 8}px`;
+      tip.style.left = `${rect.left + window.scrollX + (rect.width - tipRect.width) / 2}px`;
+    };
+
+    state.show = () => {
+      if (!tip.textContent) return; // 沒文字就不顯示
+      tip.style.display = "block";
+      place(); // 要先 display 才量得到尺寸，順序反了會量到 0
+    };
+    state.hide = () => {
+      tip.style.display = "none";
+    };
+
+    el.addEventListener("mouseenter", state.show);
+    el.addEventListener("mouseleave", state.hide);
+    // 鍵盤使用者也要看得到提示
+    el.addEventListener("focus", state.show);
+    el.addEventListener("blur", state.hide);
+  },
+
+  updated(el, binding) {
+    const state = el.__tooltip__;
+    if (!state) return;
+    if (binding.value === binding.oldValue) return; // 11.2：value 沒變就別做事
+    state.tip.textContent = binding.value ?? "";
+    if (!state.tip.textContent) state.hide(); // 文字被清空就順手收起來
+  },
+
+  unmounted(el) {
+    const state = el.__tooltip__;
+    if (!state) return;
+    el.removeEventListener("mouseenter", state.show);
+    el.removeEventListener("mouseleave", state.hide);
+    el.removeEventListener("focus", state.show);
+    el.removeEventListener("blur", state.hide);
+    state.tip.remove(); // 提示框掛在 body，不歸 Vue 管，一定要自己移除
+    delete el.__tooltip__;
+  },
+};
+```
+
+搭配的樣式：
+
+```css
+.v-tooltip {
+  background: #333;
+  color: #fff;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+```
+
+使用：
+
+```vue
+<script setup>
+import { ref } from "vue";
+import { tooltip as vTooltip } from "./directives/tooltip";
+
+const tip = ref("我是提示文字");
+</script>
+
+<template>
+  <button v-tooltip="tip" @click="tip = '文字換掉了'">滑上來看看</button>
+</template>
+```
+
+幾個容易漏掉的點：
+
+- **提示框掛在 `document.body`，不是掛在 `el` 裡面**：掛在裡面會被父層的 `overflow: hidden` 裁掉，
+  也會被父層的 `transform` / `z-index` 影響堆疊。代價是這個節點**完全不歸 Vue 管**，
+  `unmounted` 沒把它 `remove()` 掉就會留下孤兒節點——元件反覆掛載卸載時會一直累積。
+- **先 `display: block` 再量尺寸**：`getBoundingClientRect()` 對 `display: none` 的元素回傳全 0，
+  順序反了會把提示框定位到左上角。
+- **`textContent` 而不是 `innerHTML`**：提示文字常常來自後端資料，用 `innerHTML` 等於開了 XSS。
+- **`updated` 要先比對 `value`**（第 11.2 節）：元件每次更新都會進 `updated`，文字沒變就不該重寫 DOM。
+- **`focus` / `blur` 也要綁**：只綁 `mouseenter` 的話，鍵盤操作的使用者永遠看不到提示。
+- 想更完整可以在 `show()` 時加上 `scroll` / `resize` 監聽即時重新定位，`hide()` 時移除——
+  記得這兩個監聽同樣要進 `unmounted` 的清單。
+
+### 14.3 為 `v-click-outside` 加上 `.exclude`
+
+需求：`.exclude` modifier 可指定某些元素不算「外部」。
+
+這是第 7 節版本的完整替換版（不是片段），介面向下相容：
+
+- 不加 modifier：`v-click-outside="fn"`，行為與第 7 節完全相同
+- 加了 modifier：`v-click-outside.exclude="{ handler, exclude }"`，`exclude` 收 CSS selector 字串、DOM 元素、template ref 或它們的陣列
+
+```js
+// directives/clickOutside.js（第 7 節版本 + .exclude）
+// 兩種用法：
+//   v-click-outside="fn"
+//   v-click-outside.exclude="{ handler: fn, exclude: ['#trigger', triggerRef] }"
+function normalize(binding) {
+  const value = binding.value;
+
+  // 沒加 .exclude → 維持第 7 節的用法：value 本身就是 callback
+  if (!binding.modifiers.exclude || typeof value === "function") {
+    return { handler: value, exclude: [] };
+  }
+
+  const exclude = value?.exclude ?? [];
+  return {
+    handler: value?.handler,
+    exclude: Array.isArray(exclude) ? exclude : [exclude],
+  };
+}
+
+// 把清單裡的一項解析成真正的 DOM 節點清單
+function resolveNodes(item) {
+  if (!item) return [];
+  // 字串當 CSS selector 查；每次點擊都重查，才抓得到之後才出現的節點
+  if (typeof item === "string") return Array.from(document.querySelectorAll(item));
+  // 先判 Node！<button>/<input> 自己就有 .value 屬性，
+  // 若先看 .value 會把按鈕誤判成 ref 而拿到空字串（實測踩過的坑）
+  if (item instanceof Node) return [item];
+  // 元件 ref 拿到的是元件實例，真正的節點在 $el
+  if (item.$el instanceof Node) return [item.$el];
+  // 剩下才是 ref 物件 { value: ... }，遞迴解一層
+  if ("value" in item) return resolveNodes(item.value);
+  return [];
+}
+
+function isExcluded(target, exclude) {
+  return exclude.some((item) =>
+    resolveNodes(item).some((node) => node === target || node.contains(target)),
+  );
+}
+
+export const clickOutside = {
+  mounted(el, binding) {
+    const state = { ...normalize(binding) };
+    el.__clickOutside__ = state;
+
+    state.onDocumentClick = (event) => {
+      const target = event.target;
+      // 1) 點在元素自己內部 → 不算外部
+      if (el === target || el.contains(target)) return;
+      // 2) 點在排除清單上 → 也不算外部
+      if (isExcluded(target, state.exclude)) return;
+      if (typeof state.handler === "function") state.handler(event);
+    };
+
+    // 用 capture 階段，避免內部 stopPropagation 影響
+    document.addEventListener("click", state.onDocumentClick, true);
+  },
+
+  updated(el, binding) {
+    const state = el.__clickOutside__;
+    if (!state) return;
+    // handler 與 exclude 都換成最新的；監聽器本身不動，不必反覆增刪
+    Object.assign(state, normalize(binding));
+  },
+
+  unmounted(el) {
+    const state = el.__clickOutside__;
+    if (!state) return;
+    document.removeEventListener("click", state.onDocumentClick, true);
+    delete el.__clickOutside__;
+  },
+};
+```
+
+使用——這裡示範最典型的情境：**觸發鈕在面板外面**。
+
+```vue
+<script setup>
+import { ref, useTemplateRef } from "vue";
+import { clickOutside as vClickOutside } from "./directives/clickOutside";
+
+const open = ref(false);
+const triggerRef = useTemplateRef("trigger"); // Vue 3.5+
+</script>
+
+<template>
+  <!-- 觸發鈕不在面板內：不排除的話，點它會先被判定成「點外部」而關閉，
+       緊接著 @click 又把它打開 —— 畫面上看起來就是「這顆按鈕關不掉選單」 -->
+  <button ref="trigger" @click="open = !open">切換選單</button>
+
+  <div
+    v-if="open"
+    class="panel"
+    v-click-outside.exclude="{ handler: () => (open = false), exclude: [triggerRef] }"
+  >
+    <p>面板內容，點這裡不會關</p>
+  </div>
+</template>
+```
+
+幾個容易漏掉的點：
+
+- **`.exclude` 改變的是 `value` 的形狀**，所以 `normalize()` 要同時吃得下舊的函式寫法與新的物件寫法；
+  只寫物件寫法會讓既有程式碼全部壞掉。
+- **selector 要在「每次點擊時」才查**，不能在 `mounted` 先查好存起來——
+  排除目標可能是之後才被 `v-if` 渲染出來的節點。
+- **判斷 template ref 時要先 `instanceof Node`**：`<button>`、`<input>`、`<option>` 這些元素**自己就有 `.value` 屬性**，
+  若先用 `item.value ?? item` 解包，按鈕會被誤認成 ref 而拿到空字串，排除就默默失效。
+  這一條是實測時真的踩到的坑：測試裡排除的目標剛好是 `<button>`，排除完全沒作用。
+- **模板裡的 ref 會被自動解包，陣列裡的不會**：`exclude: [triggerRef]` 寫在 template 中拿到的是 DOM 元素，
+  但如果這個設定物件是在 `<script setup>` 裡組好再傳出來，指令收到的是 `{ value: el }`。兩種都要支援。
+- **`updated` 只換 state，不要重綁監聽**：每次更新都 `removeEventListener` + `addEventListener` 沒有必要，
+  也容易在某次分支漏掉而漏移除。
+
+> 三個指令都可以直接照第 12 節的 `directives/index.js` 集中註冊。

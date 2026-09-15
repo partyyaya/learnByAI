@@ -39,7 +39,7 @@
 - **JavaScript**：變數、函式、箭頭函式、陣列方法（`map`/`filter`）、解構、`Promise` / `async-await`、ES Modules（`import` / `export`）。
 - **HTML / CSS 基礎**：知道標籤、屬性、class 與基本樣式。
 - **（可選）React 經驗**：有的話更快——本課會適時用「Vue 的 X ≈ React 的 Y」幫你對照，但沒學過 React 也完全能上。
-- **環境**：Node.js **20 LTS 以上**（本機若是舊版 Node，先 `nvm use 20`）。
+- **環境**：Node.js **22 LTS 以上**（`create-vue` 要求 `^22.18.0 || >=24.12.0`；本機若是舊版 Node，先 `nvm use 22`）。
 
 ---
 
@@ -56,7 +56,7 @@
 
 ## 開發環境
 
-- Node.js：**20 LTS 以上**（本機預設是舊版 Node 時，用 `nvm use 20`）
+- Node.js：**22 LTS 以上**（`create-vue` 要求 `^22.18.0 || >=24.12.0`；本機預設是舊版時用 `nvm use 22`）
 - 套件管理：`npm` / `pnpm` / `yarn` 擇一（本課用 `npm`）
 - 編輯器：Cursor / VS Code，裝 **Vue - Official** 外掛（原 Volar；別再裝 Vetur）
 - 瀏覽器：Chrome / Edge，裝 **Vue.js devtools**
@@ -65,9 +65,10 @@
 
 ```bash
 # 0) 確認 Node 版本（舊版先切）
-nvm use 20
+nvm use 22
 
-# 1) 用官方腳手架建立 Vue 專案（前幾章 Router/Pinia/TS 都先選 No）
+# 1) 用官方腳手架建立 Vue 專案
+#    功能清單只勾 ESLint 與 Prettier，Router/Pinia/TS 都先不勾
 npm create vue@latest my-vue-course
 
 # 2) 安裝依賴並啟動

@@ -89,7 +89,7 @@ S1 現象定義
 3. 追核心資料（`activeSub`、`subTree`、`queue`、index map）
 4. 記錄第一個「與預期分歧」的點
 
-> 術語提醒：`reactivity` 裡「當前作用中的訂閱者」在 3.4+ 原始碼叫 **`activeSub`**（不是 `activeEffect`，見 01 章 1.3.1）；grep 時別找錯名字。
+> 術語提醒：`reactivity` 裡「當前作用中的訂閱者」在 **3.5** 原始碼叫 **`activeSub`**（不是 `activeEffect`，見 01 章 1.3.1）；grep 時別找錯名字。3.4 還叫 `activeEffect`，別把 3.4 和 3.5 兩次重構混在一起。
 
 ---
 

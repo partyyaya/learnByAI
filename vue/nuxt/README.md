@@ -79,7 +79,7 @@ npm run dev
 
 ## 開發環境
 
-- Node.js: 20 LTS 以上（本機若是舊版，用 `nvm use 20`）
+- Node.js: 22 LTS 以上（本機若是舊版，用 `nvm use 22`）
 - 套件管理: `npm` / `pnpm` / `yarn` 擇一
 - 編輯器: Cursor / VS Code（裝 **Vue - Official** 外掛）
 - 瀏覽器: Chrome / Edge（善用 Nuxt DevTools）

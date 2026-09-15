@@ -56,7 +56,7 @@ const win = new BrowserWindow({
 - `default-src 'self'`：預設只允許載入本機資源
 - `script-src 'self'`：禁止遠端注入惡意腳本
 
-> `<meta>` 版本的 CSP 適合入門，但有先天限制：它無法涵蓋 `frame-ancestors`、`sandbox` 等只能經 HTTP 標頭生效的指令，而且要靠 HTML 正確載入才會套用。正式產品建議改由 main process 用回應標頭注入，對所有載入的資源一體適用：
+> `<meta>` 版本的 CSP 適合入門，但有先天限制：它無法涵蓋 `frame-ancestors`、`sandbox` 等只能經 HTTP 標頭生效的指令，要靠 HTML 正確載入才會套用，而且**每一個 HTML 檔都要各自貼一次**——第五章 5.4 的 `about.html` 這類子視窗頁面若忘了加，就等於沒有 CSP。正式產品建議改由 main process 用回應標頭注入，對所有載入的資源一體適用：
 >
 > ```javascript
 > // src/main/main.js —— whenReady 內、建立視窗前後皆可
@@ -195,8 +195,17 @@ const { autoUpdater } = require("electron-updater");
 function setupAutoUpdate() {
   autoUpdater.autoDownload = false;
 
+  // 更新檢查失敗是常態（使用者離線、更新伺服器沒回應、Release 還沒建好），
+  // 一定要接住：沒有這個 listener，錯誤會變成未處理的 Promise rejection
+  autoUpdater.on("error", (error) => {
+    console.error("自動更新失敗：", error?.message || error);
+    // 檢查更新失敗不該打斷使用者，靜默記錄即可（第十章會改成寫進 electron-log）
+  });
+
   autoUpdater.on("update-available", () => {
-    autoUpdater.downloadUpdate();
+    autoUpdater.downloadUpdate().catch((error) => {
+      console.error("下載更新失敗：", error?.message || error);
+    });
   });
 
   autoUpdater.on("update-downloaded", async () => {
@@ -214,13 +223,35 @@ function setupAutoUpdate() {
 }
 
 function checkForUpdates() {
-  autoUpdater.checkForUpdates();
+  // checkForUpdates() 回傳 Promise，沒有 .catch() 就會噴 UnhandledPromiseRejection
+  return autoUpdater.checkForUpdates().catch((error) => {
+    console.error("檢查更新失敗：", error?.message || error);
+    return null;
+  });
 }
 
 module.exports = { setupAutoUpdate, checkForUpdates };
 ```
 
 > 這裡用 `checkForUpdates()` 而非 `checkForUpdatesAndNotify()`：後者會在下載完成後直接跳系統通知，與我們自己控制的對話框流程重複。整條流程是「檢查 → 有新版就下載 → 下載完詢問使用者 → 同意才重啟安裝」。
+>
+> **錯誤處理不是選配**。`autoUpdater` 的失敗路徑比成功路徑更常走到，而且同時需要 `on("error")` 與 `.catch()` 兩層——前者接住事件流裡的錯誤，後者接住 `checkForUpdates()` 這個 Promise。少了它們，打包版一啟動就會在終端機／log 印出這種東西：
+>
+> ```text
+> Error: HttpError: 404
+> "method: GET url: https://github.com/your-org/your-app/releases.atom ..."
+> (node:6903) UnhandledPromiseRejectionWarning: Unhandled promise rejection...
+> ```
+>
+> 最常見的兩個觸發原因都跟「壞掉」無關，而是還沒準備好：GitHub Release 還沒建立（404），或是你用 `npm run pack` 測試（見 9.9 的提醒）。
+>
+> 補上 `on("error")` 之後，`electron-updater` 自己內建的 logger 仍會把完整的 HTTP 錯誤（含一大串 response headers）印到終端機。正式產品可以把它導到第十章的 electron-log，或直接關掉：
+>
+> ```javascript
+> const log = require("./logger");      // 第十章 10.3
+> autoUpdater.logger = log;             // 統一寫進 log 檔
+> // autoUpdater.logger = null;         // 或者完全安靜
+> ```
 
 ---
 
@@ -266,10 +297,11 @@ gh release list
 >
 > - 上面的檔案清單以 macOS 產物為例（`.dmg`、`.zip`、`latest-mac.yml`），Windows / Linux 請依實際產物調整（`.exe`、`.AppImage`、`latest.yml` 等）。不要用 `release/*` 一把抓——`release/` 下還有 `mac/`、`win-unpacked/` 等資料夾，`gh` 無法上傳資料夾會直接失敗。
 > - 自動更新通常只在「已打包版本」中可完整測試，開發模式無法模擬真實更新流程。
+> - **測更新一定要用 `npm run dist`，不能用 `npm run pack`**。`pack`（`electron-builder --dir`）只產生未封裝的目錄，**不會**產生 `app-update.yml`，autoUpdater 一啟動就會丟 `ENOENT: no such file or directory, open '.../Contents/Resources/app-update.yml'`。這個錯誤訊息完全沒提到「你用錯指令了」，很容易被誤判成程式有 bug。`dist`（或任何 dmg / zip / nsis 這類真實 target）才會把 `app-update.yml` 放進包裡，並在 `release/` 根目錄產生 `latest-mac.yml`。
 
-### macOS 的兩個硬性前提
+### macOS 的三個硬性前提
 
-`electron-updater` 在 macOS 上有兩個沒滿足就直接報錯的要求：
+`electron-updater` 在 macOS 上有三個沒滿足就直接報錯的要求：
 
 1. **App 必須經過程式碼簽章**（Apple Developer 憑證）。未簽章的版本呼叫 autoUpdater 會拋出錯誤，這也是很多人「本機測試更新一直失敗」的原因。
 2. `build.mac.target` 需包含 `zip`（第八章已設定），macOS 的更新實際透過 zip 包進行，`dmg` 只用於首次安裝。
@@ -326,15 +358,29 @@ npm run dist:mac
 - 限制導航（`will-navigate`）與新視窗（`setWindowOpenHandler`）
 - 預設拒絕敏感權限請求（`setPermissionRequestHandler`）
 - 正式版本完成程式碼簽章與（macOS）公證
+- 不要把 API key、私鑰、後端密碼打進包裡（`app.asar` 不是加密，見下方說明）
 - 第三方套件定期升級
+
+> **`app.asar` 不是保護，只是打包格式。** 它沒有加密也沒有混淆，任何人只要一行指令就能把你的原始碼完整解開：
+>
+> ```bash
+> # 列出包裡有哪些檔案
+> npx @electron/asar list "你的App.app/Contents/Resources/app.asar"
+>
+> # 整包解開成一般資料夾
+> npx @electron/asar extract "你的App.app/Contents/Resources/app.asar" ./extracted
+> ```
+>
+> 這代表：**任何寫死在 main / preload / renderer 裡的東西，都等同公開**——API key、第三方服務的 secret、後端資料庫連線字串、授權驗證的判斷邏輯，全部都會被看到。正確作法是把需要 secret 的動作留在你自己的後端 API，App 端只拿短期 token（並照 6.11 用 `safeStorage` 存）。如果只是想提高一點閱讀門檻，可以用 bundler 壓縮打包，但請清楚知道那只是混淆，不是安全機制。
 
 ---
 
 ## 9.11 本章小結
 
 - 你建立了 Electron 的核心安全基線（webPreferences、CSP、導航與權限防護）
-- 你完成了 `electron-updater` 的基本整合
+- 你完成了 `electron-updater` 的基本整合，包含必備的錯誤處理
 - 你理解更新流程要搭配打包產物、簽章公證與發佈平台
+- 你知道 `app.asar` 可被一行指令解開，機密不能打進包裡
 
 ---
 

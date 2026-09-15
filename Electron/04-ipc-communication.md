@@ -153,9 +153,11 @@ systemInfoBtn.addEventListener("click", async () => {
 
 `invoke` / `handle` 適合「問一件事、等一個結果」。如果 Renderer 只是要通知 Main，不需要等回覆，就用 `ipcRenderer.send` 搭配 `ipcMain.on`。admin-dashboard 的自訂標題列主題就是這種情境：畫面已經先切主題，順手通知 Main 更新 Windows / Linux 的系統控制鈕底色。
 
-`src/preload/preload.js`：
+`src/preload/preload.js`（延續 4.4 的檔案，在最後追加這一段；檔案開頭的 `require` 已經有了，不用重複寫）：
 
 ```javascript
+const { contextBridge, ipcRenderer } = require("electron"); // 4.4 已宣告，此處僅為完整示意
+
 contextBridge.exposeInMainWorld("appWindow", {
   setTitleBarTheme(theme) {
     ipcRenderer.send("titlebar:theme", theme);
@@ -168,6 +170,8 @@ contextBridge.exposeInMainWorld("appWindow", {
 ```javascript
 const { BrowserWindow, ipcMain } = require("electron");
 
+const IS_MAC = process.platform === "darwin";
+
 const TITLEBAR_THEMES = {
   dark: { color: "#161b22", symbolColor: "#e6edf3" },
   light: { color: "#ffffff", symbolColor: "#16202c" }
@@ -177,7 +181,8 @@ function registerWindowIpc() {
   ipcMain.on("titlebar:theme", (event, theme) => {
     const overlay = TITLEBAR_THEMES[theme];
     const win = BrowserWindow.fromWebContents(event.sender);
-    if (!overlay || !win || typeof win.setTitleBarOverlay !== "function") return;
+    // macOS 的紅綠燈按鈕由系統繪製，改不動；setTitleBarOverlay 也只有 Windows / Linux 提供
+    if (!overlay || !win || IS_MAC || typeof win.setTitleBarOverlay !== "function") return;
     win.setTitleBarOverlay({ height: 32, ...overlay });
   });
 }
@@ -186,6 +191,8 @@ module.exports = { registerWindowIpc };
 ```
 
 重點一樣是白名單：Renderer 傳來的 `theme` 不是 CSS 顏色，而是 `dark` / `light` 這種有限字串，Main 端查表後才使用。
+
+另外注意 `IS_MAC` 這道防線：`setTitleBarOverlay` 只支援 Windows 與 Linux，macOS 上那三顆紅綠燈是系統畫的、改不了顏色。admin-dashboard 實戰專案就是這樣寫的——**跨平台 API 要先判斷平台再呼叫**，不要只靠 `typeof` 檢查碰運氣。
 
 ---
 

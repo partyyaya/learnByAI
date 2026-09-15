@@ -223,7 +223,17 @@ onErrorCaptured((err, instance, info) => {
 3. Suspense 這段期間顯示 **fallback 分支**（`#fallback` slot）。
 4. 當 `asyncDep` resolve，Suspense 回頭對這個實例補做 `handleSetupResult` → `setupRenderEffect` 完成真正掛載；等所有 async 依賴都就緒後，Suspense 從 fallback 切到 content 分支。
 
-一句話心智模型：**async setup 把「該元件的掛載」延後，交給上層 Suspense 統一調度**；沒有 Suspense 包著的 async setup 會直接報錯。
+一句話心智模型：**async setup 把「該元件的掛載」延後，交給上層 Suspense 統一調度**。
+
+> ⚠️ 沒有 Suspense 包著時**不是丟例外，而是 dev 模式的一則 `warn`**：
+>
+> ```text
+> Component <Foo>: setup function returned a promise, but no <Suspense> boundary
+> was found in the parent component tree. A component with async setup() must be
+> nested in a <Suspense> in order to be rendered.
+> ```
+>
+> 原始碼在 `setupStatefulComponent`：`instance.asyncDep = setupResult`，接著 `if (!instance.suspense) warn(...)`——**沒有 throw**。實際症狀是「元件靜靜地不渲染」，而且 **production build 連這則警告都被移除**，畫面就是一塊空白、console 一片乾淨，比直接報錯更難查。看到「元件莫名不出現」時，先確認是不是 async setup 沒被 Suspense 包住。
 
 ---
 

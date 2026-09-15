@@ -64,20 +64,22 @@ Vue 是「宣告式（declarative）」的：
 
 ## 3. 環境需求：Node 版本
 
-Vue 3.5 + Vite 需要較新的 Node，本課一律用 **Node 20 LTS 以上**。先確認版本：
+官方腳手架 `create-vue` 現在要求 **Node `^22.18.0 || >=24.12.0`**（它產生的專案 `package.json` 裡的 `engines` 也寫這個），本課一律用 **Node 22 LTS 以上**。先確認版本：
 
 ```bash
-node -v   # 建議 v20 以上
+node -v   # 需要 v22.18 以上（或 v24.12 以上）
 npm -v
 ```
 
-> ⚠️ 若你本機預設是舊版 Node（例如 v12），用它跑 Vite 會直接失敗（常見是 rollup 原生模組找不到）。請用 nvm 切到 20：
+> ⚠️ 若你本機預設是舊版 Node（例如 v12），跑 Vite 會直接失敗（常見是 rollup 原生模組找不到）。請用 nvm 切：
 
 ```bash
-nvm install 20
-nvm use 20
-node -v   # 例如 v20.19.5
+nvm install 22
+nvm use 22
+node -v   # 例如 v22.21.1
 ```
+
+> Node 20 目前**還跑得動**，但 `npm create vue@latest` 會噴一段 `npm warn EBADENGINE Unsupported engine` 警告，而且未來版本隨時可能改成硬性擋下來。看到這個警告就是該升級了。
 
 ---
 
@@ -93,18 +95,25 @@ node -v   # 例如 v20.19.5
 npm create vue@latest my-vue-course
 ```
 
-它會問一連串問題，本課建議這樣選：
+它會先問套件管理器，接著跳出**一份可多選的功能清單**（用方向鍵移動、空白鍵勾選、Enter 確認）：
 
 ```text
-✔ Add TypeScript?                        › No    （先用 JS，把觀念學穩再上 TS）
-✔ Add JSX Support?                        › No    （Vue 主用 template，不需要）
-✔ Add Vue Router for SPA?                 › No    （第 7 章才學，先不裝）
-✔ Add Pinia for state management?         › No    （第 7 章才學，先不裝）
-✔ Add Vitest for unit testing?           › No    （第 8 章才學；先選 Yes 也行，只是現在用不到）
-✔ Add an End-to-End Testing Solution?    › No
-✔ Add ESLint for code quality?           › Yes   （幫你抓錯，建議裝）
-✔ Add Prettier for formatting?           › Yes   （自動排版，建議裝）
+◆  Select features to include in your project:
+│  ◻ TypeScript              ← 不勾（先用 JS，把觀念學穩再上 TS）
+│  ◻ JSX Support             ← 不勾（Vue 主用 template）
+│  ◻ Router (SPA development)← 不勾（第 7 章才學）
+│  ◻ Pinia                   ← 不勾（第 7 章才學）
+│  ◻ Vitest                  ← 不勾（第 8 章才學；先勾也行，只是現在用不到）
+│  ◻ End-to-End Testing      ← 不勾
+│  ◼ ESLint                  ← 勾（幫你抓錯，建議裝）
+│  ◼ Prettier                ← 勾（自動排版，建議裝）
 ```
+
+也就是說：**本課只勾 ESLint 與 Prettier，其他全部留空。**
+
+> 舊教學（與本課早期版本）會寫成「`Add TypeScript? › No`」一題一題問——那是舊版 `create-vue` 的介面，現在已經合併成上面這份多選清單。選項名稱大同小異，勾法照上表即可。
+>
+> 想跳過互動直接產專案，也可以用旗標：`npm create vue@latest my-vue-course -- --eslint --prettier`。
 
 > 為什麼先都不裝 Router / Pinia / TS？因為前 6 章要專心把「響應式、模板、元件」這些**核心**練熟。等第 7 章要做路由與狀態管理、第 8 章要寫測試時再裝，你會更清楚它們各自補了什麼。
 
@@ -317,7 +326,7 @@ h1 { font-size: 28px; }
 
 ## 常見陷阱
 
-1. **Node 版本太舊**：本機預設 Node 12 之類的舊版跑不起來 Vite。先 `nvm use 20` 再 `npm install`。
+1. **Node 版本太舊**：本機預設 Node 12 之類的舊版跑不起來 Vite；Node 20 則會看到 `EBADENGINE` 警告。先 `nvm use 22` 再 `npm install`。
 2. **`create vite` 與 `create vue` 搞混**：兩者都能建 Vue 專案，差別只在「問不問你要不要 Router/Pinia/TS」。擇一即可，別兩個都建又互相蓋掉。
 3. **忘記 `.value`**：在 `<script setup>` 裡讀寫 `ref` 一定要加 `.value`（`count.value++`）；只有 `<template>` 裡才會自動解包。少寫 `.value` 是新手最常見的 bug（第 2 章詳解）。
 4. **裝了 Vetur**：Vue 3 專案請用 **Vue - Official**，別再裝 Vetur，兩者衝突會導致型別與高亮錯亂。
@@ -327,7 +336,7 @@ h1 { font-size: 28px; }
 
 ## 練習作業
 
-1. 用 `nvm use 20` 確認 Node 版本，再用 `npm create vue@latest` 建專案並成功 `npm run dev`。
+1. 用 `nvm use 22` 確認 Node 版本，再用 `npm create vue@latest` 建專案並成功 `npm run dev`。
 2. 把 `App.vue` 換成本章第 8 節的範例，確認點按鈕數字會變、`count + 2` 同步變動。
 3. 在同一個元件多加一個 `ref`（例如 `const step = ref(1)`），把 `increment` 改成 `count.value += step.value`，並在畫面上顯示目前的 `step`。
 4. 打開 Vue DevTools，點按鈕時觀察 `count` 的數值在 DevTools 裡怎麼變。

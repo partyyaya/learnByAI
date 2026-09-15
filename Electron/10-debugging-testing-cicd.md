@@ -96,6 +96,30 @@ npm install --save-dev eslint prettier eslint-config-prettier
 npx eslint --init
 ```
 
+> ESLint 9 起預設使用 **flat config**：`eslint --init` 會轉呼叫 `npm init @eslint/config`，產出的是 `eslint.config.js`（不再是 `.eslintrc.*`）。Electron 專案有兩種執行環境混在一起，記得在設定裡分開宣告 globals，否則會滿江紅：
+>
+> ```javascript
+> // eslint.config.js
+> const globals = require("globals");
+>
+> module.exports = [
+>   {
+>     // main / preload：Node.js 環境
+>     files: ["src/main/**/*.js", "src/preload/**/*.js"],
+>     languageOptions: { globals: { ...globals.node }, sourceType: "commonjs" }
+>   },
+>   {
+>     // renderer：瀏覽器環境
+>     files: ["src/renderer/**/*.js"],
+>     languageOptions: { globals: { ...globals.browser } }
+>   },
+>   // 放最後：關掉所有跟 Prettier 打架的格式規則
+>   require("eslint-config-prettier")
+> ];
+> ```
+>
+> 需要 `npm install --save-dev globals`。
+
 `package.json` 可新增：
 
 ```json
@@ -226,6 +250,18 @@ test("應用程式可啟動並顯示主畫面", async () => {
 npm run test:e2e
 ```
 
+> **跑 E2E 之前請先關掉 `npm run dev`。** 第五章 5.8 加了單一實例鎖，Playwright 的 `electron.launch()` 只是再啟動一份程序——拿不到鎖就會立刻 `app.quit()`，於是測試在第一行就失敗：
+>
+> ```text
+> > 5 |   const app = await electron.launch({ args: ["."] });
+>       |               ^
+>   1 failed
+> ```
+>
+> 錯誤訊息只會顯示一堆 websocket 斷線，完全不會提到「鎖」，很容易卡很久。CI 上因為環境乾淨不會遇到，只有本機邊開 dev 邊跑測試才會踩到。
+>
+> 如果你希望測試環境能與 dev 並存，可以讓單一實例鎖在測試時跳過——例如 `main.js` 改成 `const gotTheLock = process.env.E2E_TEST ? true : app.requestSingleInstanceLock();`，再於 `electron.launch({ args: ["."], env: { ...process.env, E2E_TEST: "1" } })` 傳入。
+
 ---
 
 ## 10.7 建立 CI 工作流程
@@ -284,6 +320,17 @@ jobs:
 - `--publish always`：electron-builder 打包完會直接把產物與 `latest*.yml` 上傳到 GitHub Release。第九章的自動更新讀取的正是這些檔案，這一步把「發版 → 使用者收到更新」整條鏈路接起來；少了它，建置產物會隨 CI 執行環境一起消失。
 - 這份 workflow 和第九章的 macOS 自動更新前提是一組：若 `build.mac.notarize: true`，GitHub repo 必須設定 `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` secrets。若只是課程本機練習、還沒有 Apple Developer 憑證，請先保留 `identity: null`、不要把未簽章 mac 版上傳成 auto-update 正式發佈。
 - 此範例只在 macOS runner 上打包 mac 版。若要同時發佈 Windows / Linux 版，可用 `strategy.matrix` 在各自平台的 runner 上執行同一組步驟（electron-builder 的簽章與部分安裝檔格式無法跨平台產生）。
+- 上面只跑了 lint 與單元測試。要把 10.6 的 E2E 也納入把關，加一個步驟即可——但 **Linux runner 沒有桌面環境**，`electron.launch()` 會因為開不了視窗而失敗，必須包一層虛擬顯示器：
+
+```yaml
+      # macOS / Windows runner 直接這樣寫
+      - name: Run E2E tests
+        run: npm run test:e2e
+
+      # ubuntu-latest 要改成這樣（先裝 xvfb）
+      # - run: sudo apt-get install -y xvfb
+      # - run: xvfb-run --auto-servernum npm run test:e2e
+```
 
 ---
 

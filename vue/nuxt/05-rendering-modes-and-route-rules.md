@@ -180,7 +180,7 @@ routeRules: {
 ## 8. 本章小練習
 
 1. 把首頁與 `/about` 設成 `prerender: true`，`npm run build` 後看 `.output/public/` 有沒有對應的 `.html`。
-2. 把 `/posts/**` 設成 `swr: 30`，連續重整並觀察內容更新的節奏。
+2. 把 `/posts/**` 設成 `swr: 30`，**用 `npm run build && npm run preview`**（不是 `dev`）連續重整並觀察內容更新的節奏——快取類規則在 dev 下不生效。
 3. 把 `/admin/**` 設成 `ssr: false`，用「檢視原始碼」確認它是空殼、其他頁不是。
 4. 加一條 `redirect`，把 `/blog` 轉到 `/posts`。
 
@@ -283,10 +283,20 @@ const renderedAt = useState('posts-rendered-at', () => new Date().toISOString())
 
 驗證方式：
 
-1. `/blog` → 自動轉到 `/posts`（`redirect` 生效）。
-2. `/posts` → 重整多次，`renderedAt` 時間不變（`swr` 快取）。
-3. `/admin` → 右鍵「檢視原始碼」，找不到「後台」字樣（`ssr:false` 的 SPA）。
-4. `/` 與 `/about` → `npm run build` 後到 `.output/public/` 會看到預先產好的靜態檔。
+> ⚠️ **先看這段，不然你會以為設定沒生效**：`prerender`、`swr`、`isr` 這些**快取類**的 routeRules 在 `npm run dev` 下**不會生效**（dev 模式每次都重新渲染，方便你改檔案立刻看到結果）。要驗證它們，必須跑打包後的版本：
+>
+> ```bash
+> npm run build && npm run preview
+> ```
+>
+> `redirect` 與 `ssr: false` 則在 dev 就看得到。
+
+| # | 驗證項目 | 在哪驗 |
+|---|---|---|
+| 1 | `/blog` → 自動轉到 `/posts`（`redirect` 生效） | `npm run dev` 就看得到 |
+| 2 | `/admin` → 右鍵「檢視原始碼」，找不到「後台」字樣（`ssr:false` 的 SPA） | `npm run dev` 就看得到 |
+| 3 | `/posts` → 重整多次，`renderedAt` 時間**不變**（`swr` 快取） | **要 `build` + `preview`**；在 `dev` 下每次重整都會變，那是正常的 |
+| 4 | `/` 與 `/about` → `.output/public/` 裡有預先產好的 `.html` | **要 `npm run build`** |
 
 ---
 

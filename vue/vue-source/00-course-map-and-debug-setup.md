@@ -126,7 +126,7 @@ pnpm dev
 - Q2:
 ```
 
-> 版本註記（Vue 3.5.x）：上面「關鍵資料」裡的 `activeEffect`，在 3.4+ 的響應式重構後原始碼已改稱 **`activeSub`**（Subscriber，泛指「訂閱者」，同時涵蓋 `effect` 與 `computed`）。若你照舊教學 grep `activeEffect` 找不到，改找 `activeSub`。
+> 版本註記（Vue 3.5.x）：上面「關鍵資料」裡的 `activeEffect`，在 **3.5** 的響應式重構後原始碼已改稱 **`activeSub`**（Subscriber，泛指「訂閱者」，同時涵蓋 `effect` 與 `computed`）。若你照舊教學 grep `activeEffect` 找不到，改找 `activeSub`。注意 3.4 也重構過一次但**不是**這一套（3.4 用的是 `_dirtyLevel`/`_trackId`），兩者常被混為一談，見 [01 章 1.3.1](./01-reactivity-core-track-trigger-effect.md)。
 
 ---
 

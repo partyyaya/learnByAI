@@ -363,24 +363,45 @@ export function useFetch(url) {
 
   // watchEffect 會自動追蹤裡面用到的響應式來源；
   // 只要 toValue(url) 依賴的東西變了，就自動重跑（重新抓）
-  watchEffect(async () => {
+  watchEffect(async (onCleanup) => {
+    // 每次重抓都開一個新的 AbortController，
+    // 並在「下次觸發前 / 元件卸載時」中止上一次還沒回來的請求（見第 2 章 5.4 的競態問題）
+    const controller = new AbortController()
+    const { signal } = controller
+    onCleanup(() => controller.abort())
+
     data.value = null
     error.value = null
     loading.value = true
     try {
-      const res = await fetch(toValue(url))
+      const res = await fetch(toValue(url), { signal })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      data.value = await res.json()
+      const json = await res.json()
+      // 關鍵：寫進 data 之前再確認一次「我還是最新的那個請求嗎」
+      if (signal.aborted) return
+      data.value = json
     } catch (e) {
+      if (signal.aborted) return      // 被我們自己取消的，不算錯誤
       error.value = e
     } finally {
-      loading.value = false
+      // 已被取代的舊請求不該把 loading 關掉——新的請求還在跑
+      if (!signal.aborted) loading.value = false
     }
   })
 
   return { data, error, loading }
 }
 ```
+
+這裡有一個**一定要做**的細節：`onCleanup` + `AbortController`。
+
+`watchEffect` 的 callback 可以接一個 `onCleanup`（就是第 2 章 5.4 學的那個）。沒有它的話，使用者快速切換 `url` 時會發生**競態**：先發的請求比後發的晚回來，舊資料就把新資料蓋掉了——畫面顯示的是「你上一個點的東西」。加上 `onCleanup(() => controller.abort())` 之後，每次重抓都會先把上一次還在飛的請求中止掉，永遠只有最新那一筆能寫進 `data`。
+
+另外三個小地方也是為了同一件事——**只要 `signal.aborted` 是 true，就代表「我已經是過期的那個請求」，什麼都不要做**：
+
+- **寫進 `data` 之前再確認一次**。這是最關鍵的一道防線：`abort()` 只是「請求瀏覽器取消」，若請求其實已經回來了（或你在測試裡用假的 `fetch`，它根本不理會 `signal`），它還是會往下跑到賦值那行。多這一個 `if (signal.aborted) return`，競態保護就不依賴底層有沒有真的支援中止。
+- `catch` 裡先判斷——被我們自己取消的不是真的錯誤，不該讓畫面變紅字。
+- `finally` 裡也要判斷——被取代的舊請求不可以把 `loading` 關掉，因為新的請求還在跑。
 
 用法：
 

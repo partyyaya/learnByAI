@@ -344,10 +344,13 @@ public class Ch03Endpoints {
     /** 回傳目前身分帶了哪些 authority —— 3.4 / 3.7 的觀察窗 */
     @GetMapping("/me/authorities")
     public Map<String, Object> authorities(Authentication auth) {
-        return new LinkedHashMap<>(Map.of(
-                "name", auth == null ? "(匿名)" : auth.getName(),
-                "authorities", auth == null ? List.of()
-                        : auth.getAuthorities().stream().map(Object::toString).sorted().toList()));
+        // ⚠️ 不要寫成 new LinkedHashMap<>(Map.of(...)) —— Map.of() 不保證順序，
+        //    JSON 的欄位順序會每次執行都不一樣，課本上的輸出就對不起來了
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("name", auth == null ? "(匿名)" : auth.getName());
+        out.put("authorities", auth == null ? List.of()
+                : auth.getAuthorities().stream().map(Object::toString).sorted().toList());
+        return out;
     }
 }
 ```
@@ -449,8 +452,10 @@ public class MethodSecurityController {
     /** 交易到底有沒有 rollback：直接問資料庫（3.5.6） */
     @GetMapping("/status/{id}")
     public Map<String, Object> status(@PathVariable Long id) {
-        return Map.of("id", id, "statusInDb",
-                jdbc.queryForObject("SELECT status FROM ord3 WHERE id=?", String.class, id));
+        Map<String, Object> out = new LinkedHashMap<>();       // ⚠️ 理由同 Ch03Endpoints.authorities
+        out.put("id", id);
+        out.put("statusInDb", jdbc.queryForObject("SELECT status FROM ord3 WHERE id=?", String.class, id));
+        return out;
     }
 
     @PostMapping("/bulk-cancel")
@@ -541,16 +546,14 @@ public class OwnershipController {
     public Map<String, Object> listPostFilter(@RequestParam(defaultValue = "0") int page,
                                               @RequestParam(defaultValue = "20") int size) {
         List<Ord3> rows = svc.pageThenFilter(page, size);
-        return new LinkedHashMap<>(Map.of("page", page, "size", size,
-                "回給前端的筆數", rows.size(), "ids", rows.stream().map(Ord3::getId).toList()));
+        return listBody(page, size, rows.size(), rows.stream().map(Ord3::getId).toList());
     }
 
     @GetMapping("/list/postfilter-mutable")
     public Map<String, Object> listPostFilterMutable(@RequestParam(defaultValue = "0") int page,
                                                      @RequestParam(defaultValue = "20") int size) {
         List<Ord3> rows = svc.pageThenFilterMutable(page, size);
-        return new LinkedHashMap<>(Map.of("page", page, "size", size,
-                "回給前端的筆數", rows.size(), "ids", rows.stream().map(Ord3::getId).toList()));
+        return listBody(page, size, rows.size(), rows.stream().map(Ord3::getId).toList());
     }
 
     @GetMapping("/list/scoped")
@@ -558,10 +561,21 @@ public class OwnershipController {
                                           @RequestParam(defaultValue = "0") int page,
                                           @RequestParam(defaultValue = "20") int size) {
         var p = svc.pageScoped(me.getName(), page, size);
-        return new LinkedHashMap<>(Map.of("page", page, "size", size,
-                "回給前端的筆數", p.getNumberOfElements(),
-                "totalElements", p.getTotalElements(), "totalPages", p.getTotalPages(),
-                "ids", p.getContent().stream().map(Ord3::getId).toList()));
+        Map<String, Object> out = listBody(page, size, p.getNumberOfElements(),
+                p.getContent().stream().map(Ord3::getId).toList());
+        out.put("totalElements", p.getTotalElements());       // ★ 只有查詢條件版算得出正確的總數
+        out.put("totalPages", p.getTotalPages());
+        return out;
+    }
+
+    /** 固定欄位順序的回應本體（Map.of 不保證順序，輸出會每次都不一樣） */
+    private static Map<String, Object> listBody(int page, int size, int returned, List<Long> ids) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("page", page);
+        out.put("size", size);
+        out.put("回給前端的筆數", returned);
+        out.put("ids", ids);
+        return out;
     }
 
     // ── 寫入（3.8.6）──
@@ -1134,6 +1148,45 @@ public class AuthzEventScenario {
 }
 ```
 
+**把「通過」與「被擋」各打幾次**（`Matrix` 是 3.1.2 那個工具）：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "p2"})
+class AuthzEventTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void events() throws Exception {
+        Matrix m = new Matrix(port);
+        System.out.println("\n═══ 3.2.5 授權事件：哪些會發、哪些不會 ═══");
+        for (String[] c : new String[][]{
+                {"GET", "/api/hello",         "匿名",  "permitAll，通過"},
+                {"GET", "/api/orders/1001",   "alice", "authenticated，通過"},
+                {"GET", "/api/admin/revenue", "admin", "hasRole(ADMIN)，通過"},
+                {"GET", "/api/admin/revenue", "alice", "hasRole(ADMIN)，被擋"},
+                {"GET", "/api/admin/revenue", "匿名",  "hasRole(ADMIN)，匿名"}}) {
+            System.out.printf("%n>> %s %s   （%s：%s）%n", c[0], c[1], c[2], c[3]);
+            System.out.println("   HTTP " + m.status(c[0], c[1], c[2]));
+            Thread.sleep(80);      // ★ 事件是 listener 印的，睡一下才不會跟下一列交錯
+        }
+    }
+}
+```
+
 **輸出**：
 
 ```
@@ -1266,6 +1319,39 @@ public class U1Scenario {
                 .csrf(c -> c.disable())
                 .build();
         }
+    }
+}
+```
+
+**用 3.1.2 的 `Matrix` 打一整張表**——一次只打一格，是看不出這個洞的：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "u1"})          // ← u1 就是上面那個寫反的設定
+class UrlRuleTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void wrongOrder() {
+        System.out.println("\n═══ 3.3.2 規則順序寫反：/api/** 寫在 /api/admin/** 前面 ═══");
+        new Matrix(port).print("u1：alice 是 ROLE_USER，admin 是 ROLE_ADMIN",
+                "GET /api/hello",
+                "GET /api/orders/1001",
+                "GET /api/admin/revenue",
+                "GET /api/admin/users");
     }
 }
 ```
@@ -1437,6 +1523,42 @@ public class U3Scenario {
                 .csrf(c -> c.disable())
                 .build();
         }
+    }
+}
+```
+
+**矩陣的「請求」欄這次一定要寫成「方法 + 路徑」**——
+只列路徑的話，下面第二列與第四列**根本不會出現在表上**：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "u3"})
+class U3MethodTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void methodForgotten() {
+        System.out.println("\n═══ 3.3.4 規則只寫了 GET ═══");
+        new Matrix(port).print(
+                "u3：requestMatchers(GET, \"/api/admin/**\").hasRole(\"ADMIN\") + anyRequest().permitAll()",
+                "GET /api/admin/users",
+                "POST /api/admin/users",          // ★ 同一個路徑，只換了方法
+                "GET /api/orders/1001",
+                "DELETE /api/orders/1001",        // ★ 同上
+                "POST /api/orders");
     }
 }
 ```
@@ -1630,6 +1752,46 @@ public class U7Scenario {
 }
 ```
 
+**同一組路徑再打一次**。這次不用 `Matrix`——要看的是**回應內容**，不只是狀態碼：
+
+```java
+package com.example.lab09.ch03;
+
+import com.example.lab09.Http;                  // 00 章 0.8.3
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "u7"})
+class U7ErrorPermittedTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void firewallStatusWithErrorPermitted() {
+        System.out.println("\n═══ 3.3.5 把 /error 放行之後，防火牆的真實狀態碼 ═══");
+        Http http = new Http(port);
+        // ★ 帶的是【正確的】憑證 —— 所以下面那四個回應絕對不是認證失敗
+        for (String p : new String[]{"/api/admin/revenue;x=1", "//api/admin/revenue",
+                "/api/./admin/revenue", "/api/orders/../admin/revenue"}) {
+            HttpResponse<String> r = http.get(p, "Authorization", Http.basic("admin", "pw"));
+            String b = r.body() == null ? "" : r.body().replace("\n", " ");
+            if (b.length() > 110) b = b.substring(0, 110) + "…";
+            System.out.printf("%-32s → %d  %s%n", p, r.statusCode(), b);
+        }
+    }
+}
+```
+
 ```
 ═══ 3.3.5 把 /error 放行之後，防火牆的真實狀態碼 ═══
 /api/admin/revenue;x=1           → 400  {"timestamp":"…","status":400,"error":"Bad Request","path":"/api/admin/revenue;x=1"}
@@ -1687,6 +1849,80 @@ public class U5Scenario {
 ```
 
 **實測**（先用表單登入拿到 `JSESSIONID` 與 `remember-me` 兩個 cookie，再分別只帶其中一個）：
+
+```java
+package com.example.lab09.ch03;
+
+import com.example.lab09.Http;                  // 00 章 0.8.3
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+import java.util.regex.*;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "u5"})
+class U5BuiltinTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void builtinRules() {
+        System.out.println("\n═══ 3.3.6 五個內建規則，三種身分 ═══");
+        Http http = new Http(port);
+
+        // ① 表單登入一次，同時拿到 JSESSIONID 與 remember-me 兩個 cookie
+        //    （設定裡寫了 alwaysRemember(true)，所以不用勾「記住我」）
+        HttpResponse<String> page = http.get("/login");
+        Matcher m = Pattern.compile("name=\"_csrf\".*?value=\"([^\"]+)\"").matcher(page.body());
+        String csrf = m.find() ? m.group(1) : "";
+        String session = cookie(page, "JSESSIONID");
+        HttpResponse<String> login = http.send("POST", "/login",
+                "username=alice&password=pw&_csrf=" + csrf,
+                "Content-Type", "application/x-www-form-urlencoded",
+                "Cookie", "JSESSIONID=" + session);
+        String full = cookie(login, "JSESSIONID");
+        String remember = cookie(login, "remember-me");
+        System.out.println("表單登入 → " + login.statusCode()
+                + "  remember-me cookie = " + (remember == null ? "（沒有）" : remember.substring(0, 12) + "…"));
+
+        // ② 三種身分各打一次：不帶 cookie（匿名）、只帶 JSESSIONID（完整登入）、
+        //    只帶 remember-me ★ 最後這一欄才分得出 authenticated 與 fullyAuthenticated
+        String[][] paths = {
+                {"/api/hello",         "permitAll()"},
+                {"/api/echo",          "denyAll()"},
+                {"/api/reports/daily", "anonymous()"},
+                {"/api/orders/1001",   "authenticated()"},
+                {"/api/admin/revenue", "fullyAuthenticated()"},
+        };
+        System.out.printf("%n%-22s %-22s %-12s %-16s %-16s%n",
+                "路徑", "規則", "匿名", "完整登入(alice)", "只帶 remember-me");
+        System.out.println("─".repeat(92));
+        for (String[] p : paths) {
+            int anon = http.get(p[0]).statusCode();
+            int sess = http.get(p[0], "Cookie", "JSESSIONID=" + full).statusCode();
+            int rem  = http.get(p[0], "Cookie", "remember-me=" + remember).statusCode();
+            System.out.printf("%-22s %-22s %-12d %-16d %-16d%n", p[0], p[1], anon, sess, rem);
+        }
+    }
+
+    /** 從 Set-Cookie 標頭挑出某個 cookie 的值（登出用的空值要跳過） */
+    static String cookie(HttpResponse<String> r, String name) {
+        return r.headers().allValues("set-cookie").stream()
+                .filter(c -> c.startsWith(name + "="))
+                .map(c -> c.substring(name.length() + 1).split(";")[0])
+                .filter(v -> !v.isEmpty())
+                .findFirst().orElse(null);
+    }
+}
+```
 
 ```
 ═══ 3.3.6 五個內建規則，三種身分 ═══
@@ -1779,6 +2015,43 @@ public class U4Scenario {
 }
 ```
 
+**驗收的方式也固定下來：八個「方法 + 路徑」× 五個帳號，一次打完**：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "u4"})
+class U4CorrectTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void correctRules() {
+        System.out.println("\n═══ 3.3.7 五條規則的完整授權矩陣 ═══");
+        new Matrix(port).print("u4：順序正確、HTTP 方法有寫、anyRequest 兜底",
+                "GET /api/hello",
+                "GET /api/orders/1001",
+                "POST /api/orders",
+                "POST /api/orders/1001/refund",     // ★ 只有帶 order:refund 的人過得去
+                "DELETE /api/orders/1001",
+                "GET /api/admin/revenue",
+                "POST /api/admin/users",            // ★ 3.3.4 漏掉的那一格，這次在表上
+                "GET /api/reports/daily");
+    }
+}
+```
+
 ```
 ═══ 3.3.7 五條規則的完整授權矩陣 ═══
 
@@ -1849,6 +2122,40 @@ public class U6Scenario {
                 .csrf(c -> c.disable())
                 .build();
         }
+    }
+}
+```
+
+**表裡故意放了三支「沒有任何規則管到」的端點**——它們就是「下週有人新增的端點」：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "u6"})
+class U6NoAnyRequestTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void noFallbackRule() {
+        System.out.println("\n═══ 3.3.8 沒有寫 anyRequest()，新端點會怎樣 ═══");
+        new Matrix(port).print("u6：只寫了 /api/admin/** 與 /api/orders/** 兩條規則",
+                "GET /api/admin/revenue",           // 有規則
+                "GET /api/orders/1001",             // 有規則
+                "GET /api/reports/daily",           // ★ 沒有規則管到
+                "GET /api/hello",                   // ★ 沒有規則管到
+                "POST /api/echo");                  // ★ 沒有規則管到
     }
 }
 ```
@@ -2028,6 +2335,49 @@ public class RoleScenarios {
 }
 ```
 
+**七條規則各打一次，並且先把每個帳號手上的 authority 印出來當對照**：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "r1"})
+class RulePrefixTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void prefixMatrix() {
+        System.out.println("""
+                
+                ═══ 3.4.2 七條規則，同一支端點 ═══
+                帳號帶的 authority：
+                  alice / bob  →  [ROLE_USER]
+                  cs           →  [ROLE_CS_AGENT]
+                  admin        →  [ROLE_ADMIN, ROLE_USER, order:refund]""");
+        new Matrix(port).print("r1：200 = 通過、403 = 被擋",
+                "GET /api/r/hasRole-ADMIN",
+                "GET /api/r/hasAuthority-ADMIN",
+                "GET /api/r/hasAuthority-ROLE_ADMIN",
+                "GET /api/r/hasRole-ROLE_ADMIN",
+                "GET /api/r/hasAuthority-refund",
+                "GET /api/r/hasRole-refund",
+                "GET /api/r/hasAnyRole",
+                "GET /api/r/manager");
+    }
+}
+```
+
 ```
 ═══ 3.4.2 七條規則，同一支端點 ═══
 帳號帶的 authority：
@@ -2041,6 +2391,7 @@ public class RoleScenarios {
 GET /api/r/hasRole-ADMIN            401      403      403      403      200
 GET /api/r/hasAuthority-ADMIN       401      403      403      403      403
 GET /api/r/hasAuthority-ROLE_ADMIN  401      403      403      403      200
+GET /api/r/hasRole-ROLE_ADMIN       401      200      200      200      200
 GET /api/r/hasAuthority-refund      401      403      403      403      200
 GET /api/r/hasRole-refund           401      403      403      403      403
 GET /api/r/hasAnyRole               401      403      403      200      200
@@ -2054,12 +2405,27 @@ GET /api/r/manager                  401      403      403      403      200
 | `hasRole("ADMIN")` | ✅ 200 | 找 `ROLE_ADMIN`，有 |
 | `hasAuthority("ADMIN")` | ❌ 403 | 找 `ADMIN`，**資料庫裡沒有這個字串** |
 | `hasAuthority("ROLE_ADMIN")` | ✅ 200 | 找 `ROLE_ADMIN`，有——**跟第一列完全等價** |
+| **（這一條寫不出來）** | ⚠️ 200，**而且每個人都 200** | 見下 |
 | `hasAuthority("order:refund")` | ✅ 200 | 找 `order:refund`，有 |
 | `hasRole("order:refund")` | ❌ 403 | 找 **`ROLE_order:refund`**——沒有這個東西 |
 | `hasAnyRole("ADMIN","CS_AGENT")` | ✅ 200（cs 也 200） | 找 `ROLE_ADMIN` 或 `ROLE_CS_AGENT` |
 | `hasAnyAuthority("ROLE_ADMIN","order:refund")` | ✅ 200 | 兩個字串**原樣**比對 |
 
-⚠️ **第五列是最容易寫錯的一個**：
+⚠️ **第四列（`/api/r/hasRole-ROLE_ADMIN`）那一整排 200 不是規則放行，是【沒有規則】。**
+
+```java
+// 這一行【寫不出來】—— 寫下去整個服務啟動就失敗（3.4.3 會證明）
+.requestMatchers("/api/r/hasRole-ROLE_ADMIN").hasRole("ROLE_ADMIN")
+```
+
+所以 `R1_Prefix` 裡只有七條規則，而端點有八支。
+第八支沒有任何規則管到，**掉進最後的 `anyRequest().authenticated()`**——
+只要登入就通過，所以 alice / bob / cs / admin 全部 200。
+
+📌 **這一列順便示範了 3.3.8 那件事**：
+「表上多出一支你沒寫規則的端點」長什麼樣子——**它不會報錯，它會放行。**
+
+⚠️ **第六列是最容易寫錯的一個**：
 
 ```java
 .requestMatchers("/api/orders/*/refund").hasRole("order:refund")     // 🔴 永遠 403
@@ -2114,6 +2480,47 @@ class R3StartupTest {
 
 **方法層**寫**同一句話**（`@PreAuthorize("hasRole('ROLE_ADMIN')")`）：
 
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+import java.util.List;
+
+/** 3.4.3：URL 層寫這句話會啟動失敗（上面那個測試），方法層寫同一句話呢？ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m1"})
+class DoublePrefixTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    static void show(String who, HttpResponse<String> r) {
+        String b = r.body() == null ? "" : r.body().replace("\n", " ");
+        if (b.length() > 130) b = b.substring(0, 130) + "…";
+        System.out.printf("   %-8s → %d  %s%n", who, r.statusCode(), b);
+    }
+
+    @Test
+    void doublePrefix() {
+        System.out.println("\n═══ 3.4.3 方法層寫 hasRole('ROLE_ADMIN') ═══");
+        System.out.println("   （URL 層寫同一句話會【啟動失敗】）");
+        Matrix m = new Matrix(port);
+        // /api/m/double-prefix 背後是 @PreAuthorize("hasRole('ROLE_ADMIN')")
+        for (String u : List.of("alice", "cs", "admin"))
+            show(u, m.send("GET", "/api/m/double-prefix", u));
+    }
+}
+```
+
 ```
 ═══ 3.4.3 方法層寫 hasRole('ROLE_ADMIN') ═══
    （URL 層寫同一句話會【啟動失敗】）
@@ -2166,6 +2573,37 @@ private static String getRoleWithDefaultPrefix(String defaultRolePrefix, String 
 @Bean
 static GrantedAuthorityDefaults grantedAuthorityDefaults() {
     return new GrantedAuthorityDefaults("PERM_");
+}
+```
+
+**只打兩支端點就夠了**（設定是 3.4.2 那個 `RoleScenarios.R2_CustomPrefix`）：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "r2"})
+class PrefixOverrideTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void customPrefix() {
+        System.out.println("\n═══ 3.4.4 GrantedAuthorityDefaults(\"PERM_\") ═══");
+        new Matrix(port).print("r2：資料庫裡存的還是 ROLE_ADMIN，前綴卻被改成 PERM_",
+                "GET /api/r/hasRole-ADMIN",              // hasRole 現在找 PERM_ADMIN
+                "GET /api/r/hasAuthority-ROLE_ADMIN");   // hasAuthority 不加前綴，不受影響
+    }
 }
 ```
 
@@ -2375,6 +2813,40 @@ public class M3Config {
 }
 ```
 
+**五支端點，每一支掛一種註解**：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m3"})
+class AnnotationFlavourTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void fourFlavours() {
+        System.out.println("\n═══ 3.5.2 四種方法層註解 ═══");
+        new Matrix(port).print("m3：@EnableMethodSecurity(securedEnabled = true, jsr250Enabled = true)",
+                "GET /api/l/secured-prefix",      // @Secured("ROLE_ADMIN")
+                "GET /api/l/secured-noprefix",    // @Secured("ADMIN")      ★ 不會自動加前綴
+                "GET /api/l/roles-allowed",       // @RolesAllowed("ADMIN")
+                "GET /api/l/permit-all",          // @PermitAll
+                "GET /api/l/deny-all");           // @DenyAll
+    }
+}
+```
+
 ```
 ═══ 3.5.2 四種方法層註解 ═══
 
@@ -2408,6 +2880,38 @@ GET /api/l/deny-all                 401      403      403      403      403
 
 **現在把 `@EnableMethodSecurity` 拿掉，其他一個字都不改**：
 
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+/** m2 的設定跟 m1 逐字相同，唯一的差別是類別上少了 @EnableMethodSecurity。 */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m2"})
+class MethodNotEnabledTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void forgotEnableMethodSecurity() {
+        System.out.println("\n═══ 3.5.2 🔴 忘了寫 @EnableMethodSecurity ═══");
+        new Matrix(port).print("m2：程式碼跟 m1 一模一樣，只差沒有那一行註解",
+                "GET /api/m/all",                 // @PreAuthorize("hasRole('ADMIN')")
+                "POST /api/m/refund/1001",        // @PreAuthorize("hasAuthority('order:refund')")
+                "GET /api/m/one/1002",            // @PostAuthorize(...)
+                "GET /api/m/filtered");           // @PostFilter(...)
+    }
+}
+```
+
 ```
 ═══ 3.5.2 🔴 忘了寫 @EnableMethodSecurity ═══
 
@@ -2416,11 +2920,23 @@ GET /api/l/deny-all                 401      403      403      403      403
 ─────────────────────────────────────────────────────────────────────────────────
 GET /api/m/all                      401      200      200      200      200
 POST /api/m/refund/1001             401      200      200      200      200
+      [方法內] findOne(1002) 真的執行了，而且查了資料庫
+      [方法內] findOne(1002) 真的執行了，而且查了資料庫
+      [方法內] findOne(1002) 真的執行了，而且查了資料庫
+      [方法內] findOne(1002) 真的執行了，而且查了資料庫
 GET /api/m/one/1002                 401      200      200      200      200
+      [方法內] 從資料庫撈回 3 筆
+      [方法內] 從資料庫撈回 3 筆
+      [方法內] 從資料庫撈回 3 筆
+      [方法內] 從資料庫撈回 3 筆
 GET /api/m/filtered                 401      200      200      200      200
 ```
 
 🔴 **全部 200。所有 `@PreAuthorize` 變成純粹的註解文字。**
+
+📌 **中間那些 `[方法內]` 是 Service 自己印的**，它們是最直接的證據：
+`findOne(1002)` 對四個帳號**各執行了一次**，`@PostAuthorize` 連看都沒看。
+（一列四個 `[方法內]`，是因為矩陣的那一列要打 alice / bob / cs / admin 四次。）
 
 ```
 啟動不報錯
@@ -2582,6 +3098,39 @@ public class OrderService3 {
 ```
 
 **實測**：
+
+**同一條 URL 規則管住全部四支端點**，所以下面每一列的差別**只可能**來自方法上的註解：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m1"})
+class MethodSecurityTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void urlLayerLetsEverythingThrough() {
+        System.out.println("\n═══ 3.5.3 URL 層只寫 anyRequest().authenticated()，方法層接手 ═══");
+        new Matrix(port).print("m1：URL 規則只有一條，下面每一列的差別【全部】來自方法上的註解",
+                "GET /api/m/all",
+                "POST /api/m/refund/1001",
+                "GET /api/m/by-owner?owner=alice",
+                "GET /api/m/by-owner?owner=bob");
+    }
+}
+```
 
 ```
 ═══ 3.5.3 URL 層只寫 anyRequest().authenticated()，方法層接手 ═══
@@ -2794,6 +3343,47 @@ public Ord3 findOne(Long id) {
 }
 ```
 
+**注意輸出裡那一行 `[方法內]`**——它證明方法在被擋下來之前**已經整個跑完了**：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m1"})
+class PostAuthorizeReadTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    static void show(String who, HttpResponse<String> r) {
+        String b = r.body() == null ? "" : r.body().replace("\n", " ");
+        if (b.length() > 130) b = b.substring(0, 130) + "…";
+        System.out.printf("   %-8s → %d  %s%n", who, r.statusCode(), b);
+    }
+
+    @Test
+    void postAuthorize() {
+        System.out.println("\n═══ 3.5.6 @PostAuthorize：方法【已經跑完】才檢查 ═══");
+        Matrix m = new Matrix(port);
+        System.out.println("\n   alice 讀自己的訂單 1001：");
+        show("alice", m.send("GET", "/api/m/one/1001", "alice"));
+        System.out.println("\n   alice 讀 bob 的訂單 1002：");
+        show("alice", m.send("GET", "/api/m/one/1002", "alice"));
+    }
+}
+```
+
 ```
 ═══ 3.5.6 @PostAuthorize：方法【已經跑完】才檢查 ═══
 
@@ -2868,13 +3458,13 @@ class PostAuthorizeTransactionTest {
 
 ```
 ═══ 3.5.6 🔴 @PostAuthorize 擋下來了，資料庫改了沒 ═══
-   出貨前：{"statusInDb":"PAID","id":1001}
+   出貨前：{"id":1001,"statusInDb":"PAID"}
 
    alice（不是 ADMIN）呼叫 POST /api/m/ship/1001：
       [方法內] 已經把 1001 改成 SHIPPED（交易還沒結束）
    alice    → 403  {"status":403,"error":"Forbidden","path":"/api/m/ship/1001"}
 
-   出貨後：{"statusInDb":"SHIPPED","id":1001}
+   出貨後：{"id":1001,"statusInDb":"SHIPPED"}
 ```
 
 🔴 **HTTP 回應是 403，資料庫裡卻真的變成 `SHIPPED` 了。**
@@ -3092,6 +3682,60 @@ public class ClaimCheck3 {
 
 **規則三的實測**（`unsafe` 的 SpEL 少了 `returnObject == null or`）：
 
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.core.context.*;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m5"})
+class NullReturnObjectTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired ClaimCheck3.NullReturnService nullSvc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    static void show(String label, HttpResponse<String> r) {
+        String b = r.body() == null ? "" : r.body().replace("\n", " ");
+        if (b.length() > 120) b = b.substring(0, 120) + "…";
+        System.out.printf("   %-46s → %d  %s%n", label, r.statusCode(), b);
+    }
+
+    @Test
+    void nullReturnObject() {
+        System.out.println("\n═══ 3.5.6 @PostAuthorize 的 SpEL 沒處理 returnObject == null ═══");
+        Matrix m = new Matrix(port);
+        show("unsafe(1001) alice 自己的訂單", m.send("GET", "/api/cc/unsafe/1001", "alice"));
+        show("unsafe(9999) 查無資料 → returnObject 是 null", m.send("GET", "/api/cc/unsafe/9999", "alice"));
+        show("safe  (9999) SpEL 有寫 returnObject == null", m.send("GET", "/api/cc/safe/9999", "alice"));
+    }
+
+    /** HTTP 只看得到 500，例外訊息要直接呼叫 Service 才看得到 */
+    @Test
+    void nullReturnObjectMessage() {
+        SecurityContext c = SecurityContextHolder.createEmptyContext();
+        c.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+                "alice", null, AuthorityUtils.createAuthorityList("ROLE_USER")));
+        SecurityContextHolder.setContext(c);
+        try { nullSvc.unsafe(9999L); }
+        catch (Exception e) { System.out.println("   完整例外：" + e.getClass().getName() + ": " + e.getMessage()); }
+        finally { SecurityContextHolder.clearContext(); }
+    }
+}
+```
+
 ```
 ═══ 3.5.6 @PostAuthorize 的 SpEL 沒處理 returnObject == null ═══
    unsafe(1001) alice 自己的訂單                       → 200  {"id":1001,"ownerUsername":"alice",…}
@@ -3133,6 +3777,62 @@ public List<Ord3> allThenFilter() {
     List<Ord3> all = repo.findAll();
     System.out.println("      [方法內] 從資料庫撈回 " + all.size() + " 筆");
     return all;
+}
+```
+
+**兩個註解各打一次**（`bulk-cancel` 是 3.1.1 那支 `MethodSecurityController` 的端點）：
+
+```java
+package com.example.lab09.ch03;
+
+import com.example.lab09.Http;                  // 00 章 0.8.3
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+import java.util.List;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m1"})
+class FilterAnnotationTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    static void show(String who, HttpResponse<String> r) {
+        String b = r.body() == null ? "" : r.body().replace("\n", " ");
+        if (b.length() > 130) b = b.substring(0, 130) + "…";
+        System.out.printf("   %-8s → %d  %s%n", who, r.statusCode(), b);
+    }
+
+    @Test
+    void postFilter() {
+        System.out.println("\n═══ 3.5.7 @PostFilter：先全部撈回來，再一筆一筆丟掉 ═══");
+        Matrix m = new Matrix(port);
+        System.out.println("\n   alice GET /api/m/filtered：");
+        show("alice", m.send("GET", "/api/m/filtered", "alice"));
+        System.out.println("\n   bob   GET /api/m/filtered：");
+        show("bob", m.send("GET", "/api/m/filtered", "bob"));
+    }
+
+    @Test
+    void preFilter() {
+        System.out.println("\n═══ 3.5.7 @PreFilter：把不是你的參數先剃掉 ═══");
+        Http http = new Http(port);
+        // 三個人都送同一份 [1001,1002,1003]：1001 是 alice 的、1002 與 1003 是 bob 的
+        for (String u : List.of("alice", "bob")) {
+            HttpResponse<String> r = http.send("POST", "/api/m/bulk-cancel", "[1001,1002,1003]",
+                    "Content-Type", "application/json", "Authorization", Http.basic(u, "pw"));
+            System.out.printf("   %-6s 送出 [1001,1002,1003] → %d  服務端收到 %s 筆%n",
+                    u, r.statusCode(), r.body());
+        }
+    }
 }
 ```
 
@@ -3216,6 +3916,7 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /** 🔴 一個「什麼都接」的 @RestControllerAdvice —— 3.5.8 的兇手 */
@@ -3225,9 +3926,48 @@ public class CatchAllAdvice {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> any(Exception e) {
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Map.of("error", "系統忙碌中，請稍後再試",
-                             "exception", e.getClass().getSimpleName()));
+        Map<String, Object> body = new LinkedHashMap<>();      // ⚠️ Map.of() 不保證欄位順序
+        body.put("error", "系統忙碌中，請稍後再試");
+        body.put("exception", e.getClass().getSimpleName());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(body);
+    }
+}
+```
+
+**同一個使用者、同一種例外，分別從方法層與 URL 層各打一次**：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m4"})          // ← m4 就是掛了 CatchAllAdvice 的那個
+class SwallowedDeniedTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void catchAllAdviceEatsAccessDenied() {
+        System.out.println("\n═══ 3.5.8 🔴 一個 @ExceptionHandler(Exception.class) 就把 403 變成 500 ═══");
+        Matrix m = new Matrix(port);
+        for (String[] c : new String[][]{
+                {"GET", "/api/l/deny-all",    "方法層 @DenyAll（AccessDeniedException 從 Service 冒出來）"},
+                {"GET", "/api/admin/revenue", "URL 層規則（AccessDeniedException 在 Filter 裡）"}}) {
+            System.out.println("\n   " + c[2]);
+            HttpResponse<String> r = m.send(c[0], c[1], "alice");
+            System.out.printf("      alice %s %s → %d  %s%n", c[0], c[1], r.statusCode(), r.body());
+        }
     }
 }
 ```
@@ -3236,7 +3976,7 @@ public class CatchAllAdvice {
 ═══ 3.5.8 🔴 一個 @ExceptionHandler(Exception.class) 就把 403 變成 500 ═══
 
    方法層 @DenyAll（AccessDeniedException 從 Service 冒出來）
-      alice GET /api/l/deny-all → 500  {"exception":"AccessDeniedException","error":"系統忙碌中，請稍後再試"}
+      alice GET /api/l/deny-all → 500  {"error":"系統忙碌中，請稍後再試","exception":"AccessDeniedException"}
 
    URL 層規則（AccessDeniedException 在 Filter 裡）
       alice GET /api/admin/revenue → 403  {"status":403,"error":"Forbidden","path":"/api/admin/revenue"}
@@ -3276,6 +4016,44 @@ public ResponseEntity<Map<String, Object>> any(Exception e) {
 
 **實測**：
 
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+
+/** m5 掛的是 ClaimCheck3.SafeAdvice —— 跟 m4 的差別只有多了一個 handler。 */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m5"})
+class RethrowDeniedTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    static void show(String label, HttpResponse<String> r) {
+        String b = r.body() == null ? "" : r.body().replace("\n", " ");
+        if (b.length() > 120) b = b.substring(0, 120) + "…";
+        System.out.printf("   %-46s → %d  %s%n", label, r.statusCode(), b);
+    }
+
+    @Test
+    void rethrowKeeps403() {
+        System.out.println("\n═══ 3.5.8 修法：接住 AccessDeniedException 再原樣往外丟 ═══");
+        Matrix m = new Matrix(port);
+        show("方法層 @DenyAll（有 SafeAdvice）", m.send("GET", "/api/cc/deny", "alice"));
+        show("URL 層規則（對照組）", m.send("GET", "/api/admin/revenue", "alice"));
+    }
+}
+```
+
 ```
 ═══ 3.5.8 修法：接住 AccessDeniedException 再原樣往外丟 ═══
    方法層 @DenyAll（有 SafeAdvice）                     → 403  {"status":403,"error":"Forbidden","path":"/api/cc/deny"}
@@ -3308,6 +4086,35 @@ public class LegacyService3 implements ReportApi {
 }
 ```
 
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m3"})
+class InterfaceAnnotationTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void annotationOnInterface() {
+        System.out.println("\n═══ 3.5.9 註解寫在介面上 ═══");
+        new Matrix(port).print("LegacyService3 implements ReportApi，@PreAuthorize 標在【介面】的 daily() 上",
+                "GET /api/l/iface-daily",         // 介面上有 @PreAuthorize("hasRole('ADMIN')")
+                "GET /api/l/iface-monthly");      // 對照組：兩邊都沒有註解
+    }
+}
+```
+
 ```
 ═══ 3.5.9 註解寫在介面上 ═══
 
@@ -3327,6 +4134,41 @@ GET /api/l/iface-monthly            401      200      200      200      200
 ```
 
 **第 ② 點的實測**（介面標 `hasRole('ADMIN')`、實作標 `hasRole('USER')`）：
+
+**這個要另外開一個 context**（m6），因為它要證明的是「**啟動不會失敗**」：
+
+```java
+package com.example.lab09.ch03;
+
+import com.example.lab09.LabApp;
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.context.ConfigurableApplicationContext;
+
+class ConflictingAnnotationTest {
+
+    @Test
+    void conflictingAnnotations() {
+        System.out.println("\n═══ 3.5.9 介面與實作標了【不同】的 @PreAuthorize ═══");
+        try (ConfigurableApplicationContext ctx = new SpringApplicationBuilder(LabApp.class)
+                .web(WebApplicationType.SERVLET)
+                .profiles("db", "ch3", "m6")
+                .properties("server.port=0", "spring.main.banner-mode=off", "logging.level.root=OFF")
+                .run()) {
+            ClaimCheck3.Conflicting c = ctx.getBean(ClaimCheck3.ConflictingImpl.class);
+            System.out.println("   啟動成功。呼叫一次看看：");           // ★ 重點在這一行
+            try { System.out.println("   " + c.both()); }
+            catch (Exception e) { System.out.println("   " + e.getClass().getName() + ": " + e.getMessage()); }
+        } catch (Exception e) {
+            Throwable root = e;
+            while (root.getCause() != null) root = root.getCause();
+            System.out.println("   啟動失敗：" + root.getClass().getName());
+            System.out.println("   " + root.getMessage());
+        }
+    }
+}
+```
 
 ```
 ═══ 3.5.9 介面與實作標了【不同】的 @PreAuthorize ═══
@@ -3427,6 +4269,45 @@ public class OrderGuard {
 ```java
 @PreAuthorize("@orderGuard.canRead(#id, authentication)")
 public Ord3 byBeanExpression(Long id, Ord3Repo repo) { return repo.findById(id).orElse(null); }
+```
+
+**`bean/{id}` 走 SpEL 呼叫 bean、`meta/{id}` 走 3.6.3 那個自訂註解**——
+兩支端點的規則其實是同一個 `orderGuard`：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.util.List;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "m3"})
+class CustomExpressionTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void customExpressions() {
+        System.out.println("\n═══ 3.6.2 / 3.6.3 把規則寫成 bean、再包成註解 ═══");
+        Matrix m = new Matrix(port);
+        for (String path : new String[]{"/api/l/bean/1001", "/api/l/bean/1002",
+                                        "/api/l/meta/1001", "/api/l/meta/1002"}) {
+            System.out.println("\n   " + path + "（1001 是 alice 的、1002 是 bob 的）");
+            // ★ alice 與 bob 同樣是 MEMBER —— 資源層的差別只有這兩個人擺在一起才看得出來
+            for (String u : List.of("alice", "bob", "cs", "admin"))
+                System.out.printf("      %-6s → %d%n", u, m.status("GET", path, u));
+        }
+    }
+}
 ```
 
 ```
@@ -3778,13 +4659,71 @@ public class RbacUserDetailsService implements UserDetailsService {
 }
 ```
 
+**這一節的三段輸出由同一個測試類別產生**（第三個測試順便量成本）：
+
+```java
+package com.example.lab09.ch03;
+
+import com.example.lab09.Http;                  // 00 章 0.8.3
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.util.List;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "rbac"})
+class RbacTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    /** ① 三張表展開之後，每個人手上到底有什麼 */
+    @Test
+    void authoritiesFromThreeTables() {
+        System.out.println("\n═══ 3.7.4 三張表展開成 GrantedAuthority ═══");
+        Matrix m = new Matrix(port);
+        for (String u : List.of("alice", "cs", "admin"))
+            System.out.printf("   %-6s → %s%n", u, m.send("GET", "/api/me/authorities", u).body());
+    }
+
+    /** ② 規則只寫權限 —— 這份設定裡一個角色名稱都沒有 */
+    @Test
+    void rulesUsePermissions() {
+        System.out.println("\n═══ 3.7.4 規則只寫權限，不寫角色 ═══");
+        new Matrix(port).print("rbac：hasAuthority(\"user:manage\") / (\"report:read\") / (\"order:read\")",
+                "GET /api/admin/revenue",
+                "GET /api/reports/daily",
+                "GET /api/orders/1001",
+                "GET /api/hello");
+    }
+
+    /** ③ 成本：RbacUserDetailsService 內部有一個 QUERIES 計數器 */
+    @Test
+    void queryCount() {
+        System.out.println("\n═══ 3.7.4 一次登入查幾句 SQL ═══");
+        Http http = new Http(port);
+        RbacUserDetailsService.QUERIES.set(0);
+        for (int i = 0; i < 5; i++)
+            http.get("/api/orders/1001", "Authorization", Http.basic("admin", "pw"));
+        System.out.println("   無狀態 + Basic，5 個請求 → loadUserByUsername 內部查了 "
+                + RbacUserDetailsService.QUERIES.get() + " 句 SQL");
+    }
+}
+```
+
 **每個帳號拿到什麼**：
 
 ```
 ═══ 3.7.4 三張表展開成 GrantedAuthority ═══
-   alice  → {"authorities":["ROLE_MEMBER","order:read"],"name":"alice"}
-   cs     → {"authorities":["ROLE_CS_AGENT","order:read","order:read:all","order:refund"],"name":"cs"}
-   admin  → {"authorities":["ROLE_ADMIN","order:delete","order:read","order:read:all","order:refund","report:read","user:manage"],"name":"admin"}
+   alice  → {"name":"alice","authorities":["ROLE_MEMBER","order:read"]}
+   cs     → {"name":"cs","authorities":["ROLE_CS_AGENT","order:read","order:read:all","order:refund"]}
+   admin  → {"name":"admin","authorities":["ROLE_ADMIN","order:delete","order:read","order:read:all","order:refund","report:read","user:manage"]}
 ```
 
 **規則現在【只寫權限】**：
@@ -3995,6 +4934,41 @@ public class HierarchyService {
 }
 ```
 
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+/** rh：宣告了 RoleHierarchy bean，但【什麼都沒接】。 */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "rbac", "rh"})
+class RoleHierarchyTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void declaredOnly() {
+        System.out.println("""
+                
+                ═══ 3.7.5 只宣告一個 RoleHierarchy bean，會自動生效嗎 ═══
+                階層：ROLE_ADMIN > ROLE_CS_AGENT > ROLE_MEMBER
+                帳號：alice=[ROLE_MEMBER…]  cs=[ROLE_CS_AGENT…]  admin=[ROLE_ADMIN…]
+                兩支端點的規則【文字一模一樣】：hasRole('MEMBER')""");
+        new Matrix(port).print("rh：URL 層 vs 方法層",
+                "GET /api/r/hasRole-MEMBER",     // URL 層規則
+                "GET /api/h/member");            // 方法層 @PreAuthorize
+    }
+}
+```
+
 ```
 ═══ 3.7.5 只宣告一個 RoleHierarchy bean，會自動生效嗎 ═══
 階層：ROLE_ADMIN > ROLE_CS_AGENT > ROLE_MEMBER
@@ -4030,6 +5004,36 @@ static DefaultMethodSecurityExpressionHandler methodSecurityExpressionHandler(Ro
     DefaultMethodSecurityExpressionHandler handler = new DefaultMethodSecurityExpressionHandler();
     handler.setRoleHierarchy(h);
     return handler;
+}
+```
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+/** rh2：只比 rh 多了一個 methodSecurityExpressionHandler bean。 */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "rbac", "rh", "rh2"})
+class RoleHierarchyWiredTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void wiredToBothLayers() {
+        System.out.println("\n═══ 3.7.5 把 RoleHierarchy 明確接到兩層之後 ═══");
+        new Matrix(port).print("rh2：URL 層不用改，方法層換掉 ExpressionHandler",
+                "GET /api/r/hasRole-MEMBER",
+                "GET /api/h/member");
+    }
 }
 ```
 
@@ -4212,10 +5216,43 @@ public class ResourceScenarios {
 }
 ```
 
+**alice 與 bob 都是 `MEMBER`**——這張表的重點就在他們兩個那兩欄：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "res"})
+class ResourceLayerTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void theBug() {
+        System.out.println("\n═══ 3.8.1 00 章 0.3.1 那個事故，到現在還在 ═══");
+        new Matrix(port).print(
+                "res：URL 層只有 anyRequest().authenticated()（1001 是 alice 的、1002 是 bob 的）",
+                "GET /api/orders/1001",
+                "GET /api/orders/1002",          // ★ alice 這一格就是那個事故
+                "GET /api/orders");
+    }
+}
+```
+
 ```
 ═══ 3.8.1 00 章 0.3.1 那個事故，到現在還在 ═══
 
-═══ res：URL 層只有 anyRequest().authenticated()（1001 是 alice 的、1002 是 bob 的）═══
+═══ res：URL 層只有 anyRequest().authenticated()（1001 是 alice 的、1002 是 bob 的） ═══
 請求                                匿名     alice    bob      cs       admin
 ─────────────────────────────────────────────────────────────────────────────────
 GET /api/orders/1001                401      200      200      200      200
@@ -4492,16 +5529,16 @@ class FourWaysSqlTest {
 ═══ 3.8.3 四種做法的成本（alice 直接呼叫 Service，沒有 HTTP、沒有認證查詢）═══
 訂單 1001 是 alice 的、1002 是 bob 的。
 
-做法   說明                                       讀 1001（自己的）                  讀 1002（別人的）
-────────────────────────────────────────────────────────────────────────────────────────────────────────
-A/B  查出來再比對（loadChecked）                      成功  SQL 1 句、載入 1 筆        AccessDeniedException  SQL 1 句、載入 1 筆
-C    @PostAuthorize                           成功  SQL 1 句、載入 1 筆        AccessDeniedException  SQL 1 句、載入 1 筆
-D    查詢條件（findByIdAndOwnerUsername）           成功  SQL 1 句、載入 1 筆        ResponseStatusException  SQL 1 句、載入 0 筆
+做法   說明                                       讀 1001（自己的）                                    讀 1002（別人的）
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+A/B  查出來再比對（loadChecked）                      成功                               SQL 1 句、載入 1 筆 AccessDeniedException            SQL 1 句、載入 1 筆
+C    @PostAuthorize                           成功                               SQL 1 句、載入 1 筆 AccessDeniedException            SQL 1 句、載入 1 筆
+D    查詢條件（findByIdAndOwnerUsername）           成功                               SQL 1 句、載入 1 筆 ResponseStatusException          SQL 1 句、載入 0 筆
 
 ── 換成 admin（ROLE_ADMIN）讀 bob 的 1002
-   查出來再比對                                   成功  SQL 1 句、載入 1 筆
-   @PostAuthorize                           成功  SQL 1 句、載入 1 筆
-   查詢條件                                     成功  SQL 1 句、載入 1 筆
+   查出來再比對                                   成功                               SQL 1 句、載入 1 筆
+   @PostAuthorize                           成功                               SQL 1 句、載入 1 筆
+   查詢條件                                     成功                               SQL 1 句、載入 1 筆
 ```
 
 **關鍵那一格：被拒絕時載入了幾筆。**
@@ -4548,12 +5585,54 @@ D    查詢條件（findByIdAndOwnerUsername）           成功  SQL 1 句、�
 
 ### 3.8.4 403 還是 404：完整判準
 
+**`b` 與 `b404` 是同一個 Service 方法，差別只在 Controller 怎麼轉換例外**：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "res"})
+class Status403vs404Test {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void status403vs404() {
+        System.out.println("\n═══ 3.8.4 403 還是 404 ═══");
+        Matrix m = new Matrix(port);
+        // 1002 是 bob 的（存在但不是你的）、9999 根本不存在 —— 比的就是這兩種情況分不分得出來
+        for (String[] c : new String[][]{
+                {"/api/res/b/1002",    "回 403「不是你的訂單」"},
+                {"/api/res/b404/1002", "回 404「找不到」"},
+                {"/api/res/b/9999",    "訂單根本不存在"},
+                {"/api/res/b404/9999", "訂單根本不存在"}}) {
+            HttpResponse<String> r = m.send("GET", c[0], "alice");
+            String b = r.body() == null ? "" : r.body().replace("\n", " ");
+            if (b.length() > 90) b = b.substring(0, 90) + "…";
+            System.out.printf("   %-24s %-24s → %d  %s%n", c[0], c[1], r.statusCode(), b);
+        }
+    }
+}
+```
+
 ```
 ═══ 3.8.4 403 還是 404 ═══
-   /api/res/b/1002          回 403「不是你的訂單」   → 403  {"status":403,"error":"Forbidden","path":"/api/res/b/1002"}
-   /api/res/b404/1002       回 404「找不到」        → 404  {"status":404,"error":"Not Found","path":"/api/res/b404/1002"}
-   /api/res/b/9999          訂單根本不存在           → 404  {"status":404,"error":"Not Found","path":"/api/res/b/9999"}
-   /api/res/b404/9999       訂單根本不存在           → 404  {"status":404,"error":"Not Found","path":"/api/res/b404/9999"}
+   /api/res/b/1002          回 403「不是你的訂單」            → 403  {"status":403,"error":"Forbidden","path":"/api…
+   /api/res/b404/1002       回 404「找不到」               → 404  {"status":404,"error":"Not Found","path":"/api…
+   /api/res/b/9999          訂單根本不存在                  → 404  {"status":404,"error":"Not Found","path":"/api…
+   /api/res/b404/9999       訂單根本不存在                  → 404  {"status":404,"error":"Not Found","path":"/api…
 ```
 
 **看第一列與第三列**：
@@ -4708,15 +5787,15 @@ java.lang.UnsupportedOperationException: null
 ```
    ── @PostFilter（回傳前先 new ArrayList<>(…)），第 0 頁（size=20）
       [方法內] 資料庫回了 20 筆（total=10000）
-      {"page":0,"回給前端的筆數":3,"size":20,"ids":[1,2,3]}
+      {"page":0,"size":20,"回給前端的筆數":3,"ids":[1,2,3]}
 
    ── @PostFilter（回傳前先 new ArrayList<>(…)），第 1 頁（size=20）
       [方法內] 資料庫回了 20 筆（total=10000）
-      {"page":1,"回給前端的筆數":0,"size":20,"ids":[]}
+      {"page":1,"size":20,"回給前端的筆數":0,"ids":[]}
 
    ── @PostFilter（回傳前先 new ArrayList<>(…)），第 2 頁（size=20）
       [方法內] 資料庫回了 20 筆（total=10000）
-      {"page":2,"回給前端的筆數":0,"size":20,"ids":[]}
+      {"page":2,"size":20,"回給前端的筆數":0,"ids":[]}
 ```
 
 **不 500 了，但分頁徹底壞掉**：
@@ -4734,7 +5813,7 @@ java.lang.UnsupportedOperationException: null
 ```
    ── 查詢條件版，第 0 頁（size=20）
       [方法內] 資料庫回了 3 筆（total=3）
-      {"page":0,"ids":[1,2,3],"totalPages":1,"size":20,"回給前端的筆數":3,"totalElements":3}
+      {"page":0,"size":20,"回給前端的筆數":3,"ids":[1,2,3],"totalElements":3,"totalPages":1}
 ```
 
 ✅ **`totalElements=3`、`totalPages=1`——數字全對。**
@@ -4788,6 +5867,55 @@ public String cancelReadThenWrite(Long id, Authentication me) {
 int cancelOwned(@Param("id") Long id, @Param("owner") String owner);
 ```
 
+**兩種做法各打兩次**（自己的 / 別人的），最後直接問資料庫確認真的改了什麼：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.net.http.HttpResponse;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "res"})
+class WriteEndpointTest {
+
+    @LocalServerPort int port;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+
+    @Test
+    void toctou() {
+        System.out.println("\n═══ 3.8.6 寫入端點：先查再改 vs 一句 UPDATE ═══");
+        Matrix m = new Matrix(port);
+        for (String[] c : new String[][]{
+                {"/api/res/cancel-rw/1001",     "alice", "自己的"},
+                {"/api/res/cancel-rw/1002",     "alice", "bob 的"},
+                {"/api/res/cancel-scoped/1003", "bob",   "自己的"},
+                {"/api/res/cancel-scoped/1001", "bob",   "alice 的"}}) {
+            m.send("POST", "/api/res/sql-reset", "admin");
+            HttpResponse<String> r = m.send("POST", c[0], c[1]);
+            String cnt = m.send("GET", "/api/res/sql-count", "admin").body();
+            long stmts = Long.parseLong(cnt.replaceAll(".*\"statements\":(\\d+).*", "$1"));
+            String b = r.body() == null ? "" : r.body().replace("\n", " ");
+            if (b.length() > 70) b = b.substring(0, 70) + "…";
+            System.out.printf("   %-30s %-6s %-8s → %d  SQL %d 句  %s%n",
+                    c[0], c[1], c[2], r.statusCode(), stmts - 1, b);
+        }
+        // ★ 斷言不能只看狀態碼 —— 3.5.6 證明過狀態碼會騙人
+        System.out.println("\n   資料庫現況：");
+        jdbc.queryForList("SELECT id, owner_username, status FROM ord3 ORDER BY id")
+            .forEach(row -> System.out.println("      " + row));
+    }
+}
+```
+
 ```
 ═══ 3.8.6 寫入端點：先查再改 vs 一句 UPDATE ═══
    /api/res/cancel-rw/1001        alice  自己的      → 200  SQL 3 句  已取消 1001
@@ -4804,12 +5932,81 @@ int cancelOwned(@Param("id") Long id, @Param("owner") String owner);
 ✅ **兩種做法的授權結果都正確**（上面的 SQL 句數含 Basic 認證那一句）。
 **直接呼叫 Service 量到的乾淨數字**：
 
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.core.context.*;
+import org.springframework.test.context.ActiveProfiles;
+
+import java.util.function.Supplier;
+
+/**
+ * 3.8.6：跟 3.8.3 的 FourWaysSqlTest 同一把尺，只是這次量的是【寫入】。
+ * 一樣直接呼叫 Service —— 不走 HTTP，Basic 認證那一句才不會混進來。
+ */
+@SpringBootTest
+@ActiveProfiles({"db", "ch3", "res"})
+class WriteSqlTest {
+
+    @Autowired OwnershipService svc;
+    @Autowired Sql3 sql;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach void seed() { Seed3.reset(jdbc); Seed3.orders(jdbc); }
+    @AfterEach  void clear() { SecurityContextHolder.clearContext(); }
+
+    static Authentication as(String name, String... authorities) {
+        return UsernamePasswordAuthenticationToken.authenticated(
+                name, null, AuthorityUtils.createAuthorityList(authorities));
+    }
+
+    void login(Authentication a) {
+        SecurityContext c = SecurityContextHolder.createEmptyContext();
+        c.setAuthentication(a);
+        SecurityContextHolder.setContext(c);
+    }
+
+    String run(Supplier<Object> call) {
+        sql.reset();
+        String outcome;
+        try { call.get(); outcome = "成功"; }
+        catch (Exception e) { outcome = e.getClass().getSimpleName(); }
+        return String.format("%-24s SQL %d 句、載入 %d 筆", outcome, sql.statements(), sql.entitiesLoaded());
+    }
+
+    @Test
+    void writeCost() {
+        Authentication alice = as("alice", "ROLE_MEMBER");
+        login(alice);
+        System.out.println("\n═══ 3.8.6 寫入：先查再改 vs 一句 UPDATE（SQL 句數）═══");
+        System.out.printf("   %-35s %s%n", "cancelReadThenWrite(1001) 自己的",
+                run(() -> svc.cancelReadThenWrite(1001L, alice)));
+        seed();                                   // ★ 上一句真的改了資料，要重灌才量得準
+        System.out.printf("   %-35s %s%n", "cancelReadThenWrite(1002) 別人的",
+                run(() -> svc.cancelReadThenWrite(1002L, alice)));
+        seed();
+        System.out.printf("   %-35s %s%n", "cancelScoped(1001) 自己的",
+                run(() -> svc.cancelScoped(1001L, alice)));
+        seed();
+        System.out.printf("   %-35s %s%n", "cancelScoped(1002) 別人的",
+                run(() -> svc.cancelScoped(1002L, alice)));
+    }
+}
+```
+
 ```
 ═══ 3.8.6 寫入：先查再改 vs 一句 UPDATE（SQL 句數）═══
-   cancelReadThenWrite(1001) 自己的      成功                      SQL 2 句、載入 1 筆
-   cancelReadThenWrite(1002) 別人的      AccessDeniedException   SQL 1 句、載入 1 筆
-   cancelScoped(1001) 自己的             成功                      SQL 1 句、載入 0 筆
-   cancelScoped(1002) 別人的             ResponseStatusException SQL 1 句、載入 0 筆
+   cancelReadThenWrite(1001) 自己的       成功                       SQL 2 句、載入 1 筆
+   cancelReadThenWrite(1002) 別人的       AccessDeniedException    SQL 1 句、載入 1 筆
+   cancelScoped(1001) 自己的              成功                       SQL 1 句、載入 0 筆
+   cancelScoped(1002) 別人的              ResponseStatusException  SQL 1 句、載入 0 筆
 ```
 
 **差別**：
@@ -4942,8 +6139,12 @@ ord3 有 10000 筆，alice 只有 3 筆。兩次呼叫的【Java 程式碼一模
 ```
 
 **同一句 `repo.findAll()`，一個回 10000 筆、一個回 3 筆。**
-📌 **順帶量出 3.8.5 那個沒說完的數字：不分頁 + `@PostFilter` 會載入 10000 個 entity、耗時 111 ms**，
-然後丟掉 9997 個。**這是 37 倍的浪費，而且它會隨資料量線性成長。**
+📌 **順帶量出 3.8.5 那個沒說完的數字：不分頁 + `@PostFilter` 會載入 10000 個 entity**，
+然後丟掉 9997 個。**這是 3333 倍的無效載入，而且它會隨資料量線性成長。**
+
+⚠️ **那兩個毫秒數在你的機器上會不一樣**（重跑同一個測試，111 ms 也可能變成 50 ms——
+JIT 暖機、作業系統快取、連線池狀態都會影響）。
+**要看的是【載入幾個 entity】那一欄**——它只跟你寫的程式碼有關，重跑一百次都一樣。
 
 **怎麼「自動」開啟 filter？** 用一個 `OncePerRequestFilter` 或 AOP，在每個請求開頭讀 `SecurityContext`：
 
@@ -5055,6 +6256,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 @SpringBootTest
 @AutoConfigureMockMvc
 @ActiveProfiles({"db", "ch3", "u4"})
+@TestMethodOrder(MethodOrderer.MethodName.class)   // ★ JUnit 5 預設【不是】依名稱排序，輸出順序會亂
 class WithMockUserTest {
 
     @Autowired MockMvc mvc;
@@ -5159,7 +6361,7 @@ class WithMockUserTest {
       GET /api/admin/revenue → 403
    @WithMockUser(authorities = "ROLE_ADMIN")      → u3  [ROLE_ADMIN]
       GET /api/admin/revenue → 200
-   @WithMockUser（什麼都不寫）                        → user  [ROLE_USER]
+   @WithMockUser（什麼都不寫）                           → user  [ROLE_USER]
    @WithUserDetails("admin")（真的去查 UserDetailsService） → admin  [order:refund, ROLE_ADMIN, ROLE_USER]
       GET /api/admin/revenue → 200
 
@@ -5409,7 +6611,9 @@ public class AuthzCoverageReporter {
                         rule, ann.isEmpty() ? "-" : ann, weak));
             }
         }
-        rows.sort(Comparator.comparing(Row::endpoint));
+        // ⚠️ 只用 endpoint 排序不夠 —— /error 有兩個 handler（error / errorHtml），
+        //    順序會每次執行都不一樣。第二個鍵讓輸出穩定下來。
+        rows.sort(Comparator.comparing(Row::endpoint).thenComparing(Row::handler));
         return rows;
     }
 
@@ -5442,29 +6646,56 @@ public class AuthzCoverageReporter {
 
 **對著 3.3.7 那份設定（`u4`）跑**：
 
+**把它接成一個測試**（3.3.7 那份寫對的設定）：
+
+```java
+package com.example.lab09.ch03;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.security.web.FilterChainProxy;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
+
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles({"db", "ch3", "u4"})
+class CoverageTest {
+
+    @Autowired RequestMappingHandlerMapping mapping;
+    @Autowired FilterChainProxy proxy;
+
+    @Test
+    void coverage() {
+        System.out.println("\n═══ 3.9.4 端點 × 授權規則 覆蓋表（u4 設定）═══");
+        AuthzCoverageReporter.print(mapping, proxy);
+    }
+}
+```
+
 ```
 ═══ 3.9.4 端點 × 授權規則 覆蓋表（u4 設定）═══
 
 ──────── 端點 × 授權規則 覆蓋表 ────────
-   端點                               處理方法                          URL 層規則                                       方法層註解
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   DELETE /api/orders/{id}          OrderController.delete          AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
-   GET /api/admin/revenue           AdminController.revenue         AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
-   GET /api/admin/users             Ch03Endpoints.users             AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
-   GET /api/hello                   HelloController.hello           permitAll()（常數 granted=true）                  -
-⚠️ GET /api/me/authorities          Ch03Endpoints.authorities       authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ GET /api/orders                  OrderController.list            authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ GET /api/orders/{id}             OrderController.get             authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ GET /api/r/{rule}                Ch03Endpoints.rule              authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ GET /api/reports/daily           Ch03Endpoints.report            authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ GET /error                       BasicErrorController.errorHtml  authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ GET /error                       BasicErrorController.error      authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ GET /whoami                      WhoAmIController.me             authenticated() / anonymous() / fullyAuthenticated() -
-   POST /api/admin/users            Ch03Endpoints.createUser        AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
-⚠️ POST /api/echo                   HelloController.echo            authenticated() / anonymous() / fullyAuthenticated() -
-⚠️ POST /api/orders                 Ch03Endpoints.create            authenticated() / anonymous() / fullyAuthenticated() -
-   POST /api/orders/{id}/refund     Ch03Endpoints.refund            AuthorityAuthorizationManager[authorities=[order:refund]] -
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   端點                                 處理方法                                     URL 層規則                                        方法層註解
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   DELETE /api/orders/{id}            OrderController.delete                   AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
+   GET /api/admin/revenue             AdminController.revenue                  AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
+   GET /api/admin/users               Ch03Endpoints.users                      AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
+   GET /api/hello                     HelloController.hello                    permitAll()（常數 granted=true）                   -
+⚠️ GET /api/me/authorities            Ch03Endpoints.authorities                authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ GET /api/orders                    OrderController.list                     authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ GET /api/orders/{id}               OrderController.get                      authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ GET /api/r/{rule}                  Ch03Endpoints.rule                       authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ GET /api/reports/daily             Ch03Endpoints.report                     authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ GET /error                         BasicErrorController.error               authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ GET /error                         BasicErrorController.errorHtml           authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ GET /whoami                        WhoAmIController.me                      authenticated() / anonymous() / fullyAuthenticated() -
+   POST /api/admin/users              Ch03Endpoints.createUser                 AuthorityAuthorizationManager[authorities=[ROLE_ADMIN]] -
+⚠️ POST /api/echo                     HelloController.echo                     authenticated() / anonymous() / fullyAuthenticated() -
+⚠️ POST /api/orders                   Ch03Endpoints.create                     authenticated() / anonymous() / fullyAuthenticated() -
+   POST /api/orders/{id}/refund       Ch03Endpoints.refund                     AuthorityAuthorizationManager[authorities=[order:refund]] -
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 共 16 支端點，其中 10 支只靠 anyRequest() 兜底、也沒有方法層註解 ⚠️
 ```
 

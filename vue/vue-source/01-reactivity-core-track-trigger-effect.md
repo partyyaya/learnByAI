@@ -1,6 +1,7 @@
 # 第 01 章：Reactivity 核心（`track` / `trigger` / `effect`）
 
-> 目標版本：**Vue 3.5.x**。本章會先用「教學簡化版」建立心智模型，再帶你看 **3.4 reactivity 重寫後**的真實結構——兩者差很多，追原始碼前一定要知道差在哪。
+> 目標版本：**Vue 3.5.x**。本章會先用「教學簡化版」建立心智模型，再帶你看 **3.5 reactivity 重寫後**的真實結構——兩者差很多，追原始碼前一定要知道差在哪。
+> 特別注意版本：Vue **3.4 與 3.5 各做過一次 reactivity 重構，內容完全不同**，很多教學把兩者混為一談（見 1.3.1 開頭的版本地圖）。
 
 ## 1.1 本章目標
 
@@ -15,7 +16,7 @@
 - 為什麼 `state.count++` 會讓畫面更新？
 - 為什麼某些情況 effect 會重複觸發，某些情況不會？
 - scheduler 介入時，effect 為何不是立刻重跑？
-- 3.4 之後 dep 為什麼從 `Set` 變成「雙向鏈結 + 版本號」？這解決了什麼問題？
+- 3.5 之後 dep 為什麼從集合變成「雙向鏈結 + 版本號」？這解決了什麼問題？
 
 ---
 
@@ -36,7 +37,7 @@
   -> 通知 count 的 dep 底下所有訂閱者（立即或交給 scheduler）
 ```
 
-這個「讀取時收集、寫入時通知」的骨架，從 Vue 3.0 到 3.5 都沒變。變的是**「dep 底下怎麼存訂閱者」的資料結構**——這正是 3.4 重寫的重點。
+這個「讀取時收集、寫入時通知」的骨架，從 Vue 3.0 到 3.5 都沒變。變的是**「dep 底下怎麼存訂閱者」的資料結構**——這正是 3.5 重寫的重點。
 
 ---
 
@@ -63,13 +64,26 @@ targetMap (WeakMap)
 - key 是目標物件（`reactive` 包起來的原始物件）
 - 物件若不再被引用，GC 可以回收，避免依賴圖造成記憶體洩漏
 
-**差異就在最裡層那個 `Dep`**：3.4 之前它實質是一個 `Set<ReactiveEffect>`；3.4 之後它是一個帶版本號、用雙向鏈結串起訂閱者的物件。下一節先講重寫後的真實樣貌，之後的 mini 版再用簡化的 `Set` 幫你建立直覺。
+**差異就在最裡層那個 `Dep`**：3.3 以前它實質是一個 `Set<ReactiveEffect>`，3.4 換成 `createDep()` 產生的 Map，**3.5 起**才變成帶版本號、用雙向鏈結串起訂閱者的物件。下一節先講重寫後的真實樣貌，之後的 mini 版再用簡化的 `Set` 幫你建立直覺。
 
 ---
 
-## 1.3.1 Vue 3.4 reactivity 重寫：從 `Set` 到 `Link` 雙向鏈結
+## 1.3.1 Vue 3.5 reactivity 重寫：從集合到 `Link` 雙向鏈結
 
-> 這是全章最重要的一節。你在網路上看到的舊教學（含本課早期版本）大多停在 `dep = Set<effect>` 的模型，那是 **3.4 之前**的實作。3.4 把整個 reactivity 重寫（受 Preact signals 啟發），追原始碼會看到完全不同的東西。
+> 這是全章最重要的一節。你在網路上看到的舊教學（含本課早期版本）大多停在 `dep = Set<effect>` 的模型，那是 **3.3 以前**的實作。追 3.5 原始碼會看到完全不同的東西。
+
+### 先搞清楚版本：3.4 和 3.5 各重構過一次，內容不一樣
+
+這是最多教學（也包括本課早期版本）搞混的地方。兩次重構的目標完全不同：
+
+| 版本 | 做了什麼 | 原始碼特徵 |
+|------|----------|-----------|
+| **3.4**（PR#5912） | 改善 **computed 重算效率**：依賴變但 computed 算出來的值沒變時，不再觸發下游 | `_dirtyLevel`、`_trackId`、`_runnings`、`createDep()` 回傳 Map |
+| **3.5**（PR#10397） | 重寫依賴圖的**資料結構**，記憶體 −56%、修掉 SSR hanging computed | `activeSub`、`class Link`、`dep.version`、`globalVersion`、`refreshComputed`、`startBatch`/`endBatch` |
+
+**本節講的 `Dep`/`Link`/版本號/批次通知，全部是 3.5 才有的東西**——你在 3.4 的原始碼裡 grep `activeSub`、`globalVersion`、`class Link` 一個都找不到。反過來，3.4 的 `_dirtyLevel`/`_trackId` 在 3.5 也已經消失。
+
+> 自己驗證：`npm pack @vue/reactivity@3.4.38` 與 `@3.5.0`，解開後 grep `dist/reactivity.cjs.js` 就一目了然。
 
 ### 三個核心角色
 
@@ -93,11 +107,11 @@ effectA.deps ──nextDep──────>┘                  │
 effectB.deps ──nextDep─────────────────────────>┘
 ```
 
-用鏈結取代 `Set` 的好處：**新增/移除訂閱是 O(1) 指標操作、可重用節點、不需要每次重建集合**，這是 3.4 效能提升的主因之一。
+用鏈結取代集合的好處：**新增/移除訂閱是 O(1) 指標操作、可重用節點、不需要每次重建集合**，這是 3.5 把記憶體用量砍掉一半以上的主因。
 
 ### 版本號：`dep.version` 與 `globalVersion`
 
-3.4 引入兩個版本計數：
+3.5 引入兩個版本計數：
 
 - 每個 `Dep` 有 `version`，**只有值真的變（`hasChanged`）才 `version++`**；
 - 模組級 `globalVersion`，任何 trigger 都會 `globalVersion++`。
@@ -118,11 +132,11 @@ dep.trigger()
   -> dep.notify()  // 走訪 subs 鏈結，對每個 subscriber 設 flags(DIRTY/NOTIFIED)、排入批次
 ```
 
-注意這裡**不是**「複製 Set 然後逐一 `run()`」。3.4 改用**批次（batch）**：`startBatch()` / `endBatch()` 包住整段通知，subscriber 先被標記並排進 `batchedSub` 串列，等 `endBatch()` 時才統一觸發（run 或交給 scheduler）。這樣一次寫入引發的多個通知能被合併、也避免重入問題。
+注意這裡**不是**「複製 Set 然後逐一 `run()`」。3.5 改用**批次（batch）**：`startBatch()` / `endBatch()` 包住整段通知，subscriber 先被標記並排進 `batchedSub` 串列，等 `endBatch()` 時才統一觸發（run 或交給 scheduler）。這樣一次寫入引發的多個通知能被合併、也避免重入問題。
 
 ### 重跑 effect 時如何清掉過期依賴：`prepareDeps` / `cleanupDeps`
 
-3.4 之前用 dep 上的 `w`/`n` bitmask 做「本輪有沒有被再次讀到」的標記；3.4 改成更直接的版本標記：
+3.3 以前用 dep 上的 `w`/`n` bitmask 做「本輪有沒有被再次讀到」的標記，3.4 改用 `_trackId` 比對；3.5 改成更直接的版本標記：
 
 ```text
 effect.run()：
@@ -135,12 +149,12 @@ effect.run()：
 
 ### 術語對照（追原始碼必看）
 
-| 舊教學 / 3.4 前 | 3.4+ 原始碼 | 說明 |
+| 舊教學 / 3.4 以前 | 3.5 原始碼 | 說明 |
 |------|------|------|
 | `activeEffect` | **`activeSub`** | 型別是 `Subscriber`，同時涵蓋 effect 與 computed |
-| `dep = Set<ReactiveEffect>` | `Dep` + `Link` 雙向鏈結 | 見上 |
+| `dep = Set<ReactiveEffect>`（3.3）/ `createDep()` Map（3.4） | `Dep` + `Link` 雙向鏈結 | 見上 |
 | effect stack | 區域變數存/還原 `activeSub`（+`link.prevActiveLink`） | 見 1.9 |
-| `_dirty` 布林 | `dep.version` / `globalVersion` 版本比對 | 見第 02 章 |
+| `_dirty` 布林（3.3）/ `_dirtyLevel`（3.4） | `dep.version` / `globalVersion` 版本比對 | 見第 02 章 |
 
 > 你 grep 原始碼時，找 `activeEffect` 會找不到——要找 `activeSub`、`class Dep`、`class Link`、`class ReactiveEffect`（都在 `packages/reactivity/src/`）。
 
@@ -148,7 +162,7 @@ effect.run()：
 
 ## 1.4 `effect`：響應式執行單位（教學簡化版）
 
-> ⚠️ 下面到 1.6 的 mini 版刻意用 `Set` + `activeEffect`，是為了讓你先抓到「track/trigger 的骨架」。真實 3.4+ 結構請對照 1.3.1。
+> ⚠️ 下面到 1.6 的 mini 版刻意用 `Set` + `activeEffect`，是為了讓你先抓到「track/trigger 的骨架」。真實 3.5 結構請對照 1.3.1。
 
 `effect(fn)` 可以理解為：
 
@@ -216,7 +230,7 @@ function track(target: object, key: PropertyKey) {
 }
 ```
 
-> 真實 3.4+：`depsMap.get(key)` 拿到的是 `Dep` 物件，`track` 是 `dep.track()` 去建立/重用 `Link`，不是 `Set.add`。
+> 真實 3.5：`depsMap.get(key)` 拿到的是 `Dep` 物件，`track` 是 `dep.track()` 去建立/重用 `Link`，不是 `Set.add`。
 
 ---
 
@@ -244,7 +258,7 @@ function trigger(target: object, key: PropertyKey) {
 }
 ```
 
-> 真實 3.4+：是 `dep.trigger()` → `dep.version++`、`globalVersion++` → `dep.notify()`，並在 `startBatch()/endBatch()` 內批次執行；不是複製 `Set` 逐一 run。對照 1.3.1。
+> 真實 3.5：是 `dep.trigger()` → `dep.version++`、`globalVersion++` → `dep.notify()`，並在 `startBatch()/endBatch()` 內批次執行；不是複製 `Set` 逐一 run。對照 1.3.1。
 
 ---
 
@@ -328,7 +342,8 @@ function useDebouncedRef(value, delay = 300) {
 
 - **3.2 之前**用一個 effect stack（陣列）push/pop；
 - **3.2 起移除 stack**，改用 `effect.parent` 記住上一層；
-- **3.4 起**再簡化為：`run()` 時用**區域變數**存住上一個 `activeSub`（及 `shouldTrack`、`link.prevActiveLink`），`finally` 時還原。
+- **3.4 起移除 `parent`**，改用區域變數在 `run()` 裡存/還原上一個作用中的 effect；
+- **3.5 起**這個區域變數叫 `activeSub`（連同 `shouldTrack`、`link.prevActiveLink` 一起存還原）。
 
 所以「Vue 用 stack 管理 activeEffect」是過時說法——1.4 的 mini 版已改用區域變數 `prev` 還原，就是對齊這個真實做法。
 
@@ -419,7 +434,7 @@ state.count++; // 預期重新印出
 state.count++; // 預期再次印出
 ```
 
-### 進階（對齊 3.4）
+### 進階（對齊 3.5）
 
 有餘力的話，把 mini 版的 `Set` 換成「dep.version + 一個 subscribers 陣列」，讓 `trigger` 改成「bump version 後通知」，體會版本號模型；再加一個 `cleanupDeps`（每次 run 前標記、run 後移除沒讀到的依賴）驗證分支清理。
 
@@ -437,11 +452,11 @@ state.count++; // 預期再次印出
 
 ### 誤區三：不清理舊依賴
 
-動態分支 effect 若不 cleanup，會導致「沒有讀到的 key 也會觸發」。3.4 用 `prepareDeps`/`cleanupDeps` 處理（見 1.3.1 / 1.9）。
+動態分支 effect 若不 cleanup，會導致「沒有讀到的 key 也會觸發」。3.5 用 `prepareDeps`/`cleanupDeps` 處理（見 1.3.1 / 1.9）。
 
-### 誤區四：拿 3.4 前的 `Set` 模型去追 3.5 原始碼
+### 誤區四：拿舊版模型去追 3.5 原始碼
 
-你會找不到 `activeEffect`、找不到 `Set` 的 dep。務必用 1.3.1 的術語對照表（`activeSub`、`Dep`、`Link`、版本號）。
+不管是 3.3 的 `Set` 還是 3.4 的 `_dirtyLevel`/`_trackId`，拿去追 3.5 都會對不上——你會找不到 `activeEffect`、也找不到 `Set` 的 dep。務必用 1.3.1 的版本地圖與術語對照表（`activeSub`、`Dep`、`Link`、版本號）。
 
 ---
 
@@ -462,7 +477,7 @@ state.count++; // 預期再次印出
 ### 驗收標準
 
 - 能正確解釋作用中訂閱者（`activeSub`）的作用
-- 能說明 `targetMap` 為何是三層結構，最裡層 3.4 前後差在哪
+- 能說明 `targetMap` 為何是三層結構，最裡層在 3.3 / 3.4 / 3.5 各是什麼
 - 能展示一個 scheduler 鉤子被呼叫但 effect 未立即執行的案例
 - 能講出 `dep.version` / `globalVersion` 是為了解決什麼
 
@@ -472,6 +487,6 @@ state.count++; // 預期再次印出
 
 下一章會在本章基礎上延伸到：
 
-- `computed`：如何 lazy 計算 + **版本化髒判定**（3.4：用 `dep.version`/`globalVersion` 比對，且重算後值沒變不觸發下游）
+- `computed`：如何 lazy 計算 + **版本化髒判定**（3.5 用 `dep.version`/`globalVersion` 比對；「重算後值沒變不觸發下游」這個**行為**則是 3.4 就有了）
 - `watch`：如何精準監聽來源並處理 cleanup（含 3.5 的 `onWatcherCleanup`、`WatchHandle`，以及 watch 核心在 3.5 搬到 `@vue/reactivity`）
 - scheduler：如何用 job queue 與 `SchedulerJobFlags` 控制 flush 順序與時機

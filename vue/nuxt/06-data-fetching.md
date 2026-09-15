@@ -82,11 +82,8 @@ const { data } = await useFetch('/api/posts', {
   // 查詢字串：等同 /api/posts?page=1。page 是 ref，變動時會自動重抓
   query: { page },
 
-  // 只把回傳資料的某些欄位留下來（減少傳給前端的 payload）
-  pick: ['id', 'title'],
-
-  // 對回傳資料做轉換（例如加工、排序）
-  transform: (posts) => posts.map((p) => ({ ...p, title: p.title.toUpperCase() })),
+  // 對回傳資料做轉換（例如挑欄位、加工、排序）
+  transform: (posts) => posts.map((p) => ({ id: p.id, title: p.title })),
 
   // 自訂快取 key（同 key 會共用，見第 8 節）
   key: `posts-${route.params.id}`,
@@ -94,12 +91,43 @@ const { data } = await useFetch('/api/posts', {
 </script>
 ```
 
+### ⚠️ `pick` 只能用在「回傳物件」的端點，不能用在陣列
+
+`pick` 常被誤用。它的實作大致就是這樣：
+
+```js
+// Nuxt 內部：把指定的 key 從回傳值上挑出來，組成一個新物件
+function pick(obj, keys) {
+  const newObj = {}
+  for (const key of keys) newObj[key] = obj[key]
+  return newObj
+}
+```
+
+所以只有當 API **回傳單一物件**時才有意義：
+
+```js
+// ✅ /api/posts/1 回傳 { id, title, body, authorId, createdAt }
+const { data } = await useFetch('/api/posts/1', { pick: ['id', 'title'] })
+// data.value → { id: 1, title: '...' }
+```
+
+若端點回傳的是**陣列**（像 `/api/posts`），`pick` 會去讀 `陣列['id']`——結果是 `undefined`，整包資料直接被毀掉：
+
+```js
+// ❌ /api/posts 回傳 [{...}, {...}]
+const { data } = await useFetch('/api/posts', { pick: ['id', 'title'] })
+// data.value → { id: undefined, title: undefined }   ← 資料沒了
+```
+
+**陣列要挑欄位一律用 `transform`**（逐筆 map），也就是上面範例的寫法。
+
 | 選項 | 作用 |
 |---|---|
 | `query`（或 `params`） | 附加查詢字串；值可以是 `ref`，變動時自動重抓 |
 | `method` / `body` | 改用 POST 等，帶 request body |
 | `headers` | 自訂標頭 |
-| `pick` | 只保留指定欄位，縮小 payload |
+| `pick` | 只保留指定欄位，縮小 payload（**僅適用回傳單一物件的端點**，陣列請改用 `transform`） |
 | `transform` | 抓到後先加工再存進 `data` |
 | `default` | 資料還沒到時的預設值 |
 | `watch` | 監看哪些來源、變動就重抓 |
