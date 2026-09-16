@@ -3844,7 +3844,7 @@ cookie           HttpOnly + Secure + SameSite=Lax
 
 **誤區 10：「無狀態比較快」**
 
-→ 4.7.2 實測：**session 版 1250 個/秒、Basic 版 13 個/秒**。
+→ 4.7.2 實測：**session 版 2344 個/秒、Basic 版 13 個/秒**。
 無狀態**比較好擴展**，但每個請求的成本取決於憑證怎麼驗——
 BCrypt 很貴，JWT 簽章很便宜（05 章）。
 

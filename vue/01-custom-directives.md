@@ -552,6 +552,7 @@ export const longpress = {
 
     state.onPointerDown = (event) => {
       // 只認主鍵（滑鼠左鍵／觸控／觸控筆），右鍵與中鍵不算長按
+      // 主要按鍵（一般滑鼠的左鍵；觸控與觸控筆的接觸也是 0）
       if (event.button !== 0) return;
       state.fired = false;
       clear();
@@ -566,6 +567,7 @@ export const longpress = {
     state.onCancel = () => clear();
 
     // 長按觸發後放開，瀏覽器仍會補一個 click；用 capture 攔掉，避免同時觸發 @click
+    // 捕獲階段的 listener 整批跑完，才輪到冒泡階段的那批，即使兩者都在目標元素上
     state.onClick = (event) => {
       if (!state.fired) return;
       state.fired = false;

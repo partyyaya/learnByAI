@@ -41,7 +41,7 @@
 - 說出只加一個 `spring-boot-starter-security` 之後，**預設發生了 16 件事**，
   並逐一說明那 16 個 Filter 各自在防什麼（0.5.2）。
 - 讀懂預設回應裡的每一個安全標頭，並說明 `X-XSS-Protection: 0` 為什麼是 `0` 而不是 `1`（0.5.3）。
-- 實測 session fixation 的防護：**登入前後的 `JSESSIONID` 會換掉，而舊的那個立刻失效**（0.5.4）。
+- 實測 session fixation 的防護：**登入前後的 `JSESSIONID` 會換掉，而舊的那個立刻失效**（0.5.5）。
 - 說出 Spring Security **預設沒有**幫你擋的六件事，並指出它們分別在本站哪一章補。
 - 用**資產 / 入口 / 攻擊者**三欄畫出一個訂單 API 的威脅模型，
   並把 OWASP API Security Top 10 對到本站的章節（0.6）。
@@ -737,7 +737,7 @@ public class SpringWay {
 
 ⚠️ 最後一行也很重要：`hideUserNotFoundExceptions` **可以關掉**。
 關掉之後例外訊息直接把不存在的帳號名印出來——
-而**很多教學為了「除錯方便」會叫你關掉它**。07 章 7.4 會完整處理帳號列舉。
+而**很多教學為了「除錯方便」會叫你關掉它**。07 章 7.3 會完整處理帳號列舉。
 
 ### 0.3.5 事故五：Filter 裡拋例外，前端只看到一個空的 401 ★★
 
@@ -791,10 +791,11 @@ public class Advice {
      *  不隔離的話，03 章資源層那些 404 會全部被它變成 500（03 章 3.5.8 就是在講這件事）。 */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> any(Exception e) {
-        return ResponseEntity.status(500).body(Map.of(
-                "handledBy", "@RestControllerAdvice",
-                "type",      e.getClass().getSimpleName(),
-                "message",   String.valueOf(e.getMessage())));
+        Map<String, Object> body = new LinkedHashMap<>();   // ★ Map.of() 的欄位順序沒有保證
+        body.put("handledBy", "@RestControllerAdvice");
+        body.put("type",      e.getClass().getSimpleName());
+        body.put("message",   String.valueOf(e.getMessage()));
+        return ResponseEntity.status(500).body(body);
     }
 }
 ```
@@ -1216,12 +1217,13 @@ public class UnifiedErrorFormat {
         res.setStatus(status);
         res.setContentType(MediaType.APPLICATION_JSON_VALUE);
         res.setCharacterEncoding("UTF-8");
-        OM.writeValue(res.getOutputStream(), Map.of(
-                "timestamp", Instant.now().toString(),
-                "status",    status,
-                "code",      code,
-                "message",   msg,
-                "path",      req.getRequestURI()));
+        Map<String, Object> body = new LinkedHashMap<>();   // ★ Map.of() 的欄位順序沒有保證
+        body.put("timestamp", Instant.now().toString());
+        body.put("status",    status);
+        body.put("code",      code);
+        body.put("message",   msg);
+        body.put("path",      req.getRequestURI());
+        OM.writeValue(res.getOutputStream(), body);
     }
 }
 ```
@@ -1360,7 +1362,7 @@ public class OwnershipAwareController {
 | 密碼錯誤 | `401` | 同上 | ❌ 回 403 |
 | Token 過期 | `401` + `code: TOKEN_EXPIRED` | 同上 | ❌ 回 403（前端無法判斷該不該續期） |
 | Token 簽章錯 | `401` | 同上 | ❌ 回 400 |
-| 帳號被鎖定 / 停用 | `401` + 明確 code | 同上 | ⚠️ 取捨：明確 code 會洩漏帳號存在（07 章 7.4） |
+| 帳號被鎖定 / 停用 | `401` + 明確 code | 同上 | ⚠️ 取捨：明確 code 會洩漏帳號存在（07 章 7.3） |
 | 登入了，角色不夠 | `403` | `AccessDeniedHandler` | ❌ 回 401（前端會誤以為要重新登入 → 無限跳登入頁） |
 | 登入了，但這筆資料不是你的 | `404` 或 `403` | **你的程式碼**（0.4.3） | ❌ 回 200 ← 這就是 0.3.1 |
 | CSRF token 缺失 / 錯誤 | `403`（已登入）/ `401`（未登入） | `CsrfFilter` → `ExceptionTranslationFilter` | ⚠️ 未登入時是 401，見下 |
@@ -1595,7 +1597,7 @@ x-xss-protection: 0               ← Spring Security 6 的預設：明確關閉
 ```
 
 **真正防 XSS 的是 CSP**（Content-Security-Policy），而 Spring Security **預設不送 CSP**——
-因為 CSP 的內容跟你的前端長什麼樣有關，框架沒辦法幫你猜。07 章 7.7 會處理。
+因為 CSP 的內容跟你的前端長什麼樣有關，框架沒辦法幫你猜。07 章 7.5 會處理。
 
 📌 **注意這裡出現了一個 0.4.2 提過的細節**：
 `content-length: 0` —— **401 的 body 是空的**。
@@ -1789,9 +1791,9 @@ POST /login 【不帶】CSRF token: 401
 | 預設沒擋 | 後果 | 本站哪一章 |
 |---|---|---|
 | **資源層授權**（這筆資料是不是你的） | 0.3.1 的 IDOR | 03 章 3.8 |
-| **暴力破解 / 撞庫** | 沒有任何登入失敗次數限制，可以無限次嘗試 | 07 章 7.5 |
-| **帳號列舉** | 註冊 / 忘記密碼端點會洩漏「這個 email 有沒有註冊」 | 07 章 7.4 |
-| **CSP 標頭** | XSS 的實質防線沒有建立（`X-XSS-Protection: 0` 只是關掉一個壞掉的東西） | 07 章 7.7 |
+| **暴力破解 / 撞庫** | 沒有任何登入失敗次數限制，可以無限次嘗試 | 07 章 7.4 |
+| **帳號列舉** | 註冊 / 忘記密碼端點會洩漏「這個 email 有沒有註冊」 | 07 章 7.3 |
+| **CSP 標頭** | XSS 的實質防線沒有建立（`X-XSS-Protection: 0` 只是關掉一個壞掉的東西） | 07 章 7.5 |
 | **稽核日誌** | 出事之後查不到「誰在什麼時候登入、被擋了幾次」 | 08 章 8.2 |
 | **密碼強度規則** | `123456` 可以註冊 | 02 章 2.9 |
 

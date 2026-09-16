@@ -54,7 +54,7 @@
 - 說明公開 client（SPA / App）**為什麼不能有 client secret**，以及 PKCE 怎麼補這個洞（6.3）。
 - 重現「授權碼被攔截」攻擊，並示範 PKCE 如何擋下它（6.3.3）。
 - 解釋 `id_token` 與 `access_token` 的**分工**，並用 05 章的 `TokenScope` 證明它們都是 JWT（6.4）。
-- 用 `oauth2Login` 接上第三方登入，說出 Spring 幫你做了哪五件事（6.5）。
+- 用 `oauth2Login` 接上第三方登入，說出它自動幫你做了哪**七**件事（6.5.2）。
 - 用 `oauth2ResourceServer` 驗「別人發的」token，並說出金鑰是從哪裡來的（6.6）。
 - 把第三方身分綁到你自己的 `app_user`，並說出**為什麼主鍵要用 `sub` 不是 `email`**（6.7）。
 
@@ -389,8 +389,9 @@ Authorization Server（＝Google）跑在 http://localhost:51776
 
 ── id_token ──
    header  : {"kid":"f2f51215-...","alg":"RS256"}
-   payload : {"sub":"user@gmail.com","aud":"shop-web","azp":"shop-web","auth_time":1789374792,
-              "iss":"http://localhost:51776","exp":...,"iat":...,"jti":"...","sid":"..."}
+   payload : {"sub":"sub-6f5d97fce","aud":"shop-web","email_verified":true,"azp":"shop-web",
+              "auth_time":1789470846,"iss":"http://localhost:53299","exp":...,"iat":...,
+              "jti":"...","email":"user@gmail.com","sid":"..."}
    ✅ 沒有發現這六項常見問題
 ```
 
@@ -659,15 +660,21 @@ PKCE（Proof Key for Code Exchange，唸 "pixy"）的想法很簡單：
 ① id_token（給【client】看的：這個人是誰、什麼時候登入的）：
 ── id_token ──
    header  : {"kid":"f07e175f-...","alg":"RS256"}
-   payload : {"sub":"user@gmail.com","aud":"shop-web","azp":"shop-web","auth_time":1789375038,
-              "iss":"http://localhost:51858","exp":...,"iat":...,"jti":"...","sid":"..."}
+   payload : {"sub":"sub-6f5d97fce","aud":"shop-web","email_verified":true,"azp":"shop-web",
+              "auth_time":1789470782,"iss":"http://localhost:53263","exp":...,"iat":...,
+              "jti":"...","email":"user@gmail.com","sid":"..."}
 
 ② access_token（給【Resource Server】看的：這張票能存取什麼）：
 ── access_token ──
    header  : {"kid":"f07e175f-...","alg":"RS256"}
-   payload : {"sub":"user@gmail.com","aud":"shop-web","nbf":...,"scope":["openid","order:read","email"],
-              "iss":"http://localhost:51858","exp":...,"iat":...,"jti":"..."}
+   payload : {"sub":"sub-6f5d97fce","aud":"shop-web","nbf":...,"scope":["openid","order:read","email"],
+              "iss":"http://localhost:53263","exp":...,"iat":...,"jti":"..."}
 ```
+
+> 📌 **`sub` 與 `email` 是【兩個不同的 claim】，這一點現在就要看清楚**：
+> `sub` 是 `sub-6f5d97fce`（AS 發的**不透明穩定 id**），`email` 才是 `user@gmail.com`。
+> **帳號主鍵要用前者**——6.7.3 會示範用後者的災難。
+> （真的 Google 的 `sub` 是一串 21 位數字，一樣不是 email。）
 
 **兩張都是 JWT，都用 AS 的私鑰簽（RS256）**——所以 05 章的每一課（簽章、exp、`TokenScope`）都適用。
 差別在 **payload 的內容**，反映了兩張票的**不同用途**：
@@ -699,7 +706,7 @@ sid        session id —— 支援 OIDC 的「單一登出」（一處登出，
 
 ## 6.5 `oauth2Login`：Spring 幫你做完整個流程
 
-6.2 那五、六步——導向、接 callback、驗 state、換 token、驗 id_token 簽章、建立登入 session——
+6.2 那六步——導向、接 callback、驗 state、換 token、驗 id_token 簽章、建立登入 session——
 **`oauth2Login` 全部幫你做**。你只要提供**一個 `ClientRegistration`**（＝在 Google 註冊的那個 client 的設定）。
 
 ### 6.5.1 設定一個 client
@@ -837,7 +844,8 @@ public class ClientScenario {
   你的網站只寫了【一行 .oauth2Login()】+ 一個 ClientRegistration，其餘 Spring 全包。
 ```
 
-**對照 6.2 手動跑的五步，看 Spring 幫你做了什麼**：
+**對照 6.2 手動跑的那幾步，看 Spring 幫你做了什麼**（八列裡有【七列】是自動的，
+只有「在 AS 登入」那一列是使用者自己做的）：
 
 ```
 6.2 你手動做的                          6.5 oauth2Login 自動做的
@@ -925,9 +933,10 @@ public class ResourceServerScenario {
     static class RsEndpoints {
         @GetMapping("/rs/me")
         public Map<String, Object> me(org.springframework.security.core.Authentication a) {
-            return new LinkedHashMap<>(Map.of(
-                    "name", a.getName(),                                   // = token 的 sub
-                    "authorities", a.getAuthorities().toString()));        // scope 轉成的 authority
+            Map<String, Object> out = new LinkedHashMap<>();           // ★ 逐個 put，順序才固定
+            out.put("name", a.getName());                                  // = token 的 sub
+            out.put("authorities", a.getAuthorities().toString());         // scope 轉成的 authority
+            return out;
         }
         @GetMapping("/rs/orders")
         public Map<String, Object> orders() { return Map.of("orders", List.of("A-1001", "A-1002")); }
@@ -966,7 +975,7 @@ Resource Server 跑在 :51866，JWKS 指向 AS http://localhost:51864/oauth2/jwk
 ① 不帶 token 打 /rs/me → 401
 
 ② 帶 AS 發的 access_token 打 /rs/me：
-   → 200  {"name":"user@gmail.com","authorities":"[SCOPE_openid, SCOPE_order:read, SCOPE_email]"}
+   → 200  {"name":"sub-6f5d97fce","authorities":"[SCOPE_openid, SCOPE_order:read, SCOPE_email]"}
    ★ RS 從沒看過這個 token，卻驗得過 —— 因為它去 AS 的 JWKS 抓了公鑰（5.2.3 非對稱）
 
 ③ /rs/orders 需要 SCOPE_order:read：
@@ -1006,7 +1015,7 @@ RS 用【公鑰】驗 → 任何人都能驗，但【不能偽造】
 6.5 拿到了 `OidcUser`（Google 說的這個人），但它還不是你系統裡的帳號。
 這一節把它接到 `app_user`——**這是「第三方登入」真正的工程量，也是最多人做錯的地方**。
 
-### 6.7.1 / 6.7.2 用 `sub` 認人：第一次建帳號，之後找回同一個
+### 6.7.1 用 `sub` 認人：`(provider, sub)` 當唯一鍵
 
 ```java
 package com.example.lab09.ch06;
@@ -1072,7 +1081,9 @@ public class SocialAccountService {
 }
 ```
 
-**輸出**：
+### 6.7.2 實測：第一次建帳號，第二次用 `sub` 認出同一個人
+
+**輸出**（同一個測試同時涵蓋 6.7.1 與 6.7.2，所以標頭印的是 `6.7.1/6.7.2`）：
 
 ```
 ═══ 6.7.1/6.7.2 第一次登入建帳號，之後用 sub 認出同一個人 ═══
@@ -1297,7 +1308,7 @@ API 收 token            oauth2ResourceServer 可同時驗「自家 JWT」與「
 □ code_challenge / code_verifier 的關係？攔到 code 的人為什麼換不到 token？
 □ id_token 與 access_token 的分工？各給誰看？拿錯會怎樣？
 □ nonce / auth_time / sid 各是做什麼的？
-□ oauth2Login 幫你自動做了哪八件事（對照 6.2 手動的五步）？
+□ oauth2Login 幫你自動做了哪七件事（對照 6.2 手動跑的流程）？
 □ Resource Server 驗 AS 的 token，公鑰從哪來？為什麼「沒看過的 token」也驗得過？
 □ 對稱 vs 非對稱，為什麼多個 Resource Server 一定要用非對稱？
 □ scope 和你系統的權限一樣嗎？SCOPE_ 前綴？

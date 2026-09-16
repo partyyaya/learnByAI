@@ -290,11 +290,13 @@ public class WhoAmIController {
     @GetMapping
     public Map<String, Object> me(Authentication auth,
                                   @AuthenticationPrincipal DbUserDetailsService.AppUserDetails me) {
-        return new LinkedHashMap<>(Map.of(
-                "name", auth.getName(),
-                "principalType", auth.getPrincipal().getClass().getSimpleName(),
-                "displayName", me == null ? "-" : me.getDisplayName(),   // ★ 自訂欄位，2.7.2 會解釋
-                "authorities", auth.getAuthorities().toString()));
+        // ⚠️ `Map.of()` 的迭代順序【沒有保證】，包進 LinkedHashMap 也救不了 —— 要逐個 put。
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("name", auth.getName());
+        out.put("principalType", auth.getPrincipal().getClass().getSimpleName());
+        out.put("displayName", me == null ? "-" : me.getDisplayName());   // ★ 自訂欄位，2.7.2 會解釋
+        out.put("authorities", auth.getAuthorities().toString());
+        return out;
     }
 }
 ```
@@ -356,7 +358,7 @@ public class Seed {
 
 | 類別 | 實驗專案裡的 `@Profile` | 為什麼 |
 |---|---|---|
-| 2.7.2 的 `DbUserDetailsService` | `!am & !ca & !p3` | 它是 `@Service`，會在**每一個**情境裡都變成一個 `UserDetailsService` bean |
+| 2.7.2 的 `DbUserDetailsService` | **`db`** `& !am & !ca & !p3` | 它是 `@Service`，沒有 profile 的話會在**每一個**情境裡都變成一個 `UserDetailsService` bean |
 | 2.7.7 的 `SessionRegistryConfig` / `AccountAdminService` | `sess` | 需要 `SessionRegistry` 與 `AppUserRepo` |
 | 2.9.4 的 `RegisterController` | `strength` | 需要 `PasswordEncoder`，而有些情境沒有、有些情境有兩個 |
 | 2.6.3 的 `AuthWiringReporter` | `am` | 只有 2.6 那組實驗需要它的輸出 |
@@ -364,6 +366,16 @@ public class Seed {
 **不隔離的話會怎樣？** `DbUserDetailsService` 是最好的例子：
 它一旦在 `am` 那組情境裡也活著，2.6.2 的 **am2 就會變成「兩個 `UserDetailsService`」**——
 於是那個「官方寫法」也會 `StackOverflowError`，整組對照就毀了。
+
+> 🔴 **注意第一列是【`db &`】開頭，不是只有一串 `!`。這個差別踩過一次**：
+> 原本只寫 `!am & !ca & !p3`（純排除），於是它在**沒被點名的每一個情境**裡都活著——
+> 包含 00／01 章那些只有記憶體帳號的情境（`s1`～`s4`、`leak`、`sc1`…）。
+> 兩個 `UserDetailsService` 一起在場 → 自動設定安靜地放棄 → **00／01 章每一個要登入的實測全部變成 401**，
+> 而那些測試只印不斷言，所以**整組測試照樣全綠**。
+>
+> **教訓**：profile 隔離要寫成「**在什麼情況下才啟用**」（正面表列），
+> 不要寫成「在什麼情況下不啟用」（負面表列）——
+> 負面表列會隨著你新增情境而默默擴張適用範圍，而且不會有人通知你。
 
 📌 **你自己的專案只有一組設定，不需要這樣做。**
 這是「一個專案裡塞了十幾種互相矛盾的設定」才會有的問題——
@@ -1219,7 +1231,7 @@ class FormLoginTest {
        登入後 cookie: JSESSIONID=90E268A227A65B9EF207A560C01CE517
        換了新的 session 嗎: true（session fixation 防護）
   4. GET /whoami（帶新 cookie）                         → 200 
-       body: {"principalType":"AppUserDetails","displayName":"艾莉絲","name":"alice","authorities":"[ROLE_USER]"}
+       body: {"name":"alice","principalType":"AppUserDetails","displayName":"艾莉絲","authorities":"[ROLE_USER]"}
 
   ── 同一份設定（只有 formLogin），改帶 Authorization 標頭：
   1. GET /whoami（帶 Authorization: Basic …）          → 302 → /login
@@ -1271,7 +1283,7 @@ class BasicRoundTripTest {
   1. GET /whoami（不帶憑證） → 401
      WWW-Authenticate: Basic realm="Realm"
   2. GET /whoami（帶 Authorization） → 200
-     body: {"principalType":"AppUserDetails","displayName":"艾莉絲","name":"alice","authorities":"[ROLE_USER]"}
+     body: {"name":"alice","principalType":"AppUserDetails","displayName":"艾莉絲","authorities":"[ROLE_USER]"}
 ```
 
 **還有一件表單登入做得到、Basic 做不到的事：登入後回到你原本要去的頁面。**
@@ -1489,7 +1501,7 @@ public class JsonFormLoginConfig {
 
     static void writeLoginFail(HttpServletRequest req, HttpServletResponse res, AuthenticationException ex)
             throws IOException {
-        // ⚠️ 對外一律同一句話（07 章 7.4 會解釋為什麼），細節只寫進日誌
+        // ⚠️ 對外一律同一句話（07 章 7.3 會解釋為什麼），細節只寫進日誌
         System.out.println("    [failureHandler] 內部原因: "
                 + ex.getClass().getSimpleName() + " / " + ex.getMessage());
         write(res, 401, Map.of("code", "BAD_CREDENTIALS", "message", "帳號或密碼錯誤"));
@@ -1559,7 +1571,7 @@ class JsonLoginTest {
   沒登入打 /whoami → 401 {"path":"/whoami","code":"UNAUTHENTICATED","message":"請先登入"}
   POST /api/auth/login（正確）→ 200 {"authorities":["ROLE_USER"],"sessionId":"27370A9B3FC0BEAB48FEF5CE883E3A89","name":"alice"}
      Set-Cookie: JSESSIONID=27370A9B3FC0BEAB48FEF5CE883E3A89
-  帶 cookie 打 /whoami → 200 {"authorities":"[ROLE_USER]","principalType":"AppUserDetails","displayName":"艾莉絲","name":"alice"}
+  帶 cookie 打 /whoami → 200 {"name":"alice","principalType":"AppUserDetails","displayName":"艾莉絲","authorities":"[ROLE_USER]"}
 
   ── 四種失敗，對外都是同一句話：
     [failureHandler] 內部原因: BadCredentialsException / 憑證錯誤
@@ -1581,7 +1593,7 @@ class JsonLoginTest {
 
 **這不是「藏起來」，是「分流」**——
 客服要知道「這個人是被鎖定了」，攻擊者不需要知道。
-07 章 7.4 會把這件事做完整（含「查詢帳號狀態」的獨立端點）。
+07 章 7.3 會把這件事做完整（含「查詢帳號狀態」的獨立端點）。
 
 ⚠️ **兩個常見的踩雷**：
 
@@ -2508,7 +2520,7 @@ class TimingDeepTest {
 
 **「帳號鎖定」這個防禦機制，反過來變成了「帳號列舉」的工具。**
 
-**兩個修法**（07 章 7.4 會做完整版）：
+**兩個修法**（07 章 7.3 會做完整版）：
 
 ```java
 // 修法 A：把帳號狀態檢查【搬到密碼比對之後】
@@ -3681,11 +3693,12 @@ public class WhoAmIController {
     @GetMapping
     public Map<String, Object> me(Authentication auth,
                                   @AuthenticationPrincipal DbUserDetailsService.AppUserDetails me) {
-        return new LinkedHashMap<>(Map.of(
-                "name", auth.getName(),
-                "principalType", auth.getPrincipal().getClass().getSimpleName(),
-                "displayName", me == null ? "-" : me.getDisplayName(),   // ★ 直接拿到自訂欄位
-                "authorities", auth.getAuthorities().toString()));
+        Map<String, Object> out = new LinkedHashMap<>();        // ★ 逐個 put，順序才固定
+        out.put("name", auth.getName());
+        out.put("principalType", auth.getPrincipal().getClass().getSimpleName());
+        out.put("displayName", me == null ? "-" : me.getDisplayName());   // ★ 直接拿到自訂欄位
+        out.put("authorities", auth.getAuthorities().toString());
+        return out;
     }
 }
 ```
@@ -4050,7 +4063,7 @@ class DbQueryCountTest {
   接下來 5 個請求【只帶 cookie】
   loadUserByUsername 被呼叫: 0 次
   Hibernate prepared statement: 0 句
-  身分還在嗎: HTTP 200  {"name":"alice","authorities":"[ROLE_USER]","principalType":"AppUserDetails","displayName":"艾莉絲"}
+  身分還在嗎: HTTP 200  {"name":"alice","principalType":"AppUserDetails","displayName":"艾莉絲","authorities":"[ROLE_USER]"}
 ```
 
 **5 次 vs 0 次。**
@@ -4372,7 +4385,7 @@ class StaleSessionTest {
 ═══ 2.7.7 登入後把帳號鎖起來，舊 session 還能不能用 ═══
   鎖定前: HTTP 200
   DB 已改 account_non_locked = FALSE
-  鎖定後（帶舊 cookie）: HTTP 200  {"name":"alice","authorities":"[ROLE_USER]","principalType":"AppUserDetails","displayName":"艾莉絲"}
+  鎖定後（帶舊 cookie）: HTTP 200  {"name":"alice","principalType":"AppUserDetails","displayName":"艾莉絲","authorities":"[ROLE_USER]"}
   鎖定後（重新 Basic）  : HTTP 401
 ```
 
@@ -5432,7 +5445,7 @@ public class RegisterController {
     public Map<String, Object> register(@Valid @RequestBody RegisterRequest req) {
         String username = req.username().trim();                 // ★ 2.3.2：登入時會 trim，註冊也要
         if (repo.findByUsername(username).isPresent()) {
-            // ⚠️ 這一句就是「帳號列舉」的洩漏點 —— 07 章 7.4 會處理
+            // ⚠️ 這一句就是「帳號列舉」的洩漏點 —— 07 章 7.3 會處理
             throw new IllegalStateException("帳號已存在");
         }
         AppUser u = new AppUser(username, encoder.encode(req.password()), req.displayName());
@@ -5445,7 +5458,7 @@ public class RegisterController {
 
 ⚠️ **`register` 這支端點自己就是一個帳號列舉的入口**——
 「帳號已存在」這個回應等於在說「這個 email 有註冊」。
-**07 章 7.4 會給完整解法**（提示：改成「我們寄了一封信給你」，不論帳號存不存在）。
+**07 章 7.3 會給完整解法**（提示：改成「我們寄了一封信給你」，不論帳號存不存在）。
 
 ### 2.9.5 註冊與改密碼還有五件事
 

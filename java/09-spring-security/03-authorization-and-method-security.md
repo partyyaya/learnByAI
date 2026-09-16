@@ -1008,7 +1008,7 @@ public class AuthzRuleReporter implements ApplicationListener<ApplicationReadyEv
                     .findFirst().orElse(null);
             if (af == null) { System.out.println("   （這條 chain 上沒有 AuthorizationFilter）"); continue; }
 
-            AuthorizationManager<?> am = af.getAuthorizationManager();
+            AuthorizationManager<?> am = unwrap(af.getAuthorizationManager());   // ★ 先剝掉觀測層
             if (!(am instanceof RequestMatcherDelegatingAuthorizationManager d)) {
                 System.out.println("   （不是 RequestMatcherDelegating…，而是 " + am.getClass().getSimpleName() + "）");
                 continue;
@@ -1019,6 +1019,23 @@ public class AuthzRuleReporter implements ApplicationListener<ApplicationReadyEv
             System.out.println("   （沒有命中任何一條規則 → DENY）");
         }
         System.out.println("─────────────────────────────────────────────────────────\n");
+    }
+
+    /**
+     * ⚠️ 專案裡一旦有 micrometer-observation（例如加了 `spring-boot-starter-actuator`，07 章 7.1.1），
+     * Spring Security 就會把 `AuthorizationManager` 包進一層 `ObservationAuthorizationManager`。
+     * 不剝掉這一層，上面那個 `instanceof` 永遠不成立 ——
+     * 🔴 而且【不會報錯】，只會印出一張「所有端點都沒有規則」的空表。
+     */
+    static AuthorizationManager<?> unwrap(AuthorizationManager<?> am) {
+        while (am instanceof org.springframework.security.authorization.ObservationAuthorizationManager<?> o) {
+            try {
+                Field f = o.getClass().getDeclaredField("delegate");
+                f.setAccessible(true);
+                am = (AuthorizationManager<?>) f.get(o);
+            } catch (ReflectiveOperationException ex) { return am; }
+        }
+        return am;
     }
 
     @SuppressWarnings("unchecked")
@@ -6575,7 +6592,8 @@ public class AuthzCoverageReporter {
         for (SecurityFilterChain chain : proxy.getFilterChains()) {
             for (var f : chain.getFilters())
                 if (f instanceof AuthorizationFilter af
-                        && af.getAuthorizationManager() instanceof RequestMatcherDelegatingAuthorizationManager d)
+                        && AuthzRuleReporter.unwrap(af.getAuthorizationManager())   // ★ 剝掉觀測層（07 章 7.1.1）
+                                instanceof RequestMatcherDelegatingAuthorizationManager d)
                     rules = AuthzRuleReporter.mappings(d);      // ★ 重用 3.2.4 那個反射
         }
 
@@ -6653,6 +6671,7 @@ package com.example.lab09.ch03;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.test.context.ActiveProfiles;
@@ -6662,7 +6681,11 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 @ActiveProfiles({"db", "ch3", "u4"})
 class CoverageTest {
 
-    @Autowired RequestMappingHandlerMapping mapping;
+    // ⚠️ 專案裡一旦有 spring-boot-starter-actuator（07 章 7.6.2 會加），
+    //    容器裡就有【兩個】RequestMappingHandlerMapping：
+    //    你的 requestMappingHandlerMapping ＋ actuator 的 controllerEndpointHandlerMapping。
+    //    不指名就是 NoUniqueBeanDefinitionException（而且是在【測試啟動時】才爆）。
+    @Autowired @Qualifier("requestMappingHandlerMapping") RequestMappingHandlerMapping mapping;
     @Autowired FilterChainProxy proxy;
 
     @Test

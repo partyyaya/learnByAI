@@ -901,8 +901,7 @@ public class ManualLoginController {
         SecurityContextHolder.setContext(ctx);
         securityContextRepository.saveContext(ctx, req, res);      // ★ 不能省
 
-        return Map.of("loggedInAs", auth.getName(),
-                      "authorities", auth.getAuthorities().toString());
+        return Map.of("loggedInAs", auth.getName());
     }
 }
 ```
@@ -1213,8 +1212,10 @@ public class DoubleRegistrationScenario {
     static class Probe {
         @GetMapping("/dup/probe")
         public Map<String, Object> probe(HttpServletRequest req) {
-            return Map.of("OncePerRequestFilter 跑過的位置", req.getAttribute("hits.once"),
-                          "Filter 跑過的位置",              req.getAttribute("hits.plain"));
+            Map<String, Object> out = new LinkedHashMap<>();   // ★ Map.of() 的欄位順序沒有保證
+            out.put("OncePerRequestFilter 跑過的位置", req.getAttribute("hits.once"));
+            out.put("Filter 跑過的位置", req.getAttribute("hits.plain"));
+            return out;
         }
     }
 }
@@ -1523,10 +1524,22 @@ public class F6_WrongOrder {
 
 ```
 ═══ 1.7.3 f5：@Order(1) 是 /api/**、@Order(2) 是 any request ═══
-  匿名 GET /api/hello              → 401
+  匿名 GET /api/hello              → 302 → http://localhost:64022/login;jsessionid=…
   alice GET /api/hello             → 200 {"msg":"hello"}
-  匿名 GET /（走第二條 chain）        → 302 → /login
+  匿名 GET /（走第二條 chain）        → 302 → http://localhost:64022/login
 ```
+
+★ **關鍵是第二列，不是第一列**：順序對的時候 `alice` 拿到 **200**（`BasicAuthenticationFilter` 讀到了
+`Authorization` 標頭）；順序寫反的時候 `alice` 也是 **302**（沒有人去讀那個標頭）。
+**「帶了憑證還是被導去登入頁」就是 chain 選錯的指紋。**
+
+> ⚠️ **第一列那個 302 本身也是一個坑，而且它是【另一件事】**：
+> 匿名打 `/api/hello` 時，`BasicAuthenticationEntryPoint` 確實回了 401 ——
+> 但這兩條 chain 都沒有把 `/error` 放行，於是容器對 `/error` 做 ERROR dispatch，
+> 那一次 dispatch 不符合 `/api/**`、落到第二條 chain，被 `formLogin` 的 entry point 蓋成 302。
+>
+> **唯一活下來的證據是回應上還掛著 `WWW-Authenticate: Basic realm="Realm"`**（實測驗過）。
+> 完整的機制在 1.8.3；1.7.6 那份建議設定就是因此才加了 `.requestMatchers("/error").permitAll()`。
 
 ⚠️ **兩個症狀都很誤導**：
 
@@ -1838,12 +1851,13 @@ public final class ApiErrors {
         res.setStatus(status);
         res.setContentType(MediaType.APPLICATION_JSON_VALUE);
         res.setCharacterEncoding("UTF-8");
-        OM.writeValue(res.getOutputStream(), Map.of(
-                "timestamp", Instant.now().toString(),
-                "status",    status,
-                "code",      code,
-                "message",   msg,
-                "path",      req.getRequestURI()));
+        Map<String, Object> body = new LinkedHashMap<>();   // ★ Map.of() 的欄位順序沒有保證
+        body.put("timestamp", Instant.now().toString());
+        body.put("status",    status);
+        body.put("code",      code);
+        body.put("message",   msg);
+        body.put("path",      req.getRequestURI());
+        OM.writeValue(res.getOutputStream(), body);
     }
 }
 ```
@@ -2102,12 +2116,13 @@ public class FilterErrorTranslationFilter extends OncePerRequestFilter {   // �
         res.setStatus(status);
         res.setContentType(MediaType.APPLICATION_JSON_VALUE);
         res.setCharacterEncoding("UTF-8");
-        OM.writeValue(res.getOutputStream(), Map.of(
-                "timestamp", Instant.now().toString(),
-                "status",    status,
-                "code",      code,
-                "message",   message,
-                "path",      req.getRequestURI()));
+        Map<String, Object> body = new LinkedHashMap<>();   // ★ Map.of() 的欄位順序沒有保證
+        body.put("timestamp", Instant.now().toString());
+        body.put("status",    status);
+        body.put("code",      code);
+        body.put("message",   message);
+        body.put("path",      req.getRequestURI());
+        OM.writeValue(res.getOutputStream(), body);
     }
 }
 ```
@@ -2452,9 +2467,12 @@ public class InheritableLeakScenario {
         public Map<String, Object> who() throws Exception {
             String inRequest = current();
             String inPool = pool.submit((Callable<String>) C::current).get();
-            return new LinkedHashMap<>(Map.of(
-                    "1_請求執行緒看到的", inRequest,
-                    "2_執行緒池看到的",   inPool));
+            // ⚠️ 不要寫 new LinkedHashMap<>(Map.of(...)) —— `Map.of()` 的【迭代順序沒有保證】，
+            //    包進 LinkedHashMap 也只是把那個隨機順序照抄一遍。要固定順序就逐個 put。
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("1_請求執行緒看到的", inRequest);
+            out.put("2_執行緒池看到的", inPool);
+            return out;
         }
 
         @GetMapping("/leak/strategy")
@@ -2468,10 +2486,10 @@ public class InheritableLeakScenario {
 ```
 ═══ 1.9.4 MODE_INHERITABLETHREADLOCAL + 執行緒池 ═══
   目前策略: 200 InheritableThreadLocalSecurityContextHolderStrategy
-  ① alice 的請求: 200 {"2_執行緒池看到的":"alice",  "1_請求執行緒看到的":"alice"}
-  ② 匿名的請求  : 200 {"2_執行緒池看到的":"alice",  "1_請求執行緒看到的":"anonymousUser"}
-  ③ bob 的請求  : 200 {"2_執行緒池看到的":"alice",  "1_請求執行緒看到的":"bob"}
-  ④ 匿名的請求  : 200 {"2_執行緒池看到的":"alice",  "1_請求執行緒看到的":"anonymousUser"}
+  ① alice 的請求: 200 {"1_請求執行緒看到的":"alice",         "2_執行緒池看到的":"alice"}
+  ② 匿名的請求  : 200 {"1_請求執行緒看到的":"anonymousUser", "2_執行緒池看到的":"alice"}
+  ③ bob 的請求  : 200 {"1_請求執行緒看到的":"bob",           "2_執行緒池看到的":"alice"}
+  ④ 匿名的請求  : 200 {"1_請求執行緒看到的":"anonymousUser", "2_執行緒池看到的":"alice"}
 ```
 
 🔴 **第 ③ 行：bob 的請求，執行緒池裡看到的是 alice。**

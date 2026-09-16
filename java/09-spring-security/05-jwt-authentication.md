@@ -2229,7 +2229,7 @@ token 每個請求都在 `Authorization` 標頭裡傳。有人把「整包使用
 # application.yml —— 本機開發用；正式環境用真正的 Secret Manager
 shop:
   jwt:
-    secret: ${JWT_SECRET:请用-openssl-rand-base64-32-產生一把至少32位元組的隨機金鑰}
+    secret: ${JWT_SECRET:請用-openssl-rand-base64-32-產生一把至少32位元組的隨機金鑰}
     access-ttl: 15m
     refresh-ttl: 14d
 ```
@@ -2529,7 +2529,7 @@ refresh 過期 → 使用者要重新登入嗎？
 | 5.2.3 的非對稱（RS256） | Google 用私鑰簽、你用**它公開的公鑰**驗——你不可能有 Google 的私鑰 |
 | 5.4.4 的 `oauth2ResourceServer` | 驗 Google 的 token 就是走這條路（`.jwt()` 換成 Google 的 issuer / jwks） |
 | 5.2.6 的「不要相信 token 自己說的 alg」 | 驗第三方 token 時，這件事更重要——要驗 `iss`、`aud`、金鑰來源 |
-| 5.9 的「綁到自家帳號」 | OAuth2 登入成功後，怎麼跟你 `app_user` 裡的帳號對應起來 |
+| 5.9 的 `ShopUserDetailsService`（帳號 → `app_user`） | 06 章要在**同一個位置**換一把鑰匙：Google 的 `sub` → `app_user`（6.7） |
 
 **06 章會回答的五個問題**：
 
