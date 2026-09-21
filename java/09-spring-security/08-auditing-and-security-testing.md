@@ -1836,8 +1836,7 @@ void everyWriteEndpointHasAnExplicitRule() {
 > 它只涵蓋「Spring Security 設定」這一層。**沒有涵蓋**的至少還有：
 > SQL injection、XSS（前端）、檔案上傳、SSRF、反序列化、相依套件的已知漏洞、
 > 基礎設施與網路、金鑰管理與輪替、備份與還原、以及人（社交工程）。
-> 那些請對照 OWASP Top 10 與 ASVS，以及本課程的
-> [`../../security-course/`](../../security-course/)（攻擊者視角）。
+> 那些請對照 OWASP Top 10 與 ASVS。
 
 ---
 

@@ -19,7 +19,6 @@
 ## 前置知識
 
 [04-controller/](../04-controller/) 全部、[02-spring-boot/](../02-spring-boot/) 04 章（AOP）。
-攻擊者視角可對照 [../../security-course/](../../security-course/)。
 
 ---
 

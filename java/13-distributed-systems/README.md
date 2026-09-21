@@ -35,7 +35,8 @@
 [05-service/06](../05-service/06-async-and-external-api-calls.md)（熔斷、隔艙、逾時）、
 [11-messaging/02～03](../11-messaging/)（Outbox 與冪等消費）、
 [03-rest-api/06、09](../03-rest-api/)（相容性與契約測試）、
-[docker/11～12](../../docker/11-kubernetes-basics.md)（K8s 基礎，第 08 章會用）。
+[02-spring-boot/08](../02-spring-boot/08-packaging-docker-and-deployment.md)（**K8s 基礎，第 08 章會用**——
+Deployment、RollingUpdate、三種 probe、`terminationGracePeriodSeconds` 這些名詞要能直接讀懂）。
 
 ---
 
@@ -46,7 +47,7 @@
 | 00 | `00-course-map-should-you-split.md` | 該不該拆（核心章） | 拆分的四項代價（延遲、一致性、除錯、維運人力）、什麼指標才算「大到該拆」、康威定律、**模組化單體才是多數團隊的終點**、三個「拆了之後更慘」的真實情境、這一站的邊界 |
 | 01 | `01-service-boundaries.md` | 邊界怎麼切 | 從 12 站的模組邊界出發、以業務能力 vs 以名詞切、聚合與交易邊界、**先拆模組再拆行程**的兩階段法、切錯邊界的症狀（每次改動都要動兩個服務） |
 | 02 | `02-splitting-the-database.md` | 資料庫拆分（最痛的一章） | 共享資料庫為什麼是反模式、資料所有權與唯一寫入者、**跨服務 JOIN 消失之後報表怎麼辦**、外鍵消失後的參照完整性、雙寫過渡期、Strangler Fig 的資料搬遷 |
-| 03 | `03-inter-service-communication.md` | 服務間通訊 | 同步 vs 非同步的決策、`@HttpExchange` / `RestClient`（不是 Feign）、gRPC 的時機（可對照 [../../grpc-frontend-course/](../../grpc-frontend-course/)）、服務間的版本相容、**用 Pact 契約測試守邊界** |
+| 03 | `03-inter-service-communication.md` | 服務間通訊 | 同步 vs 非同步的決策、`@HttpExchange` / `RestClient`（不是 Feign）、gRPC 的時機、服務間的版本相容、**用 Pact 契約測試守邊界** |
 | 04 | `04-saga-and-compensation.md` | Saga 與補償（核心章） | 分散式交易為什麼沒有 `@Transactional`、兩階段提交的代價與為何幾乎沒人用、**編排 vs 協同**的取捨、補償交易怎麼寫、⚠️ 不可補償的操作（已寄出的信、已扣的款）、Saga 的可觀測性與人工介入、對帳是最後一道防線 |
 | 05 | `05-cross-service-query.md` | 跨服務查詢 | API 組合的延遲相乘、CQRS 讀模型、**讀模型的過時視窗使用者會看到什麼**、事件重放重建讀模型、報表服務該不該直連別人的資料庫 |
 | 06 | `06-resilience-in-a-service-mesh.md` | 服務網的韌性 | 級聯故障：一個服務慢，五個服務一起死、**重試風暴**（每層都重試 3 次 = 27 倍流量）、逾時預算由外而內遞減、隔艙與連線池切分、把 [05-service/06](../05-service/06-async-and-external-api-calls.md) 的熔斷放到正確的層 |

@@ -589,7 +589,7 @@ false
 > 3. 對所有要跑 regex 的輸入**設長度上限**。
 > 4. 需要處理不受信任的 pattern（如讓使用者自訂搜尋規則），改用 RE2/J（Google 的線性時間 regex 引擎）。
 >
-> 這在第 09 站（Spring Security）與 `../security-course/` 會從攻擊者視角再看一次。
+> 這在第 09 站（Spring Security）會從攻擊者視角再看一次。
 
 ---
 

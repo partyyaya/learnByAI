@@ -11193,3 +11193,7 @@ Web 層的每一個請求是無狀態的、獨立的、可以重試的。
 ---
 
 完成後請前往 [../05-service/](../05-service/)。
+
+> ⚠️ **這一站還有一章 [08 WebSocket 與 STOMP](./08-websocket-and-stomp.md)**。
+> 它接的是 [05 章](./05-file-upload-download-and-sse.md) 的 SSE 而不是這一章，所以排在測試之後 ——
+> 需要做即時雙向功能時再讀，不影響往 05-service 的進度。

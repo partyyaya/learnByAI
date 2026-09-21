@@ -45,6 +45,7 @@
 | **05** | [檔案上傳下載與 SSE](./05-file-upload-download-and-sse.md) | 「不是 JSON 的東西」與「大到放不進記憶體的東西」 |
 | **06** | [跨來源與序列化](./06-cors-content-negotiation-and-json.md) | 為什麼前端只看得到 `Network Error`；錢與時間怎麼變成 JSON |
 | **07** ★ | [Web 層測試](./07-controller-testing-mockmvc.md) | 你怎麼知道前面六章都是對的 |
+| **08** | [WebSocket 與 STOMP](./08-websocket-and-stomp.md) | `101` 之後，前面七章的機制還剩下什麼 |
 
 ### 怎麼讀
 
@@ -55,6 +56,7 @@
            └─→ 03 ★ 全域例外處理（錯誤格式從這裡開始固定下來）
                 ├─→ 04（生命週期：traceId、日誌、冪等、限流）
                 │    ├─→ 05（檔案、串流、SSE）
+                │    │    └─→ 08（WebSocket：SSE 不夠用的時候）
                 │    └─→ 06（CORS、內容協商、Jackson）
                 └─→ 07 ★ 測試（讀完 03 與 06 再讀，效果最好）
 ```

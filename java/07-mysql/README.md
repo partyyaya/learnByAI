@@ -3,9 +3,6 @@
 > 後端服務的效能瓶頸，八成在資料庫。
 > 這一站從 Java 專案的角度看 MySQL：schema 怎麼設計、索引為什麼沒用到、交易與鎖何時互卡、慢查詢怎麼抓。
 
-> 想看資料庫**選型與通論**（PostgreSQL、MongoDB、Redis、分片、高併發搶票），
-> 請搭配 [../../database-course/](../../database-course/)；本站專注 MySQL 與 Java 應用的交界。
-
 ---
 
 ## 學完你可以

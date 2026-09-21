@@ -19,7 +19,8 @@
 - 設計 MySQL schema、看懂 `EXPLAIN`、處理交易與鎖。
 - 在 JPA 與 MyBatis 之間做出有理由的選擇，並解決 N+1、延遲載入等經典問題。
 - 用 Spring Security 實作登入、權限控管與 JWT，並知道常見漏洞怎麼防。
-- 把 Redis 正確接進 Spring 專案：快取、分散式鎖、限流，以及 Redis 掛掉時的降級。
+- 弄懂 Redis 本體（資料結構、單執行緒、淘汰、持久化、原子性），再把它正確接進 Spring 專案：
+  快取、分散式鎖、限流與冪等、預扣庫存，以及 Redis 掛掉時的降級。
 - 用 RabbitMQ 與 Kafka 做非同步與事件驅動，並說清楚訊息為什麼會漏、為什麼會重、怎麼處理。
 - 獨立完成一個可部署、有測試、有監控的後端服務。
 - （選修）判斷一個系統該不該拆成多個服務，並在決定要拆時處理資料庫拆分與跨服務一致性。
@@ -60,7 +61,7 @@ JPA / MyBatis        兩種存取實作：ORM vs SQL Mapper（08-jpa-mybatis）
   ↓
 Spring Security      認證與授權：登入、權限、JWT（09-spring-security）
   ↓
-Redis                快取、分散式鎖、限流、降級（10-redis）
+Redis                本體 → 快取、分散式鎖、限流、預扣庫存、降級、高可用（10-redis）
   ↓
 訊息佇列              RabbitMQ 與 Kafka：非同步與事件驅動（11-messaging）
   ↓
@@ -81,25 +82,28 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 01 | [01-java-core/](./01-java-core/) ✅ | Java 語言核心與 JVM | 14 | 語法、OOP、集合、Stream、併發、JVM 記憶體、Maven / Gradle、JUnit、**反射與動態代理** |
 | 02 | [02-spring-boot/](./02-spring-boot/) ✅ | Spring Boot 框架原理 | 10 | IoC 容器、DI、自動組態、設定檔與 Profile、AOP、Actuator、打包部署 |
 | 03 | [03-rest-api/](./03-rest-api/) ✅ | REST API 設計 | 10 | URL 與資源設計、狀態碼、DTO、錯誤格式、分頁、版本控管、OpenAPI |
-| 04 | [04-controller/](./04-controller/) ✅ | Web 層實作 | 8 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、檔案與串流、SSE、CORS 與序列化、MockMvc 與授權矩陣測試 |
+| 04 | [04-controller/](./04-controller/) ✅ | Web 層實作 | 9 | 參數綁定、Bean Validation、全域例外處理、Filter / Interceptor、檔案與串流、SSE、**WebSocket 與 STOMP**、CORS 與序列化、MockMvc 與授權矩陣測試 |
 | 05 | [05-service/](./05-service/) ✅ | 商業邏輯層 | 8 | 商業邏輯層定位與**不變量**、貧血 vs 充血、Service 設計與**循環依賴**、交易傳播、DTO 轉換、例外分層、快取、非同步、外部 API、Mockito 測試 |
 | 06 | [06-repository/](./06-repository/) ✅ | 資料存取層 | 7 | 資料層定位與**介面設計的七個判準**、**不變量的第四個位置**、DataSource 與連線池、JdbcTemplate、Spring Data 抽象、**分頁與動態查詢**、**交易邊界與批次**、**資料層測試（H2 vs 真 MySQL 的 21 根探針）** |
 | 07 | [07-mysql/](./07-mysql/) ✅ | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢調校、Flyway 與線上大表變更、備份／複製／讀寫分離 |
 | 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) ✅ | JPA / Hibernate 與 MyBatis | 10 | **ORM vs SQL Mapper 的六條分歧軸**、Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL、**選型與混用** |
 | 09 | [09-spring-security/](./09-spring-security/) 🚧 | 認證與授權 | 9 | **認證 vs 授權的三層**、Filter Chain、UserDetails 與密碼雜湊、方法層權限、Session vs Token、JWT、OAuth2 |
-| 10 | [10-redis/](./10-redis/) | Redis 應用（Spring 視角） | 9 | 序列化與 Lettuce 逾時、快取抽象接 Redis、**故障降級**、分散式鎖、限流與冪等、Session 與 Token 撤銷、預扣庫存 |
+| 10 | [10-redis/](./10-redis/) ✅ | Redis：本體與 Spring 應用 | 15 | **前半在 `redis-cli` 裡**：資料結構與編碼、TTL 與過期機制、單執行緒與慢命令、記憶體淘汰與持久化、原子性（Lua）；**後半接進 Spring**：序列化與 Lettuce 三層逾時、快取抽象、**故障降級**、分散式鎖、限流與冪等、Session 與 Token 撤銷、預扣庫存、Sentinel / Cluster、Testcontainers 與上線檢查清單 |
 | 11 | [11-messaging/](./11-messaging/) | 訊息佇列：RabbitMQ 與 Kafka | 12 | 可靠投遞三段、**Outbox**、冪等消費、RabbitMQ 拓撲與 DLX、Kafka 分區與 offset、精確一次、死信與 lag 監控、選型 |
 | 12 | [12-capstone/](./12-capstone/) | 期末專題：訂單系統 | 10 | 把上面全部串成一個可部署、有測試、有監控的服務 |
 | 13 | [13-distributed-systems/](./13-distributed-systems/) 🔸 | 服務拆分與分散式一致性 | 10 | **該不該拆**、邊界切法、資料庫拆分、Saga 與補償、跨服務查詢、服務網韌性、分散式追蹤、Spring Cloud vs K8s 選型、遷移與回頭路 |
 
-合計 **125 個章節**。✅ 表示該子課程已完成，🚧 表示進行中，🔸 表示進階選修。
+合計 **132 個章節**。✅ 表示該子課程已完成，🚧 表示進行中，🔸 表示進階選修。
 
-> **10 與 11 的定位**：它們不教 Redis 或 MQ 的內部原理，教的是「這東西進到 Spring 專案裡會怎麼壞」。
-> Redis 本身（資料結構、持久化、Cluster）請看 [../database-course/redis-course/](../database-course/redis-course/)，本課只負責 Java 這一側的交界。
+> **10 與 11 的定位**：重點是「這東西進到 Spring 專案裡會怎麼壞」。
+> ⚠️ **但 10 站的前六章（00～05）刻意留在 `redis-cli` 裡教 Redis 本體**——
+> 因為後半段每一個事故（序列化爆炸、鎖失效、超賣）的根因都在那六章裡，跳過的話後半段會變成抄設定。
+> 11 站則維持「不教 broker 內部原理」。
 
 > **13 為什麼在 capstone 之後、而且不叫「Spring Cloud」**：
 > Spring Cloud 的主要內容在這門課裡已經拆散教完了 —— 熔斷與重試在 [05-service/06](./05-service/06-async-and-external-api-calls.md)、限流在 [03-rest-api/08](./03-rest-api/08-idempotency-caching-and-rate-limit.md) 與 [10-redis/](./10-redis/)、
-> 設定中心在 [02-spring-boot/03](./02-spring-boot/03-configuration-properties-and-profiles.md)、追蹤在 [02-spring-boot/05](./02-spring-boot/05-logging-and-actuator.md)、閘道在 [../nginx/](../nginx/)、服務發現在 [../docker/](../docker/) 的 K8s 兩章。
+> 設定中心在 [02-spring-boot/03](./02-spring-boot/03-configuration-properties-and-profiles.md)、追蹤在 [02-spring-boot/05](./02-spring-boot/05-logging-and-actuator.md)、
+> **閘道與服務發現在 [13-distributed-systems/](./13-distributed-systems/) 的 08 章**（那一章把服務發現、設定管理、閘道、負載平衡四件事攤成決策表）。
 > 真正還沒教的不是「Spring Cloud 的功能」，而是**架構問題**：該不該拆、資料庫怎麼拆、跨服務的交易怎麼收尾。
 > 這些問題只有在你手上已經有一個會痛的單體時才問得出來 —— 所以它排在 capstone 之後，
 > 工具選型（Spring Cloud vs K8s 原生）放在第 08 章當決策表，而不是當前提。
@@ -111,13 +115,14 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 01-java-core | ✅ 已結業（14 章，約 54,400 行） |
 | 02-spring-boot | ✅ 已結業（10 章，約 29,100 行） |
 | 03-rest-api | ✅ 已結業（10 章，約 33,700 行） |
-| 04-controller | ✅ 完成（00～07 章，約 61,500 行） |
+| 04-controller | ✅ 完成（00～08 章，約 64,900 行） |
 | 05-service | ✅ 完成（00～07 章，約 42,400 行） |
 | 06-repository | ✅ 完成（00～06 章，約 20,150 行） |
 | 07-mysql | ✅ 完成（00～07 章，8 章） |
 | 08-jpa-mybatis | ✅ 完成（00～09 章，10 章） |
-| 09-spring-security | 🚧 進行中（00～02 章可讀） |
-| 10～13 | ⏳ 未開始 |
+| 09-spring-security | 🚧 進行中 |
+| 10-redis | ✅ 完成（00～14 章，15 章，約 22,700 行） |
+| 11～13 | ⏳ 未開始 |
 
 ---
 
@@ -142,8 +147,9 @@ Capstone             整合成一個可上線的服務（12-capstone）
 > 已經在做微服務、或公司正要拆的人：做完 12 站再進 [13-distributed-systems/](./13-distributed-systems/)。
 > 如果連 12 站的單體都還沒做過，13 站的每一章都會變成背名詞。
 >
-> 已經在用 Redis / MQ、只想補洞的人：10 站直接從 03（分散式鎖）與 05（限流）讀，
+> 已經在用 Redis / MQ、只想補洞的人：10 站直接從 09（分散式鎖）與 10（限流與冪等）讀，
 > 11 站直接從 02（Outbox）與 03（冪等消費）讀 —— 這四章是最常被跳過、也最常出事的地方。
+> ⚠️ **但 10 站的 09 章會一路往回指到 05（Lua）、03（單執行緒）**，追不下去的時候就是該補前半段的訊號。
 
 **路線 C：已在寫 Spring Boot，想補洞**
 
@@ -161,6 +167,9 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 對帳老是差幾分錢或差 8 小時 | [04-controller/](./04-controller/) 06 |
 | 測試全綠，上線後客戶看到別人的資料 | [04-controller/](./04-controller/) 07 |
 | CI 從 4 分鐘變成 47 分鐘，而刪測試沒有用 | [04-controller/](./04-controller/) 07 |
+| 聊天上線後「有時候收不到訊息」，而且完全不報錯 | [04-controller/](./04-controller/) 08（8.2.1、8.10） |
+| WebSocket 的 `Principal` 永遠是 null，但 Security 設定看起來沒問題 | [04-controller/](./04-controller/) 08（8.2.2、8.8） |
+| WebSocket 連線數只增不減，直到 pod 被 OOMKilled | [04-controller/](./04-controller/) 08（8.2.3、8.9） |
 | `@Transactional` 沒生效 | [05-service/](./05-service/) 02（2.7 的五種情境） |
 | 方法看起來成功卻拋 `UnexpectedRollbackException` | [05-service/](./05-service/) 02（2.8） |
 | 一個外部 API 變慢，整個服務就停止回應 | [05-service/](./05-service/) 02（2.9.3） |
@@ -265,11 +274,17 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 用 HTTP Basic 保護的 API，QPS 一過七十就開始逾時 | [09-spring-security/](./09-spring-security/) 02（2.3.5） |
 | 換密碼演算法要不要叫五十萬個使用者改密碼 | [09-spring-security/](./09-spring-security/) 02（2.8） |
 | 不知道 JWT 該怎麼做才安全 | [09-spring-security/](./09-spring-security/) 05 |
-| `redis-cli` 看到一串亂碼，改個套件名整個快取都讀不回來 | [10-redis/](./10-redis/) 01 |
-| 「Redis 只是快取」，但它一卡，整站的執行緒全堵住 | [10-redis/](./10-redis/) 01、03 |
-| 加了分散式鎖還是超賣，而鎖看起來有拿到 | [10-redis/](./10-redis/) 04（鎖與交易的順序） |
-| 業務跑超過鎖的過期時間，兩個執行緒同時「持有」同一把鎖 | [10-redis/](./10-redis/) 04（watchdog） |
-| 限流設 100 QPS，交界那一秒卻進來 200 個請求 | [10-redis/](./10-redis/) 05 |
+| `redis-cli` 看到一串亂碼，改個套件名整個快取都讀不回來 | [10-redis/](./10-redis/) 00（0.3.3）、06 |
+| 「Redis 只是快取」，但它一卡，整站的執行緒全堵住 | [10-redis/](./10-redis/) 03（3.7）、06（6.8）、08 |
+| 沒設過期時間的購物車自己不見了，而且沒有任何錯誤 | [10-redis/](./10-redis/) 04（淘汰策略）、11（11.6.4） |
+| 一行 `keys()` 讓所有人的 API 卡住半秒 | [10-redis/](./10-redis/) 01（1.5）、03 |
+| 加了分散式鎖還是超賣，而鎖看起來有拿到 | [10-redis/](./10-redis/) 09（9.8 鎖與交易的順序） |
+| 業務跑超過鎖的過期時間，兩個執行緒同時「持有」同一把鎖 | [10-redis/](./10-redis/) 09（9.6 watchdog） |
+| 限流設 100 QPS，交界那一秒卻進來 200 個請求 | [10-redis/](./10-redis/) 10（10.2.3 固定窗） |
+| 客戶端逾時重試，於是同一筆訂單建立了兩張 | [10-redis/](./10-redis/) 10（10.9 冪等鍵） |
+| 加了一台機器之後，使用者「登入了又沒登入」 | [10-redis/](./10-redis/) 11（11.2） |
+| 主從切換完成了，Java 客戶端卻 40 秒都沒恢復 | [10-redis/](./10-redis/) 13（13.5、13.8） |
+| 單機測得好好的 Lua，上了 Cluster 直接回 `CROSSSLOT` | [10-redis/](./10-redis/) 13（13.7） |
 | 通知信寄出去了，點進去卻找不到那筆訂單 | [11-messaging/](./11-messaging/) 02（Outbox） |
 | 訂單寫進資料庫了，訊息沒送出去就重啟 | [11-messaging/](./11-messaging/) 01、02 |
 | 同一封確認信客戶收到五次 | [11-messaging/](./11-messaging/) 03（冪等消費） |
@@ -326,15 +341,6 @@ curl https://start.spring.io/starter.zip \
   -o demo.zip
 unzip demo.zip -d demo
 ```
-
----
-
-## 與其他課程的關係
-
-- [../database-course/](../database-course/) — 資料庫**通論**（選型、建模、高併發、Redis、NoSQL）。本課的 07-mysql 聚焦「Java 專案怎麼用 MySQL」，兩者互補。
-- [../database-course/redis-course/](../database-course/redis-course/) — Redis **本體**（資料結構、持久化、Cluster、維運排錯，15 章）。本課的 10-redis 只講 Java 這一側；兩門課建議搭配讀，不重複。
-- [../docker/](../docker/) — 12-capstone 的部署章節會用到。
-- [../security-course/](../security-course/) — 攻擊者視角。09-spring-security 是防守方視角，可對照閱讀。
 
 ---
 

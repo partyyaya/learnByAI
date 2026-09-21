@@ -302,7 +302,7 @@ HGETALL bighash          O(N)，N = 100 萬                    →  199,542 µs
 | **③ 集合運算** | `SINTER`、`SUNION`、`SDIFF`、`ZUNIONSTORE`、`ZINTERSTORE` | 參與運算的集合大小總和 | `SINTERCARD`（只要數量）、離線預先算好 |
 | **④ 刪除與清空** | `DEL` 一個大 key、`FLUSHALL`、`FLUSHDB` | 被釋放的元素數 | **`UNLINK`**（01 章 1.3.2）、`FLUSHALL ASYNC`、或打開 `lazyfree-*`（見下方） |
 | **⑤ 排序與計算** | `SORT`、`LPOS`（大 list）、`LREM`、`SETRANGE` 造成的大量複製 | 元素數 | 在應用層排序、或用 ZSet |
-| **⑥ 一次操作很多 key** | `MGET`／`MSET` 傳幾千個 key、`DEL k1 k2 ... k5000` | 你傳了幾個 key | 分批，每批 100～1000（3.8.5） |
+| **⑥ 一次操作很多 key** | `MGET`／`MSET` 傳幾千個 key、`DEL k1 k2 ... k5000` | 你傳了幾個 key | 分批，每批 100～1000（3.8.4） |
 
 **④ 有一組設定可以把「釋放記憶體」全部交給背景執行緒**，而它們預設全是關的：
 
@@ -932,7 +932,7 @@ CONFIG SET lazyfree-lazy-user-flush yes
 ```
 
 ⚠️ **`CONFIG SET` 只改到記憶體裡，重啟就沒了。** 正式環境要寫進設定檔
-（或 `CONFIG REWRITE`）——14 章會給完整的 `redis.conf`。
+（或 `CONFIG REWRITE`）——14 章 14.9.9 會給完整的 `redis.conf`。
 
 **第二道：應用端的設定**
 

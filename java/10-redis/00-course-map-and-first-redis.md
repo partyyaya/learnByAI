@@ -365,13 +365,17 @@ docker exec redis-lab redis-cli SLOWLOG GET 3
 ```
 
 ```
-1) 1) (integer) 9
+1) 1) (integer) 8
    2) (integer) 1789540745
-   3) (integer) 97836          ← 這條命令佔用主執行緒 97,836 微秒
+   3) (integer) 505157         ← 這條命令佔用主執行緒 505,157 微秒（0.51 秒）
    4) 1) "KEYS"
-      2) "*"
-   5) "127.0.0.1:44584"
+      2) "session:*"
+   5) "192.168.65.1:44584"
 ```
+
+⚠️ **注意伺服器端的 0.51 秒，比 Java 那一側量到的 1.8 秒短。**
+差的那一秒多，是「把 300 萬個字串傳回客戶端、再組成一個 `Set`」的時間——
+**它不佔 Redis 的主執行緒，但它佔你的頻寬與 heap**（見下方 📌）。
 
 📌 **附帶一提，那個 `keys()` 還做了第二件壞事**：它把 300 萬個字串一次搬進 JVM 的 heap。
 光是 `Set<String>` 的容器加上 300 萬個 `String`，就是幾百 MB——**一行程式碼同時打了 Redis 跟你自己的 GC。**
@@ -1075,9 +1079,11 @@ db0:keys=1,expires=0,avg_ttl=0
 
 0.4.1 的啟動命令裡有 `--enable-debug-command yes`。**正式環境絕對不要開。**
 
-不開的話，`DEBUG` 系列命令會直接被擋掉：
+不開的話，`DEBUG` 系列命令會直接被擋掉。另起一台**沒有**加那個參數的容器試試看
+（測完 `docker rm -f redis-nodebug` 就可以了，本站後面不會用到它）：
 
 ```bash
+docker run -d --name redis-nodebug -p 16390:6379 redis:7.2
 docker exec redis-nodebug redis-cli DEBUG POPULATE 100
 ```
 
@@ -1099,8 +1105,9 @@ configuration file, and then restart the server.
 | `DEBUG SET-ACTIVE-EXPIRE 0` | 關掉主動過期——**這是看懂惰性刪除的唯一方法** | 01 |
 | `DEBUG SLEEP 5` | 讓 Redis 主執行緒睡 5 秒，模擬「它卡住了」 | 03、08 |
 
-📌 **正式環境要擋掉的不只 `DEBUG`。** `FLUSHALL`、`KEYS`、`CONFIG` 都可以用
-`rename-command` 改名或停用——13 章與 14 章會給一份完整的正式環境設定。
+📌 **正式環境要擋掉的不只 `DEBUG`。** `FLUSHALL`、`KEYS`、`CONFIG` 都可以用 ACL 擋掉
+（⚠️ 但不要用 `-@dangerous` 一次擋光，那會連監控一起關掉）——
+**14 章 14.9.9 有一份完整的正式環境 `redis.conf`。**
 
 ---
 
@@ -1236,7 +1243,7 @@ GET: 3333333.50 requests per second, p50=0.191 msec
 |---|---|---|
 | Redis 原始碼與 C 實作細節 | 本站教「怎麼用對」，不教「它怎麼寫的」。但**每一個行為都會實測給你看**，不會只叫你背結論 | —— |
 | Redis Stack 的擴充模組（RedisJSON、RediSearch、向量搜尋） | 那是另一套產品線，且多數團隊的正式環境是純 Redis | —— |
-| Redis 7.4+ / Valkey 的新功能（hash 欄位級 TTL 等） | 本站釘在 7.2。那些功能很好，但你的正式環境多半還沒有 | 14 章會提一句升級路徑 |
+| Redis 7.4+ / Valkey 的新功能（hash 欄位級 TTL 等） | 本站釘在 7.2。那些功能很好，但你的正式環境多半還沒有 | 14 章 14.9.11 有升級路徑 |
 | 完整的維運（備份、擴容、遷移） | 那是 SRE 的工作。本站只教「Java 這一側該知道的部分」 | 13、14 |
 
 ---
