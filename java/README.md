@@ -89,7 +89,7 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) ✅ | JPA / Hibernate 與 MyBatis | 10 | **ORM vs SQL Mapper 的六條分歧軸**、Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL、**選型與混用** |
 | 09 | [09-spring-security/](./09-spring-security/) 🚧 | 認證與授權 | 9 | **認證 vs 授權的三層**、Filter Chain、UserDetails 與密碼雜湊、方法層權限、Session vs Token、JWT、OAuth2 |
 | 10 | [10-redis/](./10-redis/) ✅ | Redis：本體與 Spring 應用 | 15 | **前半在 `redis-cli` 裡**：資料結構與編碼、TTL 與過期機制、單執行緒與慢命令、記憶體淘汰與持久化、原子性（Lua）；**後半接進 Spring**：序列化與 Lettuce 三層逾時、快取抽象、**故障降級**、分散式鎖、限流與冪等、Session 與 Token 撤銷、預扣庫存、Sentinel / Cluster、Testcontainers 與上線檢查清單 |
-| 11 | [11-messaging/](./11-messaging/) | 訊息佇列：RabbitMQ 與 Kafka | 12 | 可靠投遞三段、**Outbox**、冪等消費、RabbitMQ 拓撲與 DLX、Kafka 分區與 offset、精確一次、死信與 lag 監控、選型 |
+| 11 | [11-messaging/](./11-messaging/) ✅ | 訊息佇列：RabbitMQ 與 Kafka | 12 | 可靠投遞三段、**Outbox**、冪等消費、RabbitMQ 拓撲與 DLX、Kafka 分區與 offset、精確一次、死信與 lag 監控、**選型與「什麼時候不該用 MQ」** |
 | 12 | [12-capstone/](./12-capstone/) | 期末專題：訂單系統 | 10 | 把上面全部串成一個可部署、有測試、有監控的服務 |
 | 13 | [13-distributed-systems/](./13-distributed-systems/) 🔸 | 服務拆分與分散式一致性 | 10 | **該不該拆**、邊界切法、資料庫拆分、Saga 與補償、跨服務查詢、服務網韌性、分散式追蹤、Spring Cloud vs K8s 選型、遷移與回頭路 |
 
@@ -122,7 +122,8 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 08-jpa-mybatis | ✅ 完成（00～09 章，10 章） |
 | 09-spring-security | 🚧 進行中 |
 | 10-redis | ✅ 完成（00～14 章，15 章，約 22,700 行） |
-| 11～13 | ⏳ 未開始 |
+| 11-messaging | ✅ 完成（00～11 章，12 章，約 23,250 行） |
+| 12～13 | ⏳ 未開始 |
 
 ---
 
