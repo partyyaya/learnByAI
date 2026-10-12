@@ -36,9 +36,9 @@
 | 04 | `04-order-transaction-and-concurrency.md` | 訂單交易與併發（重頭戲） | 交易邊界、樂觀鎖 vs 悲觀鎖防超賣、冪等下單、狀態機、壓測驗證 |
 | 05 | `05-authentication-and-permission.md` | 認證與權限 | JWT 登入、角色與資料層級權限、稽核日誌 |
 | 06 | `06-caching-and-hot-inventory.md` | 快取與熱點庫存 | 商品詳情快取與失效、熱門排行、Redis 預扣庫存 + DB 落帳、分散式鎖包住交易、API 限流、**Redis 拔掉 60 秒的降級演練** |
-| 07 | `07-event-driven-order-flow.md` | 事件驅動訂單流（重頭戲二） | 用 Outbox 送出「訂單已成立」、扣庫存 / 通知 / 出貨三個消費者、冪等消費、死信與重放、`traceId` 跨 MQ、最終一致性的對帳 |
-| 08 | `08-testing-and-quality.md` | 測試與品質 | 測試金字塔、Testcontainers（MySQL + Redis + MQ）整合測試、覆蓋率、CI 流程 |
-| 09 | `09-deployment-and-observability.md` | 部署與可觀測性 | Dockerfile 與 compose（含 Redis / broker）、環境設定、健康檢查、指標與日誌、consumer lag 告警、上線檢查清單 |
+| 07 | `07-event-driven-order-flow.md` | 事件驅動訂單流（重頭戲二） | Outbox 與 relay、熱點商品的落帳移出下單交易、落帳 / 通知 / 退款等五個消費者、冪等消費、重試階梯、死信與重放、RabbitMQ 停機演練、INV-2 / INV-3 對帳（`traceId` 跨 MQ 留到第 09 章） |
+| 08 | `08-testing-and-quality.md` | 測試與品質 | 測試金字塔、Testcontainers（MySQL + Redis + MQ，一個 JVM 一組）、找出「綠得不對」的測試、覆蓋率門檻與讀沒跑到的那幾行、手工突變、獨立行程的壓測工具（0.6.2 每一列、降級演練重量）、CI 與一台什麼都沒有的機器 |
+| 09 | `09-deployment-and-observability.md` | 部署與可觀測性 | 留下日誌重跑找到的 relay 卡死、多階段分層的映像檔、`docker stop` 的寬限與 graceful、一個命令起完整的 compose（migration 是部署的一個步驟）、正式環境的規格與暖機、JSON 日誌、`traceId` 跨過 broker（驗收 Q7，`Skipped: 0`）、指標與 19 條告警（`promtool`、演練、Alertmanager）、INV-5 與稽核保留、增量對帳、上線檢查清單 |
 
 ---
 
@@ -65,6 +65,7 @@
 - 把第 07 章的事件流**用另一個 broker 再做一次**（RabbitMQ 版做完換 Kafka 版），比對設定量與壓測結果。
 - 加上熔斷，模擬第三方金流逾時（限流已在第 06 章做過）。
 - 把訂單狀態變更寫成事件流並用 log compaction 保留，體驗事件來源（Event Sourcing）的取捨。
+- 加上優惠券與滿額折（0.7 第 4 項）：`OrderItem` 要存折扣分攤，退款要按分攤金額退。
 
 ---
 

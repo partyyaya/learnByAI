@@ -87,10 +87,10 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 06 | [06-repository/](./06-repository/) ✅ | 資料存取層 | 7 | 資料層定位與**介面設計的七個判準**、**不變量的第四個位置**、DataSource 與連線池、JdbcTemplate、Spring Data 抽象、**分頁與動態查詢**、**交易邊界與批次**、**資料層測試（H2 vs 真 MySQL 的 21 根探針）** |
 | 07 | [07-mysql/](./07-mysql/) ✅ | MySQL 實戰 | 8 | Schema 設計、JOIN、索引與 EXPLAIN、InnoDB 交易與鎖、慢查詢調校、Flyway 與線上大表變更、備份／複製／讀寫分離 |
 | 08 | [08-jpa-mybatis/](./08-jpa-mybatis/) ✅ | JPA / Hibernate 與 MyBatis | 10 | **ORM vs SQL Mapper 的六條分歧軸**、Entity 映射、關聯、持久化情境、N+1、JPQL / QueryDSL、MyBatis 動態 SQL、**選型與混用** |
-| 09 | [09-spring-security/](./09-spring-security/) 🚧 | 認證與授權 | 9 | **認證 vs 授權的三層**、Filter Chain、UserDetails 與密碼雜湊、方法層權限、Session vs Token、JWT、OAuth2 |
+| 09 | [09-spring-security/](./09-spring-security/) ✅ | 認證與授權 | 9 | **認證 vs 授權的三層**、Filter Chain、UserDetails 與密碼雜湊、方法層權限、Session vs Token、JWT、OAuth2 |
 | 10 | [10-redis/](./10-redis/) ✅ | Redis：本體與 Spring 應用 | 15 | **前半在 `redis-cli` 裡**：資料結構與編碼、TTL 與過期機制、單執行緒與慢命令、記憶體淘汰與持久化、原子性（Lua）；**後半接進 Spring**：序列化與 Lettuce 三層逾時、快取抽象、**故障降級**、分散式鎖、限流與冪等、Session 與 Token 撤銷、預扣庫存、Sentinel / Cluster、Testcontainers 與上線檢查清單 |
 | 11 | [11-messaging/](./11-messaging/) ✅ | 訊息佇列：RabbitMQ 與 Kafka | 12 | 可靠投遞三段、**Outbox**、冪等消費、RabbitMQ 拓撲與 DLX、Kafka 分區與 offset、精確一次、死信與 lag 監控、**選型與「什麼時候不該用 MQ」** |
-| 12 | [12-capstone/](./12-capstone/) | 期末專題：訂單系統 | 10 | 把上面全部串成一個可部署、有測試、有監控的服務 |
+| 12 | [12-capstone/](./12-capstone/) ✅ | 期末專題：訂單系統 | 10 | 把上面全部串成一個可部署、有測試、有監控的服務 |
 | 13 | [13-distributed-systems/](./13-distributed-systems/) 🔸 | 服務拆分與分散式一致性 | 10 | **該不該拆**、邊界切法、資料庫拆分、Saga 與補償、跨服務查詢、服務網韌性、分散式追蹤、Spring Cloud vs K8s 選型、遷移與回頭路 |
 
 合計 **132 個章節**。✅ 表示該子課程已完成，🚧 表示進行中，🔸 表示進階選修。
@@ -120,10 +120,11 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 06-repository | ✅ 完成（00～06 章，約 20,150 行） |
 | 07-mysql | ✅ 完成（00～07 章，8 章） |
 | 08-jpa-mybatis | ✅ 完成（00～09 章，10 章） |
-| 09-spring-security | 🚧 進行中 |
+| 09-spring-security | ✅ 完成（00～08 章，9 章，約 32,900 行） |
 | 10-redis | ✅ 完成（00～14 章，15 章，約 22,700 行） |
 | 11-messaging | ✅ 完成（00～11 章，12 章，約 23,250 行） |
-| 12～13 | ⏳ 未開始 |
+| 12-capstone | ✅ 完成（00～09 章，約 50,000 行，含每章「其餘檔案的完整內容」；01～07 章補上專題寫完之後實跑的 `mvn clean verify`，以及已知問題修正、US-RPT-2 AC-1／US-RPT-3 的追記） |
+| 13-distributed-systems | ⏳ 未開始 |
 
 ---
 
