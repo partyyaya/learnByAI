@@ -697,7 +697,7 @@ WebSocket 的完整圖像：
 ---
 
 > 延伸閱讀：
-> - [第一章：HTTP 與 HTTPS 必備知識](./01-http-https.md) — WebSocket 握手就是走 HTTP，升級概念的基礎
-> - [第二章：SSL 憑證](./02-ssl-certificates.md) — `wss://` 背後就是 TLS，憑證設定同 HTTPS
+> - [第一章：HTTP 與 HTTPS 必備知識](./http-https.md) — WebSocket 握手就是走 HTTP，升級概念的基礎
+> - [第二章：SSL 憑證](./ssl-certificates.md) — `wss://` 背後就是 TLS，憑證設定同 HTTPS
 > - [前後端 JWT 登入實戰](./jwt-auth-frontend-backend.md) — WebSocket 身分驗證最常用 JWT
 > - [Promise、async/await](./promise-async-await-then.md) — 前端連線、重連、訊息處理都是非同步流程

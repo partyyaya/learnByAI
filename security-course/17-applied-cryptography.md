@@ -254,7 +254,7 @@ def my_encrypt(data, key="secret"):
 
 ## 17.7 TLS / HTTPS 攻防:中間人的門戶
 
-前面談的都是「你的程式怎麼用密碼學」,現在談**傳輸中**的密碼學——**TLS(Transport Layer Security)**,也就是 HTTPS 的 S。它是混合加密(17.2)最成功的實戰應用,也是本倉庫 Nginx 課程(`../nginx/06-ssl-https.md`)、common 課程(`../common/01-http-https.md`、`02-ssl-certificates.md`)的主題,這裡從攻防角度串起來。
+前面談的都是「你的程式怎麼用密碼學」,現在談**傳輸中**的密碼學——**TLS(Transport Layer Security)**,也就是 HTTPS 的 S。它是混合加密(17.2)最成功的實戰應用,也是本倉庫 Nginx 課程(`../nginx/06-ssl-https.md`)、common 課程(`../common/http-https.md`、`ssl-certificates.md`)的主題,這裡從攻防角度串起來。
 
 ### TLS 一次做齊三件事
 

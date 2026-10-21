@@ -1,21 +1,55 @@
 # 通用基礎知識教學
 
-> 涵蓋網路通訊、安全性等開發者必備的共通基礎知識，適用於所有技術領域。
+> 整理命令列工具、JavaScript 非同步、瀏覽器 API、網路通訊與安全部署等共通知識，可依學習順序閱讀，也可按工作需求查閱。
 
 ---
 
-## 課程目錄
+## 課程目錄與建議順序
 
-| 章節 | 檔案 | 主題 |
-|------|------|------|
-| 01 | [01-http-https.md](./01-http-https.md) | HTTP 與 HTTPS — 網路通訊基礎與差異 |
-| 02 | [02-ssl-certificates.md](./02-ssl-certificates.md) | SSL 憑證的取得與必備知識 |
-| 03 | [03-domain-dns-https-nginx.md](./03-domain-dns-https-nginx.md) | 從申請網域到 HTTPS 上線 — 網域、DNS、憑證與前端 Nginx 實戰 |
-| — | [jwt-auth-frontend-backend.md](./jwt-auth-frontend-backend.md) | 前後端 JWT 登入與加密實戰 — 簽章、密碼雜湊、Token 流程與安全 |
-| — | [websocket.md](./websocket.md) | WebSocket 即時通訊實戰 — 握手升級、心跳重連、身分驗證與部署 |
-| — | [sse.md](./sse.md) | SSE 伺服器推送實戰 — text/event-stream、自動重連、斷點續傳與部署 |
-| — | [web-worker.md](./web-worker.md) | Web Worker 背景執行緒實戰 — 使用情境、原生／Vue+Vite／React 範例與通訊優化 |
-| — | [browser-native-apis.md](./browser-native-apis.md) | 瀏覽器原生 API — Observer 系列、排程、請求取消、跨分頁通訊、檔案預覽與 Vue／React 整合 |
+### 1. 環境與命令列工具
+
+依作業系統選讀，不需要兩份都讀完才往下進行；部署時也可以回來查指令。
+
+| 檔案 | 主題 |
+|------|------|
+| [bash.md](./bash.md) | Bash 常用指令 — 檔案、程序、網路與 Nginx／Docker 操作 |
+| [windows.md](./windows.md) | Windows 常用指令 — CMD、PowerShell、程序與服務管理 |
+
+### 2. 非同步與瀏覽器實務
+
+先理解非同步流程，再學瀏覽器提供的能力，最後處理需要背景執行緒的運算。
+
+| 檔案 | 主題 |
+|------|------|
+| [promise-async-await-then.md](./promise-async-await-then.md) | Promise、then 與 async/await — 非同步流程與原理手作 |
+| [browser-native-apis.md](./browser-native-apis.md) | 瀏覽器原生 API — Observer、排程、請求取消、跨分頁通訊與資源清理 |
+| [web-worker.md](./web-worker.md) | Web Worker — 背景運算、通訊與原生／Vue／React 整合 |
+
+### 3. 網路與即時通訊
+
+先建立 HTTP 基礎，再比較伺服器單向推送與雙向通訊。若不熟悉請求與回應，可先讀 HTTP，再回到瀏覽器 API 篇的 fetch 範例。
+
+| 檔案 | 主題 |
+|------|------|
+| [http-https.md](./http-https.md) | HTTP 與 HTTPS — 網路通訊基礎與差異 |
+| [sse.md](./sse.md) | SSE — 伺服器推送、自動重連與斷點續傳 |
+| [websocket.md](./websocket.md) | WebSocket — 雙向通訊、握手升級、心跳重連與部署 |
+
+### 4. 安全與部署上線
+
+先理解憑證與傳輸安全，再學登入驗證，最後將網域、DNS、HTTPS 與 Nginx 串成上線流程。
+
+| 檔案 | 主題 |
+|------|------|
+| [ssl-certificates.md](./ssl-certificates.md) | SSL/TLS 憑證 — 取得、結構與管理 |
+| [jwt-auth-frontend-backend.md](./jwt-auth-frontend-backend.md) | JWT 登入與加密實戰 — 簽章、密碼雜湊、Token 流程與安全 |
+| [domain-dns-https-nginx.md](./domain-dns-https-nginx.md) | 網域到 HTTPS 上線 — DNS、憑證與前端 Nginx 實戰 |
+
+### 5. 互動效果範例
+
+| 檔案 | 主題 |
+|------|------|
+| [mouse-erase-reveal.html](./mouse-erase-reveal.html) | 滑鼠擦除露圖效果 — Canvas 遮罩與滑鼠互動，可用瀏覽器開啟觀察 |
 
 ---
 
@@ -29,29 +63,17 @@
 ## 適合對象
 
 - 想搞懂 HTTP/HTTPS 原理的後端或全端工程師
+- 想補強非同步、瀏覽器 API 與效能處理的前端工程師
 - 需要管理 SSL 憑證的 DevOps / SRE 工程師
 - 對網站安全性有興趣的開發者
 - 準備將網站從 HTTP 升級到 HTTPS 的人
 
-## 學習路線建議
-
-```
-基礎篇
-  01 HTTP 與 HTTPS 基礎 → 理解網路通訊協定的核心原理
-
-安全篇
-  02 SSL 憑證 → 學會取得、安裝與管理 SSL 憑證
-  03 網域→HTTPS 上線 → 申請網域、設定 DNS、申請憑證、設定前端 Nginx 一條龍
-  JWT 登入   → 在 HTTPS 之上，建立前後端的身分認證機制
-
-```
-
 ## 環境需求
 
-- 作業系統：Linux（推薦 Ubuntu 22.04+）/ macOS / Windows（WSL2）
-- 建議搭配工具：curl、openssl、certbot
-- 有一個可用的域名（學習 SSL 憑證申請時會用到）
+- 命令列篇：Linux／macOS 的 Shell，或 Windows 的 CMD／PowerShell；部分指令依環境選用。
+- 瀏覽器篇：瀏覽器與開發者工具；需要模組或安全環境的範例搭配本機開發伺服器。
+- 網路與部署篇：依章節使用 curl、openssl、certbot、Nginx 等工具；實際申請公開憑證時準備網域與可驗證的部署環境。
 
 ---
 
-> 準備好了嗎？讓我們從 [第一章：HTTP 與 HTTPS 必備知識](./01-http-https.md) 開始吧！
+> 已熟悉命令列可直接從 [Promise 與 async/await](./promise-async-await-then.md) 開始；只想學網站上線則從 [HTTP 與 HTTPS](./http-https.md) 接到安全與部署篇。

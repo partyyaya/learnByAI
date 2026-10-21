@@ -25,7 +25,7 @@
 | ③ 申請憑證 | 向 CA 證明你擁有這個網域 | 拿到 `fullchain.pem` 與 `privkey.pem` |
 | ④ 設定 Nginx | 把憑證與網域寫進 server block | 瀏覽器顯示鎖頭，HTTPS 正常運作 |
 
-> 延伸閱讀：本章聚焦「實際操作流程」。若想深入了解 HTTP/HTTPS 原理請看 [01-http-https.md](./01-http-https.md)，想深入了解憑證內部結構請看 [02-ssl-certificates.md](./02-ssl-certificates.md)。
+> 延伸閱讀：本章聚焦「實際操作流程」。若想深入了解 HTTP/HTTPS 原理請看 [http-https.md](./http-https.md)，想深入了解憑證內部結構請看 [ssl-certificates.md](./ssl-certificates.md)。
 
 ---
 

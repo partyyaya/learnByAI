@@ -506,4 +506,4 @@ server {
 
 ---
 
-> 下一章：[SSL 憑證的取得與必備知識](./02-ssl-certificates.md)
+> 下一章：[SSL 憑證的取得與必備知識](./ssl-certificates.md)

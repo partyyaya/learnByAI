@@ -688,6 +688,6 @@ Access Token 一般 5~15 分鐘；Refresh Token 數天到數週。視敏感程�
 ---
 
 > 延伸閱讀：
-> - [第一章：HTTP 與 HTTPS 必備知識](./01-http-https.md) — JWT 必須跑在 HTTPS 之上
-> - [第二章：SSL 憑證](./02-ssl-certificates.md) — 傳輸加密的基礎
+> - [第一章：HTTP 與 HTTPS 必備知識](./http-https.md) — JWT 必須跑在 HTTPS 之上
+> - [第二章：SSL 憑證](./ssl-certificates.md) — 傳輸加密的基礎
 > - [Promise、async/await](./promise-async-await-then.md) — 前端 Token refresh 流程都是非同步

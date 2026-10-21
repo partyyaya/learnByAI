@@ -560,7 +560,7 @@ SSE 的完整圖像：
 
 > 延伸閱讀：
 > - [WebSocket 即時通訊實戰](./websocket.md) — 需要雙向互動時的選擇，與 SSE 互為補充
-> - [第一章：HTTP 與 HTTPS 必備知識](./01-http-https.md) — SSE 完全建立在 HTTP 之上
-> - [第二章：SSL 憑證](./02-ssl-certificates.md) — SSE 也應走 HTTPS，憑證設定同 HTTPS
+> - [第一章：HTTP 與 HTTPS 必備知識](./http-https.md) — SSE 完全建立在 HTTP 之上
+> - [第二章：SSL 憑證](./ssl-certificates.md) — SSE 也應走 HTTPS，憑證設定同 HTTPS
 > - [前後端 JWT 登入實戰](./jwt-auth-frontend-backend.md) — SSE 身分驗證最常用 JWT
 > - [Promise、async/await](./promise-async-await-then.md) — `fetch` 串流解析是非同步流程
