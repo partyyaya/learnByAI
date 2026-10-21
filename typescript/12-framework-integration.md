@@ -1,10 +1,10 @@
-# 第十章：前端框架整合（Vue / React / Nuxt / Next.js）
+# 第十二章：前端框架整合（Vue / React / Nuxt / Next.js）
 
 本章將詳細說明如何在各大前端框架中確認並啟用 TypeScript 支援，涵蓋**新專案建立**與**既有專案遷移**兩種情境。
 
 ---
 
-## 10.1 Vue + TypeScript
+## 12.1 Vue + TypeScript
 
 ### 新專案：使用 create-vue 建立
 
@@ -252,7 +252,7 @@ const compRef = ref<InstanceType<typeof MyComponent> | null>(null)
 
 ---
 
-## 10.2 React + TypeScript
+## 12.2 React + TypeScript
 
 ### 新專案：使用 Vite 建立
 
@@ -571,7 +571,7 @@ function Counter() {
 
 ---
 
-## 10.3 Nuxt + TypeScript
+## 12.3 Nuxt + TypeScript
 
 Nuxt 3 **原生內建 TypeScript 支援**，無需額外設定。
 
@@ -791,7 +791,7 @@ npm run typecheck
 
 ---
 
-## 10.4 Next.js + TypeScript
+## 12.4 Next.js + TypeScript
 
 Next.js 同樣**原生支援 TypeScript**，在建立專案時選擇 TypeScript 即可。
 
@@ -1066,7 +1066,7 @@ export default function RootLayout({ children }: LayoutProps) {
 
 ---
 
-## 10.5 各框架 TypeScript 設定對照表
+## 12.5 各框架 TypeScript 設定對照表
 
 | 項目 | Vue | React | Nuxt | Next.js |
 |------|-----|-------|------|---------|
@@ -1081,7 +1081,7 @@ export default function RootLayout({ children }: LayoutProps) {
 
 ---
 
-## 10.6 共通最佳實踐
+## 12.6 共通最佳實踐
 
 ### 1. 一律開啟嚴格模式
 
@@ -1448,4 +1448,32 @@ export function SignupForm() {
 
 ---
 
-> 下一章：[第十一章 — 裝飾器（Decorators）](./11-decorators.md)
+## 總結
+
+恭喜你完成了 TypeScript 課程的主線！以下是重點回顧：
+
+1. **型別是你的朋友** — 善用型別系統能在編譯時期就捕獲錯誤
+2. **嚴格模式是底線** — 新專案務必開啟 `strict: true`
+3. **避免 any** — 使用 `unknown` + 型別守衛取代
+4. **用聯合型別描述狀態** — 判別式聯合搭配窮盡性檢查，讓漏掉的分支在編譯期現形
+5. **泛型是核心** — 掌握泛型才能寫出真正可複用的程式碼
+6. **善用工具型別** — `Partial`、`Pick`、`Omit` 等減少重複定義
+7. **型別推論很強大** — 不需要標註每一個地方，讓 TypeScript 幫你推斷
+8. **選擇合適的框架整合** — Vue、React、Nuxt、Next.js 都有成熟的 TypeScript 支援
+
+> 持續練習，讓 TypeScript 成為你開發的利器！
+
+---
+
+## 想更進一步？
+
+以下章節屬於**進階補充（選修）**，依需求挑著讀即可：
+
+- [第十三章 — 裝飾器（Decorators）](./13-decorators.md)：使用 NestJS、Angular、TypeORM 這類以類別與 `@` 語法為核心的框架時必讀。
+- [第十四章 — 型別層級程式設計](./14-type-level-programming.md)：把型別當成程式語言，用泛型、條件型別與遞迴做編譯期運算。
+- [第十五章 — 型別體操](./15-type-gymnastics.md)：解題手冊，對應 type-challenges 反覆出現的手法。
+- [第十六章 — TypeScript Compiler API](./16-compiler-api.md)：用程式操作編譯器本身，開發 codemod、linter 與程式碼產生器。
+
+---
+
+> 下一章（進階補充，選修）：[第十三章 — 裝飾器（Decorators）](./13-decorators.md)

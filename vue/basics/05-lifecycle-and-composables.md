@@ -274,6 +274,10 @@ async function send() {
 
 > 什麼時候需要它？**改了資料、又要立刻根據「更新後的畫面」去量尺寸/捲動/聚焦新出現的元素**時。其他情況幾乎用不到。
 
+請先修改狀態，再呼叫 `await nextTick()`。如果尚未排入更新就先註冊 `nextTick(callback)`，
+callback 可能在更新之前執行。它等待 Vue 的 DOM 更新，不會自動等待未完成的 API 請求、圖片或動畫，也不保證瀏覽器已把新畫面繪製到螢幕。
+完整的 Promise 排程與可執行順序實驗，見 [源碼篇第 02 章 §2.7～2.8](../vue-source/02-computed-watch-scheduler.md#27-nexttick-與-microtask)。
+
 ---
 
 ## 6. 把邏輯抽成 Composable（`useXxx`）

@@ -1,8 +1,8 @@
-# 第十三章：型別層級程式設計（Type-Level Programming）
+# 第十四章：型別層級程式設計（Type-Level Programming）
 
-> 本章屬於進階補充章節。建議先熟悉 [第六章 泛型](./06-generics.md) 與 [第七章 進階型別技巧](./07-advanced-types.md) 再來閱讀。
+> 本章屬於進階補充章節。建議先熟悉 [第七章 泛型](./07-generics.md) 與 [第八章 進階型別技巧](./08-advanced-types.md) 再來閱讀。
 
-## 13.1 什麼是型別層級程式設計？
+## 14.1 什麼是型別層級程式設計？
 
 一般寫程式時，我們在**值的層級（value level）** 操作資料：宣告變數、呼叫函式、跑迴圈。而 TypeScript 的型別系統本身就是一套**在編譯期執行的小型程式語言**，我們可以在**型別層級（type level）** 做計算：把型別當成資料，用泛型當成函式，用條件型別當成分支，用遞迴當成迴圈。
 
@@ -41,11 +41,11 @@ type B = Not<false>; // 型別：true
 - **API 設計**：函式庫作者能提供「用了就對」的型別提示（如 `zod`、`Prisma`、`tRPC` 都大量使用）。
 - **編譯期驗證**：例如物件路徑 `"user.profile.name"` 只允許實際存在的路徑，打錯字直接紅線。
 
-> ⚠️ 提醒：型別層級程式設計威力強大，但也容易寫出難以維護、拖慢編譯速度的型別。本章最後 13.9 會專門討論「什麼時候該收手」。
+> ⚠️ 提醒：型別層級程式設計威力強大，但也容易寫出難以維護、拖慢編譯速度的型別。本章最後 14.9 會專門討論「什麼時候該收手」。
 
 ---
 
-## 13.2 型別層級的基本構件
+## 14.2 型別層級的基本構件
 
 在開始寫複雜型別前，先把五個基本構件對應清楚。
 
@@ -81,7 +81,95 @@ type T4 = { a: 1; b: 2 } extends { a: 1 } ? true : false; // true（多的屬性
 
 ### 型變標註 `in` / `out`（TypeScript 4.7+）
 
-`extends` 問的是「A 能不能賦值給 B」，而**型變（variance）** 問的是：當 `A extends B` 成立時，包了一層泛型的 `Box<A>` 是否也該滿足 `Box<A> extends Box<B>`——這正是型別層級程式設計裡「精確描述型別關係」的核心問題之一。第 6 章 6.4 節已經示範過 `out`（協變，`T` 只出現在讀出位置）與 `in`（逆變，`T` 只出現在寫入位置）這兩種標註；這裡補上第三種、也是最嚴格的一種——`in out`（不變）：當 `T` 同時出現在讀跟寫的位置（例如可讀可寫的屬性），就必須讀寫兩個方向都能互相賦值，只滿足其中一邊是不夠的：
+`extends` 問的是「A 能不能賦值給 B」，而**型變（variance）** 問的是：當 `A extends B` 成立時，包了一層泛型的 `Box<A>` 是否也該滿足 `Box<A> extends Box<B>`——這正是型別層級程式設計裡「精確描述型別關係」的核心問題之一。
+
+**先講白話：「變異」在問什麼？**
+
+我們都知道 `Dog` 是 `Animal` 的子型別，所以 `const a: Animal = new Dog()` 可以。但是**包了一層泛型之後**呢？`Producer<Dog>` 可不可以當成 `Producer<Animal>` 用？
+
+「變異（Variance）」講的就是這件事：**內層型別的父子關係，包上泛型後方向會不會保持**。答案取決於 `T` 在介面裡是被拿來**產出**還是**接收**：
+
+| 標記 | 名稱 | `T` 出現的位置 | 方向 |
+| --- | --- | --- | --- |
+| `out T` | 協變（Covariant） | 只在**回傳值**（產出） | 跟 `Dog`/`Animal` 一樣 |
+| `in T` | 逆變（Contravariant） | 只在**參數**（接收） | 跟 `Dog`/`Animal` **相反** |
+
+```typescript
+// out T：T 只出現在「回傳值」位置 → 這個介面只負責「產出」T
+interface Producer<out T> {
+  produce(): T;
+}
+
+// in T：T 只出現在「參數」位置 → 這個介面只負責「接收」T
+interface Consumer<in T> {
+  consume(value: T): void;
+}
+
+class Animal {
+  name = "animal";
+}
+class Dog extends Animal {
+  bark() {}
+}
+
+// ---------- 協變 out：方向跟繼承一樣 ----------
+const dogProducer: Producer<Dog> = { produce: () => new Dog() };
+
+// ✅ 狗工廠可以當動物工廠用
+//    因為呼叫端拿到的是狗，而狗本來就是動物 —— 拿到的東西「更具體」永遠安全
+const producer: Producer<Animal> = dogProducer;
+
+const animalProducer: Producer<Animal> = { produce: () => new Animal() };
+
+// ❌ 反過來不行：動物工廠不能當狗工廠用
+//    呼叫端以為會拿到狗、想呼叫 .bark()，結果工廠可能生出一隻貓
+// const wrong: Producer<Dog> = animalProducer;
+// Type 'Producer<Animal>' is not assignable to type 'Producer<Dog>'.
+
+// ---------- 逆變 in：方向跟繼承相反 ----------
+const animalConsumer: Consumer<Animal> = { consume: (a) => console.log(a.name) };
+
+// ✅ 「什麼動物都能處理」的處理器，可以當成「處理狗」的處理器用
+//    因為呼叫端只會餵它狗，而它連任何動物都接得住 —— 接受範圍「更寬」永遠安全
+const consumer: Consumer<Dog> = animalConsumer;
+
+const dogConsumer: Consumer<Dog> = { consume: (d) => d.bark() };
+
+// ❌ 反過來不行：只會處理狗的處理器，不能當成「處理任何動物」用
+//    呼叫端可能餵它一隻貓，而 consume 內部會呼叫 .bark() —— 執行期就炸了
+// const wrong2: Consumer<Animal> = dogConsumer;
+// Type 'Consumer<Dog>' is not assignable to type 'Consumer<Animal>'.
+```
+
+**為什麼逆變的方向是反的？**
+
+關鍵在於「**誰在保證什麼**」：
+
+- 協變（產出）：我承諾「給你一隻動物」，實際給狗 —— **給得比承諾的更具體**，收下的人不會有問題。
+- 逆變（接收）：我需要「一個能處理狗的東西」，拿到一個「什麼動物都能處理」的 —— **接受得比需求更寬**，餵什麼進去都不會噎到。
+
+一句口訣：**產出可以更具體，接收可以更寬鬆。**
+
+**加了標記到底差在哪？**
+
+不標記時 TypeScript 也會自動推斷變異方向，但有個容易踩的坑：**用 method 語法宣告的參數，TypeScript 預設是「雙變（bivariant）」的，兩個方向都放行**：
+
+```typescript
+// 沒有 in 標記
+interface ConsumerNoMark<T> {
+  consume(value: T): void;
+}
+
+const dogOnly: ConsumerNoMark<Dog> = { consume: (d) => d.bark() };
+const anyAnimal: ConsumerNoMark<Animal> = dogOnly; // ⚠️ 沒報錯！但這其實不安全
+anyAnimal.consume(new Animal()); // 執行期爆炸：Animal 沒有 bark()
+```
+
+加上 `in` 標記後，同樣的寫法就會在編譯階段被擋下來。所以標記的效果是：**讓編譯器檢查更快、錯誤訊息更貼近根源，並且把 method 語法的雙變漏洞補起來。**
+
+**什麼時候用得到？** 寫一般業務程式幾乎不需要手動標記；主要是在設計「要給別人用的型別庫」時，用它把介面的使用方式（唯讀 / 唯寫）寫進型別裡，順便讓誤用在編譯期就現形。下面再補上第三種變異——`in out`（不變，既產出又接收，方向不能改）。
+
+**第三種：`in out`（不變）**——也是最嚴格的一種：當 `T` 同時出現在讀跟寫的位置（例如可讀可寫的屬性），就必須讀寫兩個方向都能互相賦值，只滿足其中一邊是不夠的：
 
 ```typescript
 class Animal {
@@ -135,7 +223,7 @@ type R = SplitFirst<[1, 2, 3]>; // { head: 1; tail: [2, 3] }
 
 ---
 
-## 13.3 遞迴型別（Recursive Types）
+## 14.3 遞迴型別（Recursive Types）
 
 型別沒有 `for` 迴圈，重複運算靠**遞迴**——型別在自己的定義裡呼叫自己，直到滿足終止條件。
 
@@ -213,7 +301,7 @@ ReverseSlow<[1, 2, 3]> = [...ReverseSlow<[2, 3]>, 1]
 
 ---
 
-## 13.4 元組型別運算（Tuple Manipulation）
+## 14.4 元組型別運算（Tuple Manipulation）
 
 元組是型別層級最重要的「資料結構」，很多運算（包含後面的算術）都建立在元組上。
 
@@ -263,7 +351,7 @@ number
 
 ---
 
-## 13.5 型別層級的算術（Type-Level Arithmetic）
+## 14.5 型別層級的算術（Type-Level Arithmetic）
 
 型別系統沒有內建加減乘除，但我們可以用「元組的長度」來代表數字：想表示數字 `N`，就建一個長度為 `N` 的元組；要做加法，就把兩個元組接起來、再讀長度。
 
@@ -320,9 +408,9 @@ type G2 = GreaterThan<3, 5>; // false
 
 ---
 
-## 13.6 字串型別運算（String Manipulation）
+## 14.6 字串型別運算（String Manipulation）
 
-搭配 [第七章 7.6](./07-advanced-types.md) 的模板字面值型別與 `infer`，可以在型別層級解析、拆解、重組字串。
+搭配 [第八章 8.3](./08-advanced-types.md) 的模板字面值型別與 `infer`，可以在型別層級解析、拆解、重組字串。
 
 ```typescript
 // Split：依分隔符切成元組
@@ -381,55 +469,25 @@ type Camel = SnakeToCamel<"user_first_name">; // "userFirstName"
 
 ---
 
-## 13.7 分配式條件型別（Distributive Conditional Types）
+## 14.7 分配式條件型別（Distributive Conditional Types）
 
-這是型別層級最容易踩坑、也最重要的行為之一。當條件型別作用在**裸型別參數（naked type parameter）** 且該參數是**聯合型別**時，條件型別會**對聯合型別的每個成員分別套用**，再把結果組成新的聯合型別。
+分配行為的完整教學（觸發條件、展開過程、用 `never` 過濾成員）在 [第 8 章 8.1](./08-advanced-types.md)。在型別層級程式設計裡，你只需要記住兩件事：
 
 ```typescript
+// 1. 裸型別參數遇到聯合型別會自動拆開，逐一套用後再組回聯合 —— 這是「對 Union 做 map」
 type ToArray<T> = T extends any ? T[] : never;
+type R1 = ToArray<string | number>; // string[] | number[]
 
-// T 是聯合型別，會分配：ToArray<string> | ToArray<number>
-type R = ToArray<string | number>; // string[] | number[]
-```
-
-如果想**關閉分配**、把整個聯合型別當成一個整體處理，只要把 `extends` 兩側用元組（或任意會破壞「裸」型別的寫法）包起來：
-
-```typescript
+// 2. 用元組包住 extends 兩側就能關閉分配，把整包聯合當成一個整體
 type ToArrayNonDist<T> = [T] extends [any] ? T[] : never;
-
-type R = ToArrayNonDist<string | number>; // (string | number)[]
+type R2 = ToArrayNonDist<string | number>; // (string | number)[]
 ```
 
-### 常見應用
-
-```typescript
-// 判斷是否為聯合型別
-type IsUnion<T, U = T> = T extends U
-  ? [U] extends [T]
-    ? false
-    : true
-  : never;
-
-type A = IsUnion<string>;          // false
-type B = IsUnion<string | number>; // true
-
-// 聯合型別轉交集型別
-type UnionToIntersection<U> = (
-  U extends any ? (arg: U) => void : never
-) extends (arg: infer I) => void
-  ? I
-  : never;
-
-type C = UnionToIntersection<{ a: 1 } | { b: 2 }>; // { a: 1 } & { b: 2 }
-
-// 過濾聯合型別（自己實作 Exclude）
-type MyExclude<T, U> = T extends U ? never : T;
-type D = MyExclude<"a" | "b" | "c", "b">; // "a" | "c"
-```
+把這兩招組合起來的進階判斷器（`IsNever`、`IsUnion`）與「聯合轉交集」`UnionToIntersection`，放在 [第 15 章 15.8、15.9](./15-type-gymnastics.md) 逐步拆解。
 
 ---
 
-## 13.8 實戰案例
+## 14.8 實戰案例
 
 前面的構件單獨看像「型別體操」，組合起來就能解決真實工程問題。
 
@@ -520,48 +578,18 @@ route("/users/:userId/posts/:postId", (params) => {
 });
 ```
 
-### 案例四：型別安全的事件系統
-
-```typescript
-// 定義事件名稱與對應的 payload 型別
-interface EventMap {
-  click: { x: number; y: number };
-  submit: { formId: string };
-  close: void;
-}
-
-class EventBus<T extends Record<string, any>> {
-  private handlers: { [K in keyof T]?: Array<(payload: T[K]) => void> } = {};
-
-  on<K extends keyof T>(event: K, handler: (payload: T[K]) => void): void {
-    (this.handlers[event] ??= []).push(handler);
-  }
-
-  emit<K extends keyof T>(event: K, payload: T[K]): void {
-    this.handlers[event]?.forEach((h) => h(payload));
-  }
-}
-
-const bus = new EventBus<EventMap>();
-
-bus.on("click", (p) => {
-  console.log(p.x, p.y); // ✅ p 的型別是 { x: number; y: number }
-});
-
-bus.emit("submit", { formId: "login" }); // ✅
-// bus.emit("submit", { x: 1 });          // ❌ payload 型別不符
-```
+> 📌 另一個常見的實戰案例「型別安全的事件系統」（事件名稱 → payload 的對應）見 [第 11 章 11.4](./11-best-practices.md)。
 
 ---
 
-## 13.9 效能與陷阱
+## 14.9 效能與陷阱
 
 型別層級程式設計是把雙面刃。用得好能大幅提升型別安全；用過頭則會拖慢編譯、讓錯誤訊息變得難以閱讀、讓同事看不懂。
 
 ### 常見問題
 
 1. **遞迴太深**：出現 `Type instantiation is excessively deep and possibly infinite.`
-   - 改寫成尾遞迴（累加器模式，見 13.3）。
+   - 改寫成尾遞迴（累加器模式，見 14.3）。
    - 減少單次遞迴的資料量（例如別對超長字串逐字元遞迴）。
 
 2. **編譯變慢 / 編輯器卡頓**：複雜型別會讓 `tsc` 與 IDE 型別檢查明顯變慢。
@@ -574,13 +602,13 @@ bus.emit("submit", { formId: "login" }); // ✅
 ### 除錯技巧
 
 ```typescript
-// 自足：Split 定義見 13.6，這裡整段複製供技巧二使用
+// 自足：Split 定義見 14.6，這裡整段複製供技巧二使用
 type Split<
   S extends string,
   D extends string,
 > = S extends `${infer Head}${D}${infer Tail}` ? [Head, ...Split<Tail, D>] : [S];
 
-// 自足：Get 定義見 13.8 案例一，這裡整段複製供技巧三使用
+// 自足：Get 定義見 14.8 案例一，這裡整段複製供技巧三使用
 type Get<T, P extends string> = P extends `${infer Key}.${infer Rest}`
   ? Key extends keyof T
     ? Get<T[Key], Rest>
@@ -615,7 +643,7 @@ type ShouldFail = StrictGet<{ a: 1 }, "b">;
 
 ---
 
-## 13.10 測試你的型別
+## 14.10 測試你的型別
 
 複雜型別也需要測試。本節先介紹社群標準的斷言寫法，再說明幾種**看得到輸出**的驗證方式（測試報告、傾印推論結果），最後整理該用哪一種。
 
@@ -723,7 +751,7 @@ type Expect<T extends true> = T;
 // type Check = Expect<Equal<{ a: 1 } & { b: 2 }, { a: 1; b: 2 }>>;
 // ❌ false —— 結構相同，但一個是交集、一個是物件字面值，不是同一型別
 
-// 想比結構，先用 13.9 的 Expand 攤平
+// 想比結構，先用 14.9 的 Expand 攤平
 type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
 type Ok = Expect<Equal<Expand<{ a: 1 } & { b: 2 }>, { a: 1; b: 2 }>>; // ✅ true
 ```
@@ -745,7 +773,7 @@ const good: Role = "admin";
 
 關鍵在於它是**雙向**的：預期的錯誤消失時，它會主動告訴你。這是它比 `@ts-ignore` 好的地方——`@ts-ignore` 在錯誤消失後只會靜默失效，變成沒人發現的死程式碼。
 
-> 📌 用在型別層級時有個陷阱：像 13.8 的 `Get` 對錯誤路徑是回傳 `never` 而不是報錯，`@ts-expect-error` 就抓不到東西。詳見 13.9 除錯技巧的技巧三。
+> 📌 用在型別層級時有個陷阱：像 14.8 的 `Get` 對錯誤路徑是回傳 `never` 而不是報錯，`@ts-expect-error` 就抓不到東西。詳見 14.9 除錯技巧的技巧三。
 
 ### 方法三：用 `vitest --typecheck` 取得測試報告
 
@@ -894,7 +922,7 @@ const reveal: 1 = probe;
 //    ⚠️ 只印出別名，沒展開
 ```
 
-只印別名時，套一層 13.9 的 `Expand` 強迫攤平：
+只印別名時，套一層 14.9 的 `Expand` 強迫攤平：
 
 ```typescript
 type Expand<T> = T extends infer O ? { [K in keyof O]: O[K] } : never;
@@ -1015,7 +1043,7 @@ type _cases = [Expect<Equal<A, "a" | "b" | "c">>];
 
 ### 練習 3：實作 DeepReadonly（含陣列與函式）
 
-強化 [第七章 7.8](./07-advanced-types.md) 的 `DeepReadonly`，讓它能正確處理巢狀陣列，並且**不要**把函式的屬性也變成 readonly：
+強化 [第八章 8.5](./08-advanced-types.md) 的 `DeepReadonly`，讓它能正確處理巢狀陣列，並且**不要**把函式的屬性也變成 readonly：
 
 ```typescript
 type DeepReadonly<T> = ???;
@@ -1122,4 +1150,4 @@ type _cases = [
 
 ---
 
-> 下一章：[第十四章 — 型別體操](./14-type-gymnastics.md)
+> 下一章：[第十五章 — 型別體操](./15-type-gymnastics.md)

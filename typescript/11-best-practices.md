@@ -1,6 +1,6 @@
-# 第十二章：最佳實踐與常見模式
+# 第十一章：最佳實踐與常見模式
 
-## 12.1 型別設計原則
+## 11.1 型別設計原則
 
 ### 優先使用 interface 定義物件結構
 
@@ -68,9 +68,42 @@ interface Button {
 }
 ```
 
+### 品牌型別（Branded / Nominal Types）
+
+`type UserId = string` 只是替 `string` 取了個別名，底層還是同一個型別。TypeScript 是**結構化型別系統（structural typing）**，不是 Java/C# 那種**具名型別系統（nominal typing）**——只要結構相同就能互相賦值，因此 `UserId` 和 `OrderId` 這種語意完全不同的字串 ID，一樣能被誤傳、混用而不會有任何編譯錯誤：
+
+```typescript
+type UserId = string;
+type OrderId = string;
+
+function getUser(id: UserId) { /* ... */ }
+
+const orderId: OrderId = "order_123";
+getUser(orderId); // ✅ 編譯通過——但這其實是個錯誤的呼叫！
+
+// 加上一個「品牌」欄位，讓結構不再相容
+type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
+type BrandedUserId = Branded<string, "UserId">;
+type BrandedOrderId = Branded<string, "OrderId">;
+
+function createUserId(id: string): BrandedUserId {
+  return id as BrandedUserId; // 型別轉換只在「建立」這一個點做一次
+}
+
+function getUserSafe(id: BrandedUserId) { /* ... */ }
+
+const safeUserId = createUserId("user_1");
+const safeOrderId = "order_123" as BrandedOrderId;
+
+getUserSafe(safeUserId); // ✅
+// getUserSafe(safeOrderId); // ❌ 型別錯誤：缺少品牌 "UserId"，兩者不再結構相容
+```
+
+> 💡 品牌欄位（如 `__brand`）在執行期完全不存在，純粹是編譯期用來製造「名義區別」的標記。適合用在 ID、金額單位（分 vs 元）、已驗證 vs 未驗證的字串等容易混淆、卻又同為 `string`/`number` 的場景。
+
 ---
 
-## 12.2 型別安全的錯誤處理
+## 11.2 型別安全的錯誤處理
 
 ### Result 模式
 
@@ -382,7 +415,7 @@ class NotFoundError extends AppError {
 
 ---
 
-## 12.3 不可變資料模式
+## 11.3 不可變資料模式
 
 ```typescript
 // 使用 Readonly 防止修改
@@ -412,7 +445,7 @@ type Route = (typeof ROUTES)[keyof typeof ROUTES];
 
 ### `as const` vs `satisfies`（TypeScript 4.9+）
 
-`as const` 只負責「把值凍結成最窄的字面值型別」，不會檢查值的形狀對不對。想要「既驗證形狀、又保留最窄字面值型別」，就該用 `satisfies`：
+`as const` 只負責「把值凍結成最窄的字面值型別」，不會檢查值的形狀對不對。想要「既驗證形狀、又保留最窄字面值型別」，就該用 `satisfies`（運算子本身的介紹見第 5 章 5.1，這裡聚焦在不可變資料的寫法）：
 
 ```typescript
 type RouteMap = Record<"home" | "users" | "settings", string>;
@@ -446,7 +479,7 @@ type WidenedHome = typeof ROUTES_ANNOTATED.home; // string（拓寬了，不再�
 
 ---
 
-## 12.4 型別安全的事件系統
+## 11.4 型別安全的事件系統
 
 ```typescript
 // 使用泛型定義事件映射
@@ -458,21 +491,19 @@ interface EventMap {
 }
 
 class TypedEventEmitter<T extends Record<string, any>> {
-  private listeners = new Map<keyof T, Set<Function>>();
+  // 映射型別：每個事件名稱各自對應「接收該事件 payload 的處理器集合」
+  private listeners: { [K in keyof T]?: Set<(data: T[K]) => void> } = {};
 
   on<K extends keyof T>(event: K, handler: (data: T[K]) => void): void {
-    if (!this.listeners.has(event)) {
-      this.listeners.set(event, new Set());
-    }
-    this.listeners.get(event)!.add(handler);
+    (this.listeners[event] ??= new Set()).add(handler);
   }
 
   off<K extends keyof T>(event: K, handler: (data: T[K]) => void): void {
-    this.listeners.get(event)?.delete(handler);
+    this.listeners[event]?.delete(handler);
   }
 
   emit<K extends keyof T>(event: K, data: T[K]): void {
-    this.listeners.get(event)?.forEach((handler) => handler(data));
+    this.listeners[event]?.forEach((handler) => handler(data));
   }
 }
 
@@ -488,9 +519,11 @@ emitter.emit("user:login", { userId: 1, timestamp: new Date() }); // ✅
 // emitter.emit("user:login", { wrong: "data" }); // ❌ 型別錯誤
 ```
 
+儲存處理器時用映射型別（第 8 章 8.2），而不是 `Map<keyof T, Set<Function>>`：`Function` 等於放棄檢查參數，類別內部存取時型別就斷了；映射型別讓「事件名稱 → 處理器參數」的對應關係從公開 API 一路保留到內部實作。
+
 ---
 
-## 12.5 型別安全的 API 客戶端
+## 11.5 型別安全的 API 客戶端
 
 ```typescript
 // 定義 API 路由結構
@@ -545,7 +578,7 @@ const user = await apiClient("GET /users/:id", { params: { id: 1 } });
 
 ---
 
-## 12.6 常見的型別陷阱與解決方案
+## 11.6 常見的型別陷阱與解決方案
 
 ### 陷阱 1：物件字面值的多餘屬性檢查
 
@@ -629,11 +662,11 @@ const host = config.database?.host; // string | undefined
 const port = config.database?.port ?? 3306; // number
 ```
 
-> 📎 另外兩個常被找、但屬於基礎章節的主題：判別聯合型別（discriminated unions）見 [第七章 7.1](./07-advanced-types.md)；用 `never` 做窮盡性檢查（exhaustiveness check）見 [第二章 2.5](./02-basic-types.md)。
+> 📎 另外兩個常被找、但屬於基礎章節的主題：判別聯合型別（discriminated unions）見 [第五章 5.1](./05-unions-and-narrowing.md)；用 `never` 做窮盡性檢查（exhaustiveness check）見 [第二章 2.5](./02-basic-types.md)。
 
 ---
 
-## 12.7 專案組織建議
+## 11.7 專案組織建議
 
 ### 目錄結構
 
@@ -683,42 +716,9 @@ interface IUser {}    // Java/C# 風格，TypeScript 不推薦
 interface User {}
 ```
 
-### 品牌型別（Branded / Nominal Types）
-
-`type UserId = string` 只是替 `string` 取了個別名，底層還是同一個型別。TypeScript 是**結構化型別系統（structural typing）**，不是 Java/C# 那種**具名型別系統（nominal typing）**——只要結構相同就能互相賦值，因此 `UserId` 和 `OrderId` 這種語意完全不同的字串 ID，一樣能被誤傳、混用而不會有任何編譯錯誤：
-
-```typescript
-type UserId = string;
-type OrderId = string;
-
-function getUser(id: UserId) { /* ... */ }
-
-const orderId: OrderId = "order_123";
-getUser(orderId); // ✅ 編譯通過——但這其實是個錯誤的呼叫！
-
-// 加上一個「品牌」欄位，讓結構不再相容
-type Branded<T, Brand extends string> = T & { readonly __brand: Brand };
-type BrandedUserId = Branded<string, "UserId">;
-type BrandedOrderId = Branded<string, "OrderId">;
-
-function createUserId(id: string): BrandedUserId {
-  return id as BrandedUserId; // 型別轉換只在「建立」這一個點做一次
-}
-
-function getUserSafe(id: BrandedUserId) { /* ... */ }
-
-const safeUserId = createUserId("user_1");
-const safeOrderId = "order_123" as BrandedOrderId;
-
-getUserSafe(safeUserId); // ✅
-// getUserSafe(safeOrderId); // ❌ 型別錯誤：缺少品牌 "UserId"，兩者不再結構相容
-```
-
-> 💡 品牌欄位（如 `__brand`）在執行期完全不存在，純粹是編譯期用來製造「名義區別」的標記。適合用在 ID、金額單位（分 vs 元）、已驗證 vs 未驗證的字串等容易混淆、卻又同為 `string`/`number` 的場景。
-
 ---
 
-## 12.8 效能考量
+## 11.8 效能考量
 
 ### 避免過度複雜的型別
 
@@ -744,15 +744,7 @@ type Merge<T, U> = Omit<T, keyof U> & U;
 
 ### 使用 Project References 加速大型專案
 
-```json
-// 根目錄 tsconfig.json
-{
-  "references": [
-    { "path": "./packages/core" },
-    { "path": "./packages/ui" }
-  ]
-}
-```
+把大型專案或 monorepo 拆成多個可獨立建置的子專案，用 `tsc --build` 只重建有變動的部分。`composite`、`references` 的設定方式與建置指令見 [第 10 章 10.8](./10-tsconfig.md)。
 
 ### 適當使用 `skipLibCheck`
 
@@ -766,7 +758,7 @@ type Merge<T, U> = Omit<T, keyof U> & U;
 
 ---
 
-## 12.9 推薦工具生態系
+## 11.9 推薦工具生態系
 
 | 工具 | 用途 | 說明 |
 |------|------|------|
@@ -1039,26 +1031,4 @@ const n: number = store.getters.doubleCount; // ✅ 推斷為 number
 
 ---
 
-## 總結
-
-恭喜你完成了 TypeScript 完整教學課程！以下是重點回顧：
-
-1. **型別是你的朋友** — 善用型別系統能在編譯時期就捕獲錯誤
-2. **嚴格模式是底線** — 新專案務必開啟 `strict: true`
-3. **避免 any** — 使用 `unknown` + 型別守衛取代
-4. **善用工具型別** — `Partial`、`Pick`、`Omit` 等減少重複定義
-5. **泛型是核心** — 掌握泛型才能寫出真正可複用的程式碼
-6. **型別推論很強大** — 不需要標註每一個地方，讓 TypeScript 幫你推斷
-7. **選擇合適的框架整合** — Vue、React、Nuxt、Next.js 都有成熟的 TypeScript 支援
-
-> 持續練習，讓 TypeScript 成為你開發的利器！
-
----
-
-## 想更進一步？
-
-以下章節屬於**進階補充**，帶你深入 TypeScript 型別系統的深水區與工具開發：
-
-- [第十三章 — 型別層級程式設計](./13-type-level-programming.md)：把型別當成程式語言，用泛型、條件型別與遞迴做編譯期運算。
-- [第十四章 — 型別體操](./14-type-gymnastics.md)：解題手冊，對應 type-challenges 反覆出現的手法。
-- [第十五章 — TypeScript Compiler API](./15-compiler-api.md)：用程式操作編譯器本身，開發 codemod、linter 與程式碼產生器。
+> 下一章：[第十二章 — 前端框架整合](./12-framework-integration.md)

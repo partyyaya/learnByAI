@@ -1,9 +1,9 @@
 // @ts-nocheck
 // ============================================================
-// 第 11 章：裝飾器（Decorators）— 範例整理（閱讀參考檔）
-// 來源：typescript/11-decorators.md
+// 第 13 章：裝飾器（Decorators）— 範例整理（閱讀參考檔）
+// 來源：typescript/13-decorators.md
 //
-// 說明：第 11 章示範類別/方法/屬性/參數裝飾器與框架應用
+// 說明：第 13 章示範類別/方法/屬性/參數裝飾器與框架應用
 //       （NestJS/TypeORM/Angular）。舊版裝飾器需在 tsconfig 開啟
 //       experimentalDecorators 與 emitDecoratorMetadata（並安裝
 //       reflect-metadata）；框架範例需安裝對應套件。故本檔以
@@ -22,7 +22,7 @@ import { Controller, Get, Post, Body, Param } from "@nestjs/common";
 import { Entity, Column, PrimaryGeneratedColumn } from "typeorm";
 import { Component, Input, Output, EventEmitter } from "@angular/core";
 
-// ===== 11.1 多個 @ 的求值 vs 套用順序 =====
+// ===== 13.1 多個 @ 的求值 vs 套用順序 =====
 {
   function A() {
     console.log("A(): evaluated");
@@ -44,7 +44,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.3 類別裝飾器（Class Decorator）=====
+// ===== 13.3 類別裝飾器（Class Decorator）=====
 {
   // 基本類別裝飾器
   {
@@ -97,7 +97,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.4 方法裝飾器（Method Decorator）=====
+// ===== 13.4 方法裝飾器（Method Decorator）=====
 {
   // 日誌裝飾器
   function Log(
@@ -130,7 +130,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   // add returned: 8
 }
 
-// ===== 11.4 常用方法裝飾器 =====
+// ===== 13.4 常用方法裝飾器 =====
 {
   // 效能測量
   function Measure(
@@ -206,7 +206,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.5 屬性裝飾器（Property Decorator）=====
+// ===== 13.5 屬性裝飾器（Property Decorator）=====
 {
   // 驗證裝飾器
   function MinLength(min: number) {
@@ -259,7 +259,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   form.name = "Gary"; // ✅
 }
 
-// ===== 11.6 參數裝飾器與 reflect-metadata =====
+// ===== 13.6 參數裝飾器與 reflect-metadata =====
 {
   function Validate(
     target: any,
@@ -299,7 +299,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.7 標準裝飾器（TypeScript 5.0+）=====
+// ===== 13.7 標準裝飾器（TypeScript 5.0+）=====
 {
   // 新語法的裝飾器
   function logged<This, Args extends any[], Return>(
@@ -329,7 +329,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.7 Accessor 裝飾器與 Decorator Metadata（TypeScript 5.2+）=====
+// ===== 13.7 Accessor 裝飾器與 Decorator Metadata（TypeScript 5.2+）=====
 {
   // 裝飾一個 `accessor` 欄位：讀寫時攔截、並把資訊寫進 context.metadata，
   // 之後可以透過 `類別[Symbol.metadata]` 讀回來（不需要額外的 Map/WeakMap）。
@@ -366,7 +366,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   console.log((Settings as any)[(Symbol as any).metadata]?.theme); // "tracked"
 }
 
-// ===== 11.8 裝飾器在框架中的應用 — NestJS =====
+// ===== 13.8 裝飾器在框架中的應用 — NestJS =====
 {
   @Controller("users")
   class UserController {
@@ -389,7 +389,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.8 裝飾器在框架中的應用 — TypeORM =====
+// ===== 13.8 裝飾器在框架中的應用 — TypeORM =====
 {
   @Entity()
   class User {
@@ -407,7 +407,7 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-// ===== 11.8 裝飾器在框架中的應用 — Angular =====
+// ===== 13.8 裝飾器在框架中的應用 — Angular =====
 {
   @Component({
     selector: "app-user-card",
@@ -439,4 +439,4 @@ import { Component, Input, Output, EventEmitter } from "@angular/core";
   }
 }
 
-console.log("第 11 章 裝飾器 範例載入完成 ✅（參考用，已 @ts-nocheck）");
+console.log("第 13 章 裝飾器 範例載入完成 ✅（參考用，已 @ts-nocheck）");

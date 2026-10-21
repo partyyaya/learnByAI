@@ -64,6 +64,7 @@ npm run dev
 - 建立可維護的 React 元件與頁面結構
 - 用正確方式處理本地狀態、表單與副作用
 - 掌握 `Context`、`useRef`、自訂 Hook 等核心 API 的使用時機
+- 理解 Hooks 的狀態保存與呼叫順序（第 5 章）、Effect 依賴與閉包（第 7 章），以及 React 18 並發渲染與限制（第 13 章）
 - 用 `TanStack Query` 管理伺服器資料快取、重抓與 mutation
 - 用 `Zustand` 管理全域 UI 狀態與跨元件共用資料
 - 能規劃「本地狀態 / 伺服器狀態」分工，避免狀態混亂

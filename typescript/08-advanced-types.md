@@ -1,446 +1,12 @@
-# 第七章：進階型別技巧
+# 第八章：進階型別技巧
 
-## 7.1 聯合型別（Union Types）
+前面幾章是在「描述」型別：用介面描述物件、用聯合描述多種可能、用泛型把型別當參數。本章開始「運算」型別：從既有型別推導出新型別，讓型別跟著資料結構自動變化，而不是每改一個欄位就手動同步好幾份定義。
 
-```typescript
-// 基本聯合型別
-type ID = string | number;
-
-function printId(id: ID): void {
-  // 需要型別縮窄才能使用特定方法
-  if (typeof id === "string") {
-    console.log(id.toUpperCase());
-  } else {
-    console.log(id.toFixed(2));
-  }
-}
-
-// 判別式聯合（Discriminated Union）
-type Shape =
-  | { kind: "circle"; radius: number }
-  | { kind: "square"; side: number }
-  | { kind: "rectangle"; width: number; height: number };
-
-function getArea(shape: Shape): number {
-  switch (shape.kind) {
-    case "circle":
-      return Math.PI * shape.radius ** 2;
-    case "square":
-      return shape.side ** 2;
-    case "rectangle":
-      return shape.width * shape.height;
-    default: {
-      // 窮盡性檢查：若 shape 的型別不是 never，表示還有分支沒處理
-      const _exhaustive: never = shape;
-      throw new Error(`Unhandled shape: ${JSON.stringify(_exhaustive)}`);
-    }
-  }
-}
-```
-
-加上 `default` 分支的窮盡性檢查（exhaustiveness check）後，未來替 `Shape` 新增一種變體（例如 `{ kind: "triangle"; ... }`）卻忘記在 `getArea` 補上對應 `case` 時，`shape` 在 `default` 分支的型別就不會是 `never`，`const _exhaustive: never = shape` 這一行會在**編譯期**直接報錯，而不用等到執行期才發現漏處理。
-
-### satisfies 運算子（TS 4.9+）
-
-`satisfies` 讓你在檢查物件是否符合某個型別結構的同時，仍然保留物件的字面值型別，跟一般型別標註（`: T`）或 `as T` 斷言都不一樣：
-
-```typescript
-type Shape =
-  | { kind: "circle"; radius: number }
-  | { kind: "square"; side: number }
-  | { kind: "rectangle"; width: number; height: number };
-
-// 一般型別標註：值被拓寬成 Shape，之後只能存取聯合型別共有欄位
-const configA: Shape = { kind: "circle", radius: 5 };
-// configA.radius; // ❌ 型別是 Shape，TypeScript 不知道一定是 circle 分支
-
-// as 斷言：不會做完整結構檢查，多打的欄位可能就這樣溜過去
-const configB = { kind: "circle", radius: 5, extraFlag: true } as Shape;
-
-// satisfies：檢查是否符合 Shape 結構（含多餘屬性檢查），同時保留字面值型別
-const configC = { kind: "circle", radius: 5 } satisfies Shape;
-configC.radius; // ✅ 型別仍是 { kind: "circle"; radius: number }，可以直接存取
-
-// const configD = { kind: "circle", radius: 5, extraFlag: true } satisfies Shape;
-// ❌ 物件字面值有多餘屬性 extraFlag，satisfies 會抓出來
-```
-
-#### 什麼時候會需要 satisfies？
-
-`satisfies` 解決的是一個「二選一」的困境 —— 在它出現之前，你只能在「有型別檢查」和「保留精確型別」之間挑一個：
-
-| 寫法 | 有做結構檢查嗎 | 保留精確型別嗎 |
-| --- | --- | --- |
-| `const x: T = {...}` | ✅ 有 | ❌ 被拓寬成 `T` |
-| `const x = {...} as T` | ⚠️ 只做寬鬆檢查，多打的欄位會溜過去 | ❌ 也變成 `T`，而且不安全 |
-| `const x = {...}` | ❌ 沒有 | ✅ 有 |
-| `const x = {...} satisfies T` | ✅ 有（含多餘屬性檢查） | ✅ 有 |
-
-**場景 1：設定表 / 常數表（最常見，也最有感）**
-
-```typescript
-type RouteConfig = { path: string; auth: boolean };
-
-// ❌ 一般標註：型別被拓寬成 Record<string, RouteConfig>
-const routesA: Record<string, RouteConfig> = {
-  home: { path: "/", auth: false },
-  admin: { path: "/admin", auth: true },
-};
-
-routesA.hoem; // ⚠️ 打錯 key 完全不報錯！索引簽章等於宣告「任何字串鍵都合法」
-type NameA = keyof typeof routesA; // string —— 具體有哪些路由的資訊全丟了
-
-// ✅ satisfies：既檢查每個值符合 RouteConfig，又保留 key 的字面量
-const routesB = {
-  home: { path: "/", auth: false },
-  admin: { path: "/admin", auth: true },
-} satisfies Record<string, RouteConfig>;
-
-// routesB.hoem;
-// ❌ Property 'hoem' does not exist on type '{ home: ...; admin: ... }'
-
-type NameB = keyof typeof routesB; // "home" | "admin" —— 可以拿去當參數型別
-function go(name: NameB) {
-  console.log(routesB[name].path);
-}
-go("admin"); // ✅ 有自動完成
-// go("other"); // ❌ 編譯期就擋下來
-```
-
-這是 `satisfies` 最大的價值：`Record<string, T>` 這類約束天生會把鍵拓寬成 `string`，用 `satisfies` 才能同時保住「每個值都合格」和「鍵到底有哪些」。**路由表、i18n 語系檔、權限表、選單設定、API endpoint 對照表都是這個形狀。**
-
-**場景 2：值的精確型別後續還要拿來用**
-
-```typescript
-type Colors = Record<string, string | [number, number, number]>;
-
-const palette = {
-  red: [255, 0, 0],
-  green: "#00ff00",
-} satisfies Colors;
-
-palette.red.map((n) => n * 2); // ✅ 知道是陣列，能直接用陣列方法
-palette.green.toUpperCase();   // ✅ 知道是字串，能直接用字串方法
-```
-
-若寫成 `const palette: Colors = {...}`，每個值的型別都會變成 `string | [number, number, number]` 這個聯合，使用前還得先 `typeof` 判斷一輪。字面量的保留也是同理：
-
-```typescript
-const config = {
-  port: 3000,
-  env: "production",
-} satisfies { port: number; env: "development" | "production" };
-
-if (config.env === "production") {
-  // ✅ env 的型別是 "production" 字面量，縮窄有效
-}
-```
-
-**場景 3：搭配 `as const`**
-
-```typescript
-const ROLES = ["admin", "user"] as const satisfies readonly string[];
-type Role = (typeof ROLES)[number]; // "admin" | "user"
-```
-
-`as const` 負責凍結成字面量，`satisfies` 負責驗證形狀，兩者常一起出現。
-
-第二行 `(typeof ROLES)[number]` 是「**把常數陣列轉成聯合型別**」的慣用寫法：`typeof ROLES` 取出 `ROLES` 這個值的型別（`readonly ["admin", "user"]`），再用 `[number]` 取出「任意索引位置的元素型別」，也就是所有元素的聯合。基礎說明見第 2 章 2.8〈typeof 型別查詢〉，完整拆解見本章 7.6 末尾。
-
-**判斷準則**
-
-- 這個值之後只當「某個型別」用，不在乎具體內容 → 用 `: T` 標註就好
-- **這個值本身的內容還要拿來推導**（`keyof typeof`、型別縮窄、取字面量）→ 用 `satisfies`
-- 想用 `as T` 繞過檢查時 → 先想想是不是該用 `satisfies`，多數情況它才是你真正要的
+本章會大量用到前面三章的工具：聯合型別與 `never`（第 5 章）、泛型與約束（第 7 章），以及 `keyof`、`typeof`、`T[K]` 這三個型別運算子（第 7 章 7.3）。
 
 ---
 
-## 7.2 交集型別（Intersection Types）
-
-```typescript
-type WithId = { id: number };
-type WithTimestamp = { createdAt: Date; updatedAt: Date };
-type WithSoftDelete = { deletedAt: Date | null };
-
-// 組合多個型別
-type BaseEntity = WithId & WithTimestamp & WithSoftDelete;
-
-type User = BaseEntity & {
-  name: string;
-  email: string;
-};
-
-// 函式組合
-type Loggable = {
-  log(): void;
-};
-
-type Serializable = {
-  serialize(): string;
-};
-
-type LoggableAndSerializable = Loggable & Serializable;
-```
-
----
-
-## 7.3 型別縮窄（Type Narrowing）
-
-### typeof Guard
-
-```typescript
-function padLeft(value: string, padding: string | number): string {
-  if (typeof padding === "number") {
-    return " ".repeat(padding) + value;
-  }
-  return padding + value;
-}
-```
-
-### instanceof Guard
-
-```typescript
-class ApiError {
-  constructor(public statusCode: number, public message: string) {}
-}
-
-class NetworkError {
-  constructor(public message: string) {}
-}
-
-function handleError(error: ApiError | NetworkError): string {
-  if (error instanceof ApiError) {
-    // 縮窄成 ApiError，才存取得到只有它才有的 statusCode
-    return `API Error ${error.statusCode}: ${error.message}`;
-  }
-  // 走到這裡 error 已自動縮窄成 NetworkError
-  return `Network Error: ${error.message}`;
-}
-```
-
-`error` 進來時的型別是 `ApiError | NetworkError`，經過 `instanceof ApiError` 判斷後，TypeScript 就知道 `if` 區塊內一定是 `ApiError`，因此允許存取只有它才有的 `statusCode`；`if` 之外則自動縮窄成 `NetworkError`。
-
-#### 順帶一提：建構子參數的 `public` 是什麼？
-
-上面 `constructor(public statusCode: number, ...)` 的 `public` 跟 `instanceof` 無關，它是 [第 5 章](./05-classes.md)介紹過的**參數屬性（Parameter Properties）** 語法糖，這裡只是用它把類別定義壓成一行。加了存取修飾符後，TypeScript 會**自動建立同名的類別屬性並在建構子裡指派**，所以這兩段完全等價：
-
-```typescript
-// 簡寫（參數屬性）
-class ApiError {
-  constructor(public statusCode: number, public message: string) {}
-}
-
-// 完整寫法 —— 上面那段實際上等於這段
-class ApiError {
-  public statusCode: number; // 1. 宣告欄位
-  public message: string;
-
-  constructor(statusCode: number, message: string) {
-    // 2. 接收參數
-    this.statusCode = statusCode; // 3. 手動指派
-    this.message = message;
-  }
-}
-```
-
-省掉的就是「同一個名字要寫三次」的重複。**注意修飾符不是可有可無的裝飾，它就是「請幫我建立這個屬性」的開關** —— 看編譯出來的 JS 最清楚：
-
-```javascript
-// class ApiError { constructor(public statusCode: number, ...) {} } 編譯後
-class ApiError {
-    statusCode;
-    message;
-    constructor(statusCode, message) {
-        this.statusCode = statusCode;   // ← TypeScript 自動補上的
-        this.message = message;
-    }
-}
-
-// 若把修飾符拿掉：constructor(statusCode: number, ...) {}
-class NoModifier {
-    constructor(statusCode, message) { }   // ← 什麼都沒有，屬性根本沒建立
-}
-```
-
-沒寫修飾符的話，`statusCode` 只是個用完就丟的普通參數，之後寫 `error.statusCode` 會直接編譯錯誤。四種修飾符的差別：
-
-| 寫法 | 效果 |
-| --- | --- |
-| `public x: T` | 建立屬性，外部可讀可寫（`public` 雖是預設值，但參數屬性**一定要明寫**才會生效） |
-| `private x: T` | 建立屬性，只有類別內部能存取 |
-| `protected x: T` | 建立屬性，類別內部與子類別能存取 |
-| `readonly x: T` | 建立屬性，建構後不可修改（可與上面三者組合，如 `public readonly`） |
-
-### in 運算子
-
-```typescript
-type Fish = { swim: () => void };
-type Bird = { fly: () => void };
-
-function move(animal: Fish | Bird): void {
-  if ("swim" in animal) {
-    animal.swim();
-  } else {
-    animal.fly();
-  }
-}
-```
-
-### 自定義型別守衛（Type Predicates）
-
-```typescript
-interface Cat {
-  type: "cat";
-  meow(): void;
-}
-
-interface Dog {
-  type: "dog";
-  bark(): void;
-}
-
-// 自定義型別守衛
-function isCat(animal: Cat | Dog): animal is Cat {
-  return animal.type === "cat";
-}
-
-function handleAnimal(animal: Cat | Dog): void {
-  if (isCat(animal)) {
-    animal.meow(); // TypeScript 知道這是 Cat
-  } else {
-    animal.bark(); // TypeScript 知道這是 Dog
-  }
-}
-```
-
-#### `animal is Cat` 的 `is` 到底做了什麼？
-
-這叫**型別謂詞（Type Predicate）**，TypeScript 1.6 就有的老語法。它要解決的問題是：**光是回傳 `boolean` 的函式，TypeScript 不會拿來做型別縮窄。**
-
-```typescript
-// 回傳型別寫成 boolean
-function isCatPlain(animal: Cat | Dog): boolean {
-  return animal.type === "cat";
-}
-
-function useA(animal: Cat | Dog) {
-  if (isCatPlain(animal)) {
-    animal.meow();
-    // ❌ Property 'meow' does not exist on type 'Cat | Dog'.
-    //      Property 'meow' does not exist on type 'Dog'.
-  }
-}
-```
-
-從編譯器的角度，`isCatPlain` 只是「一個回傳 true/false 的函式」，它不知道那個 `true` 代表什麼意思。把回傳型別改成 `animal is Cat`，等於明確告訴編譯器：**「這個函式回傳 `true` 時，請把參數 `animal` 縮窄成 `Cat`」**。
-
-所以 `is` 的價值是**把縮窄邏輯抽成可重複使用的函式** —— 否則每個用到的地方都得原地重寫一次 `if (animal.type === "cat")`。
-
-**⚠️ 重點陷阱：TypeScript 不會驗證你的謂詞寫得對不對**
-
-```typescript
-function isCatWrong(animal: Cat | Dog): animal is Cat {
-  return animal.type === "dog"; // ⚠️ 邏輯整個相反，但編譯器完全不報錯
-}
-```
-
-`animal is Cat` 是**你對編譯器的單方面承諾**，編譯器選擇相信你、不去檢查函式本體。承諾寫錯的話型別系統會跟著錯下去，最後在執行期爆炸 —— 這一點的風險性質跟 `as` 斷言相同。**寫型別守衛時，函式本體的邏輯要自己看仔細。**
-
-**TS 5.5+：很多情況已經不用手寫了**
-
-從 TypeScript 5.5 起，函式夠簡單時**不寫 `is` 也會自動推斷出型別謂詞**：
-
-```typescript
-// 沒有標註回傳型別
-function isCatInferred(animal: Cat | Dog) {
-  return animal.type === "cat";
-}
-
-function useB(animal: Cat | Dog) {
-  if (isCatInferred(animal)) {
-    animal.meow(); // ✅ 通過，TS 自動推斷成 animal is Cat
-  }
-}
-```
-
-最有感的是 `filter`，這是以前每個人都會撞到的痛點：
-
-```typescript
-const names: (string | null)[] = ["a", null, "b"];
-const filtered = names.filter((n) => n !== null);
-
-const upper: string[] = filtered; // ✅ TS 5.5+ 直接通過
-// TS 5.4 以前 filtered 的型別是 (string | null)[]，這行會報錯，
-// 必須手動寫成 names.filter((n): n is string => n !== null)
-```
-
-**那什麼時候還是要手寫？** 自動推斷只在函式簡單、能直接從回傳運算式推導時生效。邏輯複雜、跨多個條件、或要處理 `unknown`（例如驗證 API 回傳的資料）時，仍然得自己標註。
-
-### Assertion Functions
-
-```typescript
-function assertIsString(value: unknown): asserts value is string {
-  if (typeof value !== "string") {
-    throw new Error("Expected string");
-  }
-}
-
-function processInput(input: unknown): string {
-  assertIsString(input);
-  // 這之後 input 的型別是 string
-  return input.toUpperCase();
-}
-```
-
-`asserts value is string` 跟上一節的 `value is string` 長得很像，但用法完全不同：
-
-| | 型別謂詞 `value is T` | 斷言函式 `asserts value is T` |
-| --- | --- | --- |
-| 函式回傳 | `boolean` | 不回傳值，不符合就 `throw` |
-| 呼叫方式 | 放在 `if` 條件裡 | 直接呼叫一行，之後型別就變了 |
-| 不符合時 | 走 `else` 分支，程式繼續 | 直接中斷程式 |
-| 適合的情境 | 兩種情況**都要處理**（分流） | 不符合就是**錯誤**，沒有備案 |
-
-```typescript
-// 謂詞：分流，兩邊都有事做
-if (isCat(animal)) {
-  animal.meow();
-} else {
-  animal.bark();
-}
-
-// 斷言：不是就炸，過了才繼續往下走
-assertIsString(input);
-return input.toUpperCase();
-```
-
-⚠️ 跟型別謂詞一樣，**TypeScript 不會驗證斷言函式的本體邏輯**，寫錯一樣是靜默出錯。此外斷言函式還有一個容易踩到的限制：**它必須是 `function` 宣告，或是有明確型別標註的變數**，否則 TypeScript 會拒絕套用斷言效果：
-
-```typescript
-// ❌ 箭頭函式指派給 const，但變數本身沒有型別標註
-const assertIsNumber = (value: unknown): asserts value is number => {
-  if (typeof value !== "number") throw new Error("Expected number");
-};
-
-function useB(input: unknown): number {
-  assertIsNumber(input);
-  // ❌ TS2775: Assertions require every name in the call target
-  //            to be declared with an explicit type annotation.
-  return input + 1; // ❌ input 仍然是 unknown
-}
-
-// ✅ 解法一：改用 function 宣告（就是本節開頭的寫法）
-
-// ✅ 解法二：把型別標註在變數上
-type Asserter = (value: unknown) => asserts value is number;
-const assertIsNum: Asserter = (value) => {
-  if (typeof value !== "number") throw new Error("Expected number");
-};
-```
-
----
-
-## 7.4 條件型別（Conditional Types）
+## 8.1 條件型別（Conditional Types）
 
 ```typescript
 // 基本語法：T extends U ? X : Y
@@ -473,7 +39,7 @@ type Deep = DeepUnwrap<Promise<Promise<Promise<string>>>>; // string
 | `(...args: any[]) => infer R` | 函式的回傳型別 | 走 false 分支 |
 | `(...args: infer P) => any` | 整包參數列（一個元組） | 走 false 分支 |
 | `(infer E)[]` | 陣列的元素型別 | 走 false 分支 |
-| `Promise<infer U>` | Promise 包住的值型別 | 走 false 分支（即 7.4 開頭的 `UnwrapPromise`） |
+| `Promise<infer U>` | Promise 包住的值型別 | 走 false 分支（即 8.1 開頭的 `UnwrapPromise`） |
 
 ```typescript
 // 提取函式回傳型別
@@ -682,7 +248,7 @@ const mixed: CombinedArray = ["x", 1]; // ✅ 混裝陣列沒問題
 
 #### 這件事的實用價值：`Exclude` 全靠分佈
 
-分佈不是冷知識——7.6 會用到的 `Exclude` 和 `NonNullable`，整個實作原理就是它：
+分佈不是冷知識——8.4 會用到的 `Exclude` 和 `NonNullable`，整個實作原理就是它：
 
 ```typescript
 // 標準庫的 Exclude 就是這一行
@@ -726,11 +292,11 @@ type ToArray<T> = T extends any ? T[] : never;
 type B = ToArray<boolean>; // false[] | true[] ⚠️ 不是 boolean[]
 ```
 
-> 📌 分佈的進階應用（判斷是否為聯合型別的 `IsUnion`、把聯合型別轉成交集的 `UnionToIntersection`）見第 13 章 13.7。
+> 📌 分佈的進階應用（判斷是否為聯合型別的 `IsUnion`、把聯合型別轉成交集的 `UnionToIntersection`）見第 15 章 15.8、15.9。
 
 ---
 
-## 7.5 映射型別（Mapped Types）
+## 8.2 映射型別（Mapped Types）
 
 映射型別的語法是 `[K in ...]`，作用是**走訪一個聯合型別，為其中每個成員各產生一個屬性**——相當於型別層的 `for...of`。
 
@@ -921,7 +487,7 @@ K = "email" → 鍵名 `get${Capitalize<"email">}` = "getEmail" ，值 () => Use
 組合結果：{ getId: () => number; getName: () => string; getEmail: () => string }
 ```
 
-這裡用到兩個還沒介紹的東西，先簡單說明，兩者的完整介紹都在下一節 7.6：
+這裡用到兩個還沒介紹的東西，先簡單說明，兩者的完整介紹都在下一節 8.3：
 
 **1. 反引號的模板字面值型別**：`` `get${...}` `` 是在**型別層**做字串拼接，跟 JavaScript 的樣板字串長得一樣，但操作的是型別而不是值。
 
@@ -941,7 +507,7 @@ type Bad<T> = {
 //          Type 'number' is not assignable to type 'string'.
 ```
 
-`string & K` 用的是 7.2 介紹過的**交集型別**（`&`）。交集的定義是「同時滿足兩邊的型別」，套在這裡的效果就是「**只留下 `K` 之中屬於字串的部分**」——等於幫編譯器把非字串的鍵過濾掉：
+`string & K` 用的是第 4 章 4.3 介紹過的**交集型別**（`&`）。交集的定義是「同時滿足兩邊的型別」，套在這裡的效果就是「**只留下 `K` 之中屬於字串的部分**」——等於幫編譯器把非字串的鍵過濾掉：
 
 ```typescript
 type S1 = string & "name"; // "name"（本來就是字串，交集後原封不動）
@@ -992,11 +558,11 @@ type StringKeysOnly<T> = {
 type OnlyStrings = StringKeysOnly<User>; // { name: string; email: string }
 ```
 
-**「依值的型別來挑欄位」只有 key remapping 做得到**，7.7 的 `Pick` / `Omit` 都只能依鍵名操作。
+**「依值的型別來挑欄位」只有 key remapping 做得到**，8.4 的 `Pick` / `Omit` 都只能依鍵名操作。
 
 ---
 
-## 7.6 模板字面值型別（Template Literal Types）
+## 8.3 模板字面值型別（Template Literal Types）
 
 模板字面值型別借用了 JavaScript 樣板字串的語法（反引號 + `${}`），但**操作的對象是型別而不是值**：拿型別去拼接，產生新的字串字面值型別。
 
@@ -1058,7 +624,7 @@ type Capitalize<S extends string> = intrinsic;
 
 #### 三個實用性質
 
-**1. 會對聯合型別分佈**——傳入聯合型別時，每個成員各自處理再組回聯合型別（就是 7.4 講的分佈行為）：
+**1. 會對聯合型別分佈**——傳入聯合型別時，每個成員各自處理再組回聯合型別（就是 8.1 講的分佈行為）：
 
 ```typescript
 type Events = Capitalize<"click" | "change" | "focus">;
@@ -1080,7 +646,7 @@ type Bad<T> = Capitalize<T>;
 type Good<T extends string> = Capitalize<T>; // ✅
 ```
 
-> 這正是 7.5 那個 `Capitalize<string & K>` 的由來——`K` 來自 `keyof T`，可能包含數字或 symbol 鍵，得先用 `string & K` 濾出字串的部分才能餵給 `Capitalize`。
+> 這正是 8.2 那個 `Capitalize<string & K>` 的由來——`K` 來自 `keyof T`，可能包含數字或 symbol 鍵，得先用 `string & K` 濾出字串的部分才能餵給 `Capitalize`。
 
 **3. 遇到寬泛的 `string` 不會算出結果，但仍保有意義**——`Capitalize<string>` 沒辦法算出具體字串，TypeScript 會把它原封不動留著，當成「所有首字母大寫的字串」這個子型別：
 
@@ -1143,14 +709,14 @@ type Step3 = (typeof ACTIONS)[number]; // "save" | "delete" | "publish"
 
 | 位置 | 身分 | 例子 |
 | --- | --- | --- |
-| 運算式中 | JavaScript 的運算子，執行期回傳字串 | `if (typeof x === "string")`（7.3 的 typeof Guard） |
+| 運算式中 | JavaScript 的運算子，執行期回傳字串 | `if (typeof x === "string")`（第 5 章 5.2 的 typeof Guard） |
 | 型別位置 | TypeScript 的**型別查詢**，取出某個值的型別 | `type T = typeof ACTIONS` |
 
 `ACTIONS` 是一個**值**，不能直接寫在型別的位置；`typeof ACTIONS` 就是那道橋，意思是「`ACTIONS` 這個變數推論出來的型別」。這讓你不必手寫一份型別去對應已經存在的值——**值改了，型別自動跟著改**。（型別查詢的基礎介紹見第 2 章 2.8。）
 
 **步驟 ③：`[number]` 是索引存取型別**
 
-`T[K]` 這個語法（第 6 章 `T[K]` 用過）也能用在陣列與元組上。差別在於索引可以是具體數字，也可以是 `number` 這個型別：
+`T[K]` 這個語法（第 7 章 `T[K]` 用過）也能用在陣列與元組上。差別在於索引可以是具體數字，也可以是 `number` 這個型別：
 
 ```typescript
 type Actions = readonly ["save", "delete", "publish"];
@@ -1191,7 +757,7 @@ type ConfigValues = (typeof CONFIG)[keyof typeof CONFIG]; // "localhost" | 3000
 
 ---
 
-## 7.7 內建工具型別（Utility Types）
+## 8.4 內建工具型別（Utility Types）
 
 ### 常用工具型別一覽
 
@@ -1383,7 +949,7 @@ type Inst = InstanceType<typeof Repo>;          // Repo（從建構子拿回實�
 
 ### 補充：`Parameters<T>` 為什麼是元組？
 
-`Parameters` 回傳的**不是**「參數型別的列表」，而是一個**元組型別**——因為函式參數本來就是「有順序、有固定長度」的一串值，元組正好是描述這件事的型別。（它的實作就是 7.4 的 `T extends (...args: infer P) => any ? P : never`，`infer P` 抓到的是整包參數列。）
+`Parameters` 回傳的**不是**「參數型別的列表」，而是一個**元組型別**——因為函式參數本來就是「有順序、有固定長度」的一串值，元組正好是描述這件事的型別。（它的實作就是 8.1 的 `T extends (...args: infer P) => any ? P : never`，`infer P` 抓到的是整包參數列。）
 
 既然是元組，就能用元組的方式操作：
 
@@ -1422,7 +988,7 @@ type C = ConstructorParameters<typeof Repo>; // [url: string, timeout: number]
 // ❌ TS2344: Type 'string' does not satisfy the constraint '(...args: any) => any'.
 ```
 
-> ⚠️ 跟 `ReturnType` 一樣，`Parameters` 遇到**重載函式只會取最後一個簽章**（原因見 7.4〈infer 關鍵字〉）。
+> ⚠️ 跟 `ReturnType` 一樣，`Parameters` 遇到**重載函式只會取最後一個簽章**（原因見 8.1〈infer 關鍵字〉）。
 
 #### 實務用途：包裝函式時自動沿用原簽章（`Parameters`）
 
@@ -1631,7 +1197,7 @@ type UserListItem = Pick<User, "id" | "name" | "email">;
 
 ---
 
-## 7.8 自定義工具型別
+## 8.5 自定義工具型別
 
 ```typescript
 // DeepReadonly — 深層唯讀
@@ -1713,7 +1279,7 @@ type RequireAtLeastOne<T, Keys extends keyof T = keyof T> =
 }
 ```
 
-然後關鍵的最後一步 `[Keys]`——**用聯合型別去索引這張表，就會得到所有條目的聯合**（這就是 7.6 講過的 `[number]` 同一招，只是索引換成了鍵的聯合）：
+然後關鍵的最後一步 `[Keys]`——**用聯合型別去索引這張表，就會得到所有條目的聯合**（這就是 8.3 講過的 `[number]` 同一招，只是索引換成了鍵的聯合）：
 
 ```typescript
 type ValidSearch = RequireAtLeastOne<SearchParams>;
@@ -1887,4 +1453,4 @@ const state: LoginFormState = {
 
 ---
 
-> 下一章：[第八章 — 模組系統與命名空間](./08-modules.md)
+> 下一章：[第九章 — 模組系統與命名空間](./09-modules.md)

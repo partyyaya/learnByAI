@@ -7,7 +7,7 @@
 | [vue-app](./vue-app/) | Vue 3 + Pinia + Vue Router + axios | Vue 版「使用者與文章瀏覽器」 |
 | [react-app](./react-app/) | React 19 + Zustand + React Router + axios | React 版「使用者與文章瀏覽器」 |
 
-> 這兩個專案是課程 [第 10 章：前端框架整合](../10-framework-integration.md) 的延伸——第 10 章講「怎麼設定」，這裡則是「設定好之後，一個有狀態管理、路由、API 串接的真實專案長什麼樣」。
+> 這兩個專案是課程 [第 12 章：前端框架整合](../12-framework-integration.md) 的延伸——第 12 章講「怎麼設定」，這裡則是「設定好之後，一個有狀態管理、路由、API 串接的真實專案長什麼樣」。
 
 ---
 

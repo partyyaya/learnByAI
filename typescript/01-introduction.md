@@ -280,7 +280,7 @@ npx tsc --init
 }
 ```
 
-> 💡 `tsconfig.json` 的完整設定將在 [第九章](./09-tsconfig.md) 詳細說明。
+> 💡 `tsconfig.json` 的完整設定將在 [第十章](./10-tsconfig.md) 詳細說明。
 
 ---
 

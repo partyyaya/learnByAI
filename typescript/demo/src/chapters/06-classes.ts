@@ -1,16 +1,16 @@
 // ┌─────────────────────────────────────────────────────────────┐
-// │  05-classes.ts —— 第 5 章：類別與物件導向程式設計              │
+// │  06-classes.ts —— 第 6 章：類別與物件導向程式設計              │
 // ├─────────────────────────────────────────────────────────────┤
-// │  來源：typescript/05-classes.md                              │
+// │  來源：typescript/06-classes.md                              │
 // │  型別檢查： npm run check（或見 README 的 tsc 指令）           │
 // │                                                              │
 // │  ⚠ 每個獨立範例都包在自己的 { ... } 區塊內，                  │
 // │    讓同名的 class / interface / const 彼此不衝突。            │
 // └─────────────────────────────────────────────────────────────┘
 
-// ===== 5.1 類別基礎 =====
+// ===== 6.1 類別基礎 =====
 
-// --- 5.1（範例一）定義類別 ---
+// --- 6.1（範例一）定義類別 ---
 {
   class User {
     // 屬性宣告
@@ -35,7 +35,7 @@
   console.log(user.greet()); // "Hi, I'm Gary!"
 }
 
-// --- 5.1（範例二）簡化寫法：參數屬性（Parameter Properties）---
+// --- 6.1（範例二）簡化寫法：參數屬性（Parameter Properties）---
 {
   class User {
     // 在建構子參數加上存取修飾符，自動建立並指派屬性
@@ -54,7 +54,7 @@
   console.log(user.greet()); // "Hi, I'm Gary!"
 }
 
-// --- 5.1（範例三）readonly 參數屬性 + 箭頭函式類別欄位（詞法 this）---
+// --- 6.1（範例三）readonly 參數屬性 + 箭頭函式類別欄位（詞法 this）---
 {
   class Point {
     constructor(
@@ -79,12 +79,12 @@
   const button = new Button("Submit");
   const handler = button.onClick;
   handler(); // "Submit clicked"
-  console.log("5.1 readonly point:", point.x, point.y);
+  console.log("6.1 readonly point:", point.x, point.y);
 }
 
-// ===== 5.2 存取修飾符（Access Modifiers）=====
+// ===== 6.2 存取修飾符（Access Modifiers）=====
 
-// --- 5.2（範例一）public / protected / private ---
+// --- 6.2（範例一）public / protected / private ---
 {
   class BankAccount {
     public ownerName: string; // 任何地方都可存取
@@ -117,7 +117,7 @@
   // account.balance;     // ❌ private — 類別外部無法存取
 }
 
-// --- 5.2（範例二）ES2022 私有欄位 ---
+// --- 6.2（範例二）ES2022 私有欄位 ---
 {
   class Counter {
     #count = 0; // JavaScript 原生私有欄位
@@ -135,7 +135,7 @@
   // counter.#count; // ❌ 語法層面的私有，無法存取
 }
 
-// --- 5.2（範例三）#field vs private：執行期的差異 ---
+// --- 6.2（範例三）#field vs private：執行期的差異 ---
 {
   class WithHash {
     #secret = "hidden";
@@ -161,14 +161,14 @@
   const a = new WithHash();
   const b = new WithPrivate();
 
-  console.log("5.2 品牌檢查:", WithHash.isWithHash(a), WithHash.isWithHash(b));
-  console.log("5.2 JSON #field:", JSON.stringify(a)); // {} — 看不到 #secret
-  console.log("5.2 JSON private:", JSON.stringify(b)); // {"secret":"hidden"} — private 只是型別層級
-  console.log("5.2 bracket #field:", (a as any)["#secret"]); // undefined，真正的私有
-  console.log("5.2 bracket private:", (b as any)["secret"]); // "hidden"，執行期仍可見
+  console.log("6.2 品牌檢查:", WithHash.isWithHash(a), WithHash.isWithHash(b));
+  console.log("6.2 JSON #field:", JSON.stringify(a)); // {} — 看不到 #secret
+  console.log("6.2 JSON private:", JSON.stringify(b)); // {"secret":"hidden"} — private 只是型別層級
+  console.log("6.2 bracket #field:", (a as any)["#secret"]); // undefined，真正的私有
+  console.log("6.2 bracket private:", (b as any)["secret"]); // "hidden"，執行期仍可見
 }
 
-// ===== 5.3 繼承（Inheritance）=====
+// ===== 6.3 繼承（Inheritance）=====
 // 同一條繼承鏈（Animal / Dog / Cat）放在同一個區塊內。
 {
   class Animal {
@@ -211,7 +211,7 @@
   console.log(cat.purr()); // "Whiskers is purring..."
 }
 
-// --- 5.3 override 關鍵字（TS 4.3+）：覆寫父類別的具體方法 ---
+// --- 6.3 override 關鍵字（TS 4.3+）：覆寫父類別的具體方法 ---
 {
   class Employee {
     constructor(protected name: string) {}
@@ -239,7 +239,7 @@
   console.log(manager.describe()); // "Alice manages a team of 5"
 }
 
-// ===== 5.4 抽象類別（Abstract Classes）=====
+// ===== 6.4 抽象類別（Abstract Classes）=====
 // 抽象類別不能被實例化，只能被繼承。用來定義子類別必須實作的方法。
 // 同一條繼承鏈（Shape / Circle / Rectangle）放在同一個區塊內。
 {
@@ -292,9 +292,9 @@
   console.log(rectangle.describe()); // "Area: 12, Perimeter: 14"
 }
 
-// ===== 5.5 介面實作（implements）=====
+// ===== 6.5 介面實作（implements）=====
 
-// --- 5.5（範例一）一個類別可以實作多個介面 ---
+// --- 6.5（範例一）一個類別可以實作多個介面 ---
 {
   interface Serializable {
     serialize(): string;
@@ -333,7 +333,7 @@
   doc.print();
 }
 
-// --- 5.5（範例二）abstract class vs interface ---
+// --- 6.5（範例二）abstract class vs interface ---
 {
   // Interface：定義「契約」，沒有實作
   interface Logger {
@@ -365,7 +365,7 @@
   logger.error("something broke");
 }
 
-// ===== 5.6 Getter / Setter =====
+// ===== 6.6 Getter / Setter =====
 {
   class Temperature {
     private _celsius: number;
@@ -405,9 +405,9 @@
   console.log(temp.celsius); // 37.78
 }
 
-// ===== 5.7 靜態成員（Static Members）=====
+// ===== 6.7 靜態成員（Static Members）=====
 
-// --- 5.7（範例一）static 屬性與方法 ---
+// --- 6.7（範例一）static 屬性與方法 ---
 {
   class MathUtils {
     static readonly PI = 3.14159;
@@ -428,7 +428,7 @@
   console.log(MathUtils.factorial(5)); // 120
 }
 
-// --- 5.7（範例二）Singleton 模式 ---
+// --- 6.7（範例二）Singleton 模式 ---
 // Singleton＝整個程式生命週期只允許一個實例，大家拿到的都是同一個。
 // 何時用：資料庫/Redis 連線池、AppConfig、Logger、快取或 EventBus —— 共同點是
 //         「建立成本高，而且本來就該全系統共用一份」。
@@ -460,7 +460,7 @@
   // const bad = new Database("mongodb://localhost:27017");
 }
 
-// --- 5.7（範例二之二）Singleton：兩段式初始化（實務寫法）---
+// --- 6.7（範例二之二）Singleton：兩段式初始化（實務寫法）---
 // 上面的範例把連線字串寫死在 getInstance() 裡，實務上設定要從外部來。
 {
   class Database {
@@ -508,7 +508,7 @@
   //    各自都有自己的 Singleton，別當成跨機器的全域鎖。
 }
 
-// --- 5.7（範例三）ES2022 static 初始化區塊 ---
+// --- 6.7（範例三）ES2022 static 初始化區塊 ---
 {
   class AppConfig {
     static apiUrl: string;
@@ -524,45 +524,7 @@
     }
   }
 
-  console.log("5.7 static block:", AppConfig.apiUrl, AppConfig.isProduction);
-}
-
-// ===== 5.8 泛型類別 =====
-{
-  class Stack<T> {
-    private items: T[] = [];
-
-    push(item: T): void {
-      this.items.push(item);
-    }
-
-    pop(): T | undefined {
-      return this.items.pop();
-    }
-
-    peek(): T | undefined {
-      return this.items[this.items.length - 1];
-    }
-
-    get size(): number {
-      return this.items.length;
-    }
-
-    isEmpty(): boolean {
-      return this.items.length === 0;
-    }
-  }
-
-  const numberStack = new Stack<number>();
-  numberStack.push(1);
-  numberStack.push(2);
-  numberStack.push(3);
-  console.log(numberStack.pop()); // 3
-
-  const stringStack = new Stack<string>();
-  stringStack.push("hello");
-  stringStack.push("world");
-  console.log(stringStack.size); // 2
+  console.log("6.7 static block:", AppConfig.apiUrl, AppConfig.isProduction);
 }
 
 // ===== 練習題 =====
@@ -746,6 +708,6 @@
   subject.unsubscribe(observer);
 }
 
-console.log("第 5 章 類別與物件導向 範例載入完成 ✅");
+console.log("第 6 章 類別與物件導向 範例載入完成 ✅");
 
 export {};

@@ -2083,6 +2083,36 @@ Current cur = attempt == 0 ? current(orderId) : currentForUpdate(orderId);
 
 排程贏的比例特別高，是因為回呼的交易多做了一件事（先鎖 `payments`、寫 `SUCCEEDED`），晚一步才碰到 `orders`。
 
+> ⚠️ **專題寫完之後的追記（13 站第 01 章）：重讀修好了，重讀**之後**的那一句讀沒有。** E5 比的是「逾時排程 vs 回呼」：`PAID + E4` 什麼都不做，不需要退款。換成「**買家取消** vs 回呼」，`PAID + 取消` 要退款 —— 而「要退哪一筆」是 `sideEffects()` 裡的 `payments.succeededPaymentOf(orderId)` 查的，一句**一般的 SELECT**。它跟上面那一句重讀在同一個交易裡，用的是同一個快照：交易的第一句一般讀取建立的那一個（第 05 章之後，那一句是 `OrderAccess.buyers()`：查這張訂單是不是你的，5.8.1）。
+>
+> 回呼的交易如果整個落在「取消的第一句讀」與「取消的 UPDATE」之間：UPDATE 影響 0 列 → `FOR UPDATE` 重讀看到 `PAID` → 狀態機說可以取消、要退款 → `succeededPaymentOf()` 用舊快照，看不到那一筆 `SUCCEEDED` → **不建退款單**。這不是推測：`CancelRefundSnapshotTest` 用一個外層交易先做那一句讀、等另一條執行緒把回呼整個做完，再在同一個交易裡呼叫 `cancelByBuyer()`：
+>
+> ```
+> 取消的第一句讀到 PENDING_PAYMENT；回呼 200；取消 →
+>   訂單 CANCELLED、付款 SUCCEEDED、退款單 []
+> [已付款、已取消：錢要退]
+> Expected size: 1 but was: 0 in:
+> ```
+>
+> **錢收了、訂單取消了、沒有退款單，而且沒有任何錯誤。** 修法跟上面那一句重讀同一個道理 —— 要看最新提交的版本，就用當前讀：`succeededPaymentOf()` 的 SQL 結尾加 `FOR SHARE`。同一個測試：
+>
+> ```
+> 取消的第一句讀到 PENDING_PAYMENT；回呼 200；取消 →
+>   訂單 CANCELLED、付款 SUCCEEDED、退款單 [BUYER_CANCEL]
+> ```
+>
+> **加鎖讀會不會帶來死鎖？** 這一段的第一版寫的是「會」：回呼拿著付款列的鎖、還沒改到訂單時，取消已經改了訂單、又要 `FOR SHARE` 讀那一列付款 —— 兩邊互等。**那是錯的，而且是沒有對照狀態機就下的結論。** `FOR SHARE` 那一句只在狀態機說「要退款」時才執行（`sideEffects()` 裡的 `d.refund()`），而要退款的取消，訂單一定已經是 `PAID` 或 `PICKING`（`OrderStateMachine`：`PENDING_PAYMENT` 的取消是 `Decision.to(CANCELLED)`，不帶退款；`PAID`、`PICKING` 的取消才是 `toWithRefund`）—— 也就是讓它變成已付款的那個回呼**早就 commit 了**，鎖也放了。
+>
+> 最接近的情境是**同一張訂單付了兩次錢**：第二筆的回呼鎖住第二筆付款、還沒套用到訂單，取消這時 `FOR SHARE` 掃這張訂單的付款，一定會撞到第二筆。`CancelVsSecondPaymentTest` 把它釘住：回呼鎖住第二筆之後停 500 ms，取消在這段時間裡進來：
+>
+> ```
+> 第二筆的回呼：ok
+> 取消：ok
+> 訂單 CANCELLED、退款單 [{payment_id=2, reason=BUYER_CANCEL}, {payment_id=3, reason=DUPLICATE_PAYMENT}]
+> ```
+>
+> 沒有死鎖。取消等第二筆的鎖；回呼那一邊，訂單是 `PAID`，`PAID + PAY_SUCCEEDED（另一筆）` 是 `REFUND_ONLY`（「付了兩次錢」）—— 只建一張退款單，**不改訂單那一列**，不需要等取消手上的鎖，互等不成立。（寫這個測試時我預期第二筆的退款原因是 `LATE_PAYMENT`；實際是 `DUPLICATE_PAYMENT`，因為回呼讀到的訂單還是 `PAID` —— 兩種都是全額退款，結果正確。）這個測試留在測試組裡，守住「加鎖讀不會讓這個交錯死鎖」。這個測試加進來之後，整套 `mvn clean verify`：229 個測試全綠、四道覆蓋率門檻都過（4:11）。
+
 ### 4.6.3 付款回呼：驗簽、金額、冪等、晚到的錢
 
 **誰接這個回呼？** 0.3.4 寫 `payment` 模組「處理回呼」。但回呼的結果要改訂單狀態，而 `payment` **不能**依賴 `ordering`（依賴表，1.6.2；反過來會形成環）。
@@ -2685,6 +2715,35 @@ class OrderJobs implements SchedulingConfigurer {
 **① 撈 id 不在交易裡，每一張訂單各自一個交易。**
 一個交易取消 100 張訂單，任何一張失敗，另外 99 張都會 rollback。而且那個交易會拿著 100 張訂單、以及它們所有商品的 `inventory` 列的鎖，**一直拿到最後一張處理完** —— 一個熱點商品的 15 分鐘前的訂單，會讓那個商品在排程執行的這段時間裡都下不了單。
 每張一個交易：每個交易只鎖一張訂單和它自己的幾個商品，持鎖時間是毫秒等級。
+
+> ⚠️ **專題寫完之後的追記（13 站第 02 章）：「一張失敗不影響其他張」只對了一半。** 每張訂單各自一個交易是對的 —— 一張 rollback 不會帶走別張。但 `applyEach()` 只接 `ShopException`（業務上的拒絕：狀態不允許、訂單不存在）。資料庫錯誤 —— 死鎖、鎖等待逾時（4.2.3、4.5.3 都量過它們會發生）—— 是 Spring 的 `DataAccessException`，不在裡面：它會**跳出整個迴圈**，同一批後面的訂單這一輪都不處理。
+>
+> 在單體裡，後果通常只是「晚 30 秒」：下一輪會再撈到它們。除非失敗的那一張**每一輪都失敗** —— 它排在最前面（`ORDER BY payment_deadline`），後面的就一直等。13 站第 02 章把庫存切成另一個服務之後撞到它：`release()` 變成一次遠端呼叫，遠端呼叫的每一種失敗（逾時、連不上、對方 500）都是這一種例外。
+>
+> `OrderJobsIsolationTest`（`ordering.internal`）把它釘住：兩張過期的訂單，用一個 trigger 讓第一張的取消在資料庫裡失敗（寫狀態歷史的那一句被拒絕），看第二張。修正前：
+>
+> ```
+> [ERROR]   OrderJobsIsolationTest.oneFailureDoesNotStopTheBatch:53 » UncategorizedSQL PreparedStatementCallback; uncategorized SQLException for SQL [INSERT INTO order_status_history (order_id, from_status, to_status, event, actor_type, actor_id, created_at)
+> VALUES (?, ?, ?, ?, ?, ?, ?)]; SQL state [45000]; error code [1644]; jobs-isolation: injected failure
+> ```
+>
+> 例外從 `cancelExpired()` 跳了出來 —— 第二張沒有被處理。修法是多接一層：
+>
+> ```diff
+>              } catch (ShopException e) {
+>                  log.warn("排程 {} 處理訂單 {} 失敗：{}", event, id, e.getMessage());
+> +            } catch (RuntimeException e) {
+> +                // 4.7.1 ① 的追記：資料庫錯誤（死鎖、鎖等待逾時）也只算這一張 —— 第一版只接 ShopException，
+> +                // 這一種例外會跳出迴圈，同一批後面的訂單這一輪都不處理（OrderJobsIsolationTest）。下一輪會再撈到它
+> +                log.error("排程 {} 處理訂單 {} 發生錯誤（下一輪再試）", event, id, e);
+>              }
+> ```
+>
+> ```
+> 4.7.1 ①：取消了 1 張；第一張（注入失敗）PENDING_PAYMENT、第二張 CANCELLED
+> ```
+>
+> 業務上的拒絕記 WARN、其他的記 ERROR：前者是「這張單現在不能取消」（正常），後者是「有東西壞了」（要有人看）。這個測試加進來之後，整套 `mvn clean verify`：230 個測試全綠、四道覆蓋率門檻都過（4:03）。
 
 **② 走的是跟「買家取消」同一條路**（`transitions.apply()`）。排程沒有自己的 `UPDATE`，所以 4.6 的每一條規則 —— 條件式 UPDATE、locking read 重讀、狀態機、副作用、歷史 —— 自動適用。
 `OrderHistory.Actor.system()` 讓歷史記下「是排程做的」。

@@ -17,7 +17,7 @@
 |------|----------|----------|--------|
 | 演算法 | [algorithm/README.md](./algorithm/README.md) | LeetCode 高頻題型、複雜度思維、DP、圖論基礎 | 8 |
 | 通用基礎 | [common/README.md](./common/README.md) | HTTP/HTTPS、SSL 與跨技術共通知識 | 2 |
-| TypeScript | [typescript/README.md](./typescript/README.md) | 型別系統、泛型、進階型別、框架整合 | 12 |
+| TypeScript | [typescript/README.md](./typescript/README.md) | 型別系統、泛型、進階型別、框架整合 | 16 |
 | 前端 gRPC | [grpc-frontend-course/README.md](./grpc-frontend-course/README.md) | gRPC-Web、Proto、前後端對接、Streaming 與上線實戰 | 8 |
 | Vite 原理與內核 | [vite-course/README.md](./vite-course/README.md) | 建構工具演進、No-bundle Dev Server、依賴預打包、轉換管線、HMR、Plugin、生產建構、Rolldown、手寫 mini-vite | 12 |
 | Vue（基礎 / 源碼 / Nuxt） | [vue/README.md](./vue/README.md) | Vue 3 精華橋接、自訂指令、Vue 源碼解析（Reactivity/Renderer/Compiler）、Nuxt 4 全端 | 7 + 12 + 16 |

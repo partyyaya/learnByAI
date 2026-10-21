@@ -1,6 +1,6 @@
-# 第五章：類別與物件導向程式設計
+# 第六章：類別與物件導向程式設計
 
-## 5.1 類別基礎
+## 6.1 類別基礎
 
 ### 定義類別
 
@@ -45,6 +45,55 @@ class User {
 }
 ```
 
+加了存取修飾符後，TypeScript 會**自動建立同名的類別屬性並在建構子裡指派**，所以這兩段完全等價：
+
+```typescript
+// 簡寫（參數屬性）
+class ApiError {
+  constructor(public statusCode: number, public message: string) {}
+}
+
+// 完整寫法 —— 上面那段實際上等於這段
+class ApiError {
+  public statusCode: number; // 1. 宣告欄位
+  public message: string;
+
+  constructor(statusCode: number, message: string) {
+    // 2. 接收參數
+    this.statusCode = statusCode; // 3. 手動指派
+    this.message = message;
+  }
+}
+```
+
+省掉的就是「同一個名字要寫三次」的重複。**注意修飾符不是可有可無的裝飾，它就是「請幫我建立這個屬性」的開關** —— 看編譯出來的 JS 最清楚：
+
+```javascript
+// class ApiError { constructor(public statusCode: number, ...) {} } 編譯後
+class ApiError {
+    statusCode;
+    message;
+    constructor(statusCode, message) {
+        this.statusCode = statusCode;   // ← TypeScript 自動補上的
+        this.message = message;
+    }
+}
+
+// 若把修飾符拿掉：constructor(statusCode: number, ...) {}
+class NoModifier {
+    constructor(statusCode, message) { }   // ← 什麼都沒有，屬性根本沒建立
+}
+```
+
+沒寫修飾符的話，`statusCode` 只是個用完就丟的普通參數，之後寫 `error.statusCode` 會直接編譯錯誤。四種修飾符的差別：
+
+| 寫法 | 效果 |
+| --- | --- |
+| `public x: T` | 建立屬性，外部可讀可寫（`public` 雖是預設值，但參數屬性**一定要明寫**才會生效） |
+| `private x: T` | 建立屬性，只有類別內部能存取 |
+| `protected x: T` | 建立屬性，類別內部與子類別能存取 |
+| `readonly x: T` | 建立屬性，建構後不可修改（可與上面三者組合，如 `public readonly`） |
+
 同樣的語法也可以加上 `readonly`，鎖定參數屬性建構後不可修改；另外，類別欄位若賦值為箭頭函式，`this` 在定義當下就會綁定為目前實例，很適合當回呼傳遞：
 
 ```typescript
@@ -75,7 +124,7 @@ handler(); // "Submit clicked"
 
 ---
 
-## 5.2 存取修飾符（Access Modifiers）
+## 6.2 存取修飾符（Access Modifiers）
 
 | 修飾符 | 類別內部 | 子類別 | 類別外部 |
 |--------|---------|--------|---------|
@@ -137,7 +186,7 @@ const counter = new Counter();
 
 ---
 
-## 5.3 繼承（Inheritance）
+## 6.3 繼承（Inheritance）
 
 ```typescript
 class Animal {
@@ -215,7 +264,7 @@ console.log(manager.describe()); // "Alice manages a team of 5"
 
 ---
 
-## 5.4 抽象類別（Abstract Classes）
+## 6.4 抽象類別（Abstract Classes）
 
 抽象類別不能被實例化，只能被繼承。用來定義子類別必須實作的方法。
 
@@ -268,7 +317,7 @@ console.log(circle.describe()); // "Area: 78.54, Perimeter: 31.42"
 
 ---
 
-## 5.5 介面實作（implements）
+## 6.5 介面實作（implements）
 
 ```typescript
 interface Serializable {
@@ -335,7 +384,7 @@ class ConsoleLogger extends BaseLogger {
 
 ---
 
-## 5.6 Getter / Setter
+## 6.6 Getter / Setter
 
 ```typescript
 class Temperature {
@@ -378,7 +427,7 @@ console.log(temp.celsius);    // 37.78
 
 ---
 
-## 5.7 靜態成員（Static Members）
+## 6.7 靜態成員（Static Members）
 
 ```typescript
 class MathUtils {
@@ -534,46 +583,6 @@ class AppConfig {
 }
 
 console.log(AppConfig.apiUrl, AppConfig.isProduction);
-```
-
----
-
-## 5.8 泛型類別
-
-```typescript
-class Stack<T> {
-  private items: T[] = [];
-
-  push(item: T): void {
-    this.items.push(item);
-  }
-
-  pop(): T | undefined {
-    return this.items.pop();
-  }
-
-  peek(): T | undefined {
-    return this.items[this.items.length - 1];
-  }
-
-  get size(): number {
-    return this.items.length;
-  }
-
-  isEmpty(): boolean {
-    return this.items.length === 0;
-  }
-}
-
-const numberStack = new Stack<number>();
-numberStack.push(1);
-numberStack.push(2);
-numberStack.push(3);
-console.log(numberStack.pop()); // 3
-
-const stringStack = new Stack<string>();
-stringStack.push("hello");
-stringStack.push("world");
 ```
 
 ---
@@ -839,4 +848,4 @@ subject.unsubscribe(observer);
 
 ---
 
-> 下一章：[第六章 — 泛型（Generics）](./06-generics.md)
+> 下一章：[第七章 — 泛型（Generics）](./07-generics.md)

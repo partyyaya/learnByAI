@@ -1422,6 +1422,71 @@ for (Target t : targets(e)) {
 
 Q10 的通知那一半（7.11.2）：同一則 `order.placed` 同時送 10 次 → `notifications` 1 列、`attempts = 1`。
 
+> ⚠️ **專題寫完之後的追記（13 站第 06 章發現，第 08 章修）：② 的「只有一條會成功認領」，在一個順序下不成立。** 13 站第 06 章的一次整套測試，驗收 Q10 紅了：`notification_attempts=2`。單獨跑 Q10，13 站第 05 章的程式碼上 36 次紅 1 次、第 06 章的程式碼上 8 次紅 1 次 —— 那兩章都沒有碰通知，這是這一章的程式。
+>
+> 「`attempts` 還是我讀到的那個 n」擋得住**兩條讀到同一個 n**，擋不住這一種：
+>
+> - A 讀到 0，認領（0 → 1），開始寄。
+> - B 在 A 認領**之後**、標 `SENT` **之前**才讀：讀到 1、`status` 還是 `PENDING`。它用「還是 1」認領（1 → 2）—— 成功，也寄。
+>
+> 買家收到兩封，而且兩邊都沒有死掉。`NotificationClaimTest`（`notification.internal`）把 A 停在那個窗裡：它的 mailer 第一封信停在 `send()` 裡，等測試放行；B 在這時候用同一個事件呼叫 `handle()`。修正前：
+>
+> ```
+> 7.7.2 ②：A 停在寄信裡時 B 來了 → B 沒有例外，那時 {status=SENT, attempts=2}；A 寄完、B 重試 → 沒有例外；寄了 2 封，{status=SENT, attempts=2}
+> [ERROR]   NotificationClaimTest.secondCopyWhileTheFirstIsSending:88 
+> Expected size: 1 but was: 2 in:
+> ```
+>
+> **只看 `attempts`，分不出「有人正在寄」與「上一次寄失敗了」。** 後者必須能再認領 —— AC-4 的重試就是這樣寄第 2～6 次的。分得出來的是一個**租約**，跟 7.4.2 的 relay 同一個做法（V14 的 `outbox_events.claimed_until`）：
+>
+> ```sql
+> -- V26__notification_claim_lease.sql
+> ALTER TABLE notifications ADD COLUMN claimed_until DATETIME(3) NULL, ALGORITHM=INSTANT;
+> ```
+>
+> ```diff
+> -            Map<String, Object> row = jdbc.queryForMap("SELECT id, status, attempts FROM notifications WHERE dedup_key = ?", dedup);
+> +            Map<String, Object> row = jdbc.queryForMap("SELECT id, status FROM notifications WHERE dedup_key = ?", dedup);
+>              if ("SENT".equals(row.get("status"))) continue;                // AC-3：已經寄過了
+>              long id = ((Number) row.get("id")).longValue();
+> -            int attempts = ((Number) row.get("attempts")).intValue();
+> -            int claimed = jdbc.update("UPDATE notifications SET attempts = attempts + 1 WHERE id = ? AND status <> 'SENT' AND attempts = ?", id, attempts);
+> -            if (claimed == 0) continue;                                     // 同一則訊息的另一份正在寄（或剛寄完）
+> -            mailer.send(t.userId(), t.type(), dedup, t.text());             // 失敗 → 例外 → 重試階梯（AC-4）
+> +            int claimed = jdbc.update("""
+> +                    UPDATE notifications SET attempts = attempts + 1, claimed_until = CURRENT_TIMESTAMP(3) + INTERVAL ? MICROSECOND
+> +                     WHERE id = ? AND status <> 'SENT' AND (claimed_until IS NULL OR claimed_until < CURRENT_TIMESTAMP(3))""",
+> +                    CLAIM_LEASE.toMillis() * 1000, id);
+> +            if (claimed == 0) throw new InFlight(dedup);                    // 另一份正在寄（或剛寄完）：重試階梯的下一級再來看
+> +            try {
+> +                mailer.send(t.userId(), t.type(), dedup, t.text());         // 失敗 → 例外 → 重試階梯（AC-4）
+> +            } catch (RuntimeException ex) {
+> +                jdbc.update("UPDATE notifications SET claimed_until = NULL WHERE id = ?", id);   // 放掉租約：下一級重試不用等它過期
+> +                throw ex;
+> +            }
+>              jdbc.update("UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP(3) WHERE id = ?", id);
+> ```
+>
+> 三個決定：
+>
+> - **認領不到，丟例外，不是 `continue`。** 第一版認領不到就跳過 —— 那一份訊息被 ack 掉。如果 A 寄到一半行程死了，A 那一份會被 broker 重新投遞；它一進來就撞上 A 還沒過期的租約，跳過、ack，**這封信就永遠不會寄了**。丟例外（`InFlight`）讓它走 7.5.3 的重試階梯，晚一點再看：那時候不是 `SENT`（跳過），就是租約過期了（再認領）。
+> - **寄失敗要放掉租約。** 不然 AC-4 的下一級重試（正式環境 1 秒後）會撞上自己剛蓋的租約。
+> - **租約 10 秒**（`CLAIM_LEASE`）：要比寄一封信的逾時長（不然還在寄，另一份就認領得到），比重試階梯的總長短（1 + 2 + 4 + 8 + 16 = 31 秒；不然行程死掉之後，另一份的重試用完、進了死信，租約都還沒過期）。測試環境的階梯縮短成 3.1 秒，在那裡行程死在寄信裡的話會進死信 —— 沒有測試走這條路。
+>
+> 修正之後，同一個測試，加上兩個新的（行程死掉留下的租約；寄失敗放掉租約）：
+>
+> ```
+> 7.7.2 ②：A 停在寄信裡時 B 來了 → B com.example.shop.notification.internal.NotificationHandler$InFlight: 通知 e5995fc8-a979-4fbe-a73f-74625180d661:ORDER_PLACED 正在由另一份投遞寄送（租約還沒過期），那時 {status=PENDING, attempts=1}；A 寄完、B 重試 → 沒有例外；寄了 1 封，{status=SENT, attempts=1}
+> 7.7.2：第一次寄失敗 → com.example.shop.notification.internal.SimulatedMailer$MailException: SMTP 暫時失敗，{status=PENDING, attempts=1, claimed_until=null}；馬上重試 → 沒有例外，寄了 1 封，{status=SENT, attempts=2}
+> 7.7.2：死掉的行程留下租約 → 租約內重送 com.example.shop.notification.internal.NotificationHandler$InFlight: 通知 bee822a8-934d-4777-a0f5-1dfb9b8cd0be:ORDER_PLACED 正在由另一份投遞寄送（租約還沒過期）、寄了 0 封；過期之後重試 → 沒有例外、寄了 1 封，{status=SENT, attempts=2}
+> ```
+>
+> 第三行就是上面「擋不住的一種」，現在的樣子：行程死在寄信與標記之間，那封信可能已經寄出去了；租約過期之後，重送的那一份**再寄一次**。這個窗還在 —— 租約讓它從「馬上」變成「10 秒之後」，沒有讓它消失。
+>
+> 把租約的條件拿掉（突變），只跑 `NotificationClaimTest`：3 個裡紅 2 個。改完之後，整套 `mvn clean verify`：233 個測試全綠、四道覆蓋率門檻都過（4:12）。那一次的 Q10，10 份投遞裡有 1 份剛好撞進了這個窗：日誌裡一行 `EVENT_RETRY consumer=notification.order-events … attempt=1，PT0.1S 後重試：…InFlight…`，100 ms 後重試、看到 `SENT`、跳過 —— `notification_attempts=1`。舊的程式碼遇到同一個順序，會寄第二封。
+>
+> （7.13.1 的完整 `NotificationHandler` 是修正之前的樣子。）
+
 ### 7.7.3 AC-4：重試 5 次、死信、下單不受影響
 
 `EventFlowTest.mailerDownDeadLetters`（修好 7.5.3 那場風暴之後）：
@@ -1431,6 +1496,29 @@ NTF-1 AC-4：{status=FAILED, attempts=6}；死信佇列 1 則；訂單 20261002-
 ```
 
 `attempts = 6`：第一次 ＋ 重試 5 次。測試環境的重試階梯縮短成 100、200、400、800、1,600 ms（一樣 5 級、一樣指數，`src/test/resources/config/application.yml`）—— 正式的 1、2、4、8、16 秒要等 31 秒。訂單維持 `PENDING_PAYMENT`：**通知失敗，下單不受影響**，因為下單的交易從來不知道 SMTP 的存在。
+
+> ⚠️ **專題寫完之後的追記（13 站第 02 章）：這個測試有一個競態。** 13 站第 02 章的一次整套 `mvn clean verify`，它紅了：
+>
+> ```
+> NTF-1 AC-4：{status=FAILED, attempts=6}；死信佇列 0 則；訂單 20261013-442008 狀態 PENDING_PAYMENT
+> [ERROR]   EventFlowTest.mailerDownDeadLetters:196 
+> expected: 1
+>  but was: 0
+> ```
+>
+> 通知是 `FAILED`、試了 6 次 —— 只有死信佇列是 0。`RabbitConsumers` 用完重試之後的順序是：**先**呼叫 `handler.onDeadLetter()`（通知的消費者在這裡寫 `FAILED`），**再**把訊息送進死信佇列、等 confirm、ack（7.5.3）。測試等的是「`FAILED`」，等到就立刻讀佇列 —— 中間那幾毫秒，死信還在路上。我手上留下紀錄的 49 次（整套，或單獨跑 `EventFlowTest`）都是 1 則；這是第一次讀早了。
+>
+> 這是從程式碼的順序推出來的，**沒有用確定的方式重現**（要拉長那個窗，得改 `RabbitConsumers` 本身）。產品的行為沒有問題 —— 死信一定會到（送不進去就 nack、重新排隊）。改的是測試：看到 `FAILED` 之後，再等死信到，最多 5 秒：
+>
+> ```diff
+>          await().atMost(WAIT).until(() -> "FAILED".equals(notification(BUYER, "ORDER_PLACED")));
+> +        // 7.7.3 的追記（13 站第 02 章）：RabbitConsumers 先呼叫 onDeadLetter()（這裡寫 FAILED），才把訊息送進死信佇列 ——
+> +        // 看到 FAILED 的那一刻，死信可能還在路上。第一版在這裡直接讀佇列：有一次讀到 0 則（13 站第 02 章的一次整套測試）
+> +        await().atMost(Duration.ofSeconds(5)).until(() -> dlqCount() >= 1);
+>          Properties q = admin.getQueueProperties("shop.notification.order-events.dlq");
+> ```
+>
+> 後面那一句 `isEqualTo(1)` 留著：等到「至少 1 則」之後，還是要剛好 1 則（不能重複送進死信）。改完之後，整套 `mvn clean verify`：230 個測試全綠、四道覆蓋率門檻都過（4:01）。
 
 AC-2「事件發生後 p99 60 秒內」：7.4.3 量到的 commit → 寄出，p99 在 0.17～4.0 秒之間（輪詢間隔 10 ms～1 秒；這一章用的 100 ms 是 0.32～0.43 秒）。RabbitMQ 停掉的時候不會是這樣 —— 7.9 的演練量了它。
 

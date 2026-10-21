@@ -300,7 +300,7 @@ export {}; // declare global 只能出現在「模組」裡；沒有任何 impor
 - 上面整段編譯後會**完全消失**，不會產生任何一行 JavaScript——它純粹是給型別檢查器看的。
 - 型別是補上了，但**執行期真的把 `req.user` 塞進去仍然要你自己寫**（通常在驗證登入的 middleware 裡）。TypeScript 不會驗證這個承諾；宣告了卻沒實際賦值，`req.user` 執行期就是 `undefined`。
 
-> 📌 `declare` 的完整說明（各種形態、限制、以及 `.d.ts` 檔案）見第 8 章 8.3。
+> 📌 `declare` 的完整說明（各種形態、限制、以及 `.d.ts` 檔案）見第 9 章 9.3。
 
 > 💡 這才是宣告合併存在的主因：讓你在不修改套件原始碼的情況下，為既有型別「補洞」。
 
@@ -855,7 +855,7 @@ type UserDetailResponse = ApiResponse<User>;
 
 DTO（Data Transfer Object，資料傳輸物件）就是為這兩種場合各做一個型別。做法是從 `User` **衍生**出來，而不是重新手寫。
 
-> 下面會用到 `Omit`、`Pick`、`Partial` 這三個內建工具型別。它們的完整原理見 [第 6 章：泛型](./06-generics.md) 與 [第 7 章：進階型別](./07-advanced-types.md)，這裡先記住用途即可：
+> 下面會用到 `Omit`、`Pick`、`Partial` 這三個內建工具型別。它們的完整原理見 [第 7 章：泛型](./07-generics.md) 與 [第 8 章：進階型別](./08-advanced-types.md)，這裡先記住用途即可：
 
 | 寫法 | 白話 |
 | ---- | ---- |
@@ -1108,4 +1108,4 @@ type ReadonlyUser = Readonly<User>;
 
 ---
 
-> 下一章：[第五章 — 類別與物件導向程式設計](./05-classes.md)
+> 下一章：[第五章 — 聯合型別與型別縮窄](./05-unions-and-narrowing.md)

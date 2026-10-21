@@ -1,12 +1,12 @@
-# 第十四章：型別體操（Type Gymnastics）
+# 第十五章：型別體操（Type Gymnastics）
 
-> 本章是 [第十三章 型別層級程式設計](./13-type-level-programming.md) 的**解題手冊**，不是第三遍語法課。條件型別、`infer`、映射型別、模板字面值的完整教學在 [第七章](./07-advanced-types.md) 與第十三章；這裡只整理「看到什麼題、選哪套手法」。
+> 本章是 [第十四章 型別層級程式設計](./14-type-level-programming.md) 的**解題手冊**，不是第三遍語法課。條件型別、`infer`、映射型別、模板字面值的完整教學在 [第八章](./08-advanced-types.md) 與第十四章；這裡只整理「看到什麼題、選哪套手法」。
 >
-> 題目風格對齊 [type-challenges](https://github.com/type-challenges/type-challenges)。建議先熟悉 [第六章 泛型](./06-generics.md)、第七章與第十三章。
+> 題目風格對齊 [type-challenges](https://github.com/type-challenges/type-challenges)。建議先熟悉 [第七章 泛型](./07-generics.md)、第八章與第十四章。
 
 ---
 
-## 14.1 先選資料結構，再動手
+## 15.1 先選資料結構，再動手
 
 [type-challenges](https://github.com/type-challenges/type-challenges) 看起來有近 190 題，反覆出現的手法大約十來個。多數 medium / hard 只是把同一套手法換資料結構再組一次。解題時先問：**這題操作的是哪一種資料？**
 
@@ -23,7 +23,7 @@
 
 ---
 
-## 14.2 條件型別：`extends` 是相容，不是相等
+## 15.2 條件型別：`extends` 是相容，不是相等
 
 最基礎的核心：
 
@@ -51,13 +51,13 @@ type B = { name: string };
 type Result = A extends B ? true : false; // true，因為 A 至少具備 B 要求的 name
 ```
 
-所以 `extends` 不是「完全相等」，而是「型別相容 / 包含關係」。要嚴格相等，用 14.8 的 `Equal`。
+所以 `extends` 不是「完全相等」，而是「型別相容 / 包含關係」。要嚴格相等，用 15.8 的 `Equal`。
 
-> 完整語法見 [7.4 條件型別](./07-advanced-types.md)。
+> 完整語法見 [8.1 條件型別](./08-advanced-types.md)。
 
 ---
 
-## 14.3 分佈、`never`、以及什麼時候該關掉
+## 15.3 分佈、`never`、以及什麼時候該關掉
 
 ### 裸參數會自動拆開 Union
 
@@ -114,7 +114,7 @@ type Oops = BadExclude<"a" | "b" | "c", "a">;
 // "a" | "b" | "c"，整包不能賦值給 "a"，一個都沒排掉
 ```
 
-> 分佈的觸發條件、`T extends any` 這種「故意觸發分佈」的寫法，以及 `boolean` 其實是 `true | false` 也會被拆開，見 [7.4 分佈式條件型別](./07-advanced-types.md)。
+> 分佈的觸發條件、`T extends any` 這種「故意觸發分佈」的寫法，以及 `boolean` 其實是 `true | false` 也會被拆開，見 [8.1 分佈式條件型別](./08-advanced-types.md)。
 
 ### `IsNever` 一定要關分佈
 
@@ -145,7 +145,7 @@ type S = IsNever<undefined>; // false
 
 ---
 
-## 14.4 `infer`：從型別裡拆東西
+## 15.4 `infer`：從型別裡拆東西
 
 `infer` 只能出現在條件型別 `extends` 的**右側**，作用是挖空一格，讓 TypeScript 把對齊到的型別填進去。同一顆子彈打四種目標：
 
@@ -178,17 +178,17 @@ type S1 = FirstIfString<["hello", 1]>; // "hello"
 type S2 = FirstIfString<[1, 2, 3]>;    // never
 ```
 
-> `infer` 的對齊規則、同一個名稱出現兩次時協變取聯集／逆變取交集、以及 `(infer E)[]` 吃不下 `readonly` 陣列，見 [7.4 infer](./07-advanced-types.md)。
+> `infer` 的對齊規則、同一個名稱出現兩次時協變取聯集／逆變取交集、以及 `(infer E)[]` 吃不下 `readonly` 陣列，見 [8.1 infer](./08-advanced-types.md)。
 
 ---
 
-## 14.5 Tuple：遞迴拆接，不要用 `in keyof`
+## 15.5 Tuple：遞迴拆接，不要用 `in keyof`
 
 Tuple 沒有 `for` 迴圈。標準起手式是：拆第一個 → 決定留不留 → 對剩下的遞迴 → 空元組結束。
 
 ### Filter：經典遞迴
 
-對應 [#18220 Filter](https://github.com/type-challenges/type-challenges/blob/main/questions/18220-medium-filter/README.md)，也是 [第十三章練習 1](./13-type-level-programming.md)：
+對應 [#18220 Filter](https://github.com/type-challenges/type-challenges/blob/main/questions/18220-medium-filter/README.md)，也是 [第十四章練習 1](./14-type-level-programming.md)：
 
 ```typescript
 type Filter<T extends unknown[], U> =
@@ -220,7 +220,7 @@ First extends U？
 
 ### 陷阱：`First` 自己也是 Union 時會再分佈一次
 
-`First extends U` 裡的 `First` 如果是聯合型別，會再走一遍 14.3 的分佈：
+`First extends U` 裡的 `First` 如果是聯合型別，會再走一遍 15.3 的分佈：
 
 ```typescript
 type Naive = Filter<[string | number, boolean], string>;
@@ -230,7 +230,7 @@ type Naive = Filter<[string | number, boolean], string>;
 // 結果是 [string] | []，不是「這一格整格留下或整格丟掉」
 ```
 
-若題目要把「這一格」當整體處理，把 14.3 的關分佈用在 `First` 上：
+若題目要把「這一格」當整體處理，把 15.3 的關分佈用在 `First` 上：
 
 ```typescript
 type FilterSlot<T extends unknown[], U> =
@@ -303,11 +303,11 @@ type U = TupleToUnion<[1, 2, 3]>; // 1 | 2 | 3
 type L = Length<[1, 2, 3]>;       // 3（元組的 length 是字面值）
 ```
 
-`T[number]` 對應 [#10 Tuple to Union](https://github.com/type-challenges/type-challenges/blob/main/questions/00010-medium-tuple-to-union/README.md)。`T["length"]` 對一般陣列是 `number`，對元組才是字面值——[13.5 型別層算術](./13-type-level-programming.md) 全建立在這件事上。
+`T[number]` 對應 [#10 Tuple to Union](https://github.com/type-challenges/type-challenges/blob/main/questions/00010-medium-tuple-to-union/README.md)。`T["length"]` 對一般陣列是 `number`，對元組才是字面值——[14.5 型別層算術](./14-type-level-programming.md) 全建立在這件事上。
 
 ---
 
-## 14.6 物件：`in keyof`、`as never`、修飾符
+## 15.6 物件：`in keyof`、`as never`、修飾符
 
 `in keyof` 的核心是：把 `T` 的每個 key 走一遍，重新建立型別。這跟 `infer` 解構 Tuple 是兩條路。
 
@@ -368,7 +368,7 @@ P = "completed"   → "completed" extends "description"？否 → 留下 complet
 
 注意 `as never` 刪的是**鍵**，不是把值改成 `never`。如果寫成 `[P in keyof T]: P extends K ? never : T[P]`，`description` 還在，只是型別變成 `never`。
 
-對照 14.5：
+對照 15.5：
 
 | | 物件 | Tuple |
 |--|------|-------|
@@ -376,7 +376,7 @@ P = "completed"   → "completed" extends "description"？否 → 留下 complet
 | 真正拿掉中間元素 | `as never` 會刪掉這個 key | 映射成 `never` 只會留下破洞 |
 | 依**值的型別**過濾 | `as T[K] extends U ? K : never` | 只能 `infer` + 遞迴 |
 
-「依值挑欄位」（#2595 PickByType、#2852 OmitByType）只有 key remapping 做得到，`Pick` / `Omit` 只能依鍵名操作。細節見 [7.5 鍵值重新映射](./07-advanced-types.md)。
+「依值挑欄位」（#2595 PickByType、#2852 OmitByType）只有 key remapping 做得到，`Pick` / `Omit` 只能依鍵名操作。細節見 [8.2 鍵值重新映射](./08-advanced-types.md)。
 
 ### 修飾符是獨立維度
 
@@ -390,11 +390,11 @@ type MyRequired<T> = { [K in keyof T]-?: T[K] };
 
 Hard 的 [#57 Get Required](https://github.com/type-challenges/type-challenges/blob/main/questions/00057-hard-get-required/README.md)、[#59 Get Optional](https://github.com/type-challenges/type-challenges/blob/main/questions/00059-hard-get-optional/README.md) 不是新語法，而是在問：某個 key 能不能缺席。常用判斷是 `{} extends Pick<T, K>`——成立代表 `K` 可選。
 
-巢狀物件往下走就是遞迴映射（#9 Deep Readonly），練習見 [第十三章練習 3](./13-type-level-programming.md)。
+巢狀物件往下走就是遞迴映射（#9 Deep Readonly），練習見 [第十四章練習 3](./14-type-level-programming.md)。
 
 ---
 
-## 14.7 字串：模板字面值就是字串版 `infer`
+## 15.7 字串：模板字面值就是字串版 `infer`
 
 字串題和 Tuple 題是同一件事，只是資料從 `[]` 換成 `` `${}` ``。
 
@@ -450,11 +450,11 @@ type S2 = StartsWith<"abc", "b">; // false
 type S3 = StartsWith<"abc", "">; // true（空前綴對任何字串都成立）
 ```
 
-路由參數、snake_case 轉換在 [13.6](./13-type-level-programming.md) 與 [13.8 案例三](./13-type-level-programming.md)。內建的 `Uppercase` / `Lowercase` / `Capitalize` / `Uncapitalize` 不必自己做。
+路由參數、snake_case 轉換在 [14.6](./14-type-level-programming.md) 與 [14.8 案例三](./14-type-level-programming.md)。內建的 `Uppercase` / `Lowercase` / `Capitalize` / `Uncapitalize` 不必自己做。
 
 ---
 
-## 14.8 判斷器：`IsNever`、`IsAny`、`IsUnion`、`Equal`
+## 15.8 判斷器：`IsNever`、`IsAny`、`IsUnion`、`Equal`
 
 `any`、`unknown`、`never` 會讓普通 `extends` 說謊。型別體操裡「判斷這是什麼」幾乎都要先關分佈，或改用更嚴的比較。
 
@@ -511,7 +511,7 @@ type C = IsUnion<[string | number]>; // false，元組裡裝 Union 仍是單一�
 type D = IsUnion<never>; // false（沒有第一行的話會是 never）
 ```
 
-`[T] extends [never]` **就是在攔 `never`**，不是多餘的防呆。`never` 是空的 union，裸的 `T extends U` 會像 14.3 那樣「對 0 個成員跑 map」，結果是 `never`，連 `true` / `false` 都拿不到。包進 `[T]` 才能真的問「這是不是 never」，並規定答案為 `false`。
+`[T] extends [never]` **就是在攔 `never`**，不是多餘的防呆。`never` 是空的 union，裸的 `T extends U` 會像 15.3 那樣「對 0 個成員跑 map」，結果是 `never`，連 `true` / `false` 都拿不到。包進 `[T]` 才能真的問「這是不是 never」，並規定答案為 `false`。
 
 其餘情況逐步拆：
 
@@ -528,11 +528,9 @@ IsUnion<string | number>
   true | true → true
 ```
 
-完整說明見 [13.7](./13-type-level-programming.md)。
-
 ### 為什麼 `Equal` 不用雙向 `extends`
 
-對應 [#19749 IsEqual](https://github.com/type-challenges/type-challenges/blob/main/questions/19749-medium-isequal/README.md)，也是 [13.10](./13-type-level-programming.md) 測試型別的標準寫法：
+對應 [#19749 IsEqual](https://github.com/type-challenges/type-challenges/blob/main/questions/19749-medium-isequal/README.md)，也是 [14.10](./14-type-level-programming.md) 測試型別的標準寫法：
 
 ```typescript
 type Equal<X, Y> =
@@ -610,7 +608,7 @@ Expand<{ a: 1 } & { b: 2 }>
 3. 映射重建 { a: 1; b: 2 } → 變成和 Flattened 同一個型別
 ```
 
-測結構相不相等時先 `Expand`；測「是不是我寫出來的那一個型別」就不要攤。完整測試寫法見 [13.10](./13-type-level-programming.md)。
+測結構相不相等時先 `Expand`；測「是不是我寫出來的那一個型別」就不要攤。完整測試寫法見 [14.10](./14-type-level-programming.md)。
 
 ### `Includes` 為什麼看起來 easy，卻一定要用 `Equal`
 
@@ -625,15 +623,15 @@ type Includes<T extends readonly unknown[], U> =
     : false;
 ```
 
-若寫成 `F extends U`，`Includes<[boolean], true>` 之類的測資會過不了——`true` 可以賦值給 `boolean`，但題目要的是「陣列裡有沒有**這個型別**」。這題把 14.5 與本節串在一起。
+若寫成 `F extends U`，`Includes<[boolean], true>` 之類的測資會過不了——`true` 可以賦值給 `boolean`，但題目要的是「陣列裡有沒有**這個型別**」。這題把 15.5 與本節串在一起。
 
-測試方法（`Expect`、`@ts-expect-error`、`vitest --typecheck`）見 [13.10](./13-type-level-programming.md)。
+測試方法（`Expect`、`@ts-expect-error`、`vitest --typecheck`）見 [14.10](./14-type-level-programming.md)。
 
 ---
 
-## 14.9 Union 轉 Intersection：逆變
+## 15.9 Union 轉 Intersection：逆變
 
-對應 [#55 Union to Intersection](https://github.com/type-challenges/type-challenges/blob/main/questions/00055-hard-union-to-intersection/README.md)。這是 Hard 的分水嶺，也是 [13.7](./13-type-level-programming.md) 寫過的公式：
+對應 [#55 Union to Intersection](https://github.com/type-challenges/type-challenges/blob/main/questions/00055-hard-union-to-intersection/README.md)。這是 Hard 的分水嶺，公式本身很短，難在理解為什麼成立：
 
 ```typescript
 type UnionToIntersection<U> = (
@@ -651,18 +649,18 @@ type C = UnionToIntersection<{ a: 1 } | { b: 2 }>; // { a: 1 } & { b: 2 }
 
 ---
 
-## 14.10 對照 type-challenges：最小題單
+## 15.10 對照 type-challenges：最小題單
 
 同一家族做 2～3 題，觀念就齊了；後面多半是換皮。建議順序：
 
 | 家族 | 題 | 對應本章 |
 |------|----|----------|
-| 條件 / 分佈 | If、Exclude | 14.2、14.3 |
-| 物件映射 | Pick、Readonly、Omit | 14.6 |
-| Tuple | First、Concat、Parameters、Filter | 14.4、14.5 |
-| 字串 | Trim Left、Trim、Replace | 14.4、14.7 |
-| 判斷器 | IsNever、IsUnion、IsEqual、Includes | 14.3、14.8 |
-| 進階 | Awaited、Tuple to Union、Deep Readonly、Union to Intersection、IsAny | 14.4、14.5、14.8、14.9 |
+| 條件 / 分佈 | If、Exclude | 15.2、15.3 |
+| 物件映射 | Pick、Readonly、Omit | 15.6 |
+| Tuple | First、Concat、Parameters、Filter | 15.4、15.5 |
+| 字串 | Trim Left、Trim、Replace | 15.4、15.7 |
+| 判斷器 | IsNever、IsUnion、IsEqual、Includes | 15.3、15.8 |
+| 進階 | Awaited、Tuple to Union、Deep Readonly、Union to Intersection、IsAny | 15.4、15.5、15.8、15.9 |
 
 不必整本搬進課程的：
 
@@ -671,13 +669,13 @@ type C = UnionToIntersection<{ a: 1 } | { b: 2 }>; // { a: 1 } & { b: 2 }
 - 框架模擬：Simple Vue、Pinia（觀念已是遞迴物件 + 函式）
 - `Union to Tuple`（能寫，產品裡不要用）
 
-效能、遞迴深度、以及「什麼時候該收手」見 [13.9](./13-type-level-programming.md)。函式庫作者為了使用者體驗值得投資複雜型別；應用程式開發者多半不需要把 type-challenges 寫進業務程式。
+效能、遞迴深度、以及「什麼時候該收手」見 [14.9](./14-type-level-programming.md)。函式庫作者為了使用者體驗值得投資複雜型別；應用程式開發者多半不需要把 type-challenges 寫進業務程式。
 
 ---
 
 ## 練習題
 
-以下三題刻意跟 [第十三章練習](./13-type-level-programming.md) 錯開：分別練物件映射、字串遞迴，以及「Tuple + `Equal`」。測資用 type-challenges 的 `Equal` / `Expect`。
+以下三題刻意跟 [第十四章練習](./14-type-level-programming.md) 錯開：分別練物件映射、字串遞迴，以及「Tuple + `Equal`」。測資用 type-challenges 的 `Equal` / `Expect`。
 
 ```typescript
 type Equal<X, Y> =
@@ -743,7 +741,7 @@ type _cases = [
 type TrimLeft<S extends string> = S extends ` ${infer R}` ? TrimLeft<R> : S;
 ```
 
-`Trim` 是先 `TrimLeft` 再 `TrimRight`（或反過來），見 14.7。
+`Trim` 是先 `TrimLeft` 再 `TrimRight`（或反過來），見 15.7。
 
 </details>
 
@@ -765,7 +763,7 @@ type _cases = [
 <details>
 <summary>參考解答</summary>
 
-拆 `First` / `Rest` 後，用 14.8 的 `Equal` 比第一個元素，命中就停，否則對 `Rest` 遞迴。空元組是 `false`。
+拆 `First` / `Rest` 後，用 15.8 的 `Equal` 比第一個元素，命中就停，否則對 `Rest` 遞迴。空元組是 `false`。
 
 ```typescript
 type Equal<X, Y> =
@@ -788,5 +786,5 @@ type Includes<T extends readonly unknown[], U> =
 
 ---
 
-> 上一章：[第十三章 — 型別層級程式設計](./13-type-level-programming.md)
-> 下一章：[第十五章 — TypeScript Compiler API](./15-compiler-api.md)
+> 上一章：[第十四章 — 型別層級程式設計](./14-type-level-programming.md)
+> 下一章：[第十六章 — TypeScript Compiler API](./16-compiler-api.md)

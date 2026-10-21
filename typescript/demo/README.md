@@ -29,7 +29,7 @@ npm run check
 # 型別檢查 + 監看模式
 npm run check:watch
 
-# 執行 Compiler API 範例（第 15 章）
+# 執行 Compiler API 範例（第 16 章）
 npm run capi
 ```
 
@@ -56,8 +56,8 @@ demo/
 └── src/
     ├── playground.ts     # 👈 你的主要測試場，隨便改
     ├── type-utils.ts     # 型別測試工具（Equal / Expect / expectType）
-    ├── type-testing.ts   # 型別層級程式設計的斷言範例（第 13 章精簡版）
-    ├── compiler-api.ts   # Compiler API 遊樂場（第 15 章精簡版）
+    ├── type-testing.ts   # 型別層級程式設計的斷言範例（第 14 章精簡版）
+    ├── compiler-api.ts   # Compiler API 遊樂場（第 16 章精簡版）
     └── chapters/         # 👈 各章完整程式碼範例（見下方「章節範例」）
 ```
 
@@ -70,20 +70,21 @@ demo/
 | `02-basic-types.ts` | ✅ | 原始型別、陣列、元組、列舉、any/unknown/never、型別推論/斷言、字面值 |
 | `03-functions.ts` | ✅ | 函式型別、可選/預設/剩餘參數、多載、this、回呼 |
 | `04-interfaces-type-aliases.ts` | ✅ | 介面、型別別名、擴展、宣告合併、索引簽名 |
-| `05-classes.ts` | ✅ | 類別、修飾符、繼承、抽象類別、getter/setter、靜態、泛型類別 |
-| `06-generics.ts` | ✅ | 泛型函式/介面/類別、約束、預設值、Result/Builder 模式 |
-| `07-advanced-types.ts` | ✅ | 聯合/交集、型別縮窄、條件型別、映射型別、模板字面值、工具型別 |
-| `08-modules.ts` | 📖 參考 | 模組匯入匯出、路徑別名、命名空間（`@ts-nocheck`） |
-| `10-framework-integration.ts` | 📖 參考 | Vue / React / Nuxt / Next.js 整合（`@ts-nocheck`） |
-| `11-decorators.ts` | 📖 參考 | 裝飾器與 NestJS/TypeORM/Angular（`@ts-nocheck`，見下方裝飾器說明） |
-| `12-best-practices.ts` | ✅ | 錯誤處理、不可變、事件系統、型別安全 API、陷阱、zod |
-| `13-type-level-programming.ts` | ✅ | 型別層級程式設計 + 型別斷言（正確性由 tsc 保證） |
-| `15-compiler-api.ts` | ✅ | Compiler API（會發出網路/讀檔的範例包成不呼叫的函式） |
+| `05-unions-and-narrowing.ts` | ✅ | 聯合型別、判別式聯合、satisfies、各種型別縮窄、型別守衛與斷言函式 |
+| `06-classes.ts` | ✅ | 類別、修飾符、繼承、抽象類別、getter/setter、靜態 |
+| `07-generics.ts` | ✅ | 泛型函式/介面/類別、約束、預設值、Result/Builder 模式 |
+| `08-advanced-types.ts` | ✅ | 條件型別、映射型別、模板字面值、工具型別 |
+| `09-modules.ts` | 📖 參考 | 模組匯入匯出、路徑別名、命名空間（`@ts-nocheck`） |
+| `11-best-practices.ts` | ✅ | 錯誤處理、不可變、事件系統、型別安全 API、陷阱、zod |
+| `12-framework-integration.ts` | 📖 參考 | Vue / React / Nuxt / Next.js 整合（`@ts-nocheck`） |
+| `13-decorators.ts` | 📖 參考 | 裝飾器與 NestJS/TypeORM/Angular（`@ts-nocheck`，見下方裝飾器說明） |
+| `14-type-level-programming.ts` | ✅ | 型別層級程式設計、型變標註 + 型別斷言（正確性由 tsc 保證） |
+| `16-compiler-api.ts` | ✅ | Compiler API（會發出網路/讀檔的範例包成不呼叫的函式） |
 
-- **✅ 可執行**：用 `npx tsx src/chapters/07-advanced-types.ts` 直接跑，會印出範例輸出並以 `... 範例載入完成 ✅` 結尾。
+- **✅ 可執行**：用 `npx tsx src/chapters/08-advanced-types.ts` 直接跑，會印出範例輸出並以 `... 範例載入完成 ✅` 結尾。
 - **📖 參考**：這些章節依賴外部框架、路徑別名或舊版裝飾器，無法在此單檔環境編譯／執行，故加了 `// @ts-nocheck` 只供閱讀（不納入型別檢查、也不要用 tsx 執行）。
 
-> 第 1 章（環境安裝）與第 9 章（tsconfig 設定）內容是指令與 JSON 設定、非可執行程式碼，因此未收錄於此。
+> 第 1 章（環境安裝）與第 10 章（tsconfig 設定）內容是指令與 JSON 設定、非可執行程式碼，因此未收錄於此。
 
 **每個範例都是自足的**：同一章不同範例各自包在 `{ ... }` 區塊裡（利用區塊作用域隔離同名的 `type`/`interface`/`class`/`let`），用到的型別也整段複製進該區塊，可以獨立閱讀、複製、修改。刻意示範「會編譯錯誤」或「執行時出錯」的行都已註解並保留 `// ❌` 說明。
 
@@ -99,7 +100,7 @@ npx tsx src/playground.ts
 
 ### 2. 測試「型別」——寫型別斷言，用 tsc 檢查
 
-型別層級的東西（第 6、7、13 章）沒有執行期輸出，正確與否要靠**型別檢查**。做法是用 `type-utils.ts` 提供的 `Equal` / `Expect`：
+型別層級的東西（第 7、8、14 章）沒有執行期輸出，正確與否要靠**型別檢查**。做法是用 `type-utils.ts` 提供的 `Equal` / `Expect`：
 
 ```typescript
 import type { Equal, Expect } from "./type-utils.js";
@@ -118,7 +119,7 @@ npm run check
 
 沒有任何輸出（exit code 0）就代表所有型別斷言都通過了。範例見 [src/type-testing.ts](./src/type-testing.ts)。
 
-## 測試裝飾器（第 11 章）
+## 測試裝飾器（第 13 章）
 
 預設設定支援 TypeScript 5.0 的**標準（TC39）裝飾器**。若要測試課程中 NestJS / TypeORM 風格的**舊版裝飾器**，請：
 

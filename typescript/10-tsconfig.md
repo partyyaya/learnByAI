@@ -1,6 +1,6 @@
-# 第九章：tsconfig.json 設定完全指南
+# 第十章：tsconfig.json 設定完全指南
 
-## 9.1 tsconfig.json 概覽
+## 10.1 tsconfig.json 概覽
 
 `tsconfig.json` 是 TypeScript 專案的設定檔，定義了編譯器的行為和專案結構。
 
@@ -27,7 +27,7 @@ npx tsc --init
 
 ---
 
-## 9.2 核心編譯選項
+## 10.2 核心編譯選項
 
 ### 目標版本（target）
 
@@ -88,7 +88,7 @@ const greet = (name) => `Hello, ${name}`;
 
 ---
 
-## 9.3 嚴格模式選項
+## 10.3 嚴格模式選項
 
 ```json
 {
@@ -155,7 +155,7 @@ const first = scores[0]; // 沒開啟時型別是 number；開啟後型別是 nu
 
 ---
 
-## 9.4 輸出選項
+## 10.4 輸出選項
 
 ```json
 {
@@ -190,7 +190,7 @@ const first = scores[0]; // 沒開啟時型別是 number；開啟後型別是 nu
 
 ---
 
-## 9.5 路徑與檔案
+## 10.5 路徑與檔案
 
 ```json
 {
@@ -208,6 +208,8 @@ const first = scores[0]; // 沒開啟時型別是 number；開啟後型別是 nu
   "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
 ```
+
+> 📌 `baseUrl` / `paths` 的寫法、匯入時怎麼用，以及「打包工具也要同步設定」的提醒，已在第 9 章 9.5 說明，這裡不重複。
 
 ### typeRoots 與 types
 
@@ -287,7 +289,7 @@ console.log(__LOOSE_VAR__); // ❌ error TS2304: Cannot find name '__LOOSE_VAR__
 | 「我專案裡有一份 `.d.ts`，想讓它生效」 | `include` / `files` |
 | 「我想控制 `@types/*` 這類全域型別包自動載入哪些」 | `typeRoots` / `types` |
 
-> 📌 這也是第 8 章 8.3 那句警告的由來——自己寫的 `legacy-lib.d.ts`、`assets.d.ts` 都是「單一檔案」，要用 `include` 收，放進 `typeRoots` 是無效的。
+> 📌 這也是第 9 章 9.3 那句警告的由來——自己寫的 `legacy-lib.d.ts`、`assets.d.ts` 都是「單一檔案」，要用 `include` 收，放進 `typeRoots` 是無效的。
 
 ### include / exclude / files
 
@@ -317,16 +319,16 @@ console.log(__LOOSE_VAR__); // ❌ error TS2304: Cannot find name '__LOOSE_VAR__
 
 ---
 
-## 9.6 常見專案設定範本
+## 10.6 常見專案設定範本
 
 下面的範本會重複用到幾個選項，先簡單說明它們的作用與取捨：
 
 | 選項 | 作用與取捨 |
 |------|-----------|
-| `esModuleInterop` | 讓 `import x from "cjs-module"` 這種預設匯入語法，也能套用在沒有真正 `default` 匯出的 CommonJS 模組上（詳見第 8 章「與 CommonJS 互通」）。實務上新專案幾乎都會開啟。 |
+| `esModuleInterop` | 讓 `import x from "cjs-module"` 這種預設匯入語法，也能套用在沒有真正 `default` 匯出的 CommonJS 模組上（詳見第 9 章「與 CommonJS 互通」）。實務上新專案幾乎都會開啟。 |
 | `skipLibCheck` | 跳過所有 `.d.ts`（含 `node_modules` 內的型別定義檔）的型別檢查。能大幅加快編譯速度，代價是可能「蓋住」不同套件之間互相衝突的型別問題（例如兩個套件對同一個全域型別的宣告有衝突，不會被抓出來）。 |
 | `isolatedModules` | 要求每個檔案都能「被單獨轉譯」，不依賴跨檔案的型別資訊。這是 esbuild、swc、Babel 等單檔案轉譯器（一次只看一個檔案，不做完整型別分析）的必要條件，會限制某些重新匯出（如 `export { Type }` 需搭配 `export type`）與 `const enum` 的用法。 |
-| `composite` | 啟用 Project References（見 9.8），讓這個專案可以被其他專案用 `references` 引用。開啟後會強制要求 `declaration: true`，且輸出設定（如 `rootDir`）要更嚴謹，換取增量建置（`tsc --build`）的效能。 |
+| `composite` | 啟用 Project References（見 10.8），讓這個專案可以被其他專案用 `references` 引用。開啟後會強制要求 `declaration: true`，且輸出設定（如 `rootDir`）要更嚴謹，換取增量建置（`tsc --build`）的效能。 |
 
 ### Node.js 後端專案
 
@@ -358,7 +360,7 @@ console.log(__LOOSE_VAR__); // ❌ error TS2304: Cannot find name '__LOOSE_VAR__
 
 Vite 專案的共通點：TypeScript 只做型別檢查（`noEmit: true`），打包與轉譯交給 Vite。因此 React 與 Vue 都會開 `moduleResolution: "bundler"`、`isolatedModules: true`，`lib` 也要含 `DOM`。真正分叉的是 **JSX / `.vue` 檔案怎麼處理**，以及 **用哪個指令做型別檢查**。
 
-官方 `create-vite` / `create-vue` 樣板會再拆成 `tsconfig.app.json`（應用程式）與 `tsconfig.node.json`（Vite 設定檔），細節見 [第十章](./10-framework-integration.md)。這裡先給「單一 tsconfig」的可複製範本。
+官方 `create-vite` / `create-vue` 樣板會再拆成 `tsconfig.app.json`（應用程式）與 `tsconfig.node.json`（Vite 設定檔），細節見 [第十二章](./12-framework-integration.md)。這裡先給「單一 tsconfig」的可複製範本。
 
 #### React + Vite
 
@@ -473,7 +475,7 @@ Vite 專案的共通點：TypeScript 只做型別檢查（`noEmit: true`），�
 
 ---
 
-## 9.7 繼承設定（extends）
+## 10.7 繼承設定（extends）
 
 ```json
 // tsconfig.base.json — 共用基礎設定
@@ -519,9 +521,9 @@ npm install --save-dev @tsconfig/strictest
 
 ---
 
-## 9.8 Project References（多專案設定）
+## 10.8 Project References（多專案設定）
 
-9.7 的 `extends` 是**複製設定**（子專案繼承一份 JSON）；這一節的 `references` 是**宣告建置相依**（先編完 A，B 才能用 A 的產出）。兩者常一起出現在 monorepo，但做的事完全不同。
+10.7 的 `extends` 是**複製設定**（子專案繼承一份 JSON）；這一節的 `references` 是**宣告建置相依**（先編完 A，B 才能用 A 的產出）。兩者常一起出現在 monorepo，但做的事完全不同。
 
 適用情境：倉庫裡有多個套件（例如 `packages/core`、`packages/ui`、`packages/api`），彼此會互相 import。若仍用「根目錄一份 tsconfig 涵蓋全部原始碼」，TypeScript 會把整個倉庫當成**一個編譯單位**——任何一個檔案改動都可能牽動全庫重查，套件邊界也不清楚。Project References 的做法是：每個套件自己一份 tsconfig，再用 `references` 把「誰依賴誰」畫成建置圖，讓 `tsc --build` 依拓撲順序編譯，且只重建過期的專案。
 
@@ -543,7 +545,7 @@ npm install --save-dev @tsconfig/strictest
 - `incremental`：只加速**這一個專案自己**的重編譯。
 - `composite`：包含增量編譯的效果，再加上「我可以當別人的相依項」——因此才強制產出 `.d.ts`。
 
-沒有 `.d.ts`，下游在 `tsc --build` 時就沒有一份穩定、過期可偵測的型別契約可讀。這也是為什麼「只做型別檢查、不輸出」的 `noEmit: true` **不能**用在「還要被其他套件 `references`」的專案上（會得到 `TS6310` Referenced project may not disable emit）。Vite 把同一個 app 拆成 `tsconfig.app.json` / `tsconfig.node.json` 也用 `references`，那是為了分開檢查瀏覽器程式與 Vite 設定檔，**不是**套件互依；那種拆法見 [第十章](./10-framework-integration.md)。若前後端要抽共用型別套件，做法見本章練習 3。
+沒有 `.d.ts`，下游在 `tsc --build` 時就沒有一份穩定、過期可偵測的型別契約可讀。這也是為什麼「只做型別檢查、不輸出」的 `noEmit: true` **不能**用在「還要被其他套件 `references`」的專案上（會得到 `TS6310` Referenced project may not disable emit）。Vite 把同一個 app 拆成 `tsconfig.app.json` / `tsconfig.node.json` 也用 `references`，那是為了分開檢查瀏覽器程式與 Vite 設定檔，**不是**套件互依；那種拆法見 [第十二章](./12-framework-integration.md)。若前後端要抽共用型別套件，做法見本章練習 3。
 
 > 💡 建議順手開 `"declarationMap": true`。有了 `.d.ts.map`，編輯器對下游專案「跳到定義」時可以連回上游的 `.ts` 原始碼，而不是停在產生出來的 `.d.ts`。
 
@@ -634,9 +636,9 @@ npx tsc --build --clean
 
 ---
 
-## 9.9 verbatimModuleSyntax、moduleDetection 與 isolatedDeclarations
+## 10.9 verbatimModuleSyntax、moduleDetection 與 isolatedDeclarations
 
-TypeScript 5.0 之後新增了幾個與模組語法／宣告檔輸出有關的選項。第 8 章曾提過 `verbatimModuleSyntax`，這裡完整說明它與另外兩個相關選項。
+TypeScript 5.0 之後新增了幾個與模組語法／宣告檔輸出有關的選項。第 9 章曾提過 `verbatimModuleSyntax`，這裡完整說明它與另外兩個相關選項。
 
 ### verbatimModuleSyntax（TS 5.0+）
 
@@ -652,7 +654,7 @@ TypeScript 5.0 之後新增了幾個與模組語法／宣告檔輸出有關的�
 
 - 型別匯入／匯出**必須**明確寫 `import type` / `export type`，混合匯入要加上 `type` 修飾字（如 `import { createUser, type User } from "./user"`），否則會編譯錯誤。
 - 匯入的程式碼會「逐字（verbatim）」保留到輸出檔案——TypeScript 不會自動幫你判斷某個匯入只用到型別而悄悄把它移除；你寫什麼就輸出什麼。
-- 取代了舊版的 `importsNotUsedAsValues` 與 `preserveValueImports` 兩個選項，效果上也和 `isolatedModules` 大致相容，是目前推薦的統一設定（見第 8 章 8.2）。
+- 取代了舊版的 `importsNotUsedAsValues` 與 `preserveValueImports` 兩個選項，效果上也和 `isolatedModules` 大致相容，是目前推薦的統一設定（見第 9 章 9.2）。
 
 #### 有加跟沒加，輸出差在哪？
 
@@ -1035,4 +1037,4 @@ npx tsc --build --clean
 
 ---
 
-> 下一章：[第十章 — 前端框架整合](./10-framework-integration.md)
+> 下一章：[第十一章 — 最佳實踐與常見模式](./11-best-practices.md)

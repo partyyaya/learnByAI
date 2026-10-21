@@ -647,6 +647,66 @@ Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
 
 `loading` 是一個 `ConcurrentHashMap<Long, CompletableFuture>`：第一個沒命中的請求放進一個 future、自己去讀；之後到達的人看到 future 已經在了，就等它（`join()`）。讀完之後從 map 移除 —— **single-flight 只合併「同時」的讀取，不是另一層快取**。
 
+> ⚠️ **專題寫完之後的追記：`ProductCacheTest.singleFlight` 偶發地讀了 2 次。** 在 13 站第 00 章的分支上（這個類別與它的測試都沒有改）連跑三次整套 `mvn clean verify`，第二次這一題紅了：`expected: 1 but was: 2`，另外兩次是綠的。用同樣的情境在一個 JVM 裡重複 200 輪、再在 8 個 `yes` 佔滿 CPU（load 33）時重複 200 輪：400 輪都是 1 次，沒有重現。
+> 讀上面這段程式碼，看得到一個窗口：一個請求讀 Redis 沒命中之後、`putIfAbsent` 之前，如果負責讀的那一個剛好讀完、寫進 Redis、從 `loading` 移除，它就會成為新的讀取者，再讀一次 MySQL（多讀一次，資料不會錯）。在「搶到讀取權之後再看一次 Redis」可以關掉這個窗口 —— 但我沒有重現它，**不能確定這就是那一次的原因**，所以程式碼沒有改，只記在這裡。
+>
+> 📌 **再追記（13 站第 01 章）：把那個窗口用 latch 釘住，重現了，也修了。** 400 輪重跑等不到它，就不要等：讓它**一定**發生。`ProductCacheTest.singleFlightLateMiss` 用一個 `RedisGuard` 的子類別，讓「慢的那個請求」讀 Redis 沒命中之後停在 latch 上；等負責讀的那個請求**整個做完**（讀 MySQL、寫進 Redis、從 `loading` 移除、`get()` 回來），再放它走：
+>
+> ```java
+> RedisGuard pausing = new RedisGuard(java.time.Clock.systemUTC(), new io.micrometer.core.instrument.simple.SimpleMeterRegistry()) {
+>     final AtomicBoolean paused = new AtomicBoolean();
+>     @Override
+>     public <T> Optional<T> call(String what, java.util.function.Supplier<T> action) {
+>         Optional<T> r = super.call(what, action);
+>         if (Thread.currentThread() == late[0] && what.equals("product-cache.get") && paused.compareAndSet(false, true)) {
+>             missed.countDown();                                       // ① 沒有命中……
+>             try { loaderDone.await(); } catch (InterruptedException e) { throw new IllegalStateException(e); }
+>         }
+>         return r;
+>     }
+> };
+> // ……
+> Future<?> slow = pool.submit(() -> { late[0] = Thread.currentThread(); return c.get(PRODUCT, loader); });
+> missed.await();
+> pool.submit(() -> c.get(PRODUCT, loader)).get();                      // ② 讀的人整個做完
+> loaderDone.countDown();                                               // ③ 慢的請求醒來
+> slow.get();
+> assertThat(loads.get()).isEqualTo(1);
+> ```
+>
+> 修正前：
+>
+> ```
+> 6.4.3 追記：慢的請求醒來之後，MySQL 一共被讀了 2 次
+> [ERROR] com.example.shop.catalog.internal.ProductCacheTest.singleFlightLateMiss -- Time elapsed: 0.049 s <<< FAILURE!
+> expected: 1
+>  but was: 2
+> ```
+>
+> 修法就是上面說的那一句。把「讀快取」抽成 `peek()`，搶到讀取權之後再 `peek()` 一次：
+>
+> ```java
+> Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
+>     Optional<Optional<Core>> hit = peek(id);
+>     if (hit.isPresent()) return hit.get();
+>     CompletableFuture<Optional<Core>> mine = new CompletableFuture<>();
+>     CompletableFuture<Optional<Core>> running = loading.putIfAbsent(id, mine);
+>     if (running != null) { /* 別人正在讀：等它的結果（跟原本一樣） */ }
+>     try {
+>         // 「讀快取沒有」與「搶讀取權」之間，上一個讀的人可能剛好做完。搶到之後再看一次快取
+>         Optional<Optional<Core>> late = peek(id);
+>         if (late.isPresent()) {
+>             mine.complete(late.get());
+>             return late.get();
+>         }
+>         Optional<Core> loaded = loader.apply(id);
+>         // ……（跟原本一樣）
+> ```
+>
+> 為什麼再看一次就夠：上一個讀的人是**先**寫快取、**才**從 `loading` 移除的；搶到讀取權（`putIfAbsent` 成功）的人，一定在那次移除之後 —— 它寫的值一定看得到。（它寫入失敗的話看不到，那就再讀一次 MySQL，跟以前一樣。）代價：真的沒命中的那一個請求多一次 Redis 的 GET；等別人結果的請求不受影響。修正後同一個測試是 `MySQL 一共被讀了 1 次`，`ProductCacheTest` 8 個全綠，整套 `mvn clean verify` 227 個測試全綠、四道覆蓋率門檻都過（4:16）。
+>
+> **這證明了「這個交錯會讀 2 次」，沒有證明「13 站那一次就是它」** —— 那一次的日誌裡沒有分辨得出來的資訊。但讀程式碼只找得到這一條路，而修正之後它不存在了。
+
 **`join()` 那一段的 `catch` 是後來加的。** 6.9.2 的降級演練裡出現了 1 個商品詳情的 500。那一次的日誌被我的過濾條件濾掉了，我沒辦法確認是哪一個例外，就去讀程式碼 —— 找到一條**一定會**產生 500 的路：負責讀 MySQL 的那個請求失敗了（例如連線池逾時，`CannotCreateTransactionException`），等它的人從 `join()` 拿到的不是那個例外，而是包了一層的 `CompletionException`。`GlobalExceptionHandler` 認得前者（503，4.8.2），不認得後者 —— 500。
 
 `ProductCacheTest.waitersSeeTheOriginalException` 先證明這條路存在（修正前是紅的）：

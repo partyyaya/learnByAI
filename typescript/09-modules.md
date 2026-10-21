@@ -1,6 +1,6 @@
-# 第八章：模組系統與命名空間
+# 第九章：模組系統與命名空間
 
-## 8.1 ES Modules（ESM）
+## 9.1 ES Modules（ESM）
 
 TypeScript 完整支援 ES Modules 語法，這是現代 JavaScript 的標準模組系統。
 
@@ -148,7 +148,7 @@ console.log(`已載入使用者：${gary.name}`);
 
 > ⚠️ 頂層 await 有個前提：該檔案必須被 TypeScript 視為「模組」（至少要有一個 `import` 或 `export`），否則會出現 `'await' expressions are only allowed at the top level of a file when that file is a module` 的編譯錯誤。多數實際專案的檔案本來就有其他 import/export，通常不會踩到；只有像上面這種幾乎「空」的檔案才需要留意。
 >
-> 本課程 demo 的 `tsconfig.json`（`target: ES2022`、`module: ESNext`）剛好滿足頂層 await 的另一個條件，見第 9 章對 `target` / `module` 的說明。
+> 本課程 demo 的 `tsconfig.json`（`target: ES2022`、`module: ESNext`）剛好滿足頂層 await 的另一個條件，見第 10 章對 `target` / `module` 的說明。
 
 ### 與 CommonJS 互通
 
@@ -190,7 +190,7 @@ import { createUser } from "./user.js";
 
 ---
 
-## 8.2 import type — 型別匯入
+## 9.2 import type — 型別匯入
 
 TypeScript 提供了 `import type` 語法，明確區分**值匯入**和**型別匯入**。
 
@@ -234,11 +234,11 @@ import { User } from "./types.js";
 import type { User } from "./types.js"; // ✅
 ```
 
-> 📌 完整說明（含編譯前後的實際輸出對照、四種情況的行為差異、以及它取代的舊選項）見第 9 章 9.9。
+> 📌 完整說明（含編譯前後的實際輸出對照、四種情況的行為差異、以及它取代的舊選項）見第 10 章 10.9。
 
 ---
 
-## 8.3 型別宣告檔案（.d.ts）
+## 9.3 型別宣告檔案（.d.ts）
 
 ### declare 關鍵字：「這東西存在，但實作不在這裡」
 
@@ -304,9 +304,9 @@ interface A2 { x: number }        // ✅ 一樣的效果
 | `declare const` / `declare function` / `declare class` | 描述由 `<script>`、CDN、打包工具注入的全域變數與函式 | 本節上方 |
 | `declare module "套件名"` | 為沒有型別定義的 JS 套件補上型別 | 本節下方「為第三方函式庫新增型別」 |
 | `declare global { ... }` | 在模組檔案裡擴充全域型別（`Window`、`Express.Request`…） | 第 4 章 4.4 宣告合併 |
-| `declare namespace` | 描述舊式的全域命名空間（常見於 UMD 套件） | 8.4 命名空間 |
+| `declare namespace` | 描述舊式的全域命名空間（常見於 UMD 套件） | 9.4 命名空間 |
 
-> 💡 課程後面的章節（例如第 7 章的 `declare function pick(x: string): string;`）還會看到另一種用途：**只想示範型別、不想寫沒意義的函式本體**時，用 `declare` 就能省掉實作。
+> 💡 課程後面的章節（例如第 8 章的 `declare function pick(x: string): string;`）還會看到另一種用途：**只想示範型別、不想寫沒意義的函式本體**時，用 `declare` 就能省掉實作。
 >
 > ⚠️ 反過來提醒：如果套件已經自帶型別、或裝了對應的 `@types/xxx`，就**不要**再自己 `declare` 一份，否則容易蓋掉正確的型別或造成衝突。
 
@@ -410,7 +410,7 @@ import { format } from "legacy-lib"; // ✅ 配對成功
 error TS7016: Could not find a declaration file for module 'legacy-lib'.
 ```
 
-> ⚠️ **別用 `typeRoots` 來放這種檔案。** `typeRoots` 是控制「`@types/*` 這類全域型別包要自動載入哪些」的選項，跟「去哪裡找 `.d.ts`」是兩回事。它底下的每個項目都必須是**資料夾**（各自帶 `index.d.ts`），直接丟一個 `legacy-lib.d.ts` 進去完全不會生效。單一檔案一律用 `include` 收。詳見第 9 章 9.5。
+> ⚠️ **別用 `typeRoots` 來放這種檔案。** `typeRoots` 是控制「`@types/*` 這類全域型別包要自動載入哪些」的選項，跟「去哪裡找 `.d.ts`」是兩回事。它底下的每個項目都必須是**資料夾**（各自帶 `index.d.ts`），直接丟一個 `legacy-lib.d.ts` 進去完全不會生效。單一檔案一律用 `include` 收。詳見第 10 章 10.5。
 
 **2. 這個檔案必須是「環境宣告檔」，不能是模組**
 
@@ -533,7 +533,7 @@ declare module '*.svg' {
 /// <reference types="vite/client" />
 ```
 
-> ⚠️ 如果你用了方式一，記得 `types` 是**白名單**——一旦設定，其他 `@types/*` 就不再自動載入了，需要的要一起列進去（如 `"types": ["vite/client", "node"]`）。原因見第 9 章 9.5。
+> ⚠️ 如果你用了方式一，記得 `types` 是**白名單**——一旦設定，其他 `@types/*` 就不再自動載入了，需要的要一起列進去（如 `"types": ["vite/client", "node"]`）。原因見第 10 章 10.5。
 
 沒有引入時，以下四種寫法全部會報錯（實測）：
 
@@ -615,7 +615,7 @@ error TS2339: Property 'env' does not exist on type 'ImportMeta'.
 >
 > 所以在 Astro 裡 `import Logo from "./logo.svg"` 之後可以直接 `<Logo />`，也可以讀 `Logo.width`；把 Vite 專案的程式碼複製過來（假設它是 `string`）就會型別錯誤。
 
-> 💡 順帶一提，Astro 官方 tsconfig 樣板預設就開了 `verbatimModuleSyntax` 和 `isolatedModules`（見 9.9 與 9.6）——這也印證了前面說的：用 esbuild／單檔轉譯的工具鏈幾乎都會要求這兩個選項。
+> 💡 順帶一提，Astro 官方 tsconfig 樣板預設就開了 `verbatimModuleSyntax` 和 `isolatedModules`（見 10.9 與 10.6）——這也印證了前面說的：用 esbuild／單檔轉譯的工具鏈幾乎都會要求這兩個選項。
 
 **webpack：真的要自己寫**
 
@@ -766,7 +766,7 @@ npm install --save-dev @types/express
 
 ---
 
-## 8.4 命名空間（Namespace）
+## 9.4 命名空間（Namespace）
 
 > ⚠️ 現代 TypeScript 開發中，**推薦使用 ES Modules 取代 Namespace**。Namespace 主要用於舊專案或全域宣告。
 
@@ -813,7 +813,7 @@ Module (ES Modules):
 
 ---
 
-## 8.5 路徑別名（Path Aliases）
+## 9.5 路徑別名（Path Aliases）
 
 ### tsconfig.json 設定
 
@@ -851,7 +851,7 @@ import Header from "@components/Header";
 
 ---
 
-## 8.6 模組組織最佳實踐
+## 9.6 模組組織最佳實踐
 
 ### 目錄結構
 
@@ -1112,7 +1112,7 @@ const total: number = new Calculator(10).add(5).subtract(3).result();
 console.log(sum, rounded, PI, total);
 ```
 
-重點提醒：這是**多檔案**示範——`declare module` 一定要放在「沒有頂層 `import` / `export` 的環境宣告檔（.d.ts）」裡，它才會被當成「為某個模組補型別」；如果把它寫進一個本身已經是模組的檔案（檔案內有其他 import/export），`declare module "simple-math"` 反而會被解讀成「模組擴增（augmentation）」而報 `module ... cannot be found`。另外要確保這個 `typings/simple-math.d.ts` 有被 `tsconfig.json` 的 `include`（或 `files`）涵蓋到——這一點與上面 8.3〈檔名要跟模組同名嗎〉說明的規則相同（不要改用 `typeRoots`，原因見 8.3 的提醒與第 9 章 9.5）。
+重點提醒：這是**多檔案**示範——`declare module` 一定要放在「沒有頂層 `import` / `export` 的環境宣告檔（.d.ts）」裡，它才會被當成「為某個模組補型別」；如果把它寫進一個本身已經是模組的檔案（檔案內有其他 import/export），`declare module "simple-math"` 反而會被解讀成「模組擴增（augmentation）」而報 `module ... cannot be found`。另外要確保這個 `typings/simple-math.d.ts` 有被 `tsconfig.json` 的 `include`（或 `files`）涵蓋到——這一點與上面 9.3〈檔名要跟模組同名嗎〉說明的規則相同（不要改用 `typeRoots`，原因見 9.3 的提醒與第 10 章 10.5）。
 
 </details>
 
@@ -1166,4 +1166,4 @@ import { UserService } from "@services/user.service";
 
 ---
 
-> 下一章：[第九章 — tsconfig.json 設定完全指南](./09-tsconfig.md)
+> 下一章：[第十章 — tsconfig.json 設定完全指南](./10-tsconfig.md)

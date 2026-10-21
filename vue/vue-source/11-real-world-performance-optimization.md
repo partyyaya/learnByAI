@@ -35,14 +35,14 @@ Vue 應用的執行成本，幾乎都落在這三層。優化前先判斷你卡�
 
 ### 11.3.1 大型唯讀資料用 `shallowRef` / `shallowReactive`
 
-`reactive` 會對物件做**深層**遞迴代理，每一層存取都觸發 `track`。如果你有一個幾千筆、巢狀很深的資料（例如後端回傳的大型 JSON），深層代理的建立與依賴收集成本很可觀，而你往往只是整包替換、不會改內部欄位。
+`reactive` 支援**深層**響應式，但巢狀 Proxy 通常在讀取該屬性時才建立，並會快取重用，不是在初始化時遍歷整棵樹。當 render 或其他 effect 大量讀取巢狀資料時，代理存取與依賴收集仍會有成本；若資料只會整包替換，可以考慮淺層 API。
 
 > 特別注意：`ref(物件)` **不會**比較省。`ref` 內部會對物件呼叫 `toReactive`（即 `reactive`），所以 `ref(hugeJson)` 和 `reactive(hugeJson)` 的深層代理成本幾乎一樣（細節見 11.3.3）。要省，得用 `shallowRef` / `shallowReactive`。
 
 ```js
-// ❌ 改之前：深層代理，整棵樹都被代理 + 收集依賴
-const tableData = reactive(hugeNestedJson)  // 數千筆，每層都 proxy
-const tableData = ref(hugeNestedJson)       // 一樣慘：內部 toReactive → 深層 proxy
+// 比較兩種深層模式：在 effect 中大量存取巢狀資料時會產生追蹤成本
+const deepState = reactive(hugeNestedJson) // 巢狀 Proxy 按存取建立
+const deepRef = ref(hugeNestedJson)        // 內部 toReactive，同樣支援深層追蹤
 
 // ✅ 改之後：只在「整包替換」時觸發更新，內部不做深層追蹤
 const tableData = shallowRef(hugeNestedJson)
@@ -77,7 +77,7 @@ const state = reactive({
 - 一組相關欄位且常整組操作 → `reactive`
 - 大型/巢狀/常整包替換 → `shallowRef`
 
-差異不只是風格：`reactive` 解構會丟失反應性，誘導你用 `toRefs`（每個欄位各建一個 ref，多一層成本）。能用 `ref` 表達就別硬塞 `reactive`。
+解構基本型別屬性會取得快照，這對 `reactive` 與 `ref.value` 都成立；解構取得的巢狀 Proxy 仍可追蹤其內部修改。需要保持屬性連結時可用 `toRefs`，但它仍指向原物件，不會自動跟隨外層 ref 的整包替換（見第 01 章 1.7.3）。選型應依資料更新方式，而不是假設 ref 一定更快或不怕解構。
 
 ---
 

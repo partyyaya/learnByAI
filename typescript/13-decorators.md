@@ -1,28 +1,30 @@
-# 第十一章：裝飾器（Decorators）
+# 第十三章：裝飾器（Decorators）
+
+> 本章屬於進階補充（選修）。日常寫 Vue / React 幾乎用不到裝飾器；若你使用 NestJS、Angular、TypeORM 這類以類別為核心的框架，則建議讀完。前置知識：[第六章 類別](./06-classes.md)、[第七章 泛型](./07-generics.md)，以及 [第十章 tsconfig](./10-tsconfig.md) 的編譯選項概念。
 
 裝飾器用 `@` 把額外行為貼在類別、方法、屬性或參數上，在**宣告當下**執行，用來擴充行為而不改原本實作。NestJS、TypeORM、Angular 都大量使用。
 
 本章先把框架仍在用的**舊版裝飾器**講完，最後才對照 TypeScript 5.0+ 的**標準裝飾器**。兩套語法不相容，一個專案一次編譯只能選一種。
 
-閱讀順序：11.1 認語法 → 11.2 啟用與共用寫法 → 11.3～11.6 四種附加位置 → 11.7 標準裝飾器（選讀）→ 11.8 框架怎麼用。
+閱讀順序：13.1 認語法 → 13.2 啟用與共用寫法 → 13.3～13.6 四種附加位置 → 13.7 標準裝飾器（選讀）→ 13.8 框架怎麼用。
 
 ---
 
-## 11.1 什麼是裝飾器？
+## 13.1 什麼是裝飾器？
 
 裝飾器是一種**語法糖**：寫在宣告正上方的 `@Foo` 或 `@Foo(...)`，編譯後會變成「對該宣告呼叫一個函式」。它在 **class 宣告被求值時**就跑完，不是每次 `new`。之後 `new User()` 不會再執行 `@Sealed` 或 `@Log`。
 
 四種附加位置如下（名稱只是地圖，實作見後面對應小節）：
 
 ```typescript
-@Sealed                            // 類別 → 11.3（最後才套）
+@Sealed                            // 類別 → 13.3（最後才套）
 class User {
-  @Required                        // 屬性 → 11.5
+  @Required                        // 屬性 → 13.5
   name!: string;
 
-  constructor(@Validate id: number) {} // 參數 → 11.6（比成員晚、比類別早）
+  constructor(@Validate id: number) {} // 參數 → 13.6（比成員晚、比類別早）
 
-  @Log                             // 方法 → 11.4
+  @Log                             // 方法 → 13.4
   save() {}
 }
 ```
@@ -82,13 +84,13 @@ class Demo {
 // A(): applied
 ```
 
-`@A() @B() save()` 等價於 `A(B(save))`：先套內層 `B`，再套外層 `A`。11.4 的 `@Catch` 在上、`@Measure` 在下，就是先測時間再攔錯。同一方法若有多個參數裝飾器，套用時由**右到左**（最後一個參數先）。
+`@A() @B() save()` 等價於 `A(B(save))`：先套內層 `B`，再套外層 `A`。13.4 的 `@Catch` 在上、`@Measure` 在下，就是先測時間再攔錯。同一方法若有多個參數裝飾器，套用時由**右到左**（最後一個參數先）。
 
-標準裝飾器（11.7）堆疊同樣是由內而外；整份 class 的求值細節與舊版不完全相同，兩套仍不要混用。
+標準裝飾器（13.7）堆疊同樣是由內而外；整份 class 的求值細節與舊版不完全相同，兩套仍不要混用。
 
 ---
 
-## 11.2 啟用方式與共用寫法
+## 13.2 啟用方式與共用寫法
 
 ### 本章預設：舊版裝飾器
 
@@ -102,7 +104,7 @@ class Demo {
 }
 ```
 
-`emitDecoratorMetadata` 要搭配 `reflect-metadata` 套件才有執行期效果。自己用 `Reflect.defineMetadata` 存自訂鍵值時，套件仍要裝，但不必開這個旗標。細節見 11.6。
+`emitDecoratorMetadata` 要搭配 `reflect-metadata` 套件才有執行期效果。自己用 `Reflect.defineMetadata` 存自訂鍵值時，套件仍要裝，但不必開這個旗標。細節見 13.6。
 
 ### 舊版 vs 標準（TC39）
 
@@ -110,8 +112,8 @@ class Demo {
 |---|---|---|
 | 啟用 | tsconfig 開 `"experimentalDecorators": true` | 不需旗標 |
 | 函式簽章 | 依位置不同（見上表） | 統一 `(value, context) => ...` |
-| 參數裝飾器 | ✅（NestJS `@Param` / `@Body` 這類） | ❌ 規格已刪除，見 11.6 |
-| 中繼資料 | `emitDecoratorMetadata` + `reflect-metadata` | `context.metadata`（TS 5.2+，見 11.7） |
+| 參數裝飾器 | ✅（NestJS `@Param` / `@Body` 這類） | ❌ 規格已刪除，見 13.6 |
+| 中繼資料 | `emitDecoratorMetadata` + `reflect-metadata` | `context.metadata`（TS 5.2+，見 13.7） |
 | 誰在用 | NestJS、TypeORM、Angular（遷移前） | 尚無主流後端框架 |
 
 > ⚠️ 兩套不能混用：整個 tsconfig 要嘛開 `experimentalDecorators` 走舊版，要嘛不開走標準版。
@@ -126,7 +128,7 @@ class Demo {
 
 ---
 
-## 11.3 類別裝飾器（Class Decorator）
+## 13.3 類別裝飾器（Class Decorator）
 
 參數是**類別的建構函式**。在 `class` 宣告完成時執行一次，不是每次 `new`。三種常見用法：就地修改、貼中繼資料、回傳子類別攔截 `new`。
 
@@ -168,7 +170,7 @@ class User {
 
 ### 貼中繼資料：Factory + `Reflect.defineMetadata`
 
-`@Entity("users")` 需要參數，所以外層是工廠。內層把「這個 class 對應哪張表」記在 constructor 上，之後 ORM 再讀。`defineMetadata` 本身不會建表，原理見 11.6。
+`@Entity("users")` 需要參數，所以外層是工廠。內層把「這個 class 對應哪張表」記在 constructor 上，之後 ORM 再讀。`defineMetadata` 本身不會建表，原理見 13.6。
 
 ```typescript
 function Entity(tableName: string) {
@@ -295,7 +297,7 @@ new Plain();             // 型別是 any，之後全無檢查
 
 ---
 
-## 11.4 方法裝飾器（Method Decorator）
+## 13.4 方法裝飾器（Method Decorator）
 
 方法宣告時執行，拿到三個參數：
 
@@ -413,11 +415,11 @@ class SearchService {
 }
 ```
 
-多個 `@` 的順序見 11.1：這裡 `@Catch` 在上、`@Measure` 在下，所以先套 `Measure` 再套 `Catch`，計時包在 try/catch 裡。
+多個 `@` 的順序見 13.1：這裡 `@Catch` 在上、`@Measure` 在下，所以先套 `Measure` 再套 `Catch`，計時包在 try/catch 裡。
 
 ---
 
-## 11.5 屬性裝飾器（Property Decorator）
+## 13.5 屬性裝飾器（Property Decorator）
 
 只有 `target` 與 `propertyKey`，**沒有 descriptor**，所以不能像方法那樣直接換函式。常見做法是用 `Object.defineProperty` 在 prototype 上裝 getter/setter，攔截賦值。
 
@@ -479,7 +481,7 @@ form.name = "Gary"; // ✅
 
 ---
 
-## 11.6 參數裝飾器與 `reflect-metadata`
+## 13.6 參數裝飾器與 `reflect-metadata`
 
 參數裝飾器只負責**記住第幾個參數需要處理**，本身不會包一層函式。真正檢查發生在方法被呼叫時，所以通常再搭配一個方法裝飾器，用中繼資料把兩邊串起來。
 
@@ -494,7 +496,7 @@ Reflect.defineMetadata(key, value, target, propertyKey?);
 Reflect.getMetadata(key, target, propertyKey?);
 ```
 
-- 11.3 的 `@Entity("users")`：key 是 `"tableName"`，target 是 class。
+- 13.3 的 `@Entity("users")`：key 是 `"tableName"`，target 是 class。
 - 下面的 `@Validate`：key 是 `"validate"`，value 是參數 index 陣列，貼在方法上。
 
 和 tsconfig 的 `emitDecoratorMetadata` 不同：那個旗標是讓**編譯器**自動寫入 `design:type` / `design:paramtypes`；`defineMetadata` 是你自己寫自訂鍵。兩者都需要這個套件才能在執行期讀到。
@@ -542,7 +544,7 @@ class UserService {
 
 ---
 
-## 11.7 標準裝飾器（TypeScript 5.0+）
+## 13.7 標準裝飾器（TypeScript 5.0+）
 
 不需要 `experimentalDecorators`。簽章統一成 `(value, context)`，`context` 帶有 `kind`、`name`、`metadata` 等資訊。下面這段**不要**和舊版裝飾器放在同一個 tsconfig 裡編譯。
 
@@ -614,9 +616,9 @@ console.log(Settings[Symbol.metadata]?.theme); // "tracked"
 
 ---
 
-## 11.8 框架中的應用
+## 13.8 框架中的應用
 
-下面都是**舊版裝飾器 + Factory**（11.2～11.6 那套）。看到 `@Get()`、`@Column()`、`@Component({...})`，就是外層先收參數、內層再改 class / 方法 / 屬性。
+下面都是**舊版裝飾器 + Factory**（13.2～13.6 那套）。看到 `@Get()`、`@Column()`、`@Component({...})`，就是外層先收參數、內層再改 class / 方法 / 屬性。
 
 ### NestJS：類別 + 方法 + 參數
 
@@ -648,7 +650,7 @@ class UserController {
 
 ### TypeORM：類別 + 屬性
 
-`@Entity` 對應 11.3 貼表名；`@Column` 是屬性裝飾器，把欄位對應寫進 metadata。
+`@Entity` 對應 13.3 貼表名；`@Column` 是屬性裝飾器，把欄位對應寫進 metadata。
 
 ```typescript
 import { Entity, Column, PrimaryGeneratedColumn } from "typeorm";
@@ -702,7 +704,7 @@ class UserCardComponent {
 <details>
 <summary>參考解答</summary>
 
-用**舊版裝飾器**（`experimentalDecorators`，與 11.4 同一套）。思路：在工廠裡包一層迴圈，攔截 `descriptor.value`，用 `try/catch` 反覆呼叫原方法；第一次是正常呼叫，之後最多再重試 `maxRetries` 次，全部失敗才把最後一個錯誤丟出去。方法可能是非同步，包裝後統一 `await`。
+用**舊版裝飾器**（`experimentalDecorators`，與 13.4 同一套）。思路：在工廠裡包一層迴圈，攔截 `descriptor.value`，用 `try/catch` 反覆呼叫原方法；第一次是正常呼叫，之後最多再重試 `maxRetries` 次，全部失敗才把最後一個錯誤丟出去。方法可能是非同步，包裝後統一 `await`。
 
 ```typescript
 function Retry(maxRetries: number) {
@@ -761,7 +763,7 @@ console.log(await client.fetchData()); // 前兩次失敗、第三次成功
 <details>
 <summary>參考解答</summary>
 
-同樣走**舊版裝飾器**，沿用 11.5 的手法：用 `Object.defineProperty` 攔截 `set`，賦值當下就驗證。跟 11.5 範例的差別是改用 `WeakMap` 依實例存值，避免多個實例共用同一個閉包變數。`@IsEmail`、`@IsPositive` 不帶參數；`@MaxLength(n)` 需要參數所以多包一層工廠。
+同樣走**舊版裝飾器**，沿用 13.5 的手法：用 `Object.defineProperty` 攔截 `set`，賦值當下就驗證。跟 13.5 範例的差別是改用 `WeakMap` 依實例存值，避免多個實例共用同一個閉包變數。`@IsEmail`、`@IsPositive` 不帶參數；`@MaxLength(n)` 需要參數所以多包一層工廠。
 
 ```typescript
 function IsEmail(target: any, propertyKey: string) {
@@ -965,4 +967,4 @@ console.log(dispatch("POST", "/api/users")); // { created: true }
 
 ---
 
-> 下一章：[第十二章 — 最佳實踐與常見模式](./12-best-practices.md)
+> 下一章：[第十四章 — 型別層級程式設計](./14-type-level-programming.md)

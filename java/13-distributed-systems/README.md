@@ -30,7 +30,7 @@
 
 ## 前置知識
 
-**必須先完成 [12-capstone](../12-capstone/)** —— 這一站的每個練習都拿它當起點。
+**必須先完成 [12-capstone](../12-capstone/)** —— 這一站的每一章都拿它當起點。
 另外會直接用到：[05-service/01](../05-service/01-service-design-and-dependency.md)（1.5.3 編排只能有一層）、
 [05-service/06](../05-service/06-async-and-external-api-calls.md)（熔斷、隔艙、逾時）、
 [11-messaging/02～03](../11-messaging/)（Outbox 與冪等消費）、
@@ -49,8 +49,8 @@ Deployment、RollingUpdate、三種 probe、`terminationGracePeriodSeconds` 這�
 | 02 | `02-splitting-the-database.md` | 資料庫拆分（最痛的一章） | 共享資料庫為什麼是反模式、資料所有權與唯一寫入者、**跨服務 JOIN 消失之後報表怎麼辦**、外鍵消失後的參照完整性、雙寫過渡期、Strangler Fig 的資料搬遷 |
 | 03 | `03-inter-service-communication.md` | 服務間通訊 | 同步 vs 非同步的決策、`@HttpExchange` / `RestClient`（不是 Feign）、gRPC 的時機、服務間的版本相容、**用 Pact 契約測試守邊界** |
 | 04 | `04-saga-and-compensation.md` | Saga 與補償（核心章） | 分散式交易為什麼沒有 `@Transactional`、兩階段提交的代價與為何幾乎沒人用、**編排 vs 協同**的取捨、補償交易怎麼寫、⚠️ 不可補償的操作（已寄出的信、已扣的款）、Saga 的可觀測性與人工介入、對帳是最後一道防線 |
-| 05 | `05-cross-service-query.md` | 跨服務查詢 | API 組合的延遲相乘、CQRS 讀模型、**讀模型的過時視窗使用者會看到什麼**、事件重放重建讀模型、報表服務該不該直連別人的資料庫 |
-| 06 | `06-resilience-in-a-service-mesh.md` | 服務網的韌性 | 級聯故障：一個服務慢，五個服務一起死、**重試風暴**（每層都重試 3 次 = 27 倍流量）、逾時預算由外而內遞減、隔艙與連線池切分、把 [05-service/06](../05-service/06-async-and-external-api-calls.md) 的熔斷放到正確的層 |
+| 05 | `05-cross-service-query.md` | 跨服務查詢 | API 組合的延遲相乘、CQRS 讀模型、**讀模型的過時視窗使用者會看到什麼**、事件重放重建讀模型、報表服務該不該直連別人的資料庫（📌 追記：這個系統量到的是延遲相加、可用性相乘；讀模型從快照重建，不是事件重放 —— 第 05 章 5.2.3、5.6） |
+| 06 | `06-resilience-in-a-service-mesh.md` | 服務網的韌性 | 級聯故障：一個服務慢，五個服務一起死、**重試風暴**（每一層最多送 3 次：三層 27 倍、五層 243 倍；這條線上兩層，量到 6 倍）、逾時預算由外而內遞減、隔艙與連線池切分、把 [05-service/06](../05-service/06-async-and-external-api-calls.md) 的熔斷放到正確的層 |
 | 07 | `07-distributed-tracing-and-observability.md` | 分散式追蹤 | Micrometer Tracing + OpenTelemetry（不是 Sleuth，Boot 3 已退場）、`traceId` 跨 HTTP 與跨 MQ 的傳遞、取樣率的取捨、從一條 trace 找出誰慢了、跨服務的日誌關聯與告警該設在哪 |
 | 08 | `08-infrastructure-spring-cloud-vs-k8s.md` | 基礎設施選型 | 服務發現、設定管理、閘道、負載平衡四件事，**Spring Cloud 與 K8s 原生各怎麼做**的逐項決策表、什麼情況兩者混用、Netflix 那套（Eureka / Ribbon / Zuul / Hystrix）的歷史與現況、Service Mesh 值不值得 |
 | 09 | `09-migration-and-the-way-back.md` | 遷移與回頭路 | Strangler Fig 完整流程、灰度與雙寫驗證、回滾計畫、遷移期的兩套資料怎麼對帳、**什麼時候該把服務合併回單體**（以及怎麼做） |
@@ -65,10 +65,10 @@ Deployment、RollingUpdate、三種 probe、`terminationGracePeriodSeconds` 這�
 - 跨服務用 `@Transactional`，或以為 Seata / 兩階段提交能把分散式交易變回本地交易。
 - Saga 只寫了正向流程，補償交易「之後再補」—— 上線第一週就出現卡在中間狀態的訂單，沒有人知道怎麼收尾。
 - 補償邏輯裡包含「把已寄出的通知信收回來」。
-- 每一層都設 3 次重試，五層下去就是 243 倍的流量打在最底層。
+- 每一層都設「最多 3 次」（含第一次），五層下去最底層收到 3⁵ = 243 倍的流量；「失敗後再重試 3 次」是每層 4 次，五層 1,024 倍。而且不用五層：只要一層「再送一次」，負載過半時，一次 10 秒的變慢就可能讓系統回不來。
 - 逾時設定由內而外遞增（外層 3 秒、內層 10 秒），外層早就放棄了內層還在跑。
-- 出事時每個服務的 log 都看起來正常，因為沒有 `traceId` 串起來。
-- 用了 Spring Cloud Gateway 又用 K8s Ingress，兩套路由規則互相打架，改到能動就不敢再碰。
+- 出事時每個服務的 log 都看起來正常：每一行都有 `traceId`，可是下游服務用的是另一個（收的那一邊把上游的 `traceparent` 丟了）；事件的消費者 traceId 對了，parent 卻是編的，trace 接不成一棵樹。
+- 用了 Spring Cloud Gateway 又用 K8s 的入口（Ingress、Gateway API），兩層各自加了重試與逾時：一個會 503 的 GET 在後面變成 8 次，買家等滿外層的 15 秒拿到 504，裡面那一層還在重試。
 - 拆完發現不對，卻沒有人敢提「合併回去」—— 因為那聽起來像失敗。
 
 ## 產出

@@ -21,7 +21,7 @@
     // 只做型別檢查，實際執行交給 tsx（見 README）
     "noEmit": true
 
-    // === 想測試「舊版裝飾器」（第 11 章 NestJS / TypeORM 風格）時，取消下面註解 ===
+    // === 想測試「舊版裝飾器」（第 13 章 NestJS / TypeORM 風格）時，取消下面註解 ===
     // "experimentalDecorators": true,
     // "emitDecoratorMetadata": true
   },

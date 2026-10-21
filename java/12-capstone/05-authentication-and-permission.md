@@ -1790,6 +1790,16 @@ class IpLoginLimiter {
 
 固定窗、單機、一個 `ConcurrentHashMap`。它有固定窗的邊界問題（[10-redis/10](../10-redis/10-rate-limit-and-idempotency.md) 的 10.2.3：邊界那一秒放進 2 倍流量），在這裡可以接受：它只是 Redis 掛掉那幾十秒裡的底線。`AuthApiTest.perIpLimit`：同一個 IP 送 20 次 → 401，第 21 次 → 429，帶 `Retry-After`。
 
+> ⚠️ **專題寫完之後的追記：這個測試自己也會撞到那個邊界。** 13 站第 01 章的第一次整套 `mvn clean verify` 紅了這一題：`Status expected:<429> but was:<401>`。日誌的時間：前一個測試在 17:18:59.4 結束，下一個測試類別在 17:19:01.4 開始，`perIpLimit` 花了 1.7 秒 —— 21 個請求**跨過了 17:19:00**。窗是用 `now / 60_000` 切的，第 21 個請求落在新的一分鐘，計數從 1 開始，於是 401。（這是從時間戳推出來的，沒有刻意在 :59 秒起跑去重現。）
+> 修法只改測試：離整分鐘不到 5 秒就先等到下一分鐘。
+>
+> ```java
+> long intoMinute = System.currentTimeMillis() % 60_000;
+> if (intoMinute > 55_000) Thread.sleep(60_000 - intoMinute + 50);
+> ```
+>
+> 正式程式碼沒有改 —— 這就是上一段說的「邊界那一秒放進 2 倍流量」，只是這一次發生在測試裡：邊界兩邊各 20 次，2 秒內放進了 40 次登入。
+
 **「IP」是誰的 IP？** `LoginService.login()` 的 IP 來自 `HttpServletRequest.getRemoteAddr()`。在正式環境，應用程式前面有一個負載平衡器，`getRemoteAddr()` 會是**負載平衡器的** IP —— 所有使用者共用一個 IP，每分鐘 20 次的限流會讓全站只能登入 20 次。
 
 Spring Boot 的標準做法是 `server.forward-headers-strategy: native`，讓 Tomcat 的 `RemoteIpValve` 從 `X-Forwarded-For` 取出真正的客戶端 IP。但它有一個前提，用同一台機器、每次換一個 `X-Forwarded-For` 值，送 25 次登入：
@@ -2630,6 +2640,40 @@ exit code = 1
 
 **本機與驗收 Q6**：`application-local.yml` 給了一組本機用的帳密 `admin@example.com` / `local-dev-only-admin-password`（跟 `shop/shop` 的資料庫帳密一樣，只存在你的筆電上；完整內容見 5.12.1）。種子資料的 `shop` 裡已經有 `admin@example.com`，所以它不會被用到；驗收 Q6 從一個空的 `shop_q6` 啟動，它就會被用到 —— 這一章的完整測試裡，Q6 的日誌有一行 `BOOTSTRAP_ADMIN_CREATED id=1 email=a***@example.com`。**這兩行不能省**：Q6 用預設的 `local` profile 從空的 `shop_q6` 啟動，少了它們，`BootstrapAdmin` 會丟 `IllegalStateException`，Q6 就起不來。
 `lab` profile（第 00～01 章的實驗，連 `shop_lab`）沒有 Flyway 管理的 `users` 表，所以 `application-lab.yml` 用 `bootstrap-admin.enabled: false` 關掉它。
+
+> ⚠️ **專題寫完之後的追記（13 站第 09 章）：兩個行程同時第一次啟動，輸的那一個起不來。** 13 站第 09 章在 K8s 上讓單體與另一個也擁有 account 模組的服務接同一個空的庫、同時第一次起來，單體的 `RESTARTS` 是 1，上一次的日誌：`Duplicate entry 'a***@example.com' for key 'users.uk_users_email'`。兩邊都看到「沒有管理員」、都去建，輸的那一邊撞到唯一索引，`ApplicationRunner` 丟例外，應用程式起不來；K8s 把它重開，第二次看到「已經有了」，就好了。
+>
+> 這個專題自己也會遇到：**兩台同時對一個新的庫第一次部署**。上面的四格實驗都只起一個行程，碰不到它。
+>
+> `BootstrapAdminRaceTest`（`account.internal`）把那個順序釘住：A 檢查的時候還沒有管理員（第一次的 `adminCount()` 回 0），A 建的時候庫裡已經有同一個 email 的管理員（測試的 Spring context 起來時建的那一個）。修正前：
+>
+> ```
+> [ERROR] Tests run: 2, Failures: 1, Errors: 0, Skipped: 0
+> Expecting code not to raise a throwable but caught
+>   "org.springframework.dao.DuplicateKeyException: PreparedStatementCallback; Duplicate entry 'admin@example.com' for key 'users.uk_users_email'
+> ```
+>
+> 修法：撞到唯一索引之後再看一次 —— 有管理員了，就是別人剛建好，照常起來；還是沒有（那個 email 被一個不是管理員的帳號用掉了），才是真的錯，照舊起不來（測試的第二個情境）：
+>
+> ```diff
+> -        long id = tx.execute(s -> accounts.insert(email, encoder.encode(password), "管理員", Role.ADMIN, null));
+> +        long id;
+> +        try {
+> +            id = tx.execute(s -> accounts.insert(email, encoder.encode(password), "管理員", Role.ADMIN, null));
+> +        } catch (DuplicateKeyException race) {
+> +            // 5.10 的追記（13 站 9.4.3 找到的）：另一個行程同時對同一個庫第一次啟動（兩台同時第一次部署）——
+> +            // 兩邊都看到「沒有管理員」、都去建，輸的這一邊撞到 uk_users_email。第一版就這樣起不來（BootstrapAdminRaceTest）。
+> +            // 別人剛建好就是建好了；email 被一個不是管理員的帳號用掉了，才是真的錯，照舊起不來
+> +            if (accounts.adminCount() == 0) throw race;
+> +            log.info("BOOTSTRAP_ADMIN_EXISTS email={}：另一個行程剛建好", Email.mask(email));
+> +            return;
+> +        }
+>          log.warn("BOOTSTRAP_ADMIN_CREATED id={} email={}（請把 SHOP_BOOTSTRAP_ADMIN_PASSWORD 從部署設定中移除）", id, Email.mask(email));
+> ```
+>
+> 修正之後兩個情境都綠；整套 `mvn clean verify` 235 個測試全綠（專題原本的 233 個，加上這兩個）。
+>
+> 為什麼不在一開始就加一把鎖（例如 `SELECT … FOR UPDATE` 或分散式鎖），讓兩邊排隊？因為「建第一個管理員」只會發生一次，撞到的時候只要知道「是不是別人剛建好」就夠了 —— 唯一索引已經是那把鎖，問題只在輸的那一邊怎麼解讀它。
 
 ---
 

@@ -1,11 +1,11 @@
 // =====================================================================
-// 第六章：泛型（Generics）
-// 來源：typescript/06-generics.md
+// 第七章：泛型（Generics）
+// 來源：typescript/07-generics.md
 // 每個獨立範例都包在自己的 { ... } 區塊內，避免同名宣告互相衝突，
 // 並把用到的型別/介面整段複製進來，讓每塊自成一體。
 // =====================================================================
 
-// ===== 6.1 什麼是泛型？ =====
+// ===== 7.1 什麼是泛型？ =====
 
 // 範例 A：不使用泛型 — 缺乏型別安全
 {
@@ -14,7 +14,7 @@
   }
 
   const result = getFirst([1, 2, 3]); // result 的型別是 any，失去了型別資訊
-  console.log("6.1 any 版本 getFirst:", result);
+  console.log("7.1 any 版本 getFirst:", result);
 }
 
 // 範例 B：使用泛型 — 保留型別資訊
@@ -25,10 +25,10 @@
 
   const num = getFirst([1, 2, 3]); // num 的型別是 number
   const str = getFirst(["a", "b", "c"]); // str 的型別是 string
-  console.log("6.1 泛型版本 getFirst:", num, str);
+  console.log("7.1 泛型版本 getFirst:", num, str);
 }
 
-// ===== 6.2 泛型函式 =====
+// ===== 7.2 泛型函式 =====
 {
   // 基本泛型函式
   function identity<T>(value: T): T {
@@ -49,17 +49,17 @@
   }
 
   const p = pair("hello", 42); // 型別為 [string, number]
-  console.log("6.2 pair:", p);
+  console.log("7.2 pair:", p);
 
   // 泛型箭頭函式
   const toArray = <T>(value: T): T[] => [value];
 
   // 在 TSX 中需要加逗號避免被解析成 JSX
   const toArray2 = <T,>(value: T): T[] => [value];
-  console.log("6.2 toArray:", toArray(1), toArray2("a"));
+  console.log("7.2 toArray:", toArray(1), toArray2("a"));
 }
 
-// ===== 6.2 NoInfer<T>（TS 5.4+）避免推斷型別被意外撐大 =====
+// ===== 7.4 NoInfer<T>（TS 5.4+）避免推斷型別被意外撐大 =====
 {
   // 沒有 NoInfer：fallbackRole 的型別也會拿去推斷 T，讓 T 被意外撐大
   function pickRole<T extends string>(roles: T[], fallbackRole?: T): T {
@@ -79,10 +79,10 @@
   // pickRoleFixed(["admin", "user"], "guest");
   // ❌ Argument of type '"guest"' is not assignable to parameter of type '"admin" | "user" | undefined'
 
-  console.log("6.2 NoInfer:", role, roleFixed);
+  console.log("7.4 NoInfer:", role, roleFixed);
 }
 
-// ===== 6.3 泛型約束（Generic Constraints）=====
+// ===== 7.4 泛型約束（Generic Constraints）=====
 {
   // 約束 T 必須有 length 屬性
   function logLength<T extends { length: number }>(value: T): void {
@@ -108,10 +108,10 @@
   ];
 
   const user = findById(users, 1); // 型別為 { id: number; name: string } | undefined
-  console.log("6.3 findById:", user);
+  console.log("7.4 findById:", user);
 }
 
-// ===== 6.3 keyof 約束 =====
+// ===== 7.4 keyof 約束 =====
 {
   // T 是物件，K 是 T 的鍵
   function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
@@ -123,10 +123,10 @@
   getProperty(user, "name"); // 回傳型別為 string
   getProperty(user, "age"); // 回傳型別為 number
   // getProperty(user, "phone"); // ❌ "phone" 不是 user 的鍵
-  console.log("6.3 getProperty:", getProperty(user, "name"), getProperty(user, "age"));
+  console.log("7.4 getProperty:", getProperty(user, "name"), getProperty(user, "age"));
 }
 
-// ===== 6.3 keyof 約束 — 場景 1：通用表格元件 =====
+// ===== 7.4 keyof 約束 — 場景 1：通用表格元件 =====
 {
   interface Column<T> {
     key: keyof T; // 只能是 T 真的有的欄位名
@@ -156,10 +156,10 @@
     // { key: "phone", title: "電話" }, // ❌ Employee 沒有 phone
   ]);
 
-  console.log("6.3 renderTable:", table);
+  console.log("7.4 renderTable:", table);
 }
 
-// ===== 6.3 keyof 約束 — 場景 2：sortBy / pluck（回傳型別跟著 key 變）=====
+// ===== 7.4 keyof 約束 — 場景 2：sortBy / pluck（回傳型別跟著 key 變）=====
 {
   function sortBy<T, K extends keyof T>(items: T[], key: K): T[] {
     return [...items].sort((a, b) => (a[key] > b[key] ? 1 : -1));
@@ -178,10 +178,10 @@
   const ages = pluck(staff, "age"); // number[]
   const sorted = sortBy(staff, "age"); // 依年齡排序
 
-  console.log("6.3 pluck / sortBy:", names, ages, sorted);
+  console.log("7.4 pluck / sortBy:", names, ages, sorted);
 }
 
-// ===== 6.3 keyof 約束 — 場景 3：key 與 value 必須對得起來 =====
+// ===== 7.4 keyof 約束 — 場景 3：key 與 value 必須對得起來 =====
 {
   function setField<T, K extends keyof T>(obj: T, key: K, value: T[K]): T {
     return { ...obj, [key]: value };
@@ -193,10 +193,10 @@
   // setField(profile, "age", "31"); // ❌ age 是 number，不能塞字串
   // setField(profile, "name", 100); // ❌ name 是 string，不能塞數字
 
-  console.log("6.3 setField:", updated);
+  console.log("7.4 setField:", updated);
 }
 
-// ===== 6.4 泛型介面 =====
+// ===== 7.5 泛型介面 =====
 {
   // 泛型介面
   interface ApiResponse<T> {
@@ -233,7 +233,7 @@
   async () => {
     const userRes = await fetchApi<User>("/api/users/1");
     // userRes.data 的型別是 User
-    console.log("6.4 fetchApi:", userRes.data);
+    console.log("7.5 fetchApi:", userRes.data);
   };
 
   // 讓型別別名被使用一下，避免被視為完全孤立
@@ -249,80 +249,11 @@
     message: "ok",
     timestamp: "2026-07-23",
   };
-  console.log("6.4 ApiResponse:", _demoUserResponse.data, _demoProductResponse.data);
+  console.log("7.5 ApiResponse:", _demoUserResponse.data, _demoProductResponse.data);
 }
 
-// ===== 6.4 型別變異標記 in / out（TS 4.7+）=====
-// 「變異」在問：Dog 是 Animal 的子型別，那包上泛型後 Producer<Dog> 還是 Producer<Animal> 的子型別嗎？
-// 答案取決於 T 是被拿來「產出」還是「接收」。
-{
-  // out T：T 只出現在「回傳值」位置 → 這個介面只負責產出 T（協變）
-  interface Producer<out T> {
-    produce(): T;
-  }
 
-  // in T：T 只出現在「參數」位置 → 這個介面只負責接收 T（逆變）
-  interface Consumer<in T> {
-    consume(value: T): void;
-  }
-
-  class Animal {
-    name = "animal";
-  }
-  class Dog extends Animal {
-    bark() {}
-  }
-
-  // ---------- 協變 out：方向跟繼承一樣 ----------
-  const dogProducer: Producer<Dog> = { produce: () => new Dog() };
-
-  // ✅ 狗工廠可以當動物工廠用：呼叫端拿到狗，而狗本來就是動物 —— 給得比承諾的更具體，安全
-  const producer: Producer<Animal> = dogProducer;
-
-  const animalProducer: Producer<Animal> = { produce: () => new Animal() };
-  // ❌ 反過來不行：呼叫端以為會拿到狗、想呼叫 .bark()，但工廠可能生出一隻貓
-  // const wrong: Producer<Dog> = animalProducer;
-  void animalProducer;
-
-  // ---------- 逆變 in：方向跟繼承相反 ----------
-  const animalConsumer: Consumer<Animal> = { consume: (a) => console.log(a.name) };
-
-  // ✅ 「什麼動物都能處理」可以當成「處理狗」用：呼叫端只餵狗，而它連任何動物都接得住 —— 接受得比需求更寬，安全
-  const consumer: Consumer<Dog> = animalConsumer;
-
-  const dogConsumer: Consumer<Dog> = { consume: (d) => d.bark() };
-  // ❌ 反過來不行：呼叫端可能餵一隻貓，而 consume 內部會呼叫 .bark()，執行期就炸了
-  // const wrong2: Consumer<Animal> = dogConsumer;
-  void dogConsumer;
-
-  // 口訣：產出可以更具體，接收可以更寬鬆。
-
-  console.log("6.4 variance in/out:", producer.produce(), typeof consumer.consume);
-}
-
-// ===== 6.4 沒有 in 標記時的雙變（bivariant）漏洞 =====
-{
-  class Animal {
-    name = "animal";
-  }
-  class Dog extends Animal {
-    bark() {}
-  }
-
-  // 沒有 in 標記，且用 method 語法宣告參數 → TypeScript 預設是「雙變」，兩個方向都放行
-  interface ConsumerNoMark<T> {
-    consume(value: T): void;
-  }
-
-  const dogOnly: ConsumerNoMark<Dog> = { consume: (d) => d.bark() };
-  // ⚠️ 這行沒有報錯，但其實不安全；如果 ConsumerNoMark 寫成 <in T> 就會在這裡被擋下來
-  const anyAnimal: ConsumerNoMark<Animal> = dogOnly;
-
-  // anyAnimal.consume(new Animal()); // 真的呼叫下去會執行期爆炸：Animal 沒有 bark()
-  console.log("6.4 bivariance 漏洞:", typeof anyAnimal.consume);
-}
-
-// ===== 6.4 泛型介面 — Repository 模式 =====
+// ===== 7.5 泛型介面 — Repository 模式 =====
 {
   interface User {
     id: number;
@@ -357,10 +288,48 @@
   }
 
   const repo = new UserRepository();
-  console.log("6.4 Repository:", repo instanceof UserRepository);
+  console.log("7.5 Repository:", repo instanceof UserRepository);
 }
 
-// ===== 6.5 泛型類別 =====
+// ===== 7.6 泛型類別 — Stack =====
+{
+  class Stack<T> {
+    private items: T[] = [];
+
+    push(item: T): void {
+      this.items.push(item);
+    }
+
+    pop(): T | undefined {
+      return this.items.pop();
+    }
+
+    peek(): T | undefined {
+      return this.items[this.items.length - 1];
+    }
+
+    get size(): number {
+      return this.items.length;
+    }
+
+    isEmpty(): boolean {
+      return this.items.length === 0;
+    }
+  }
+
+  const numberStack = new Stack<number>();
+  numberStack.push(1);
+  numberStack.push(2);
+  numberStack.push(3);
+  console.log(numberStack.pop()); // 3
+
+  const stringStack = new Stack<string>();
+  stringStack.push("hello");
+  stringStack.push("world");
+  console.log(stringStack.size); // 2
+}
+
+// ===== 7.6 泛型類別 =====
 {
   interface User {
     id: number;
@@ -397,10 +366,10 @@
   userStore.add({ id: 2, name: "Bob" });
 
   const alice = userStore.find((u) => u.name === "Alice");
-  console.log("6.5 DataStore:", alice, userStore.getAll());
+  console.log("7.6 DataStore:", alice, userStore.getAll());
 }
 
-// ===== 6.6 泛型預設值 =====
+// ===== 7.7 泛型預設值 =====
 {
   interface User {
     id: number;
@@ -430,46 +399,46 @@
     pageSize: 10,
     total: 1,
   };
-  console.log("6.6 PaginatedList:", list.total, userList.items);
+  console.log("7.7 PaginatedList:", list.total, userList.items);
 }
 
-// ===== 6.7 常見泛型模式 — Result 模式（錯誤處理）=====
+// ===== 7.8 常見泛型模式 — Result 模式（錯誤處理）=====
 // 用途：把「這個函式可能會失敗」寫進回傳型別，讓編譯器強迫呼叫端處理錯誤。
 // 對比 try/catch：函式簽章看不出會不會 throw，呼叫端容易漏掉；catch (e) 的 e 還是 unknown。
 {
-  // 可辨識聯合：用 success 這個字面量欄位當「標籤」；E 預設為 Error
+  // 可辨識聯合：用 ok 這個字面量欄位當「標籤」；E 預設為 Error
   type Result<T, E = Error> =
-    | { success: true; data: T } // 成功時只有 data
-    | { success: false; error: E }; // 失敗時只有 error
+    | { ok: true; value: T } // 成功時只有 value
+    | { ok: false; error: E }; // 失敗時只有 error
 
   // 回傳型別直接宣告「我可能失敗，失敗時錯誤是 string」
   function divide(a: number, b: number): Result<number, string> {
     if (b === 0) {
       // 除以零是「預期內」的失敗，不是程式 bug，所以用回傳值而非 throw
-      return { success: false, error: "Cannot divide by zero" };
+      return { ok: false, error: "Cannot divide by zero" };
     }
-    return { success: true, data: a / b };
+    return { ok: true, value: a / b };
   }
 
   const result = divide(10, 2);
 
-  // 檢查 success 後 TypeScript 會自動縮窄型別；沒先檢查就存取 data 會編譯錯誤
-  if (result.success) {
-    console.log("6.7 Result 成功:", result.data); // 型別縮窄為 number
+  // 檢查 ok 後 TypeScript 會自動縮窄型別；沒先檢查就存取 value 會編譯錯誤
+  if (result.ok) {
+    console.log("7.8 Result 成功:", result.value); // 型別縮窄為 number
   } else {
-    console.error("6.7 Result 失敗:", result.error); // 型別縮窄為 string
+    console.error("7.8 Result 失敗:", result.error); // 型別縮窄為 string
   }
 
-  // console.log(result.data); // ❌ 沒先檢查 success，data 不存在於失敗分支
+  // console.log(result.value); // ❌ 沒先檢查 ok，value 不存在於失敗分支
 
   // 失敗情境
   const failed = divide(10, 0);
-  console.log("6.7 Result 除以零:", failed.success ? failed.data : failed.error);
+  console.log("7.8 Result 除以零:", failed.ok ? failed.value : failed.error);
 
   // 判準：失敗是業務流程的一部分 → 用 Result；是不該發生的 bug → 用 throw
 }
 
-// ===== 6.7 常見泛型模式 — Builder 模式 =====
+// ===== 7.8 常見泛型模式 — Builder 模式 =====
 // 用途：把「參數很多、大多選填、要一步步組出來」的物件，改成可讀性高的鏈式呼叫。
 // 不用 Builder 通常會變成吃十幾個參數的函式，或塞滿 undefined 的設定物件。
 {
@@ -527,7 +496,7 @@
     // .orderBy("phone") // ❌ User 沒有 phone，編譯期就擋下來
     .limit(10)
     .build();
-  console.log("6.7 Builder:", query);
+  console.log("7.8 Builder:", query);
 }
 
 // ===== 練習 1：泛型函式 groupBy =====
@@ -666,6 +635,6 @@
   console.log("練習 3 merge:", merged.name, merged.age);
 }
 
-console.log("第 6 章 泛型 範例載入完成 ✅");
+console.log("第 7 章 泛型 範例載入完成 ✅");
 
 export {};

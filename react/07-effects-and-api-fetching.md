@@ -9,6 +9,7 @@
 3. 用 `AbortController` 避免快速切換造成的競態問題。
 4. 解釋 StrictMode 下 effect 執行兩次的原因與正確應對。
 5. 把重複的資料抓取邏輯抽成自訂 Hook。
+6. 用 render 快照與閉包解釋依賴陣列，修正漏寫依賴與引用不穩定的問題。
 
 ---
 
@@ -21,11 +22,13 @@ React 元件主要負責「渲染 UI」，
 - 操作 `document.title`
 - 訂閱 / 取消訂閱事件
 
-這些邏輯應放在 `useEffect`。
+當這些操作需要隨元件顯示或 props/state 變化，與外部系統保持同步時，適合放在 `useEffect`。
+但「按下送出才新增資料」應放在事件處理器；單純依 state 計算篩選結果則直接在 render 計算。
+不要把所有副作用或衍生資料都塞進 Effect。詳見 [Synchronizing with Effects](https://react.dev/learn/synchronizing-with-effects)。
 
 ---
 
-## 2. 依賴陣列與執行時機
+## 2. 依賴陣列與執行時機：為什麼重要？
 
 ```jsx
 useEffect(() => {
@@ -33,9 +36,102 @@ useEffect(() => {
 }, [userId]);
 ```
 
-- 初次渲染會執行
-- `userId` 改變時再次執行
-- 若回傳 cleanup function，下一次 effect 前或卸載時會先清理
+- 初次掛載提交（commit）後執行 setup；render 本身只是計算 UI。
+- 後續提交若 `userId` 改變，先執行舊的 cleanup，再用新的值執行 setup。
+- 卸載時執行最後一次 cleanup；被放棄、沒有提交的 render 不會執行其 Effect setup。
+
+### 2.1 不傳、空陣列、有依賴，差在哪裡？
+
+| 寫法 | 何時重新同步 |
+|---|---|
+| `useEffect(setup)` | 每次該元件提交後執行 |
+| `useEffect(setup, [])` | 掛載時執行，不因後續 props/state 更新而重跑 |
+| `useEffect(setup, [userId])` | 掛載時，以及 `userId` 與上次比較不同的提交後執行 |
+
+`[]` 不代表整個應用生命週期只執行一次：重新掛載仍會執行，開發期 StrictMode 也會額外檢查（見第 5 節）。
+Effect 只在客戶端執行。不要把它理解成「一定在瀏覽器繪製畫面後」的計時工具；互動造成的 Effect 可能在繪製前執行。
+這些時機與依賴規則可查閱 [useEffect 官方 API](https://react.dev/reference/react/useEffect)。
+
+### 2.2 少寫依賴，會留下哪一份資料？
+
+第 5 章提過，每次 render 都有自己的 state 快照，callback 會透過閉包捕捉那份值。
+依賴陣列是在告訴 React：**哪些值改變後，舊的同步工作已不適用，需要重新建立？**
+
+```jsx
+import { useEffect } from "react";
+
+// 錯誤示範：切換使用者後，標題仍停留在最初的 userId
+function UserTitle({ userId }) {
+  useEffect(() => {
+    document.title = `User ${userId}`;
+  }, []); // 漏掉 userId
+
+  return <h1>目前使用者：{userId}</h1>;
+}
+```
+
+畫面可能已經顯示 User 2，但標題仍是 User 1。
+修正成 `[userId]`，React 才會在切換後執行使用新值的 Effect。
+計時器或訂閱也一樣：如果一直保留第一次建立的 callback，它就可能持續讀取舊值，這稱為 **stale closure（閉包中的舊值）**。
+
+依賴應包含 Effect 讀取的 reactive values，例如 props、state，以及元件內宣告的變數與函式。
+不需要機械式地把所有識別字都填進去：模組層級常數、穩定的 state setter 等不需要因每次 render 重新同步。
+使用 `eslint-plugin-react-hooks` 的 `exhaustive-deps` 規則協助檢查；不要為了讓警告消失直接關掉規則。
+詳見 [Removing Effect Dependencies](https://react.dev/learn/removing-effect-dependencies)。
+
+### 2.3 `Object.is` 與物件／函式的引用
+
+React 用 `Object.is` 逐項比較依賴，不會深度比較物件內容。
+依賴陣列的項目數與排列應固定；每次建立新的陣列字面值 `[userId]` 沒問題，重點是裡面的值。
+
+```jsx
+// 元件函式內：每次 render 都建立新的 options 物件
+const options = { userId };
+
+useEffect(() => {
+  document.title = `User ${options.userId}`;
+}, [options]); // 即使 userId 沒變，options 的引用仍不同
+```
+
+若物件只是 Effect 的內部細節，把它移進 Effect，再依賴真正的輸入：
+
+```jsx
+useEffect(() => {
+  const options = { userId };
+  document.title = `User ${options.userId}`;
+}, [userId]);
+```
+
+函式也有引用問題。只給 Effect 使用的函式可移進 Effect；不依賴元件資料的工具函式可移到元件外。
+確實需要跨地方保持引用時，再考慮 `useMemo`／`useCallback`（第 13 章）。
+單純引用不同會造成重跑；若 Effect 又更新 state，且更新讓依賴持續改變，才可能形成無限迴圈。
+
+### 2.4 用函式型更新減少真正不需要的依賴
+
+下面的計時器只需要「將前一次計數加一」，不用讀取這次 render 的 `count`：
+
+```jsx
+import { useEffect, useState } from "react";
+
+export default function Timer() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const timerId = setInterval(() => {
+      setCount((previous) => previous + 1);
+    }, 1000);
+    return () => clearInterval(timerId);
+  }, []);
+
+  return <p>經過 {count} 秒</p>;
+}
+```
+
+若改成 `setCount(count + 1)` 卻保留 `[]`，callback 會一直要求設成最初的 `count + 1`。
+加上 `[count]` 可以讓它讀新值，但也會每次清掉並重建計時器。
+這裡用 updater 消除了對外層 `count` 的讀取，所以 `[]` 才是合理的；若計時器還使用 `step` prop，就仍應把 `step` 列入依賴。
+
+**理解檢查：**依賴陣列會影響同步的正確性與重跑成本。要減少依賴，先改寫 Effect 讓它不再讀取那些值，再讓陣列與程式碼一致。
 
 ---
 
@@ -66,15 +162,15 @@ return () => controller.abort();
 
 用本章範例打 API 時，你會在 Network 面板看到**同一個請求發了兩次**。  
 這不是 bug：`main.jsx` 裡的 `<React.StrictMode>` 在**開發模式**會刻意把
-「掛載 → 清理 → 再掛載」跑一遍，幫你提早發現忘了寫 cleanup 的 effect。
+額外執行一次「setup → cleanup」，再執行正常的 setup，幫你提早發現無法正確清理的 Effect。
 
 要知道三件事：
 
-1. 只發生在開發模式，`npm run build` 後的正式版不會執行兩次。
+1. 這次額外檢查只發生在開發模式；正式版仍可能因重新掛載或依賴改變而再次執行。
 2. 不要為了「只跑一次」移除 StrictMode 或亂加旗標——正確解法是把 cleanup 寫好。
 3. 本章範例的 `AbortController` 就是正確示範：第一次的請求會在 cleanup 時被中止。
 
-> 判斷準則：**effect 被執行兩次卻造成問題，代表缺少 cleanup，而不是 React 有問題。**
+> 判斷準則：**檢查 setup 與 cleanup 是否對稱；像送出訂單這種由特定操作觸發的行為，應放在事件處理器。**
 
 ---
 
@@ -142,6 +238,8 @@ const { todos, loading, error } = useTodos(userId);
 3. 顯示 loading、error、empty 狀態。
 4. 在切換時避免舊資料覆蓋新資料。
 5. 把抓資料邏輯抽成 `useTodos` 自訂 Hook 後再接回元件。
+6. 重現第 2.2 節切換使用者但標題不更新的問題，再修正依賴。
+7. 比較 Timer 使用 `setCount(count + 1)` 與函式型更新的差異，解釋閉包捕捉哪一份值。
 
 ---
 

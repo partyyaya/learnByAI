@@ -1,9 +1,9 @@
 // @ts-nocheck
 
 /*
- * 第 10 章 前端框架整合(Vue / React / Nuxt / Next.js)
+ * 第 12 章 前端框架整合(Vue / React / Nuxt / Next.js)
  *
- * 第 10 章示範 Vue / React / Nuxt / Next.js 的 TypeScript 整合。
+ * 第 12 章示範 Vue / React / Nuxt / Next.js 的 TypeScript 整合。
  * 這些依賴各框架的套件與型別,此 demo 未安裝,故本檔以 @ts-nocheck 作為
  * 閱讀參考,不納入型別檢查;要實際執行請在對應框架專案中使用。
  *
@@ -14,10 +14,10 @@
  *   註解保留(需置於 .tsx 才能編譯)。
  */
 
-// ===== 10.1 Vue:env.d.ts(讓 TypeScript 認識 .vue 檔案)=====
+// ===== 12.1 Vue:env.d.ts(讓 TypeScript 認識 .vue 檔案)=====
 /// <reference types="vite/client" />
 
-// ===== 10.1 Vue:.vue 使用 <script setup lang="ts">(HelloWorld.vue 的 script 段)=====
+// ===== 12.1 Vue:.vue 使用 <script setup lang="ts">(HelloWorld.vue 的 script 段)=====
 import { ref, computed } from 'vue'
 
 // 定義 props 型別
@@ -61,7 +61,7 @@ const doubled = computed(() => props.count * 2) // ComputedRef<number>
 </template>
 */
 
-// ===== 10.1 Vue:常用型別 =====
+// ===== 12.1 Vue:常用型別 =====
 import type { Ref, ComputedRef, PropType } from 'vue'
 
 // 本節範例共用的 User 型別
@@ -104,10 +104,10 @@ const inputRef = ref<HTMLInputElement | null>(null)
 import MyComponent from './MyComponent.vue'
 const compRef = ref<InstanceType<typeof MyComponent> | null>(null)
 
-// ===== 10.2 React:vite-env.d.ts =====
+// ===== 12.2 React:vite-env.d.ts =====
 /// <reference types="vite/client" />
 
-// ===== 10.2 React:元件的 TypeScript 寫法(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
+// ===== 12.2 React:元件的 TypeScript 寫法(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
 /*
 import { useState, useEffect } from 'react'
 
@@ -187,7 +187,7 @@ function UserList() {
 }
 */
 
-// ===== 10.2 React:常用 TypeScript 型別(無 JSX)=====
+// ===== 12.2 React:常用 TypeScript 型別(無 JSX)=====
 // 事件型別
 const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
   console.log(e.target.value)
@@ -240,7 +240,7 @@ function reducer(state: State, action: Action): State {
   }
 }
 
-// ===== 10.3 Nuxt:啟用嚴格型別檢查(nuxt.config.ts)=====
+// ===== 12.3 Nuxt:啟用嚴格型別檢查(nuxt.config.ts)=====
 export default defineNuxtConfig({
   typescript: {
     strict: true,      // 開啟嚴格模式
@@ -248,7 +248,7 @@ export default defineNuxtConfig({
   },
 })
 
-// ===== 10.3 Nuxt:自動匯入的型別支援(script setup)=====
+// ===== 12.3 Nuxt:自動匯入的型別支援(script setup)=====
 // Nuxt 3 自動匯入 — 不需要 import
 // ref, computed, watch 等來自 Vue
 // useRoute, useRouter, useFetch 等來自 Nuxt
@@ -259,7 +259,7 @@ const { data, pending, error } = await useFetch<User[]>('/api/users')
 const route = useRoute()
 // route.params 有完整的型別支援
 
-// ===== 10.3 Nuxt:實戰 pages/users/[id].vue(script setup)=====
+// ===== 12.3 Nuxt:實戰 pages/users/[id].vue(script setup)=====
 // pages/users/[id].vue
 interface User {
   id: number
@@ -290,7 +290,7 @@ export default defineEventHandler(async (event) => {
   }
 })
 
-// ===== 10.3 Nuxt:composables/useAuth.ts =====
+// ===== 12.3 Nuxt:composables/useAuth.ts =====
 // composables/useAuth.ts
 interface AuthState {
   user: User | null
@@ -329,12 +329,12 @@ export function useAuth() {
   }
 }
 
-// ===== 10.4 Next.js:next-env.d.ts =====
+// ===== 12.4 Next.js:next-env.d.ts =====
 // next-env.d.ts(由 Next.js 自動維護,不要手動修改)
 /// <reference types="next" />
 /// <reference types="next/image-types/global" />
 
-// ===== 10.4 Next.js:App Router 實戰 — Server Component(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
+// ===== 12.4 Next.js:App Router 實戰 — Server Component(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
 /*
 // src/app/page.tsx — Server Component(預設)
 interface User {
@@ -364,7 +364,7 @@ export default async function UsersPage() {
 }
 */
 
-// ===== 10.4 Next.js:App Router 實戰 — 動態路由(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
+// ===== 12.4 Next.js:App Router 實戰 — 動態路由(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
 /*
 // src/app/users/[id]/page.tsx — 動態路由
 interface PageProps {
@@ -393,7 +393,7 @@ export async function generateStaticParams() {
 }
 */
 
-// ===== 10.4 Next.js:App Router 實戰 — API Route(無 JSX)=====
+// ===== 12.4 Next.js:App Router 實戰 — API Route(無 JSX)=====
 // src/app/api/users/route.ts — API Route
 import { NextRequest, NextResponse } from 'next/server'
 
@@ -414,7 +414,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ id: 1, ...body }, { status: 201 })
 }
 
-// ===== 10.4 Next.js:App Router 實戰 — Client Component(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
+// ===== 12.4 Next.js:App Router 實戰 — Client Component(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
 /*
 // src/components/Counter.tsx — Client Component
 'use client'
@@ -437,7 +437,7 @@ export default function Counter({ initialCount = 0 }: CounterProps) {
 }
 */
 
-// ===== 10.4 Next.js:常用型別 — Metadata / Middleware(無 JSX)=====
+// ===== 12.4 Next.js:常用型別 — Metadata / Middleware(無 JSX)=====
 import type { Metadata } from 'next'
 
 // 頁面 Metadata
@@ -454,7 +454,7 @@ export const middleware: NextMiddleware = (request: NextRequest) => {
   return NextResponse.next()
 }
 
-// ===== 10.4 Next.js:常用型別 — Layout(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
+// ===== 12.4 Next.js:常用型別 — Layout(JSX 範例,置於 .tsx 才能編譯,此處僅供參考)=====
 /*
 // Layout 型別
 interface LayoutProps {
@@ -470,4 +470,4 @@ export default function RootLayout({ children }: LayoutProps) {
 }
 */
 
-console.log("第 10 章 前端框架整合 範例載入完成 ✅(參考用,已 @ts-nocheck)");
+console.log("第 12 章 前端框架整合 範例載入完成 ✅(參考用,已 @ts-nocheck)");

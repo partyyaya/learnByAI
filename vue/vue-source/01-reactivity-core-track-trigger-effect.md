@@ -16,6 +16,7 @@
 - 為什麼 `state.count++` 會讓畫面更新？
 - 為什麼某些情況 effect 會重複觸發，某些情況不會？
 - scheduler 介入時，effect 為何不是立刻重跑？
+- `ref({ count: 0 })` 的 `.value` 與內部 `count` 分別由誰追蹤？
 - 3.5 之後 dep 為什麼從集合變成「雙向鏈結 + 版本號」？這解決了什麼問題？
 
 ---
@@ -266,16 +267,114 @@ function trigger(target: object, key: PropertyKey) {
 
 | 項目 | `reactive` | `ref` |
 |---|---|---|
-| 適用資料 | 物件/陣列 | 基本型別與單值包裝 |
+| 適用資料 | 物件、陣列、Map／Set 等可代理資料 | 基本型別或物件等值的包裝 |
 | 存取方式 | `state.count` | `count.value` |
 | 實作核心 | `Proxy` | 帶 getter/setter 的 `RefImpl` |
 | 收集依賴 | proxy `get` → 該 key 的 `Dep.track()` | 讀 `.value` → ref 自己那個 `Dep.track()` |
-| 解包規則 | template / 特定場景自動解包 | script 中一般需 `.value` |
+| 解包規則 | 深層 reactive 的一般物件屬性會解包內含 ref；陣列索引與集合元素例外 | JS 中通常用 `.value`；模板頂層 ref 可自動解包 |
 
 ### 一句話理解
 
 - `reactive`：攔截整個物件屬性存取（`Proxy`）
 - `ref`：一個持有 `dep` 的物件，讀 `.value` 時 track、寫 `.value` 且值有變時 trigger
+
+### 1.7.1 `RefImpl`：`_rawValue` 與 `_value` 分工
+
+普通 `ref` 包住一般物件時，外面是 `RefImpl`，裡面的值會經 `toReactive` 轉換。
+因此 `ref` 與 `reactive` 並不是兩套互斥的響應式系統。
+
+| 內部欄位 | 用途 |
+|---|---|
+| `dep` | 保存讀取這個 ref 的 `.value` 的訂閱關係 |
+| `_rawValue` | 保存用來比較新舊值的原始值，避免把同一個物件的 raw／Proxy 誤認成不同資料 |
+| `_value` | getter 實際回傳的值；一般物件會經 `toReactive` 取得 Proxy |
+
+普通 ref 的主要路徑可簡化為：
+
+```text
+ref(raw) → new RefImpl(raw)
+  初始化：_rawValue = toRaw(raw)，_value = toReactive(raw)
+  讀 .value：dep.track() → 回傳 _value
+  寫 .value：正規化新值 → hasChanged（以 Object.is 判斷差異）
+             → 有變才更新兩個欄位並 dep.trigger()
+```
+
+上面省略 shallow／readonly 等分支；`shallowRef` 不會主動把內部物件轉成 Proxy，
+但若傳進去的本來就是 Proxy，它也不會把既有響應式移除。
+對照 Vue 3.5.13 的 [ref.ts](https://github.com/vuejs/core/blob/v3.5.13/packages/reactivity/src/ref.ts)，查看 `createRef`、`RefImpl` 的 constructor 與 getter/setter；內部欄位不是應用程式應直接操作的 API。
+
+### 1.7.2 兩層依賴：換整包與改欄位走不同路徑
+
+以下可在有安裝 Vue 的專案執行。此處用沒有 scheduler 的 `effect`，所以寫入後同步執行；元件更新則會交給第 02 章的排程器。
+
+```js
+import { effect, ref, stop } from 'vue'
+
+const box = ref({ count: 0 })
+let wholeRuns = 0
+let fieldRuns = 0
+
+const whole = effect(() => {
+  void box.value // 只讀 ref 的值，沒有讀內部 count
+  wholeRuns++
+})
+const field = effect(() => {
+  void box.value.count // 同時讀 ref 的值與 Proxy 的 count
+  fieldRuns++
+})
+
+console.log(wholeRuns, fieldRuns) // 1 1：effect 初次執行
+box.value.count++
+console.log(wholeRuns, fieldRuns) // 1 2：只觸發 count 的依賴
+
+const oldObject = box.value
+box.value = { count: 10 }
+console.log(wholeRuns, fieldRuns) // 2 3：觸發 ref 自己的 dep
+
+oldObject.count++
+console.log(wholeRuns, fieldRuns) // 2 3：field 已改為訂閱新物件
+
+stop(whole)
+stop(field)
+```
+
+```text
+讀 box.value.count
+  ├─ RefImpl.value getter → ref 的 dep → 訂閱「整包替換」
+  └─ Proxy.count getter   → 原始物件 count 的 dep → 訂閱「欄位改變」
+
+box.value.count++       → Proxy 的 set → count 的 dep 通知
+box.value = 新物件      → RefImpl 的 setter → ref 的 dep 通知
+```
+
+改 `count` 不會呼叫 ref 的 `.value` setter。整包替換後，effect 重跑時會讀取新 Proxy，
+並清掉不再讀取的舊物件依賴；若其他 effect 仍讀舊物件，那些訂閱仍然有效。
+只用 `reactive({ count: 0 })` 時沒有外層 ref 容器，重新賦值一般 JS 變數本身也不會觸發 Proxy 的 trap。
+
+### 1.7.3 解構到底斷掉哪一層？
+
+```js
+import { ref, toRef } from 'vue'
+
+const box = ref({ count: 0, nested: { total: 0 } })
+const { count, nested } = box.value
+const countLink = toRef(box.value, 'count')
+
+box.value.count = 1
+console.log(count, countLink.value) // 0 1：數字快照不變，toRef 仍連到原物件
+nested.total++                     // nested 仍是 Proxy，內部修改仍有響應式
+
+box.value = { count: 10, nested: { total: 10 } }
+console.log(countLink.value)       // 1：toRef 指向舊物件，沒有自動改接新物件
+console.log(nested.total)          // 1：nested 也仍指向舊的巢狀 Proxy
+```
+
+若要讓依賴跟著整包替換，保留 `box` 並在 effect／computed 中讀取 `box.value.count`。
+`toRefs` 適合連到身分穩定的物件屬性；「用 ref 就不怕任何解構」是不正確的概括。
+解構造成的是變數綁定與原屬性的斷連，取得的物件本身仍可能有響應式。參考 [Reactivity in Depth](https://vuejs.org/guide/extras/reactivity-in-depth.html)。
+
+另外，深層代理通常在 getter 讀到巢狀物件時才建立，並使用代理快取，
+不是呼叫 `reactive` 時就把整棵樹遍歷完。詳見 [baseHandlers.ts](https://github.com/vuejs/core/blob/v3.5.13/packages/reactivity/src/baseHandlers.ts) 的 `get` 與本章 1.10。
 
 ---
 
@@ -467,6 +566,7 @@ state.count++; // 預期再次印出
 - 手寫 mini-reactivity（`reactive + effect + track + trigger`）
 - 做一個分支案例驗證 cleanup 的必要性
 - 繪製一張 `get/set` -> `track/trigger` -> `effect` 的時序圖
+- 執行 1.7.2 的雙層依賴範例，再把 `ref` 換成 `shallowRef` 包住普通物件，預測並驗證執行次數
 
 ### 加分
 
@@ -480,6 +580,7 @@ state.count++; // 預期再次印出
 - 能說明 `targetMap` 為何是三層結構，最裡層在 3.3 / 3.4 / 3.5 各是什麼
 - 能展示一個 scheduler 鉤子被呼叫但 effect 未立即執行的案例
 - 能講出 `dep.version` / `globalVersion` 是為了解決什麼
+- 能區分 ref 容器的 dep 與內部 Proxy 屬性的 dep，並解釋整包替換後的依賴清理
 
 ---
 

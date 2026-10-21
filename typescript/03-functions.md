@@ -68,32 +68,6 @@ createUser("Gary");           // { name: "Gary", role: "user" }
 createUser("Gary", "admin");  // { name: "Gary", role: "admin" }
 ```
 
-### NoInfer\<T\>（TypeScript 5.4+）
-
-> 📌 **學習定位：進階、非必備。** 這是設計泛型 API 時才會用到的工具，日常寫業務邏輯、元件、呼叫 API 幾乎不會親手寫到它（你反而常常間接受惠於函式庫內部的用法）。**理解概念即可**，不用刻意背；等哪天自己寫泛型函式、發現某個參數把 `T` 意外拓寬了，再回來查它就行。
-
-一般情況下，`T` 會同時從 `value` 和 `fallback` 兩個參數推斷，導致 `fallback` 若傳入預期範圍外的字面值，`T` 會被意外拓寬，讓本不該通過的值也通過型別檢查。用 `NoInfer<T>` 包住 `fallback`，讓它「只被檢查、不參與推斷」，型別完全以 `value` 為準。
-
-```typescript
-type Status = "active" | "inactive" | "suspended";
-
-// 沒有 NoInfer：T 同時由 value 與 fallback 推斷
-function setDefaultLoose<T>(value: T, fallback: T): T {
-  return value ?? fallback;
-}
-
-const currentStatus: Status = "active";
-setDefaultLoose(currentStatus, "not-a-status"); // ⚠️ 不會報錯！T 被拓寬成 "active" | "not-a-status"
-
-// 使用 NoInfer：fallback 不參與型別推斷，只能是 value 推斷出的型別
-function setDefault<T>(value: T, fallback: NoInfer<T>): T {
-  return value ?? fallback;
-}
-
-setDefault(currentStatus, "active");        // ✅ OK
-// setDefault(currentStatus, "not-a-status"); // ❌ 正確報錯：不是合法的 Status
-```
-
 ---
 
 ## 3.3 剩餘參數（Rest Parameters）
@@ -269,7 +243,7 @@ boundClick(); // ✅ OK
 
 ## 3.7 泛型函式（預覽）
 
-> 泛型將在 [第六章](./06-generics.md) 深入說明，這裡先預覽基本用法。
+> 泛型將在 [第七章](./07-generics.md) 深入說明，這裡先預覽基本用法。
 
 ```typescript
 // 不使用泛型 — 需要為每種型別寫一個函式
@@ -480,7 +454,7 @@ async function unstable(): Promise<string> {
 retry(unstable, 5).then((result) => console.log(result)); // 成功！
 ```
 
-重點提醒：`operation` 的回傳型別用泛型 `T` 帶著走，所以 `retry` 能適用任何非同步操作而不失去型別資訊（泛型將在第六章深入）；`for` 迴圈條件寫 `attempt <= maxRetries` 代表「第一次執行 + 額外重試 maxRetries 次」。
+重點提醒：`operation` 的回傳型別用泛型 `T` 帶著走，所以 `retry` 能適用任何非同步操作而不失去型別資訊（泛型將在第七章深入）；`for` 迴圈條件寫 `attempt <= maxRetries` 代表「第一次執行 + 額外重試 maxRetries 次」。
 
 </details>
 

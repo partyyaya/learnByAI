@@ -66,29 +66,6 @@
   createUser("Gary", "admin");  // { name: "Gary", role: "admin" }
 }
 
-// --- NoInfer<T>（TypeScript 5.4+） ---
-{
-  type Status = "active" | "inactive" | "suspended";
-
-  // 沒有 NoInfer：T 同時由 value 與 fallback 推斷
-  function setDefaultLoose<T>(value: T, fallback: T): T {
-    return value ?? fallback;
-  }
-
-  const currentStatus: Status = "active";
-  const loose = setDefaultLoose(currentStatus, "not-a-status"); // ⚠️ 不會報錯！T 被拓寬成 "active" | "not-a-status"
-
-  // 使用 NoInfer：fallback 不參與型別推斷，只能是 value 推斷出的型別
-  function setDefault<T>(value: T, fallback: NoInfer<T>): T {
-    return value ?? fallback;
-  }
-
-  const strict = setDefault(currentStatus, "active"); // ✅ OK
-  // setDefault(currentStatus, "not-a-status"); // ❌ 正確報錯：不是合法的 Status
-
-  console.log(loose, strict);
-}
-
 // ===== 3.3 剩餘參數（Rest Parameters）=====
 {
   // 使用 ... 接收不定數量的參數
@@ -214,7 +191,7 @@
 }
 
 // ===== 3.7 泛型函式（預覽）=====
-// 泛型將在第六章深入說明，這裡先預覽基本用法。
+// 泛型將在第七章深入說明，這裡先預覽基本用法。
 {
   // 不使用泛型 — 需要為每種型別寫一個函式
   function identityString(arg: string): string {

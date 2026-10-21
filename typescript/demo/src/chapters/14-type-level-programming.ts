@@ -1,5 +1,5 @@
 // =============================================================================
-// 第 13 章 型別層級程式設計（Type-Level Programming）
+// 第 14 章 型別層級程式設計（Type-Level Programming）
 //
 // 本章幾乎都是「型別層級」程式碼，沒有執行期輸出。
 // 正確性靠「型別斷言 + 型別檢查」驗證：只要 tsc --noEmit 通過（0 錯誤），
@@ -14,7 +14,7 @@
 type Equal<X, Y> = (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
 type Expect<T extends true> = T;
 
-// ===== 13.1 什麼是型別層級程式設計？ =====
+// ===== 14.1 什麼是型別層級程式設計？ =====
 {
   // 值層級：一個把數字加一的函式
   function inc(n: number): number {
@@ -30,7 +30,7 @@ type Expect<T extends true> = T;
   type _t = [Expect<Equal<A, false>>, Expect<Equal<B, true>>, Expect<Equal<typeof two, number>>];
 }
 
-// ===== 13.2 型別層級的基本構件 =====
+// ===== 14.2 型別層級的基本構件 =====
 
 // 字面值型別 = 常數
 {
@@ -63,6 +63,76 @@ type Expect<T extends true> = T;
     Expect<Equal<T3, true>>,
     Expect<Equal<T4, true>>,
   ];
+}
+
+// ===== 14.2 型別變異標記 in / out（TS 4.7+）=====
+// 「變異」在問：Dog 是 Animal 的子型別，那包上泛型後 Producer<Dog> 還是 Producer<Animal> 的子型別嗎？
+// 答案取決於 T 是被拿來「產出」還是「接收」。
+{
+  // out T：T 只出現在「回傳值」位置 → 這個介面只負責產出 T（協變）
+  interface Producer<out T> {
+    produce(): T;
+  }
+
+  // in T：T 只出現在「參數」位置 → 這個介面只負責接收 T（逆變）
+  interface Consumer<in T> {
+    consume(value: T): void;
+  }
+
+  class Animal {
+    name = "animal";
+  }
+  class Dog extends Animal {
+    bark() {}
+  }
+
+  // ---------- 協變 out：方向跟繼承一樣 ----------
+  const dogProducer: Producer<Dog> = { produce: () => new Dog() };
+
+  // ✅ 狗工廠可以當動物工廠用：呼叫端拿到狗，而狗本來就是動物 —— 給得比承諾的更具體，安全
+  const producer: Producer<Animal> = dogProducer;
+
+  const animalProducer: Producer<Animal> = { produce: () => new Animal() };
+  // ❌ 反過來不行：呼叫端以為會拿到狗、想呼叫 .bark()，但工廠可能生出一隻貓
+  // const wrong: Producer<Dog> = animalProducer;
+  void animalProducer;
+
+  // ---------- 逆變 in：方向跟繼承相反 ----------
+  const animalConsumer: Consumer<Animal> = { consume: (a) => console.log(a.name) };
+
+  // ✅ 「什麼動物都能處理」可以當成「處理狗」用：呼叫端只餵狗，而它連任何動物都接得住 —— 接受得比需求更寬，安全
+  const consumer: Consumer<Dog> = animalConsumer;
+
+  const dogConsumer: Consumer<Dog> = { consume: (d) => d.bark() };
+  // ❌ 反過來不行：呼叫端可能餵一隻貓，而 consume 內部會呼叫 .bark()，執行期就炸了
+  // const wrong2: Consumer<Animal> = dogConsumer;
+  void dogConsumer;
+
+  // 口訣：產出可以更具體，接收可以更寬鬆。
+
+  console.log("14.2 variance in/out:", producer.produce(), typeof consumer.consume);
+}
+
+// ===== 14.2 沒有 in 標記時的雙變（bivariant）漏洞 =====
+{
+  class Animal {
+    name = "animal";
+  }
+  class Dog extends Animal {
+    bark() {}
+  }
+
+  // 沒有 in 標記，且用 method 語法宣告參數 → TypeScript 預設是「雙變」，兩個方向都放行
+  interface ConsumerNoMark<T> {
+    consume(value: T): void;
+  }
+
+  const dogOnly: ConsumerNoMark<Dog> = { consume: (d) => d.bark() };
+  // ⚠️ 這行沒有報錯，但其實不安全；如果 ConsumerNoMark 寫成 <in T> 就會在這裡被擋下來
+  const anyAnimal: ConsumerNoMark<Animal> = dogOnly;
+
+  // anyAnimal.consume(new Animal()); // 真的呼叫下去會執行期爆炸：Animal 沒有 bark()
+  console.log("14.2 bivariance 漏洞:", typeof anyAnimal.consume);
 }
 
 // 型變標註 in / out（TypeScript 4.7+）
@@ -132,7 +202,7 @@ type Expect<T extends true> = T;
   ];
 }
 
-// ===== 13.3 遞迴型別（Recursive Types）=====
+// ===== 14.3 遞迴型別（Recursive Types）=====
 
 // 反轉元組
 {
@@ -163,7 +233,7 @@ type Expect<T extends true> = T;
   ];
 }
 
-// ===== 13.4 元組型別運算（Tuple Manipulation）=====
+// ===== 14.4 元組型別運算（Tuple Manipulation）=====
 {
   // Head：取第一個元素
   type Head<T extends unknown[]> = T extends [infer H, ...unknown[]] ? H : never;
@@ -202,7 +272,7 @@ type Expect<T extends true> = T;
   ];
 }
 
-// ===== 13.5 型別層級的算術（Type-Level Arithmetic）=====
+// ===== 14.5 型別層級的算術（Type-Level Arithmetic）=====
 {
   // 建立長度為 L 的元組（元素內容用 unknown 即可）
   type BuildTuple<L extends number, T extends unknown[] = []> = T["length"] extends L
@@ -241,7 +311,7 @@ type Expect<T extends true> = T;
   ];
 }
 
-// ===== 13.6 字串型別運算（String Manipulation）=====
+// ===== 14.6 字串型別運算（String Manipulation）=====
 {
   // Split：依分隔符切成元組
   type Split<S extends string, D extends string> = S extends `${infer Head}${D}${infer Tail}`
@@ -289,7 +359,7 @@ type Expect<T extends true> = T;
   ];
 }
 
-// ===== 13.7 分配式條件型別（Distributive Conditional Types）=====
+// ===== 14.7 分配式條件型別（Distributive Conditional Types）=====
 
 // 分配：條件型別作用在裸型別參數且該參數是聯合型別時，會對每個成員分別套用
 {
@@ -333,7 +403,7 @@ type Expect<T extends true> = T;
   ];
 }
 
-// ===== 13.8 實戰案例 =====
+// ===== 14.8 實戰案例 =====
 
 // 案例一：型別安全的物件路徑
 {
@@ -431,50 +501,14 @@ type Expect<T extends true> = T;
   type _t = Expect<Equal<Params, { userId: string; postId: string }>>;
 }
 
-// 案例四：型別安全的事件系統
+// ===== 14.9 效能與陷阱：除錯技巧 =====
 {
-  // 定義事件名稱與對應的 payload 型別
-  // （原文為 interface EventMap；這裡改用 type 純粹是風格一致，並非型別系統強制——
-  //   經實測 TS 5.9：約束是 Record<string, any> 時，沒有索引簽章的 interface 一樣能
-  //   賦值過去，因為值型別是 any 時索引簽章比對會被跳過。只有約束換成非 any 的值型別
-  //   （例如 Record<string, unknown>）時，沒有索引簽章的 interface 才會報錯
-  //   「Index signature for type 'string' is missing」，那時才需要真的改用 type）
-  type EventMap = {
-    click: { x: number; y: number };
-    submit: { formId: string };
-    close: void;
-  };
-
-  class EventBus<T extends Record<string, any>> {
-    private handlers: { [K in keyof T]?: Array<(payload: T[K]) => void> } = {};
-
-    on<K extends keyof T>(event: K, handler: (payload: T[K]) => void): void {
-      (this.handlers[event] ??= []).push(handler);
-    }
-
-    emit<K extends keyof T>(event: K, payload: T[K]): void {
-      this.handlers[event]?.forEach((h) => h(payload));
-    }
-  }
-
-  const bus = new EventBus<EventMap>();
-
-  bus.on("click", (p) => {
-    console.log(p.x, p.y); // ✅ p 的型別是 { x: number; y: number }
-  });
-
-  bus.emit("submit", { formId: "login" }); // ✅
-  // bus.emit("submit", { x: 1 });          // ❌ payload 型別不符
-}
-
-// ===== 13.9 效能與陷阱：除錯技巧 =====
-{
-  // 自足：從 13.6 複製 Split，供 Step1 使用
+  // 自足：從 14.6 複製 Split，供 Step1 使用
   type Split<S extends string, D extends string> = S extends `${infer Head}${D}${infer Tail}`
     ? [Head, ...Split<Tail, D>]
     : [S];
 
-  // 自足：從 13.8 案例一複製 Get
+  // 自足：從 14.8 案例一複製 Get
   type Get<T, P extends string> = P extends `${infer Key}.${infer Rest}`
     ? Key extends keyof T
       ? Get<T[Key], Rest>
@@ -503,7 +537,7 @@ type Expect<T extends true> = T;
   void 0 as unknown as ShouldFail; // 使用一下，避免「宣告但未使用」觀感
 }
 
-// ===== 13.10 測試你的型別 =====
+// ===== 14.10 測試你的型別 =====
 {
   // 自足：把下面測試會用到的型別，從前面各節整段複製進來
   type BuildTuple<L extends number, T extends unknown[] = []> = T["length"] extends L
@@ -622,6 +656,6 @@ type Expect<T extends true> = T;
   type _t = Expect<Equal<PublicUser, { id: number; name: string; email: string }>>;
 }
 
-console.log("第 13 章 型別層級程式設計 範例載入完成 ✅（正確性由 tsc 型別檢查保證）");
+console.log("第 14 章 型別層級程式設計 範例載入完成 ✅（正確性由 tsc 型別檢查保證）");
 
 export {};

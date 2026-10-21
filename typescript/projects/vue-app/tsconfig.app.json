@@ -7,7 +7,7 @@
     "paths": {
       "@/*": ["./src/*"]
     },
-    // 課程第 9 章建議的額外嚴格旗標：陣列/物件索引存取的結果多包一層 undefined
+    // 課程第 10 章建議的額外嚴格旗標：陣列/物件索引存取的結果多包一層 undefined
     "noUncheckedIndexedAccess": true
   },
   "include": ["env.d.ts", "src/**/*", "src/**/*.vue"]

@@ -91,7 +91,7 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 10 | [10-redis/](./10-redis/) ✅ | Redis：本體與 Spring 應用 | 15 | **前半在 `redis-cli` 裡**：資料結構與編碼、TTL 與過期機制、單執行緒與慢命令、記憶體淘汰與持久化、原子性（Lua）；**後半接進 Spring**：序列化與 Lettuce 三層逾時、快取抽象、**故障降級**、分散式鎖、限流與冪等、Session 與 Token 撤銷、預扣庫存、Sentinel / Cluster、Testcontainers 與上線檢查清單 |
 | 11 | [11-messaging/](./11-messaging/) ✅ | 訊息佇列：RabbitMQ 與 Kafka | 12 | 可靠投遞三段、**Outbox**、冪等消費、RabbitMQ 拓撲與 DLX、Kafka 分區與 offset、精確一次、死信與 lag 監控、**選型與「什麼時候不該用 MQ」** |
 | 12 | [12-capstone/](./12-capstone/) ✅ | 期末專題：訂單系統 | 10 | 把上面全部串成一個可部署、有測試、有監控的服務 |
-| 13 | [13-distributed-systems/](./13-distributed-systems/) 🔸 | 服務拆分與分散式一致性 | 10 | **該不該拆**、邊界切法、資料庫拆分、Saga 與補償、跨服務查詢、服務網韌性、分散式追蹤、Spring Cloud vs K8s 選型、遷移與回頭路 |
+| 13 | [13-distributed-systems/](./13-distributed-systems/) ✅ 🔸 | 服務拆分與分散式一致性 | 10 | **該不該拆**、邊界切法、資料庫拆分、Saga 與補償、跨服務查詢、服務網韌性、分散式追蹤、Spring Cloud vs K8s 選型、遷移與回頭路 |
 
 合計 **132 個章節**。✅ 表示該子課程已完成，🚧 表示進行中，🔸 表示進階選修。
 
@@ -123,8 +123,8 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 09-spring-security | ✅ 完成（00～08 章，9 章，約 32,900 行） |
 | 10-redis | ✅ 完成（00～14 章，15 章，約 22,700 行） |
 | 11-messaging | ✅ 完成（00～11 章，12 章，約 23,250 行） |
-| 12-capstone | ✅ 完成（00～09 章，約 50,000 行，含每章「其餘檔案的完整內容」；01～07 章補上專題寫完之後實跑的 `mvn clean verify`，以及已知問題修正、US-RPT-2 AC-1／US-RPT-3 的追記） |
-| 13-distributed-systems | ⏳ 未開始 |
+| 12-capstone | ✅ 完成（00～09 章，約 50,000 行，含每章「其餘檔案的完整內容」；01～07 章補上專題寫完之後實跑的 `mvn clean verify`，以及已知問題修正、US-RPT-2 AC-1／US-RPT-3 的追記；13 站途中找到的七個問題也以追記補上：4.6.2 取消時少退款、4.7.1 排程一張失敗整批停下、5.6.4 測試撞到整分鐘、5.10 兩台同時第一次啟動搶著建管理員、6.4.3 single-flight、7.7.2 通知的認領、7.7.3 死信測試讀得太早） |
+| 13-distributed-systems | ✅ 完成（00～09 章，約 52,000 行；這一站不設練習；第 09 章寫完之後補了一輪追記（`products.hot` 分兩次部署收縮（同一次部署就刪：123 張 500）、每個服務一個資料庫帳號、停寫從 24 秒縮到 1.5 秒（新的先起來待命、只換誰在寫）、binlog 的搬家程式、依使用者分群的灰度、兩個服務的部署順序（擴充、遷移、收縮）、`ShopJobHigh5xxRatio` 在 kind 上真的響了一次、Alertmanager 照 severity 分組與抑制、燃燒速率的告警量了沒有換（這個 SLO 之下，每一種事故都響得更慢）、尾端抽樣、configMapGenerator、GitOps（Flux：kubectl 改的一分鐘內被改回）、三個 node；探索時的那 1 張 500 找到了 —— 搬家程式裝 trigger 的 DDL 與做到一半的預留，外鍵讓它們在 metadata lock 上成環，預留改成死結就整個重做）；第 09 章把單體也放上 kind，照 Strangler Fig 遷移：照第 02 章的計畫加一個 10% 的灰度就超賣 44 件、搬家程式的核對卻說兩個庫一樣，改成程式先搬（兩個服務先接單體的庫，入口的權重灰度、`Shop-Route` 雙跑比對、cookie 黏性、兩邊各算的告警）、資料最後搬（邊寫邊對帳、停寫切換約 24 秒、反方向的搬家程式與回滾演練），最後用同一組問題判斷這個系統該合回去，並真的合回去（資料先、程式後；交錯量的下單 p50 35 → 30 ms、記憶體 1,512 → 585 MiB）；途中修了兩個行程同時第一次啟動搶著建管理員（第 12 站也有，5.10 的追記）與訂單服務的副本還沒建好就接流量；第 08 章把兩個服務搬到本機的 K8s（kind）、前面加一個 Gateway API 的入口，逐項量服務發現、負載平衡、設定、閘道的 K8s 原生做法（kube-proxy 平衡的是連線、入口會接著買家的 traceId、入口後面「每個 IP」數的是入口、兩層閘道各自重試、縮到 0 台時舊的告警不會響），Spring Cloud 那一欄只量了 Spring Cloud Gateway、其餘引用文件，寫成一份選型文件；途中抓到庫存服務對訂單服務限流（第 03 章就有的 bug），並修了第 12 站驗收 Q10 的通知競態（7.7.2 的追記）；第 07 章讓一個 traceId 穿過 HTTP 與 RabbitMQ：換成 OpenTelemetry、送到 Jaeger，只信任自己服務帶來的 traceparent，outbox 帶著寫它的那一個 span，用借連線的 span 與 self time 指出誰慢了，告警只叫醒使用者感受得到的，並做了一次排查演練（換版那一刻的舊訊息曾被丟掉、MDC 的掛勾被搶先，都是途中抓到的）；第 06 章量了慢的下游與重試風暴（只要一層「再送一次」，一次 10 秒的變慢就回不來），做了逾時預算、重試預算、隔艙與熔斷；第 05 章做了庫存的讀模型（版本、過時視窗、從快照重建），熱點旗標搬回庫存；第 04 章寫完之後補了幾個追記：出貨檢查漏掉的一個窗口（4.6.3）、熱點閘門的洞量了沒修（4.2.2）、第 02 章的六個情境與第 00 章的四個代價在真的線上重跑（4.10.6、4.10.7）、事件的契約與 Pact Broker／can-i-deploy（3.8.6）、trigger 的代價多量幾輪（2.8.4）） |
 
 ---
 
@@ -299,11 +299,59 @@ Capstone             整合成一個可上線的服務（12-capstone）
 | 拆成微服務之後，每個改動要協調三個團隊、四次部署 | [13-distributed-systems/](./13-distributed-systems/) 00、01（分散式單體） |
 | 兩個「微服務」共用同一個資料庫 | [13-distributed-systems/](./13-distributed-systems/) 02 |
 | 拆完之後報表寫不出來，因為 JOIN 不見了 | [13-distributed-systems/](./13-distributed-systems/) 02、05 |
+| 同一個 jar 部署成兩個服務，一半的事件被錯的服務收走，有的還「成功」 | [13-distributed-systems/](./13-distributed-systems/) 03（同一個 jar、兩個角色） |
+| 服務之間逾時，使用者再按一次，庫存補了兩次 | [13-distributed-systems/](./13-distributed-systems/) 03（服務之間的冪等） |
+| 改了一個欄位的名字，測試全綠，上線後舊版的服務讀到 0 | [13-distributed-systems/](./13-distributed-systems/) 03（Pact 契約測試） |
 | 訂單建立成功、扣庫存失敗，那筆訂單卡在中間沒人收 | [13-distributed-systems/](./13-distributed-systems/) 04（Saga 補償） |
+| 一台服務當掉之後，使用者重送 30 秒都是「處理中」，最後還多一筆預留 | [13-distributed-systems/](./13-distributed-systems/) 04（catch 不是補償；冪等鍵綁到 Saga 的訂單） |
+| 用了兩階段提交，協調者一當掉，熱門商品那一列被鎖住、整個搶購停住 | [13-distributed-systems/](./13-distributed-systems/) 04（2PC 的代價） |
+| 加一個訂單狀態，migration 讓下單停了兩秒，報表的數字也多算了 | [13-distributed-systems/](./13-distributed-systems/) 04（語意鎖的代價） |
+| 出貨之前明明問過庫存，還是出了一件不存在的貨 | [13-distributed-systems/](./13-distributed-systems/) 04（4.6.3 的追記：決定「要不要問」的那一次讀也會過時） |
+| 搶購期間 Redis 跟 MySQL 對不上，對帳一直沒修 | [13-distributed-systems/](./13-distributed-systems/) 04（4.2.2 的追記：「連續兩輪才修」在一直有人買的時候永遠不成立） |
+| 兩個服務的新版本都測過了，卻不知道該先部署哪一個 | [13-distributed-systems/](./13-distributed-systems/) 03（3.8.6 的追記：Pact Broker 與 can-i-deploy） |
+| 庫存服務停掉，商品頁、購物車全部 503，只因為「還剩幾件」拿不到 | [13-distributed-systems/](./13-distributed-systems/) 05（讀模型：可以晚的讀不要每一次問） |
+| 讀模型偶爾停在舊的數字，重試過的事件把新的值蓋回去 | [13-distributed-systems/](./13-distributed-systems/) 05（事件帶版本；`>=` 才修得好版本一樣、值錯了的列） |
+| 讀模型的消費者部署好了，卻一則事件都沒收到 | [13-distributed-systems/](./13-distributed-systems/) 05（5.4.4：relay 只送自己的行程裡有人訂閱的事件） |
 | 一個服務變慢，五個服務跟著一起死 | [13-distributed-systems/](./13-distributed-systems/) 06（級聯故障） |
-| 每層重試 3 次，最底層收到 243 倍流量 | [13-distributed-systems/](./13-distributed-systems/) 06（重試風暴） |
-| 出事時每個服務的 log 看起來都正常 | [13-distributed-systems/](./13-distributed-systems/) 07（`traceId` 跨服務） |
-| Spring Cloud Gateway 和 K8s Ingress 兩套路由打架 | [13-distributed-systems/](./13-distributed-systems/) 08 |
+| 每一層最多送 3 次，五層下去最底層收到 243 倍流量 | [13-distributed-systems/](./13-distributed-systems/) 06（重試風暴：這條線上兩層，量到 6 倍；重試預算） |
+| 下游只慢了 10 秒，系統卻 40 秒都回不來 | [13-distributed-systems/](./13-distributed-systems/) 06（6.3.4：只要一層「再送一次」；預算與借到連線之後的檢查） |
+| 每個呼叫都設了逾時，服務還是整個卡死，連不相關的頁面也慢 | [13-distributed-systems/](./13-distributed-systems/) 06（6.2：逾時 × 重送 × 每秒請求數 = 佔住的執行緒；隔艙） |
+| 熔斷器開著，還是寫了一堆要補償的訂單 | [13-distributed-systems/](./13-distributed-systems/) 06（6.7.5：在做任何事之前問熔斷器） |
+| 出事時每個服務的 log 看起來都正常，trace 卻一條都接不起來 | [13-distributed-systems/](./13-distributed-systems/) 07（收的那一邊丟了 traceparent、事件只帶 traceId、各服務各抽各的） |
+| 客服拿著錯誤畫面上的 traceId，兩個服務的日誌都找不到 | [13-distributed-systems/](./13-distributed-systems/) 07（7.2.5、7.10） |
+| 換了追蹤的實作，換版那一刻佇列裡的事件不見了 | [13-distributed-systems/](./13-distributed-systems/) 07（7.6.4：舊訊息的那條路丟例外，訊息不重新排隊） |
+| 一張慢的請求，trace 上看不出慢在哪一段 | [13-distributed-systems/](./13-distributed-systems/) 07（7.7：借連線的 span、self time） |
+| 熔斷器擋下的請求，trace 上什麼都沒有 | [13-distributed-systems/](./13-distributed-systems/) 07（7.7.5：每一個「不做了」都要留一個 span） |
+| 拆成兩個服務之後，大部分的告警再也不會響，而且沒有任何錯誤 | [13-distributed-systems/](./13-distributed-systems/) 07（7.9.2：規則寫死了 job 的名字，19 條裡 16 條） |
+| 日誌突然全部沒有 traceId，卻沒有任何錯誤 | [13-distributed-systems/](./13-distributed-systems/) 07（7.4.4：OpenTelemetry 的 MDC 掛勾被搶先） |
+| 庫存服務多開一台，新的那一台一個請求都沒收到；舊的一停就是一次事故 | [13-distributed-systems/](./13-distributed-systems/) 08（8.2：寫死的位址；8.5：一個 Service 的名字） |
+| K8s 上擴容之後，新的 pod 半分鐘以上分不到請求，之後一台拿全部 | [13-distributed-systems/](./13-distributed-systems/) 08（8.6：kube-proxy 平衡的是連線，不是請求） |
+| 拆開之後，下單量一大就有幾張 500，庫存服務的日誌是 429 | [13-distributed-systems/](./13-distributed-systems/) 08（8.6.3：庫存服務把訂單服務限流了） |
+| 前面加了 gateway，trace 從 gateway 開始就斷了，或者 traceId 是買家決定的 | [13-distributed-systems/](./13-distributed-systems/) 08（8.8.2：入口拿掉、服務信任、只有入口連得到，三樣一起） |
+| 前面加了 gateway，全站每秒 50 個請求就開始 429 | [13-distributed-systems/](./13-distributed-systems/) 08（8.8.3：「每個 IP」數的是 gateway） |
+| Spring Cloud Gateway 和 K8s 的入口兩層各自重試，一個請求在後面變成 8 次、買家拿到 504 | [13-distributed-systems/](./13-distributed-systems/) 08（8.8.4：有邏輯的閘道只能有一層） |
+| 服務整個縮到 0 台，告警卻沒有響 | [13-distributed-systems/](./13-distributed-systems/) 08（8.9.1：kubernetes_sd 上，被刪掉的 pod 是消失，不是 down） |
+| 改了 ConfigMap，應用程式用的還是舊的值 | [13-distributed-systems/](./13-distributed-systems/) 08（8.7.1） |
+| Spring Cloud 的新 patch 起得來，第一個請求就 NoSuchMethodError | [13-distributed-systems/](./13-distributed-systems/) 08（8.8.4：Spring Cloud 跟 Spring Boot 的版本綁在一起） |
+| 灰度只切了 10%，庫存就超賣，搬家程式的核對卻說兩個庫一樣 | [13-distributed-systems/](./13-distributed-systems/) 09（9.2：資料在兩個庫的時候，灰度就是兩個正本；9.3：程式先搬、資料最後搬） |
+| 回滾只把權重改回去，那一段的訂單在舊的庫裡找不到預留 | [13-distributed-systems/](./13-distributed-systems/) 09（9.2、9.7：資料搬了，回滾就是另一次搬家） |
+| 兩台同時對一個新的庫第一次部署，其中一台起不來 | [13-distributed-systems/](./13-distributed-systems/) 09（9.4.3）、[12-capstone/](./12-capstone/) 05（5.10 的追記） |
+| 新的服務一接到流量，商品頁全部說 0 件 | [13-distributed-systems/](./13-distributed-systems/) 09（9.4.4：讀模型建好之前，readiness 不放流量）、05（5.6.4） |
+| 灰度時新的那一邊錯了一成，告警一聲都沒響 | [13-distributed-systems/](./13-distributed-systems/) 09（9.5.2：全站的比例被稀釋，兩邊要各算各的） |
+| 同一個買家重新整理，剩幾件反而變多 | [13-distributed-systems/](./13-distributed-systems/) 09（9.5.4：來回兩邊，一邊讀的是副本；黏性） |
+| 停寫切換在測試環境只要一兩秒，在 K8s 上停了半分鐘 | [13-distributed-systems/](./13-distributed-systems/) 09（9.6.5：停寫的時間幾乎都是 pod 的關與起） |
+| 拆完發現不對，沒有人敢提、也不知道怎麼合回去 | [13-distributed-systems/](./13-distributed-systems/) 09（9.9：同一組問題、加上數字；9.10：資料先、程式後） |
+| 刪掉一個沒有人用的欄位，部署的那十幾秒下單大半是 500 | [13-distributed-systems/](./13-distributed-systems/) 05（5.7.9：收縮要分兩次部署 —— 先不讀不寫，下一次才刪） |
+| 共用一個庫的那一段，新的服務讀得到別的服務的表、有人越界也沒有人知道 | [13-distributed-systems/](./13-distributed-systems/) 02（2.4.4 的追記：每個服務一個角色）、09（9.4.6） |
+| 換庫的停寫半分鐘，幾乎都在等 pod 關掉、起來 | [13-distributed-systems/](./13-distributed-systems/) 09（9.6.7：新的先起來待命、舊的凍結，只換誰在寫） |
+| 搬家程式裝 trigger（或 migration 跑一句 ALTER）的那一刻，一張下單 500，InnoDB 的死結紀錄裡什麼都沒有 | [13-distributed-systems/](./13-distributed-systems/) 09（9.6.5 的追記：外鍵讓 DDL 與做到一半的預留在 metadata lock 上成環，被犧牲的是預留；死結就整個交易重做） |
+| 藍綠切換之後拿掉不用的那一組，值班的人被叫醒 | [13-distributed-systems/](./13-distributed-systems/) 09（9.6.7：兩組的 job 不同名，「整個服務不見了」的告警把它當成停機） |
+| 兩個服務互相要對方的新版本，哪一個都不能先上 | [13-distributed-systems/](./13-distributed-systems/) 09（9.5.8：擴充、遷移、收縮，每一步問 can-i-deploy） |
+| 一次事故，值班的人被叫醒兩次 | [13-distributed-systems/](./13-distributed-systems/) 07（7.11.1：照 severity 分組、抑制） |
+| 照書上改成燃燒速率的告警，整個停掉的時候反而更晚才響 | [13-distributed-systems/](./13-distributed-systems/) 07（7.11.2：叫醒人要多快，是 SLO 決定的） |
+| 出事的那幾張 trace 剛好沒被抽到 | [13-distributed-systems/](./13-distributed-systems/) 07（7.8.4：尾端抽樣，與它的代價） |
+| `kubectl rollout undo` 之後，設定還是新的 | [13-distributed-systems/](./13-distributed-systems/) 08（8.7.3：configMapGenerator，與 migration 的 Job） |
+| 灰度的權重用 kubectl 改了，過一會兒自己變回去 | [13-distributed-systems/](./13-distributed-systems/) 08（8.4.6：GitOps 之下，改權重是一個 commit） |
 
 ---
 

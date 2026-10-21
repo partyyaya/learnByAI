@@ -1,6 +1,6 @@
-# 第六章：泛型（Generics）
+# 第七章：泛型（Generics）
 
-## 6.1 什麼是泛型？
+## 7.1 什麼是泛型？
 
 泛型是一種讓型別變成「參數」的機制，讓你在定義函式、介面、類別時**不預先指定具體型別**，而是在使用時才決定。
 
@@ -65,7 +65,7 @@ function bad1<string>(x: string): string { return x; }
 
 ---
 
-## 6.2 泛型函式
+## 7.2 泛型函式
 
 ```typescript
 // 基本泛型函式
@@ -97,7 +97,72 @@ const toArray2 = <T,>(value: T): T[] => [value];
 
 ---
 
-## 6.3 泛型約束（Generic Constraints）
+## 7.3 型別運算子：keyof、typeof 與索引存取 T[K]
+
+寫泛型之前，先把三個「從既有型別或值推導出新型別」的運算子湊齊。它們本身跟泛型無關，但下一節的 `K extends keyof T`、`T[K]` 以及第 8 章的映射型別、工具型別，全都建立在這三個運算子上。
+
+| 運算子 | 吃什麼 | 吐什麼 | 例子 |
+| --- | --- | --- | --- |
+| `keyof T` | 物件型別 | 所有鍵名的聯合 | `keyof User` → `"id" \| "name" \| "email"` |
+| `typeof x` | 值（變數、函式、類別） | 那個值的型別 | `typeof config` → `{ url: string; ... }` |
+| `T[K]` | 型別 + 鍵 | 該鍵對應的值型別 | `User["name"]` → `string` |
+
+### keyof：取出所有鍵名
+
+`keyof` 是一個**型別運算子**：吃一個物件型別，吐出「它所有鍵名組成的聯合型別」。
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+}
+
+type UserKeys = keyof User; // "id" | "name" | "email"
+
+const k1: UserKeys = "name";  // ✅
+// const k2: UserKeys = "phone"; // ❌ User 沒有 phone 這個鍵
+```
+
+它是**型別層的操作**，跟執行期的 `Object.keys()` 只是概念相似——`Object.keys(user)` 回傳的是值（一個 `string[]` 陣列），`keyof User` 產生的是型別（三個字串字面值的聯合）。
+
+### typeof：從值進到型別
+
+第 2 章 2.8 已經介紹過型別位置的 `typeof`。它最常跟 `keyof` 搭配：`keyof` 只吃型別，手上只有值的時候就先用 `typeof` 轉成型別：
+
+```typescript
+const THEME = { primary: "#007bff", danger: "#dc3545" } as const;
+
+type Theme = typeof THEME;           // { readonly primary: "#007bff"; readonly danger: "#dc3545" }
+type ThemeName = keyof typeof THEME; // "primary" | "danger"
+```
+
+### T[K]：索引存取型別
+
+`T[K]` 用鍵名取出對應的值型別，語法跟執行期的 `obj[key]` 一樣，只是作用在型別上：
+
+```typescript
+type NameType = User["name"];            // string
+type IdOrName = User["id" | "name"];     // number | string，鍵是聯合時結果也是聯合
+type AllValues = User[keyof User];       // number | string，所有值型別的聯合
+```
+
+陣列與元組也能用索引存取。索引可以是具體數字，也可以是 `number` 這個型別，代表「任意位置的元素」：
+
+```typescript
+type Pair = [string, number];
+type First = Pair[0];       // string
+type Item = Pair[number];   // string | number
+
+const ROLES = ["admin", "editor", "user"] as const;
+type Role = (typeof ROLES)[number]; // "admin" | "editor" | "user"
+```
+
+最後一行是第 2 章 2.8 介紹過的慣用寫法：`as const` 凍結成元組 → `typeof` 進到型別 → `[number]` 攤成聯合。
+
+---
+
+## 7.4 泛型約束（Generic Constraints）
 
 使用 `extends` 關鍵字限制泛型的範圍。
 
@@ -130,31 +195,7 @@ const user = findById(users, 1); // 型別為 { id: number; name: string } | und
 
 ### keyof 約束
 
-#### 先搞懂 `keyof` 本身
-
-`keyof` 是一個**型別運算子**：吃一個物件型別，吐出「它所有鍵名組成的聯合型別」。
-
-```typescript
-interface User {
-  id: number;
-  name: string;
-  email: string;
-}
-
-type UserKeys = keyof User; // "id" | "name" | "email"
-
-const k1: UserKeys = "name";  // ✅
-// const k2: UserKeys = "phone"; // ❌ User 沒有 phone 這個鍵
-```
-
-它是**型別層的操作**，跟執行期的 `Object.keys()` 只是概念相似——`Object.keys(user)` 回傳的是值（一個 `string[]` 陣列），`keyof User` 產生的是型別（三個字串字面值的聯合）。
-
-搭配**索引存取型別** `T[K]`（用鍵名取出對應的值型別），就能組出各種工具：
-
-```typescript
-type NameType = User["name"];       // string，用鍵名取值型別
-type AllValues = User[keyof User];  // number | string，把所有鍵一次代進去 = 所有值型別的聯合
-```
+把 7.3 的 `keyof` 與 `T[K]` 放進泛型裡，就能寫出「鍵名由呼叫端決定、但一定合法」的函式。
 
 #### `keyof T` 與 `K extends keyof T` 差在哪？
 
@@ -197,7 +238,7 @@ getProperty(profile, "age");   // 回傳型別為 number
 // getProperty(profile, "phone"); // ❌ "phone" 不是 profile 的鍵
 ```
 
-> 📌 還有第三種長得很像的寫法 `[K in keyof T]`（映射型別），它做的事完全不同——是「走訪每一個鍵」。三者的對照見第 7 章 7.5。
+> 📌 還有第三種長得很像的寫法 `[K in keyof T]`（映射型別），它做的事完全不同——是「走訪每一個鍵」。三者的對照見第 8 章 8.2。
 
 #### 什麼時候真的需要 keyof 約束？
 
@@ -319,7 +360,7 @@ const roleFixed = pickRoleFixed(["admin", "user"], "admin"); // ✅ T 只會是 
 
 ---
 
-## 6.4 泛型介面
+## 7.5 泛型介面
 
 ```typescript
 // 泛型介面
@@ -355,94 +396,6 @@ async function fetchApi<T>(url: string): Promise<ApiResponse<T>> {
 const userRes = await fetchApi<User>("/api/users/1");
 // userRes.data 的型別是 User
 ```
-
-### 型別變異標記 in / out（TS 4.7+）
-
-**先講白話：「變異」在問什麼？**
-
-我們都知道 `Dog` 是 `Animal` 的子型別，所以 `const a: Animal = new Dog()` 可以。但是**包了一層泛型之後**呢？`Producer<Dog>` 可不可以當成 `Producer<Animal>` 用？
-
-「變異（Variance）」講的就是這件事：**內層型別的父子關係，包上泛型後方向會不會保持**。答案取決於 `T` 在介面裡是被拿來**產出**還是**接收**：
-
-| 標記 | 名稱 | `T` 出現的位置 | 方向 |
-| --- | --- | --- | --- |
-| `out T` | 協變（Covariant） | 只在**回傳值**（產出） | 跟 `Dog`/`Animal` 一樣 |
-| `in T` | 逆變（Contravariant） | 只在**參數**（接收） | 跟 `Dog`/`Animal` **相反** |
-
-```typescript
-// out T：T 只出現在「回傳值」位置 → 這個介面只負責「產出」T
-interface Producer<out T> {
-  produce(): T;
-}
-
-// in T：T 只出現在「參數」位置 → 這個介面只負責「接收」T
-interface Consumer<in T> {
-  consume(value: T): void;
-}
-
-class Animal {
-  name = "animal";
-}
-class Dog extends Animal {
-  bark() {}
-}
-
-// ---------- 協變 out：方向跟繼承一樣 ----------
-const dogProducer: Producer<Dog> = { produce: () => new Dog() };
-
-// ✅ 狗工廠可以當動物工廠用
-//    因為呼叫端拿到的是狗，而狗本來就是動物 —— 拿到的東西「更具體」永遠安全
-const producer: Producer<Animal> = dogProducer;
-
-const animalProducer: Producer<Animal> = { produce: () => new Animal() };
-
-// ❌ 反過來不行：動物工廠不能當狗工廠用
-//    呼叫端以為會拿到狗、想呼叫 .bark()，結果工廠可能生出一隻貓
-// const wrong: Producer<Dog> = animalProducer;
-// Type 'Producer<Animal>' is not assignable to type 'Producer<Dog>'.
-
-// ---------- 逆變 in：方向跟繼承相反 ----------
-const animalConsumer: Consumer<Animal> = { consume: (a) => console.log(a.name) };
-
-// ✅ 「什麼動物都能處理」的處理器，可以當成「處理狗」的處理器用
-//    因為呼叫端只會餵它狗，而它連任何動物都接得住 —— 接受範圍「更寬」永遠安全
-const consumer: Consumer<Dog> = animalConsumer;
-
-const dogConsumer: Consumer<Dog> = { consume: (d) => d.bark() };
-
-// ❌ 反過來不行：只會處理狗的處理器，不能當成「處理任何動物」用
-//    呼叫端可能餵它一隻貓，而 consume 內部會呼叫 .bark() —— 執行期就炸了
-// const wrong2: Consumer<Animal> = dogConsumer;
-// Type 'Consumer<Dog>' is not assignable to type 'Consumer<Animal>'.
-```
-
-**為什麼逆變的方向是反的？**
-
-關鍵在於「**誰在保證什麼**」：
-
-- 協變（產出）：我承諾「給你一隻動物」，實際給狗 —— **給得比承諾的更具體**，收下的人不會有問題。
-- 逆變（接收）：我需要「一個能處理狗的東西」，拿到一個「什麼動物都能處理」的 —— **接受得比需求更寬**，餵什麼進去都不會噎到。
-
-一句口訣：**產出可以更具體，接收可以更寬鬆。**
-
-**加了標記到底差在哪？**
-
-不標記時 TypeScript 也會自動推斷變異方向，但有個容易踩的坑：**用 method 語法宣告的參數，TypeScript 預設是「雙變（bivariant）」的，兩個方向都放行**：
-
-```typescript
-// 沒有 in 標記
-interface ConsumerNoMark<T> {
-  consume(value: T): void;
-}
-
-const dogOnly: ConsumerNoMark<Dog> = { consume: (d) => d.bark() };
-const anyAnimal: ConsumerNoMark<Animal> = dogOnly; // ⚠️ 沒報錯！但這其實不安全
-anyAnimal.consume(new Animal()); // 執行期爆炸：Animal 沒有 bark()
-```
-
-加上 `in` 標記後，同樣的寫法就會在編譯階段被擋下來。所以標記的效果是：**讓編譯器檢查更快、錯誤訊息更貼近根源，並且把 method 語法的雙變漏洞補起來。**
-
-**什麼時候用得到？** 寫一般業務程式幾乎不需要手動標記；主要是在設計「要給別人用的型別庫」時，用它把介面的使用方式（唯讀 / 唯寫）寫進型別裡，順便讓誤用在編譯期就現形。第 13 章「型別層級程式設計」還會再補上第三種變異——`in out`（不變，既產出又接收，方向不能改）。
 
 ### 泛型介面 — Repository 模式
 
@@ -482,7 +435,47 @@ class UserRepository implements Repository<User> {
 
 ---
 
-## 6.5 泛型類別
+## 7.6 泛型類別
+
+類別也能接型別參數，最典型的就是各種「容器」：存什麼型別由使用者決定，取出來時型別不會丟失。
+
+```typescript
+class Stack<T> {
+  private items: T[] = [];
+
+  push(item: T): void {
+    this.items.push(item);
+  }
+
+  pop(): T | undefined {
+    return this.items.pop();
+  }
+
+  peek(): T | undefined {
+    return this.items[this.items.length - 1];
+  }
+
+  get size(): number {
+    return this.items.length;
+  }
+
+  isEmpty(): boolean {
+    return this.items.length === 0;
+  }
+}
+
+const numberStack = new Stack<number>();
+numberStack.push(1);
+numberStack.push(2);
+numberStack.push(3);
+console.log(numberStack.pop()); // 3
+
+const stringStack = new Stack<string>();
+stringStack.push("hello");
+// stringStack.push(42); // ❌ number 不能放進 Stack<string>
+```
+
+把操作改成接收回呼，就能做出更通用的資料容器：
 
 ```typescript
 interface User {
@@ -524,7 +517,7 @@ const alice = userStore.find((u) => u.name === "Alice");
 
 ---
 
-## 6.6 泛型預設值
+## 7.7 泛型預設值
 
 ```typescript
 // 給泛型指定預設型別
@@ -554,7 +547,7 @@ const userList: PaginatedList<User> = {
 
 ---
 
-## 6.7 常見泛型模式
+## 7.8 常見泛型模式
 
 ### Result 模式（錯誤處理）
 
@@ -563,33 +556,33 @@ const userList: PaginatedList<User> = {
 用 `try/catch` 有兩個問題：一是從函式簽章上**完全看不出它會不會丟錯**，呼叫端很容易忘記包 `try`；二是 TypeScript 中 `catch (e)` 的 `e` 型別是 `unknown`（開啟 `useUnknownInCatchVariables` 時），還要自己判斷型別。Result 模式改用回傳值表達失敗，成功與失敗兩種形狀都寫在型別裡：
 
 ```typescript
-// 可辨識聯合（Discriminated Union）：用 success 這個字面量欄位當「標籤」
+// 可辨識聯合（Discriminated Union）：用 ok 這個字面量欄位當「標籤」
 // E 給預設值 Error，不指定時就是一般的 Error 物件
 type Result<T, E = Error> =
-  | { success: true; data: T }    // 成功時只有 data，沒有 error
-  | { success: false; error: E }; // 失敗時只有 error，沒有 data
+  | { ok: true; value: T }    // 成功時只有 value，沒有 error
+  | { ok: false; error: E }; // 失敗時只有 error，沒有 value
 
 // 回傳型別直接宣告「我可能失敗，而且失敗時錯誤是 string」
 // 呼叫端從簽章就看得出來，不會漏掉錯誤處理
 function divide(a: number, b: number): Result<number, string> {
   if (b === 0) {
     // 除以零是「預期內」的失敗，不是程式 bug，所以用回傳值而非 throw
-    return { success: false, error: "Cannot divide by zero" };
+    return { ok: false, error: "Cannot divide by zero" };
   }
-  return { success: true, data: a / b };
+  return { ok: true, value: a / b };
 }
 
 const result = divide(10, 2);
 
-// 關鍵：檢查 success 之後，TypeScript 會自動縮窄型別
-// 沒有先檢查就存取 result.data 會直接編譯錯誤 —— 這就是「強迫處理錯誤」的來源
-if (result.success) {
-  console.log(result.data); // 型別縮窄為 number（這個分支沒有 error 可用）
+// 關鍵：檢查 ok 之後，TypeScript 會自動縮窄型別
+// 沒有先檢查就存取 result.value 會直接編譯錯誤 —— 這就是「強迫處理錯誤」的來源
+if (result.ok) {
+  console.log(result.value); // 型別縮窄為 number（這個分支沒有 error 可用）
 } else {
-  console.error(result.error); // 型別縮窄為 string（這個分支沒有 data 可用）
+  console.error(result.error); // 型別縮窄為 string（這個分支沒有 value 可用）
 }
 
-// console.log(result.data); // ❌ 沒先檢查 success，data 不存在於失敗分支
+// console.log(result.value); // ❌ 沒先檢查 ok，value 不存在於失敗分支
 ```
 
 **常見使用場景**
@@ -602,6 +595,8 @@ if (result.success) {
 **什麼時候不要用**：真正的程式錯誤（不該發生的狀態、寫錯的邏輯）還是應該 `throw`，因為那種情況你要的是「立刻炸掉並看到 stack trace」，而不是安靜地回傳一個錯誤物件。判準是：**失敗是不是業務流程的一部分？** 是就用 Result，不是就 throw。
 
 > 這個模式來自 Rust 的 `Result<T, E>` 與 Go 的 `(value, err)` 慣例。前端生態中 [neverthrow](https://github.com/supermacro/neverthrow)、`fp-ts` 的 `Either` 都是同一個概念的成熟實作。
+>
+> 📌 這裡的縮窄靠的是第 5 章的判別式聯合；第 11 章 11.2 會沿用同一個 `Result` 型別，加上 `map`、`andThen` 等組合工具。
 
 ### Builder 模式
 
@@ -967,4 +962,4 @@ console.log(merged.name, merged.age); // 兩個來源物件的屬性都保有正
 
 ---
 
-> 下一章：[第七章 — 進階型別技巧](./07-advanced-types.md)
+> 下一章：[第八章 — 進階型別技巧](./08-advanced-types.md)
