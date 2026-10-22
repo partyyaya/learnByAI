@@ -1,6 +1,6 @@
 # 通用基礎知識教學
 
-> 整理命令列工具、JavaScript 非同步、瀏覽器 API、網路通訊與安全部署等共通知識，可依學習順序閱讀，也可按工作需求查閱。
+> 整理命令列工具、CSS 排版、JavaScript 非同步、瀏覽器 API、網路通訊與安全部署等共通知識，可依學習順序閱讀，也可按工作需求查閱。
 
 ---
 
@@ -15,12 +15,13 @@
 | [bash.md](./bash.md) | Bash 常用指令 — 檔案、程序、網路與 Nginx／Docker 操作 |
 | [windows.md](./windows.md) | Windows 常用指令 — CMD、PowerShell、程序與服務管理 |
 
-### 2. 非同步與瀏覽器實務
+### 2. 前端排版、非同步與瀏覽器實務
 
-先理解非同步流程，再學瀏覽器提供的能力，最後處理需要背景執行緒的運算。
+先掌握排版與樣式，再理解非同步流程、瀏覽器提供的能力，最後處理需要背景執行緒的運算。
 
 | 檔案 | 主題 |
 |------|------|
+| [css-flex-variables-property.md](./css-flex-variables-property.md) | Flex 排版細節、CSS 變數與 `@property` — 尺寸分配、溢位、主題繼承與型別動畫 |
 | [promise-async-await-then.md](./promise-async-await-then.md) | Promise、then 與 async/await — 非同步流程與原理手作 |
 | [browser-native-apis.md](./browser-native-apis.md) | 瀏覽器原生 API — Observer、排程、請求取消、跨分頁通訊與資源清理 |
 | [web-worker.md](./web-worker.md) | Web Worker — 背景運算、通訊與原生／Vue／React 整合 |
@@ -76,4 +77,4 @@
 
 ---
 
-> 已熟悉命令列可直接從 [Promise 與 async/await](./promise-async-await-then.md) 開始；只想學網站上線則從 [HTTP 與 HTTPS](./http-https.md) 接到安全與部署篇。
+> 已熟悉命令列可從 [Flex 與 CSS 變數](./css-flex-variables-property.md) 或 [Promise 與 async/await](./promise-async-await-then.md) 開始；只想學網站上線則從 [HTTP 與 HTTPS](./http-https.md) 接到安全與部署篇。
