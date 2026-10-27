@@ -49,7 +49,7 @@ Deployment、RollingUpdate、三種 probe、`terminationGracePeriodSeconds` 這�
 | 02 | `02-splitting-the-database.md` | 資料庫拆分（最痛的一章） | 共享資料庫為什麼是反模式、資料所有權與唯一寫入者、**跨服務 JOIN 消失之後報表怎麼辦**、外鍵消失後的參照完整性、雙寫過渡期、Strangler Fig 的資料搬遷 |
 | 03 | `03-inter-service-communication.md` | 服務間通訊 | 同步 vs 非同步的決策、`@HttpExchange` / `RestClient`（不是 Feign）、gRPC 的時機、服務間的版本相容、**用 Pact 契約測試守邊界** |
 | 04 | `04-saga-and-compensation.md` | Saga 與補償（核心章） | 分散式交易為什麼沒有 `@Transactional`、兩階段提交的代價與為何幾乎沒人用、**編排 vs 協同**的取捨、補償交易怎麼寫、⚠️ 不可補償的操作（已寄出的信、已扣的款）、Saga 的可觀測性與人工介入、對帳是最後一道防線 |
-| 05 | `05-cross-service-query.md` | 跨服務查詢 | API 組合的延遲相乘、CQRS 讀模型、**讀模型的過時視窗使用者會看到什麼**、事件重放重建讀模型、報表服務該不該直連別人的資料庫（📌 追記：這個系統量到的是延遲相加、可用性相乘；讀模型從快照重建，不是事件重放 —— 第 05 章 5.2.3、5.6） |
+| 05 | `05-cross-service-query.md` | 跨服務查詢 | API 組合的代價（這個系統量到的是延遲相加、可用性相乘）、CQRS 讀模型、**讀模型的過時視窗使用者會看到什麼**、讀模型從快照重建（不是事件重放）、報表服務該不該直連別人的資料庫 |
 | 06 | `06-resilience-in-a-service-mesh.md` | 服務網的韌性 | 級聯故障：一個服務慢，五個服務一起死、**重試風暴**（每一層最多送 3 次：三層 27 倍、五層 243 倍；這條線上兩層，量到 6 倍）、逾時預算由外而內遞減、隔艙與連線池切分、把 [05-service/06](../05-service/06-async-and-external-api-calls.md) 的熔斷放到正確的層 |
 | 07 | `07-distributed-tracing-and-observability.md` | 分散式追蹤 | Micrometer Tracing + OpenTelemetry（不是 Sleuth，Boot 3 已退場）、`traceId` 跨 HTTP 與跨 MQ 的傳遞、取樣率的取捨、從一條 trace 找出誰慢了、跨服務的日誌關聯與告警該設在哪 |
 | 08 | `08-infrastructure-spring-cloud-vs-k8s.md` | 基礎設施選型 | 服務發現、設定管理、閘道、負載平衡四件事，**Spring Cloud 與 K8s 原生各怎麼做**的逐項決策表、什麼情況兩者混用、Netflix 那套（Eureka / Ribbon / Zuul / Hystrix）的歷史與現況、Service Mesh 值不值得 |

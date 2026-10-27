@@ -5,39 +5,6 @@
 > **這一章**：處理那條線。先把它放到三種真的會發生的情況裡看它怎麼壞（事件真的走 broker、回應在回程上丟了、有人直接打它）；然後一條一條決定哪些呼叫該同步、哪些該是事件；重新設計介面（16 個操作 → 12 支端點，`@HttpExchange` 宣告的客戶端）；讓每一個寫入都可以安全地再送一次；加上服務之間的認證；讓「同一個 jar、兩個角色」各自只做自己的事；最後用 Pact 守住它，並且示範一次「改了一個欄位的名字，全部的測試都綠」是怎麼被抓到的。
 >
 > **你手上會有**：從 `d02` 開出來的分支 `d03`。正式程式碼：`shop.deployment.role`（`monolith` / `order-service` / `inventory-service`）與兩個 profile；庫存服務的 `/internal/inventory/v1/**`（`InventoryServiceController` → `InventoryService`）；訂單服務的 `RemoteInventoryApi`（`@HttpExchange` 的 `InventoryClient`，沒有回應時用同一個冪等鍵再送一次）；服務之間的 token（`ServiceTokens`、`InternalApiSecurity`）；`Inbox`（`processed_messages` 給 HTTP 命令用）；熱點閘門的「同一個鍵只減一次」；`InventoryApi` 拿掉 `initialize`、`holdHot` 併進 `reserve`；消費者只收自己擁有的模組。`src/test` 多一個 `dist03` 套件（四個實驗）、五個預設的測試類別（含 Pact 的呼叫端），以及 failsafe 那一段的兩個 Pact 提供端驗證。265 個測試，加上 30 個契約驗證。
->
-> **這一章的實測事故**：
->
-> - **同一個 jar 部署兩次、兩個服務都照第 12 站的預設打開消費者**（3.2.2）：每一個佇列有 4 個消費者，兩個在訂單服務、兩個在庫存服務。RabbitMQ 輪流分給它們 —— 20 個 `product.created` 在訂單服務那邊失敗了 18 次（它的庫沒有庫存的表）、40 個熱點落帳失敗了 38 次，靠重試才繞回庫存服務；60 則通知在庫存服務那邊失敗了 59 次，1 則重試用完進了死信。**最糟的那一個沒有任何錯誤**：20 個「把熱點閘門加回去」，剛好 10 個被訂單服務收走，加到它自己的 Redis 裡 —— 那裡沒有這個 key，什麼都沒做，成功、ack。熱點閘門 70，MySQL 算出來是 80。
-> - **回應遺失**（3.2.3）：庫存服務做完了、commit 了，回應晚到訂單服務已經放棄之後。使用者看到 500、再按一次：補貨 10 件變成 +20；下單成立 1 張、預留 2 筆（1 筆沒有訂單）；熱點下單的閘門減了 2。只有取消（重做同一件事）收斂了。
-> - **沒有認證**（3.2.4）：一個沒有任何 token 的請求，釋放了一張別人的訂單的預留 —— 那 1 件回到可售量裡；買家付款 200，賣家出貨 409「即將取消」，沒有人取消它。
-> - **改了一個欄位的名字，265 個測試全綠**（3.8.5）：`StockLevel.available` → `availableQuantity`，伺服端與呼叫端在同一個 commit 裡一起改。只有「線上那一版訂單服務的契約」紅了 —— 用舊的程式讀新的回應，每一個商品的可售量都是 0，不是錯誤。
-> - 換成這一章的線之後，同樣的三種情況（3.5.6、3.6.4、3.7.4）：每一個佇列 2 個消費者、0 次重試、閘門 80 = 80；四種回應遺失，使用者都在 3 秒多一點拿到成功，效果各一次；沒有 token 的請求全部 401，那張訂單照常出貨。
->
-> **⚠️ 寫這一章途中被自己的實驗抓到的**：
->
-> - **Pact 第一次驗證，三個錯誤的互動全紅**（3.8.4）：契約說錯誤的回應是 `application/json`，庫存服務回的是 `application/problem+json`（第 12 站的 Problem Details）。呼叫端的測試是綠的 —— Pact 的 mock server 照我寫的回，我的程式又不看 Content-Type。
-> - **`@DynamicPropertySource` 的 supplier 不只呼叫一次**（3.5.5）：第一版在裡面 `DROP DATABASE` 再建，Flyway 建好的表，下一次讀屬性就被刪了 —— 7 個測試全部 `Table 'inventory' doesn't exist`。
-> - **改了 `InventoryApi`，`mvn test-compile` 說 BUILD SUCCESS**（3.4.2）：沒有 `clean` 的時候，編譯器只重新編譯「原始碼改了」的檔案 —— 測試的原始碼沒改，就沒有重新編譯，舊的 class 照樣在 `target/` 裡。`mvn clean` 之後，6 個檔案編譯不過。
-> - **D1 的三次結果幾乎一樣**（3.2.2）：我以為兩個服務搶同一個佇列是丟銅板，結果 18、38、10／10 三次都一樣 —— RabbitMQ 是輪流分，不是隨機分。三次裡只有「死信 1 則」這一格不一樣。
-> - **D2 的第一版把一個動作的名字切錯了**（3.4.6）：「事件 X → 消費者」本身就有一個 →，我用第一個 → 切「動作」與「端點」。改成最後一個，重跑。
->
-> **小坑**：
->
-> - Pact JVM 4.6 預設是 V4 的契約：`RequestResponsePact` 的寫法要在 `@PactTestFor` 指定 `PactSpecVersion.V3`，不然 15 個方法全部「does not conform required method signature」（3.8.3）。
-> - 提供端驗證裡，回 503 的那一個互動花了 5 秒：Pact 用的 Apache HttpClient 5 沒有關掉自動重試，它照回應的 `Retry-After: 5` 等了 5 秒、再送一次（3.8.4）。
-> - 庫存服務起來，也要有使用者 token 的金鑰與金流回呼的金鑰：`ShopProperties` 的 `@NotBlank` 不知道角色（3.7.2）。
->
-> **這一章沒有達成、或只達成一部分的目標**：
->
-> - **熱點旗標沒有搬回庫存模組**（3.4.7）：第 01 章 1.3.3 看出來的問題還在。`setHot` 仍在 catalog 的交易裡呼叫；下單時哪些品項是熱點，仍由 ordering 問 catalog。（📌 第 04 章寫完之後的追記：留給第 05 章，第 04 章 4.14。）（📌 再追記：第 05 章 5.7 搬了。）
-> - **6 種切斷的交易一種都沒少**：這一章讓每一個遠端的寫入可以安全地再送一次，但「兩個交易」還是兩個交易（第 04 章）。
-> - **重試只做了最小的一種**（3.5.4）：沒有回應才再送、只送一次、不等待。下單交易裡的那一次 `reserve`，最壞的情況要佔著一條資料庫連線大約兩個 read timeout（6 秒）。逾時預算與熔斷是第 06 章。
-> - **回應遺失只修好了「一次」**（3.5.6）：兩次都沒有回應 → 503 → 使用者用同一個鍵重送 → 新的訂單、新的 orderId → 第 00 章 0.2.2 ② 的孤兒預留照樣出現。第 00 章那一節的 📌 已經說了：答案不是再加一個冪等鍵，是 Saga（第 04 章）。
-> - **服務的 token 是 HS256 的共用金鑰**（3.6.1）：庫存服務也做得出「訂單服務的 token」。非對稱金鑰或 mTLS 沒有做（第 08 章）。
-> - **「線上那一版的契約」是一個手動複製的檔案**（3.8.5）：沒有 Pact Broker、沒有 can-i-deploy。**事件的契約**（message pact）沒有做，事件只靠 D4 與 `ServiceRoleConsumersTest`（3.8.6）。（📌 第 04 章寫完之後的追記：兩件都做了，3.8.6 —— can-i-deploy 說第 04 章的兩個服務，哪一個都不能先上。）（📌 第 09 章寫完之後的再追記：「哪一個都不能先上」拆成擴充、遷移、收縮三步，每一步 can-i-deploy 都說可以 —— 第 09 章 9.5.8。）
-> - **gRPC 只有討論，沒有實作**（3.3.3）。
-> - **K1～K5 沒有重跑**：新的線在兩個 JVM 之間的延遲沒有量；這一章的實驗量的是往返次數、資料落在哪裡、失敗的時候留下什麼。（📌 追記：第 04 章 4.10.7 在真的線上重跑了 K1、K2、K3、K5。）
 
 ---
 
@@ -162,7 +129,7 @@ mvn test -Pexperiments -Dtest=D1TheLineTest
 | `notification`：庫存服務失敗 / 死信 | 59 / 1 | 60 / 0 | 60 / 0 |
 | 熱點閘門：Redis / MySQL | 70 / 80 | 70 / 80 | 70 / 80 |
 
-⚠️ 我原本預期每一次投遞是丟銅板 —— 那樣的話，`hot-stock-return` 的 20 則會是 10 左右、每次不一樣。三次都剛好 10／10，失敗次數也一樣：**RabbitMQ 是輪流分（round-robin），不是隨機分**。只有「哪一則剛好連續 6 次輪到錯的那一邊」會因為時間的細微差別而不同（第一次 1 則，後兩次 0 則）。所以這不是一個「偶爾會出事」的問題：**每一次部署都會出事，而且出事的比例是固定的一半**。
+⚠️ 這不是丟銅板。如果每一次投遞是丟銅板，`hot-stock-return` 的 20 則會是 10 左右、每次不一樣。三次都剛好 10／10，失敗次數也一樣：**RabbitMQ 是輪流分（round-robin），不是隨機分**。只有「哪一則剛好連續 6 次輪到錯的那一邊」會因為時間的細微差別而不同（第一次 1 則，後兩次 0 則）。所以這不是一個「偶爾會出事」的問題：**每一次部署都會出事，而且出事的比例是固定的一半**。
 
 ### 3.2.3 ② 回應遺失：使用者再按一次
 
@@ -408,7 +375,7 @@ gRPC（HTTP/2 + Protocol Buffers）常被拿來跟 REST 比。它真正的好處
 
 第 00 章、第 02 章的實驗支架也實作 `InventoryApi`，跟著改：`dist00.RemoteInventoryApi`（一般品項照舊走 HTTP、熱點品項照舊在本地）、`dist02.RemoteInventory`（照舊送兩支：`reserve`、`hold-hot` —— 那是第 02 章的線，3.2 與 3.4.6 要拿它對照）、`dist02.InventoryEndpoints`、`dist00.LabInventoryService`，以及第 12 站 lab 的 `FriendlyPlaceOrder`。
 
-⚠️ **改了介面，`mvn test-compile` 說 BUILD SUCCESS。** 第一次改完 `InventoryApi`，我跑了 `mvn -o test-compile`，沒有任何錯誤 —— 輸出裡寫的是（摘錄）：
+⚠️ **改了介面，`mvn test-compile` 說 BUILD SUCCESS。** 改完 `InventoryApi` 之後跑 `mvn -o test-compile`，沒有任何錯誤 —— 輸出裡寫的是（摘錄）：
 
 ```
 [INFO] --- compiler:3.11.0:testCompile (default-testCompile) @ shop ---
@@ -934,11 +901,9 @@ mvn test -Pexperiments -Dtest=D2InterfaceTest
   （結束時 load { 5.29 5.47 5.06 }）
 ```
 
-- **兩條線都走完了 61 個請求**，結果一樣。新的線第一次跑就全綠。
+- **兩條線都走完了 61 個請求**，結果一樣。
 - **下單 12 → 8 次**：第 02 章的線，6 張訂單送了 6 次 `gate-hot`（4 次是空的）、4 次 `reserve`、2 次 `hold-hot`；新的線，2 次 `hot-gate`（只有兩張有熱點品項）、6 次 `PUT /reservations`（每一張一次）。其他動作的次數都沒變。
 - 新的線只用到 10 支端點：`POST /reservations/query`（對帳的第二個方向 —— 使用者的一天沒有一張超過 5 分鐘還沒結束的訂單，2.9.3）與 `POST /hot-gate/returns`（沒有一張下單失敗）沒有走到。它們有測試（3.5.5）與契約（3.8.3）。
-
-⚠️ D2 的第一版，表的最後幾列名字被切錯了（「事件 inventory.hot-settlement-failed」後面少了「→ ordering.stock-shortage」）：一列的鍵是「動作 → 端點」，而事件的動作名字本身就有一個 →，我用第一個 → 切。改成最後一個，重跑（數字沒變）。
 
 ### 3.4.7 沒有搬的：熱點旗標
 
@@ -1181,7 +1146,7 @@ class InventoryServiceApiTest {
             return url;
 ```
 
-⚠️ 註解裡的那個坑是真的：第一版在 supplier 裡 `DROP DATABASE`、`CREATE DATABASE`，7 個測試全紅，每一個都是 `Table 'shop_svc_inventory_api.inventory' doesn't exist`。`@DynamicPropertySource` 註冊的是一個 supplier，Spring 每一次需要這個屬性的值就呼叫一次 —— Flyway 用它建完表之後，下一次讀屬性，庫就被刪掉重建了。
+⚠️ 註解裡的那個坑：supplier 裡每一次都 `DROP DATABASE`、`CREATE DATABASE` 的話，7 個測試全紅，每一個都是 `Table 'shop_svc_inventory_api.inventory' doesn't exist`。`@DynamicPropertySource` 註冊的是一個 supplier，Spring 每一次需要這個屬性的值就呼叫一次 —— Flyway 用它建完表之後，下一次讀屬性，庫就被刪掉重建了。所以建庫只做一次（`url == null` 那一個判斷）。
 
 「同時」送兩次的那一個：
 
@@ -1996,7 +1961,7 @@ $ 關掉兩個行程
 - 建立商品 1 秒之後，賣家的商品列表裡可售量是 100：`product.created` 經過 RabbitMQ 到了庫存服務，賣家的列表再經過 `GET /internal/inventory/v1/stock` 讀回來。
 - 下單之後，庫存服務的庫：預留 `HELD`、`reserved = 1`；`processed_messages` 裡同時有事件的消費者（`inventory.product-created`、`inventory.hot-settlement`）與 HTTP 命令（`inventory.http.reserve`，鍵是 orderId `1`）。訂單服務的庫：訂單待付款、通知已寄出。
 
-> **追記（第 08 章）**：這兩個行程的全域限流（第 12 站 0.6.5 的「每個 IP 每秒 50 次」）是開著的，只是這一節的請求太少，看不到它。庫存服務也跑同一個 filter，而訂單服務的每一個呼叫都從同一個 IP 來：每秒呼叫超過 50 次，預留就被 429，買家拿到 500。這一站的實驗一直用 `shop.rate-limit.enabled=false` 起服務，直到第 08 章搬到 K8s、用正式的設定才量到它（8.6.3）。修法：帶著發給庫存服務的服務 token 的 `/internal/**`，不算進每個 IP 的額度。
+> ⚠️ 這兩個行程的全域限流（第 12 站 0.6.5 的「每個 IP 每秒 50 次」）是開著的，只是這一節的請求太少，看不到它。庫存服務也跑同一個 filter，而訂單服務的每一個呼叫都從同一個 IP 來：每秒呼叫超過 50 次，預留就被 429，買家拿到 500。第 08 章之前的實驗都用 `shop.rate-limit.enabled=false` 起服務，看不到它；第 08 章搬到 K8s、用正式的設定量到它（8.6.3）。修法也在那一節：帶著發給庫存服務的服務 token 的 `/internal/**`，不算進每個 IP 的額度。
 
 ---
 
@@ -2320,7 +2285,7 @@ class InventoryProviderPactIT extends InventoryProviderContract {
 mvn verify -Dtest=InventoryClientPactTest -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=InventoryProviderPactIT
 ```
 
-⚠️ **第一次，15 個互動紅了 3 個**：
+⚠️ **錯誤的回應沒有標 `application/problem+json`，15 個互動紅 3 個**：
 
 ```
 1) Verifying a pact between order-service and inventory-service - 預留超過可售量 includes headers "Content-Type" with value "[application/json; charset=UTF-8]"
@@ -2330,7 +2295,7 @@ mvn verify -Dtest=InventoryClientPactTest -Dsurefire.failIfNoSpecifiedTests=fals
 [ERROR] Tests run: 15, Failures: 3, Errors: 0, Skipped: 0
 ```
 
-三個都是錯誤的回應（庫存不足、閘門搶不到、還在落帳），都錯在 `Content-Type`。我在契約裡用 `PactDslJsonBody` 寫錯誤的內容，它自動把回應標成 `application/json`；庫存服務回的是 `application/problem+json`（第 12 站的 Problem Details，RFC 9457）。**呼叫端的測試是綠的**：mock server 照我寫的回，`RemoteInventoryApi` 又不看 Content-Type。
+三個都是錯誤的回應（庫存不足、閘門搶不到、還在落帳），都錯在 `Content-Type`。在契約裡用 `PactDslJsonBody` 寫錯誤的內容，它自動把回應標成 `application/json`；庫存服務回的是 `application/problem+json`（第 12 站的 Problem Details，RFC 9457）。**呼叫端的測試是綠的**：mock server 照契約寫的回，`RemoteInventoryApi` 又不看 Content-Type。
 
 這不是庫存服務的 bug，是契約寫錯了：它說的不是提供端真的會做的事。修的是契約：
 
@@ -2484,13 +2449,13 @@ surefire 的 262 個全綠；failsafe 裡，**這一次建置的契約全綠，�
 
 最後一列要記住：Pact 驗證的是形狀與範例的型別，不是意思。`available` 從「`on_hand − reserved`」改成「`on_hand`」，契約照樣綠。
 
-### 3.8.6 沒有做的
+### 3.8.6 這一章沒有做的
 
 - **Pact Broker、can-i-deploy**。這一章的「線上那一版」是一個手動複製的檔案，只有一份。真的流程：呼叫端每一次建置把契約發布到 Pact Broker（帶著版本與分支）；部署到某個環境時記下「這一版在 production」；提供端驗證「每一個環境上的每一版呼叫端」的契約，結果也發布回去；部署之前問 `can-i-deploy`：「我這一版跟 production 上的每一個對方都驗證過了嗎？」
 - **事件的契約**（Pact 的 message pact）。`order.placed`、`product.created` 的 payload 也是兩個服務之間的契約（第 12 站 7.3.1 的 `EventTypes` 註解：「改欄位的名字或意思 = 破壞契約」）。這一章只靠 D4 跑過一遍、`ServiceRoleConsumersTest` 守住「誰收」，沒有守「長什麼樣」。
 - **提供端的前提（`@State`）知道庫存的表**：契約一多，這些 SQL 會變成另一份要維護的東西。這是 Pact 的已知代價。
 
-> 📌 **第 04 章寫完之後的追記：頭兩項做了。** 上面的頭兩項，在開始第 05 章之前補上了。程式碼在第 04 章的分支上往後加（`d04`）—— 跨過這一刀的事件，到了第 04 章才多起來：訂單服務送 6 種給庫存服務、庫存服務送 1 種回來（4.10.4 的 B1）。第三項（`@State` 知道庫存的表）沒有變，下面會再看到它一次。
+頭兩項的做法在下面幾小節，要先讀完第 04 章：程式碼在 `d04` 分支上、第 04 章結束（`4512f05`）之後的 commit 裡，完整的檔案在第 04 章 4.11.2。跨過這一刀的事件，到了第 04 章才多起來：訂單服務送 6 種給庫存服務、庫存服務送 1 種回來（4.10.4 的 B1）。第三項（`@State` 知道庫存的表）沒有變，下面會再看到它一次。
 
 #### 事件的契約：呼叫端
 
@@ -2563,7 +2528,7 @@ class InventoryEventsPactTest {
 }
 ```
 
-⚠️ **第一次跑，HTTP 的契約紅了。** 這一則的呼叫端是 order-service、提供端是 inventory-service —— 跟 3.8.3 的 HTTP 契約是**同一對**，寫進同一個檔（`order-service-inventory-service.json`）。HTTP 的那一份是 V3（3.8.3 的小坑），事件的這一份是 V4：
+⚠️ **加了這一則，HTTP 的契約會紅。** 這一則的呼叫端是 order-service、提供端是 inventory-service —— 跟 3.8.3 的 HTTP 契約是**同一對**，寫進同一個檔（`order-service-inventory-service.json`）。HTTP 的那一份是 V3（3.8.3 的小坑），事件的這一份是 V4：
 
 ```
 [ERROR] Tests run: 17, Failures: 0, Errors: 1, Skipped: 0, Time elapsed: 2.699 s <<< FAILURE! -- in com.example.shop.inventory.internal.remote.InventoryClientPactTest
@@ -2698,15 +2663,15 @@ public class OrderEventMessages {
          JdbcTemplate admin = TestInfra.adminJdbc();
 ```
 
-⚠️ **「標在哪裡」試了三次。** `@PactVerifyProvider` 是 Pact 在測試的套件裡**掃**出來的：
+⚠️ **標在哪裡有差。** `@PactVerifyProvider` 是 Pact 在測試的套件裡**掃**出來的：
 
 | 標在哪裡 | 結果 |
 |---|---|
-| 驗證這份契約的 IT 自己身上（第一版：一個 IT 驗資料夾裡的契約） | 綠 |
+| 驗證這份契約的 IT 自己身上（只有一個 IT 驗資料夾裡的契約時） | 綠 |
 | 共用的抽象父類別（要多一個驗 broker 的 IT，想共用） | `cannot access a member of class …InventoryProviderContract with package access`；改成 public 之後 `InstantiationException` —— 方法不在測試類別本身，Pact 自己 `new` 那個類別，而它是抽象的 |
 | 兩個 IT 各標一次，轉呼叫父類別 | 驗 broker 的那一個 6 則全紅：同一個描述有兩個方法，Pact 挑到**另一個** IT 的那一個（`cannot access a member of class …OrderEventsProviderPactIT`） |
 
-最後的寫法：每一則**只標一次**，標在一個 public 的類別上（`OrderEventMessages`、`InventoryEventMessages`），Pact 用它 public 的無參數建構子 `new` 它；要用的 bean 從**正在跑的那個測試**拿（測試的 `@BeforeEach` 把自己的 context 交給它）。第一版的那個註解（「Pact 只在測試類別自己宣告的方法裡找」）是猜的，猜對了一半。
+所以每一則**只標一次**，標在一個 public 的類別上（`OrderEventMessages`、`InventoryEventMessages`），Pact 用它 public 的無參數建構子 `new` 它；要用的 bean 從**正在跑的那個測試**拿（測試的 `@BeforeEach` 把自己的 context 交給它）。
 
 六則加一則全綠之後，**它抓得到東西嗎？** 在訂單服務暫時把 `order.rejected` 的 `hotLines[].quantity` 改名成 `qty`，只跑提供端的驗證：
 
@@ -2780,7 +2745,7 @@ class InventoryProviderBrokerIT extends InventoryProviderContract {
 }
 ```
 
-`OrderEventsProviderBrokerIT` 一樣（`@Provider("order-service")`，繼承 `OrderEventsProviderContract`）。⚠️ 那個方法要 `public static`：第一版只寫了 `static`，兩個 IT 都在 0.36 秒內 `IllegalAccessException: Consumer version selector methods must be public and static`。它們的名字是 `*BrokerIT`，failsafe 只收 `*PactIT`（3.8.2）—— **預設的建置不需要 broker**；`InventoryProviderReleasedPactIT`（3.8.5 那一份檔案）照舊留在預設的建置裡。
+`OrderEventsProviderBrokerIT` 一樣（`@Provider("order-service")`，繼承 `OrderEventsProviderContract`）。⚠️ 那個方法要 `public static`：只寫 `static` 的話，兩個 IT 都在 0.36 秒內 `IllegalAccessException: Consumer version selector methods must be public and static`。它們的名字是 `*BrokerIT`，failsafe 只收 `*PactIT`（3.8.2）—— **預設的建置不需要 broker**；`InventoryProviderReleasedPactIT`（3.8.5 那一份檔案）照舊留在預設的建置裡。
 
 發布、驗證、問、記錄，包成一支腳本：
 
@@ -2865,7 +2830,7 @@ Recorded deployment of order-service version 3dc04d0 to production environment i
 Recorded deployment of inventory-service version 3dc04d0 to production environment in the Pact Broker.
 ```
 
-然後是這一章的版本（`9933bd9`）：發布兩個服務的契約、兩個提供端各驗證一次：
+然後是 `d04` 的版本（`9933bd9`）：發布兩個服務的契約、兩個提供端各驗證一次：
 
 ```bash
 scripts/d04-contracts.sh publish
@@ -2882,9 +2847,9 @@ Pact successfully published for order-service version 9933bd9 and provider inven
 [INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 27.83 s -- in com.example.shop.ordering.internal.OrderEventsProviderBrokerIT
 ```
 
-庫存服務驗了 32 個互動：線上那一版訂單服務的 15 個（就是 3.8.5 那一份）、這一章的 17 個 —— 第 04 章的庫存服務**接得住**第 03 章的訂單服務。訂單服務驗了庫存服務要讀的 6 則事件。
+庫存服務驗了 32 個互動：線上那一版訂單服務的 15 個（就是 3.8.5 那一份）、`d04` 的 17 個 —— 第 04 章的庫存服務**接得住**第 03 章的訂單服務。訂單服務驗了庫存服務要讀的 6 則事件。
 
-還差一半：**線上那一版的兩個提供端，從來沒有驗證過這一章的契約。** broker 只知道「它們在 production」，不知道它們接不接得住新的呼叫端。正式的做法是讓提供端的管線，拿 production 上那一版的程式碼，驗證新發布的契約（broker 的 webhook 會在「有一份需要驗證的新契約」時觸發它）。這裡手動做一次：在第 03 章的程式碼上，只放進驗證用的四個測試類別（`OrderEventMessages`、`OrderEventsProviderContract`、`OrderEventsProviderBrokerIT`、`InventoryProviderBrokerIT`，跟這一章的同一份），正式程式碼一行都不動，以 `3dc04d0` 的身分把結果發布回 broker。四個檔案只有一處不一樣 —— 第 03 章的程式碼在庫存不足時不寫訂單，`rejected()` 找不到那一張，要說清楚：
+還差一半：**線上那一版的兩個提供端，從來沒有驗證過 `d04` 的契約。** broker 只知道「它們在 production」，不知道它們接不接得住新的呼叫端。正式的做法是讓提供端的管線，拿 production 上那一版的程式碼，驗證新發布的契約（broker 的 webhook 會在「有一份需要驗證的新契約」時觸發它）。這裡手動做一次：在第 03 章的程式碼上，只放進驗證用的四個測試類別（`OrderEventMessages`、`OrderEventsProviderContract`、`OrderEventsProviderBrokerIT`、`InventoryProviderBrokerIT`，跟 `d04` 的同一份），正式程式碼一行都不動，以 `3dc04d0` 的身分把結果發布回 broker。四個檔案只有一處不一樣 —— 第 03 章的程式碼在庫存不足時不寫訂單，`rejected()` 找不到那一張，要說清楚：
 
 ```diff
                      new OrderingApi.OrderLine(hot, 1, new BigDecimal("100")), new OrderingApi.OrderLine(scarce, 2, new BigDecimal("100"))));
@@ -2918,7 +2883,7 @@ mvn verify -Djacoco.skip=true -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=fals
 
 六個紅的，每一個都是真的差別：
 
-| 第 03 章的提供端 | 這一章的契約要的 | 差在哪裡 |
+| 第 03 章的提供端 | `d04` 的契約要的 | 差在哪裡 |
 |---|---|---|
 | 庫存服務 | `GET …/reservations/{id}/shippable`：204、503（4.6.3） | 這一版沒有這一支端點：404 |
 | 庫存服務 | 「訂單 7005 的預留已經被補償」「訂單 7006 的熱點預留落帳時不夠」兩個前提（4.7.2、4.6.3） | 這一版的驗證沒有這兩個 `@State` —— 3.8.6 第三項的代價：前提是提供端的測試寫的，新的前提只有新的版本有 |
@@ -3154,13 +3119,6 @@ TEST_INFRA MySQL 最多同時 3 條連線（max_connections 151）
 ```
 
 **265 個測試**：第 02 章的 234 個，加上 `InventoryServiceApiTest` 7 個、`RemoteInventoryApiTest` 5 個、`ServiceRoleConsumersTest` 1 個、`DeploymentPropertiesTest` 3 個、`InventoryClientPactTest` 15 個。**failsafe 那一段另外 30 個**：兩份契約各 15 個互動。第二個「testcontainers 啟動」是 failsafe 的 JVM 自己起的容器（3.8.2）。
-
-**這是第三次完整的 verify**。之前：
-
-- **第一次（247 個，全綠，4:21）**：3.4～3.7 的程式碼與三個新的測試類別都進來了、Pact 還沒有。
-- 中間兩次是 3.8.5 改名的示範，在一個用完就丟掉的分支上：第一次 262 個紅 2 個（呼叫端的契約），第二次 262 個全綠、failsafe 紅 2 個（線上那一版的契約）。那兩次不是這個分支的程式碼。
-- **第二次（265 個 + 30 個，全綠，5:34）**：多了 `DeploymentPropertiesTest`。
-- 那之後 D3 多了「兩次都沒有回應」那一個情況（3.5.6；實驗，不在預設的測試組裡），測試的程式碼變了，所以再跑這一次，讓這一節的輸出就是最後的程式碼。
 
 ### 3.10.1 本章其餘檔案的完整內容
 
@@ -6355,7 +6313,7 @@ class D4BrokerDayTest {
 4. **每一個寫入都可以安全地再送**（3.5）：五支本來就冪等；預留與補貨用 `Inbox`（跟事件的消費者同一張 `processed_messages`）；熱點閘門用 Redis 腳本裡的標記。呼叫端只在沒有回應時、用同一個鍵、再送一次。四種回應遺失，使用者都在 3 秒多拿到成功，效果各一次。
 5. **服務之間的認證**（3.6）：另一把金鑰、`iss`、`sub`、`aud`；只有 `order-service` 進得來。
 6. **同一個 jar、三種角色**（3.7）：消費者只收擁有的模組；拓撲與 relay 刻意不濾；庫存服務上的使用者 API 是 404。事件真的走 RabbitMQ，使用者的一天全綠；用 jar 起兩個真的行程也一樣。
-7. **契約測試**（3.8）：呼叫端寫 15 個互動，提供端在 failsafe 驗證這一次建置的、與線上那一版的兩份。第一次驗證就抓到我自己寫錯的契約（`application/problem+json`）；一次「兩邊一起改」的改名，只有線上那一版的契約紅了。
+7. **契約測試**（3.8）：呼叫端寫 15 個互動，提供端在 failsafe 驗證這一次建置的、與線上那一版的兩份。提供端的驗證抓到寫錯的契約（`application/problem+json`）；一次「兩邊一起改」的改名，只有線上那一版的契約紅了。
 
 **第 00 章的四個代價，這一章仍然沒有減少**：下單路徑上的 `reserve` 還在下單交易裡（甚至多了一次重送的窗口，3.5.4）、6 種切斷的交易還在、traceId 還是斷的。這一章換到的是：**那條線上的每一個操作，現在都可以安全地再做一次** —— 這正是第 04 章 Saga 的每一步需要的。
 

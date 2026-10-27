@@ -24,48 +24,6 @@
 > - 告警規則認 `system="shop"`，不認 job 的名字；使用者的 5xx 只算 `/api/**`。
 >
 > 測試 362 個，failsafe 契約驗證 39 個。
->
-> **這一章的實測事故**：
->
-> - **一張慢的下單，trace 上只看得到訂單服務在等**（7.2）：6.2 的那 6 秒，訂單服務的 trace 有兩個各 3 秒的 client span；庫存服務做那兩次預留的 span（7.2 ms、12.9 ms）在**另外兩個 trace** 裡，各自是根。兩個服務的 span 都說自己是 `shop`。
-> - **消費者的 parent 不存在**（7.2）：付款之後，兩個服務的消費者跟回呼在同一個 traceId 裡，但 parent 是編出來的 spanId，後端畫不出這棵樹。
-> - **抽樣 0.1，200 次「下單 → 付款」，完整的 trace 0 個**（7.2）：訂單服務送出去 21 個 trace，沒有一個接上庫存服務；庫存服務的 24 個預留 span 全部是自己一個 trace 的根。622 個 span 裡 419 個是 Spring Security 的。
-> - **客服拿 traceId 找日誌，兩個服務都是 0 行**（7.2）：庫存服務的連線池借不到連線、回了 503；它記下的 10 行「拿不到資料庫連線」，traceId 10 個都不一樣，沒有一個是買家畫面上的那一個。
-> - **第 12 站的告警規則寫死了 `job="shop"`**（7.9.2）：19 條裡 16 條，切開之後永遠不會響（用 promtool 餵切開之後的序列量了其中兩條；其餘 14 條是同一個選擇器）。
-> - **之後**：
->   - 同一張慢的下單是一棵樹，self time 的第一名指出「庫存服務做完了，3 秒花在回應的路上」（7.7.4）。庫存服務的連線池、訂單服務自己的交易、熔斷器擋掉，各有各的形狀。
->   - 抽樣 0.1：完整的下單 trace 21 個、只有一段的 0 個（7.8）。
->   - 客服找得到：庫存服務那一行「拿不到資料庫連線」（7.10）。
->   - 演練：庫存服務的資料庫慢 0.6 秒，叫醒人的告警在 315 秒後響；從 exemplar 走到 trace，self time 指出「庫存服務拿著連線 607.9 ms」（7.11）。
->
-> **⚠️ 寫這一章途中被自己的實驗抓到的**：
->
-> - **舊的訊息在 OpenTelemetry 上被丟掉**（7.6.4）：只帶 traceId 的訊息（換版那一刻還在佇列裡的），消費者第一版 NullPointerException，訊息不重新排隊、直接不見；補上之後，traceId 又變成新的。整套測試的第一次，`EventFlowTest` 紅 4 個。
-> - **MDC 的 traceId 靠一個整個 JVM 只能裝一次的掛勾**（7.4.4）：一個不用 Spring 的單元測試先碰了 OpenTelemetry 的 `Context`，跟它一起跑的 Spring 測試，回應的 `X-Trace-Id` 是 null、驗收 Q7 紅了。拿掉那個測試，加了一個啟動時的檢查。
-> - **熔斷器擋下的那一張，trace 上什麼都沒有**（7.7.5）：第 06 章的 `ensureReservable()` 擋在 `call()` 之前，沒有 span。補上之後是一個 `outcome=breaker` 的 span。
-> - **`@SpringBootTest` 預設把追蹤的傳遞關掉**（7.6.6）：用它起、有事件流過的測試，走的是舊路；要測新路，得加 `@AutoConfigureObservability`。
-> - **`service_IS_UNDEFINED`**（7.4.5）：日誌設定檔的 `<springProperty>` 只有 Boot 載入時才認得。
-> - **演練第一版的開關早切了 5 秒**（7.11）：迴圈先切開關才等到那一秒，「正常」那一段混進了 50 張慢的。
->
-> **小坑**：
->
-> - **Micrometer 1.2 的 `traceContextBuilder()` 做出來的 parent，OpenTelemetry 會忽略**（7.6.4）。
-> - **Spring 啟動時會重設 Logback**：之前掛上的 appender 被拿掉，啟動途中的日誌收不到（H6 改成啟動之後才掛）。
-> - **通知的消費者處理一次付款，借了 8 次連線**（7.7.2）：它不在交易裡，每一句 SQL 各借一次。看得到之前沒有人知道；這一章沒有改。
->
-> **這一章沒有達成、或只達成一部分的目標**：
->
-> - **沒有 gateway**：README 產出第 4 項的「Gateway → 訂單 → MQ → 庫存」，這一章的 trace 從訂單服務開始（第 08 章）。
-> - **尾端抽樣（tail-based sampling）沒有做**（7.8.3）：出事的那幾張，只有被抽到的才有 trace。（📌 第 09 章寫完之後的追記：量了，7.8.4。）
-> - **Jaeger 的資料在記憶體裡**：正式環境的儲存是第 08 章的事。
-> - **叫醒人的告警要 5 分鐘以上才響**（7.11）：第 12 站 0.6.6 的「持續 5 分鐘」；這一章量了它的代價，沒有改它。也沒有做「依燃燒速率」的告警。（📌 第 09 章寫完之後的追記：燃燒速率的規則量了、沒有換 —— 這個 SLO 之下，它每一種事故都響得更慢；多了兩條「整個壞掉」的快速規則，7.11.2。）
-> - **一個事故叫醒人兩次**（7.11）：下單變慢與事件積壓是同一個原因，兩條告警各響各的。Alertmanager 的抑制（inhibit）沒有設。（📌 第 09 章寫完之後的追記：照 severity 分組、加上抑制 —— 一個事故一張單，7.11.1。）
-> - **成功的預留，庫存服務沒有日誌**（7.10）：要不要加，看出事的時候缺不缺；這一章沒有加。
-> - **服務 token 在 `TraceFilters` 多驗一次**（7.5）：沒有量它的成本。
-> - **抽樣率對應用程式的成本量不出來**（7.8.2）：兩次跑，方向相反。確定的只有後端收到的量差 10 倍。
-> - **演練恢復之後，下單變慢的告警又進了一次 pending**（7.11）：沒有查是哪幾張、為什麼慢。
-> - **全部量在一台筆電上**：Jaeger、Prometheus 與兩個服務搶同一顆 CPU（7.8 的成本表尤其如此）。
-> - **第 12 站的通知有一個併發的洞，這一章也沒有修**（第 06 章的那一條）。（📌 追記：第 08 章修了，第 12 站 7.7.2 的追記。）
 
 ---
 
@@ -410,13 +368,13 @@ Boot 3.2 的 OTLP 匯出器**只有在設了 `management.otlp.tracing.endpoint` 
       "[spring.security]": false
 ```
 
-（註解裡的 559、357 是寫這一段設定那時候跑的 H2；7.2.4 是最後一輪，比例差不多。）
+（註解裡的 559、357 是另一輪 H2 的數字，比例跟 7.2.4 差不多。）
 
 `management.observations.enable.<前綴>` 關的是名字以那個前綴開頭的觀測，span 與它附帶的計時器一起關。key 裡有點。Boot 的文件說，值是 `Boolean` 這種純量時，不加 `[...]` 也會保留點；這裡加上，是為了不必記這條規則。
 
 ### 7.4.4 ⚠️ MDC 的 traceId 靠一個整個 JVM 只能裝一次的掛勾
 
-換完、整套測試的第一次跑：6 個紅的（7.4.5、7.6.4）。修了那兩件之後，我寫了一個不用 Spring 的單元測試 `TracesTest`，直接建一個 OpenTelemetry SDK 測 `Traces`。它四個測試裡紅了一個（7.6.4 的第二次）—— 更麻煩的是跟它一起跑的 Spring 測試（新的與受影響的 7 個類別）：
+同一個 JVM 裡，如果有一個不用 Spring 的單元測試（直接建一個 OpenTelemetry SDK 測 `Traces`）排在 Spring 的測試前面，跟它一起跑的 Spring 測試會這樣：
 
 ```
 13 站 7.5：訂單服務的 token → 200 X-Trace-Id null
@@ -430,7 +388,7 @@ Boot 3.2 的 OTLP 匯出器**只有在設了 `management.otlp.tracing.endpoint` 
 - Brave 是 Tracing 自己的一個 `ScopeDecorator`，跟著每一個 Tracing 走。
 - OpenTelemetry 的版本，是 Boot 在建 `OtelCurrentTraceContext` 的時候，往 OpenTelemetry 的 `ContextStorage` 上裝一個掛勾（`ContextStorage.addWrapper`）。**這個掛勾整個 JVM 只能在第一次用到 `Context` 之前裝**，之後再裝，OpenTelemetry 只記一行 FINE 等級的日誌，然後忽略。
 
-那個單元測試排在 Spring 的測試前面，在任何 Spring context 之前就用到了 `Context`，之後 Boot 要裝的掛勾就裝不上去了。拿掉它，`InternalTraceparentTest` 與 Q7 都綠了；它的四種情況改放在 Spring 的測試裡（7.6.5）。
+那個單元測試在任何 Spring context 之前就用到了 `Context`，之後 Boot 要裝的掛勾就裝不上去了。所以這一章不寫這種測試：`Traces` 的情況放在 Spring 的測試裡測（7.6.5）。
 
 H6 重現這件事：先在 JVM 裡碰一次 `Context`，再起一個單體。
 
@@ -471,7 +429,7 @@ mvn test -Pexperiments -Dtest=H6MdcHookTest
 
 ### 7.4.5 ⚠️ `service_IS_UNDEFINED`
 
-日誌的 `service` 欄位原本寫死 `"shop"`（第 12 站 9.7）。第一版改成 Boot 的 `<springProperty>`、讀 `spring.application.name`，`JsonLogFormatTest` 紅了：
+日誌的 `service` 欄位原本寫死 `"shop"`（第 12 站 9.7）。改成 Boot 的 `<springProperty>`、讀 `spring.application.name` 之後，`customFields` 裡如果直接寫 `${service}`，`JsonLogFormatTest` 會紅：
 
 ```
 expected: "shop"
@@ -544,7 +502,7 @@ expected: "shop"
 
 只有第一種接上了。其他四種回應的 `X-Trace-Id` 都是新的。
 
-> 📌 **這個測試要 `@AutoConfigureObservability`。** `@SpringBootTest` 預設把追蹤的傳遞關掉：propagator 是一個什麼都不做的 `NoopTextMapPropagator`（7.6.6 是在那裡看到的）。不加，traceparent 不會被讀，第一種請求也接不上 —— 這是推論，我沒有拿掉它跑一次。
+> 📌 **這個測試要 `@AutoConfigureObservability`。** `@SpringBootTest` 預設把追蹤的傳遞關掉：propagator 是一個什麼都不做的 `NoopTextMapPropagator`（7.6.6）。不加，traceparent 不會被讀，第一種請求也接不上（推論，沒有拿掉它實際跑過）。
 
 ---
 
@@ -612,9 +570,9 @@ span 的 kind 是 CONSUMER，parent 是寫 outbox 的那一個 span（多半是 
 
 ### 7.6.4 ⚠️ 舊的訊息：先是例外，再是一個新的 traceId
 
-沒有 `traceparent` 的訊息還是會出現：**換版的那一刻**，舊版寫進 outbox、舊版 relay 送出去的事件，可能還在佇列裡，被新版的消費者收到。它們走 `continueTrace(traceId)` 的舊路。這條路在 OpenTelemetry 上壞了兩次：
+沒有 `traceparent` 的訊息還是會出現：**換版的那一刻**，舊版寫進 outbox、舊版 relay 送出去的事件，可能還在佇列裡，被新版的消費者收到。它們走 `continueTrace(traceId)` 的舊路。第 12 站的寫法不改，這條路在 OpenTelemetry 上會壞在兩個地方：
 
-**第一次：NullPointerException。** 換完之後整套測試的第一次，`EventFlowTest` 紅了 4 個（等不到消費者做完）。那一次的日誌裡，這個例外一共 192 次：
+**第一個：NullPointerException。** 只換實作、不改這條路，`EventFlowTest` 紅 4 個（等不到消費者做完），日誌裡這個例外一共 192 次：
 
 ```
 Caused by: java.lang.NullPointerException: Cannot invoke "java.lang.Boolean.booleanValue()" because "this.sampled" is null
@@ -624,9 +582,9 @@ Caused by: java.lang.NullPointerException: Cannot invoke "java.lang.Boolean.bool
 
 第 12 站用 `tracer.traceContextBuilder()` 組 parent，沒有給 sampled：Brave 可以，OpenTelemetry 的版本一定要。例外在 `continueTrace` 裡、`handle()` 之前丟出，第 12 站 7.5 的重試階梯接不到它；container 不重新排隊（`setDefaultRequeueRejected(false)`），主佇列也沒有死信交換器 —— **訊息被丟掉了**，每一次例外就是一則。換版那一刻還在佇列裡的舊事件，就這樣不見。
 
-**第二次：traceId 變了。** 補上 `sampled(false)` 之後，不丟例外了；我寫的單元測試（7.4.4 那一個）抓到：消費者拿到的是一個**新的** traceId。Micrometer 1.2 的 `OtelTraceContextBuilder.build()` 做出來的 parent 不帶 span，`setParent` 之後 OpenTelemetry 拿的是「現在的 Context」—— 消費者的執行緒上什麼都沒有，等於沒有 parent。
+**第二個：traceId 變了。** 補上 `sampled(false)`，不丟例外了，但消費者拿到的是一個**新的** traceId。Micrometer 1.2 的 `OtelTraceContextBuilder.build()` 做出來的 parent 不帶 span，`setParent` 之後 OpenTelemetry 拿的是「現在的 Context」—— 消費者的執行緒上什麼都沒有，等於沒有 parent。
 
-最後的寫法：把「只有 traceId」也組成一個 traceparent（parent 的 spanId 照舊是編的、旗標 00），交給同一個 `Propagator`：
+修法：把「只有 traceId」也組成一個 traceparent（parent 的 spanId 照舊是編的、旗標 00），交給同一個 `Propagator`：
 
 ```java
     public <T> T continueTrace(String traceId, String name, Supplier<T> work) {
@@ -690,7 +648,7 @@ Caused by: java.lang.NullPointerException: Cannot invoke "java.lang.Boolean.bool
 
 ### 7.6.6 ⚠️ 大部分的測試走的是舊路
 
-找第一次的 NullPointerException 時，我在 `JdbcOutbox` 印了一行：outbox 寫入的那一刻**有 span**，`traceparent` 卻是 null。原因跟 7.5 的 📌 一樣：`@SpringBootTest` 把傳遞關掉了，`Propagator.inject` 什麼都不寫。
+用 `@SpringBootTest` 起的測試，outbox 寫入的那一刻**有 span**，`traceparent` 卻是 null。原因跟 7.5 的 📌 一樣：`@SpringBootTest` 把傳遞關掉了，`Propagator.inject` 什麼都不寫。
 
 所以用 `@SpringBootTest` 起、又有事件流過的測試（`EventFlowTest` 是其中之一），事件走的全部是舊路；新路只有加了 `@AutoConfigureObservability` 的那兩個測試，以及用 `SpringApplicationBuilder` 起應用程式的（驗收測試、實驗）在走。這不是壞事 —— 舊路本來就要能用 —— 但要知道：**一個測試綠了，不代表它走過你以為的那一條路。**
 
@@ -766,7 +724,7 @@ Caused by: java.lang.NullPointerException: Cannot invoke "java.lang.Boolean.bool
 13 站 7.7：shop.remote.call [inventory reserve outcome=ok attempts=1 error=-, inventory reserve outcome=4xx attempts=1 error=-, inventory reserve outcome=no_response attempts=2 error=ShopException, inventory reserve outcome=breaker attempts=0 error=ShopException, inventory reserve outcome=breaker attempts=0 error=ShopException]
 ```
 
-（第五筆是 7.7.5 的修正之後才有的。）
+（第五筆是 7.7.5 的 `ensureReservable()` 留下的。）
 
 ### 7.7.2 借連線：`db connection`
 
@@ -858,7 +816,7 @@ class TracedDataSource implements BeanPostProcessor {
 - **bean 還是一個 `HikariDataSource`。** Spring AOP 的子類別代理（`proxyTargetClass`），不是包一層別的類別。第 12 站有兩個實驗把 DataSource 轉型成 `HikariDataSource` 讀連線池；HikariCP 5.0.1 的這個類別沒有 final 方法，每一個呼叫都轉得過去。
 - **一個交易一個 span，不是一句 SQL 一個。** 每一句 SQL 一個 span 的做法有現成的套件；這裡要的只是「誰拿著連線多久」。即使這樣，H1 那一張正常的下單，22 個 span 裡 15 個是 `db connection`（7.8 的成本）。
 
-📌 這些 span 也讓我看見一件第 12 站沒有人注意到的事：**通知的消費者處理一次付款，借了 8 次連線**（7.6.5 的那一張付款）。`NotificationHandler` 不在交易裡（`transactional() = false`，第 12 站 7.7.2），`JdbcTemplate` 每一句 SQL 各借一次、各還一次。它不慢，但這是一個「看得到之前不知道」的例子。這一章沒有改它。
+📌 這些 span 也照出一件第 12 站看不到的事：**通知的消費者處理一次付款，借了 8 次連線**（7.6.5 的那一張付款）。`NotificationHandler` 不在交易裡（`transactional() = false`，第 12 站 7.7.2），`JdbcTemplate` 每一句 SQL 各借一次、各還一次。它不慢，但這是一個「看得到之前不知道」的例子。這一章沒有改它。
 
 ### 7.7.3 self time：時間花在哪裡
 
@@ -905,7 +863,7 @@ class TracedDataSource implements BeanPostProcessor {
 - **client span 的 self time**：送出去到收到回應之間，對方的 server span 沒有蓋到的部分 —— 網路、對方的 Tomcat 佇列、回應在路上。第 06 章 6.4.4 說「請求在路上、在對方的佇列裡等的時間，對方不知道」；trace 上它是看得到的：client 與 server 兩個 span 的長度差。
 - **只算根 span 結束之前的**：消費者在回應之後才跑，買家沒有在等它們。
 
-新版的 Jaeger 網頁會標出 critical path，想法類似（我沒有拿它跟這裡的算法對照）；這裡自己算，是為了讓實驗的輸出是一行字。
+新版的 Jaeger 網頁會標出 critical path，想法類似（沒有拿它跟這裡的算法對照過）；這裡自己算，是為了讓實驗的輸出是一行字。
 
 ### 7.7.4 五張慢的下單
 
@@ -1042,7 +1000,7 @@ mvn test -Pexperiments -Dtest=H1SlowOrderTraceTest
   第 4 張下單 201 → 熔斷器 closed
 ```
 
-被擋下的那一張，樹上有一個 0.3 ms 的 `inventory reserve`：ERROR、`shop.attempts=0`、底下沒有 HTTP 的 span —— **一次都沒有送出去**。它的 `outcome` 是 breaker（低基數的標籤，上面的樹只印 `shop.` 開頭的屬性；`RemoteInventoryResilienceTest` 把它釘住）。下一節是它的第一版。
+被擋下的那一張，樹上有一個 0.3 ms 的 `inventory reserve`：ERROR、`shop.attempts=0`、底下沒有 HTTP 的 span —— **一次都沒有送出去**。它的 `outcome` 是 breaker（低基數的標籤，上面的樹只印 `shop.` 開頭的屬性；`RemoteInventoryResilienceTest` 把它釘住）。沒有這個 span 是什麼樣子，見下一節。
 
 整理成一張表：
 
@@ -1055,7 +1013,7 @@ mvn test -Pexperiments -Dtest=H1SlowOrderTraceTest
 
 ### 7.7.5 ⚠️ 熔斷器擋下的那一張，trace 上什麼都沒有
 
-⑥ 的第一次跑，被擋下的那一張是這樣：
+如果只在 `call()` 裡開觀測，⑥ 被擋下的那一張是這樣：
 
 ```
     trace 8ab306d6319c5031cb184b194da626f6：5 個 span，第一個開始到最後一個結束 21.8 ms
@@ -1160,7 +1118,7 @@ mvn test -Pexperiments -Dtest=H5SamplingCostTest
 兩件事分開看：
 
 - **後端收到的量：確定是 10 倍。** 抽樣 1.0，每一張下單 21.9 個 span，這個速率下每秒 2,775 個；0.1 是 2.1 個、每秒 273 個。換算到第 12 站 0.6.2 的尖峰（一般商品每秒 50 張下單），100% 就是每秒一千多個 span 要收、要存、要查（推論：只算下單，不算其他 API）。
-- **應用程式這一邊的成本：這台筆電上量不出來。** 三輪的吞吐，0 是 103～128、0.1 是 127～130、1.0 是 113～136 張／秒，範圍互相重疊；0 與 1.0 各自三輪之間的差，比三種抽樣率的平均之間的差還大。寫這一章途中也跑過一次同樣的實驗，那一次 1.0 的三輪（116～122）都比 0 的兩輪（137、138）低；這一次反過來，1.0 有兩輪比 0 的三輪都高。Jaeger、Docker 的虛擬機與兩個服務在同一台機器上搶 CPU，load（一分鐘平均）在 6 到 31 之間跳。兩次的方向相反，能說的只有：**跟這台機器的雜訊比，它小到量不出來**；要量，得把後端放到另一台機器上。
+- **應用程式這一邊的成本：這台筆電上量不出來。** 三輪的吞吐，0 是 103～128、0.1 是 127～130、1.0 是 113～136 張／秒，範圍互相重疊；0 與 1.0 各自三輪之間的差，比三種抽樣率的平均之間的差還大。同樣的實驗另外跑過一次，那一次 1.0 的三輪（116～122）都比 0 的兩輪（137、138）低；上面這一次反過來，1.0 有兩輪比 0 的三輪都高。Jaeger、Docker 的虛擬機與兩個服務在同一台機器上搶 CPU，load（一分鐘平均）在 6 到 31 之間跳。兩次的方向相反，能說的只有：**跟這台機器的雜訊比，它小到量不出來**；要量，得把後端放到另一台機器上。
 
 ### 7.8.3 怎麼選
 
@@ -1174,7 +1132,7 @@ mvn test -Pexperiments -Dtest=H5SamplingCostTest
       probability: 0.1
 ```
 
-（註解裡的「19 個 exemplar」是寫這一段設定那時候跑的 H4；7.11 是最後一輪的 20 個。）
+（註解裡的「19 個 exemplar」是另一輪 H4 的數字；7.11 的是 20 個。）
 
 理由是三樣東西在抽樣之下各剩下什麼：
 
@@ -1193,9 +1151,9 @@ mvn test -Pexperiments -Dtest=H5SamplingCostTest
 
 這一章沒有做：這一站量過的事故（第 06 章的慢與重試風暴、7.11 的演練）都是「整段時間都在發生」的，10% 裡就抽得到；個別一張的錯誤，日誌找得到。等到「出事的那一張剛好沒有 trace」真的妨礙了排查，再加一個收集器。
 
-### 7.8.4 追記：尾端抽樣，量一次
+### 7.8.4 尾端抽樣，量一次
 
-📌 **第 09 章寫完之後補的。** 7.8.3 說頭端抽樣管不到「出事的那幾張剛好沒被抽到」，要尾端抽樣；第 08 章 8.9.2 把 Collector 放到了 span 的路上，規則沒有寫。這裡寫、在 kind 上量。規則放在一份另外的 Collector 設定裡（實驗換上去、量完換回來）：
+這一節的程式碼在 `d09` 分支上，實驗要第 08、09 章的 kind 環境。7.8.3 說頭端抽樣管不到「出事的那幾張剛好沒被抽到」，要尾端抽樣；第 08 章 8.9.2 把 Collector 放到了 span 的路上，規則沒有寫。這裡寫、在 kind 上量。規則放在一份另外的 Collector 設定裡（實驗換上去、量完換回來）：
 
 ```yaml
       tail_sampling:
@@ -1233,7 +1191,7 @@ mvn test -Pexperiments -Dtest=K12TailSamplingTest
 - **尾端抽樣：錯的、慢的全部留下**（32／32、56／56），其他的 10.9%（規則是 10%）。
 - **代價**：Collector 收到的 span 從 1,679 個變成 13,639 個（8.1 倍：每一個服務都送 100%，7.8.2 量過應用程式的那一半），送到 Jaeger 的從 1,679 變成 2,971 個（1.8 倍：多存的就是那些錯的、慢的）；Collector 的記憶體 86 → 211 MiB（它要把每一條 trace 收齊、等 10 秒）。
 - **只能一台**：同一條 trace 的 span 要落在同一台 Collector 才收得齊。要多台，前面再放一層照 traceId 分的（Collector 的 `loadbalancing` exporter）—— 這裡沒有做。
-- 錯的那幾張，買家拿到的是 500，不是 503：預留被 trigger 拒絕，庫存服務回 500，訂單服務把它當成「不認得的錯誤」（`RemoteInventoryApi.decode`）—— 第 09 章 9.6.5 的追記裡，那一張 500 走的是同一條路。
+- 錯的那幾張，買家拿到的是 500，不是 503：預留被 trigger 拒絕，庫存服務回 500，訂單服務把它當成「不認得的錯誤」（`RemoteInventoryApi.decode`）—— 第 09 章 9.6.5 那一張 500 走的是同一條路。
 - **決定**：k8s/observability 預設仍然是頭端（10%）。尾端的代價是每一個服務送出的 span 變成 10 倍、Collector 要有狀態；換到的是「出事的那幾張一定在」。這個專案的告警與排查（7.11）靠的是 exemplar 加上日誌（100% 有 traceId），還沒有需要；要換的那一天，是「客服拿著一個 traceId 來，Jaeger 裡找不到」的次數多到要處理的時候。
 
 ---
@@ -1360,9 +1318,9 @@ Checking alerts.yml
 
 7.11 的演練就是從這裡開始的。
 
-### 7.9.5 追記：第 04 章留給這一章的三個訊號
+### 7.9.5 第 04 章留給這一章的三個訊號
 
-📌 **第 09 章寫完之後補的。** 第 04 章交給這一章三件事，這一章沒有做：
+這一節的程式碼在 `d09` 分支上。第 04 章交給這一章三件事：
 
 - 4.2.2：搶購進行中，熱點對帳一次都不修，而 `shop.inventory.hot.drift` 只在**修了**的時候加 1 ——「搶購進行中的不一致，指標上看不到」。
 - 4.9：`shop.orders.rejected{reason=PLACEMENT_EXPIRED}` —— 停在 `RESERVING` 太久、被排程補償掉的下單，「沒有替它設告警的門檻」。
@@ -1372,7 +1330,7 @@ Checking alerts.yml
 
 ```yaml
       - alert: ShopHotStockMismatchPersistent
-        # 13 站第 09 章寫完之後的追記（第 07 章 7.9.5；第 04 章 4.2.2 留給第 07 章的那一條）：搶購進行中，熱點對帳一次都不修 ——
+        # 13 站 7.9.5（第 04 章 4.2.2 留給第 07 章的那一條）：搶購進行中，熱點對帳一次都不修 ——
         #   「連續兩輪看到同一組」永遠不成立，上面那一條（修了才加 1）也就不會響。這一條看「每一輪都有對不上的」：15 分鐘裡每一分鐘的最小值都 > 0。
         #   一張訂單從閘門到落帳的那幾百毫秒裡本來就對不上，所以只要有某一輪對上了，就不響；一場一直有人在買、每一輪都剛好有訂單在路上的搶購，會誤報（推論，沒有量）
         expr: min_over_time(max(shop_inventory_hot_mismatched{system="shop"})[15m:1m]) > 0
@@ -1381,7 +1339,7 @@ Checking alerts.yml
           summary: "熱點商品的 Redis 與 MySQL，15 分鐘裡每一輪都對不上（最少 {{ $value }} 個）"
           why: "13 站 4.2.2：閘門扣了之後、訂單寫下之前當掉的那一件，搶購進行中不會被修 —— 少賣，不是超賣"
       - alert: ShopPlacementsExpired
-        # 13 站第 09 章寫完之後的追記（第 07 章 7.9.5；第 04 章 4.9）：停在 RESERVING 太久、被排程補償掉的下單。
+        # 13 站 7.9.5（第 04 章 4.9）：停在 RESERVING 太久、被排程補償掉的下單。
         #   買家那時候已經拿到 503（ShopHigh5xxRatio 算過了），這一條不叫醒人：它說的是「Saga 卡在中間」—— 協調者當掉、庫存服務沒有回應
         expr: sum(increase(shop_orders_rejected_total{system="shop",reason="PLACEMENT_EXPIRED"}[15m])) > 0
         labels: {severity: ticket}
@@ -1389,7 +1347,7 @@ Checking alerts.yml
           summary: "15 分鐘內有 {{ $value }} 張下單停在 RESERVING、被補償掉"
           why: "13 站 4.9：RESERVE_FAILED（庫存不足）是正常的業務，PLACEMENT_EXPIRED 不是"
       - alert: ShopConsumeConflict
-        # 13 站第 09 章寫完之後的追記（第 07 章 7.9.5；第 04 章 4.6.3）：已經出貨的訂單，它的預留卻已經釋放 —— 貨可能出去了、帳上沒扣
+        # 13 站 7.9.5（第 04 章 4.6.3）：已經出貨的訂單，它的預留卻已經釋放 —— 貨可能出去了、帳上沒扣
         expr: sum(increase(shop_inventory_consume_conflict_total{system="shop"}[15m])) > 0
         labels: {severity: ticket}
         annotations:
@@ -1403,7 +1361,7 @@ Checking alerts.yml
      private final JdbcTemplate jdbc;
      private final Counter drift;
      private final java.util.concurrent.ConcurrentHashMap<Long, String> lastMismatch = new java.util.concurrent.ConcurrentHashMap<>();
-+    /** 13 站第 09 章寫完之後的追記（第 07 章 7.9.5）：最近一輪看到幾個 Redis ≠ MySQL 的熱點商品（不管修了沒有） */
++    /** 13 站 7.9.5：最近一輪看到幾個 Redis ≠ MySQL 的熱點商品（不管修了沒有） */
 +    private final java.util.concurrent.atomic.AtomicInteger mismatched = new java.util.concurrent.atomic.AtomicInteger();
  
      HotStock(StringRedisTemplate redis, RedisGuard guard, DistributedLock locks, JdbcTemplate jdbc, MeterRegistry meters) {
@@ -1595,9 +1553,9 @@ mvn test -Pexperiments -Dtest=H4DrillTest
 
 > 📌 **README 的產出第 4 項寫的是「Gateway → 訂單 → MQ → 庫存」的 trace。** 這個系統還沒有 gateway（第 08 章），所以這一章的 trace 從訂單服務開始：訂單 → 庫存（HTTP）、訂單 → MQ → 庫存與訂單自己的消費者（7.7 的樹上都有）。
 
-### 7.11.1 追記：一個事故，一張單
+### 7.11.1 一個事故，一張單
 
-📌 **第 09 章寫完之後補的。** 上面的演練裡，`ShopConsumerLag` 在第 290 秒 firing、`ShopPlaceOrderSlow` 在第 435 秒 —— 同一個原因，叫醒人兩次（7.9.1 的「一個事故不要叫醒人五次」）。第 08 章 8.9.1 又遇到一次：compose 上單體停掉，`ShopDown` 與 `ShopServiceGone` 一起響。Alertmanager 的設定一直是第 12 站 9.10.6 的那一份：照告警的**名字**分組 —— 兩個名字，兩組，兩張單。
+這一節的程式碼在 `d09` 分支上。上面的演練裡，`ShopConsumerLag` 在第 290 秒 firing、`ShopPlaceOrderSlow` 在第 435 秒 —— 同一個原因，叫醒人兩次（7.9.1 的「一個事故不要叫醒人五次」）。第 08 章 8.9.1 又遇到一次：compose 上單體停掉，`ShopDown` 與 `ShopServiceGone` 一起響。Alertmanager 的設定一直是第 12 站 9.10.6 的那一份：照告警的**名字**分組 —— 兩個名字，兩組，兩張單。
 
 兩個改動：
 
@@ -1606,7 +1564,7 @@ mvn test -Pexperiments -Dtest=H4DrillTest
  route:
    receiver: local-sink
 -  group_by: [alertname]
-+  # 13 站第 09 章寫完之後的追記（第 07 章 7.11.1）：第一版照告警的名字分組 —— 7.11 的演練裡，下單變慢與事件積壓是同一個原因，
++  # 13 站 7.11.1：第一版照告警的名字分組 —— 7.11 的演練裡，下單變慢與事件積壓是同一個原因，
 +  #   兩個名字兩組、兩次叫醒人。改成照 severity：同一個系統、同一個等級的告警是同一組，值班系統只開一張單（groupKey），
 +  #   後來的那一條是那一張單的更新。代價：兩件不相干的事同時發生，也在同一張單裡
 +  group_by: [severity]
@@ -1617,13 +1575,13 @@ mvn test -Pexperiments -Dtest=H4DrillTest
      webhook_configs:
        - url: http://alert-sink:8080/alerts
          send_resolved: true
-+# 13 站第 09 章寫完之後的追記（第 08 章 8.9.1）：一個服務整個不見了（ShopServiceGone）的時候，同一個 job 的 ShopDown 不用再說一次 ——
++# 13 站 8.9.1：一個服務整個不見了（ShopServiceGone）的時候，同一個 job 的 ShopDown 不用再說一次 ——
 +#   compose 上單體停掉，兩條一起響（8.9.1）。equal：只抑制同一個 job 的
 +inhibit_rules:
 +  - source_matchers: ['alertname="ShopServiceGone"']
 +    target_matchers: ['alertname="ShopDown"']
 +    equal: [job]
-+  # 13 站第 09 章寫完之後的追記（第 07 章 7.11.2）：快的那一條響了，慢的那一條說的是同一件事
++  # 13 站 7.11.2：快的那一條響了，慢的那一條說的是同一件事
 +  - source_matchers: ['alertname="ShopHigh5xxRatioFast"']
 +    target_matchers: ['alertname="ShopHigh5xxRatio"']
 +  - source_matchers: ['alertname="ShopPlaceOrderSlowFast"']
@@ -1652,9 +1610,9 @@ mvn test -Pexperiments -Dtest=H7AlertRoutingTest
 - **A（這一節的演練）**：照名字分組是兩張單、兩則 firing 的通知；照 severity 是**一張單**：第一則只有 `ShopConsumerLag`，第二則（145 秒之後）是同一張單、兩條都在。
 - **B（8.9.1）**：照名字是兩張單；加上抑制之後只送了 `ShopServiceGone`。
 
-### 7.11.2 追記：依燃燒速率的告警，與「不要等 5 分鐘」
+### 7.11.2 依燃燒速率的告警，與「不要等 5 分鐘」
 
-📌 **第 09 章寫完之後補的。** 上面的時間軸：一個從第一秒就讓每一張下單都慢 0.6 秒的事故，`ShopPlaceOrderSlow` 要 315 秒才 firing。常見的建議是改用「依燃燒速率」的告警（Google 的 SRE Workbook 第 5 章）：SLO 給出一個錯誤預算，告警看預算燒得多快 —— 燒得越快，響得越快。照那一章的建議寫兩條（燃燒速率 14.4 倍：1 小時窗＋5 分鐘窗；6 倍：6 小時窗＋30 分鐘窗），SLO 用第 12 站 0.6.6 的那一個（`/api/**` 的 99% 不是 5xx，預算 1%）：
+這一節的程式碼在 `d09` 分支上。上面的時間軸：一個從第一秒就讓每一張下單都慢 0.6 秒的事故，`ShopPlaceOrderSlow` 要 315 秒才 firing。常見的建議是改用「依燃燒速率」的告警（Google 的 SRE Workbook 第 5 章）：SLO 給出一個錯誤預算，告警看預算燒得多快 —— 燒得越快，響得越快。照那一章的建議寫兩條（燃燒速率 14.4 倍：1 小時窗＋5 分鐘窗；6 倍：6 小時窗＋30 分鐘窗），SLO 用第 12 站 0.6.6 的那一個（`/api/**` 的 99% 不是 5xx，預算 1%）：
 
 ```yaml
       - alert: ShopErrorBudgetBurn14x
@@ -1717,7 +1675,7 @@ Checking alerts-burn-rate.yml
 
 ```yaml
       - alert: ShopHigh5xxRatioFast
-        # 13 站第 09 章寫完之後的追記（第 07 章 7.11.2）：整個壞掉的時候，不要等 5 分鐘。一半以上是 5xx、5 分鐘窗與 1 分鐘窗都是，沒有 for ——
+        # 13 站 7.11.2：整個壞掉的時候，不要等 5 分鐘。一半以上是 5xx、5 分鐘窗與 1 分鐘窗都是，沒有 for ——
         #   全部 5xx 的事故 2 分半就響（上面那一條是 5 分多鐘）。50% 是判斷：小的、慢慢燒的，留給上面那一條。兩條都響時，Alertmanager 抑制上面那一條
         expr: |
           (sum(rate(http_server_requests_seconds_count{system="shop",uri=~"/api/.*",status=~"5.."}[5m]))
@@ -1731,7 +1689,7 @@ Checking alerts-burn-rate.yml
           why: "13 站 7.11.2：整個壞掉的事故不等 5 分鐘"
 ```
 
-上表最右一欄：全部 5xx 的事故 2¼～3 分鐘響（原本 5～6 分鐘）；20%、2% 的不響，留給原本那一條。代價在 S4：一次 3 分鐘、自己好了的停機，原本不會叫醒人，現在會。兩條一起響的時候，Alertmanager 抑制慢的那一條（7.11.1 的設定）。這一節的演練（每一張都慢 0.6 秒）是 `ShopPlaceOrderSlowFast` 那一種：推論它會在變慢之後兩分半左右響 —— 這一次沒有在 kind 上重跑演練。
+上表最右一欄：全部 5xx 的事故 2¼～3 分鐘響（原本 5～6 分鐘）；20%、2% 的不響，留給原本那一條。代價在 S4：一次 3 分鐘、自己好了的停機，原本不會叫醒人，現在會。兩條一起響的時候，Alertmanager 抑制慢的那一條（7.11.1 的設定）。這一節的演練（每一張都慢 0.6 秒）是 `ShopPlaceOrderSlowFast` 那一種：推論它會在變慢之後兩分半左右響（沒有重跑演練驗證）。
 
 ---
 
@@ -1851,23 +1809,7 @@ TEST_INFRA MySQL 最多同時 6 條連線（max_connections 151）
 
 **failsafe 那一段 39 個**，跟第 06 章一樣（7.6.7）。
 
-這一章的整套測試跑了三次，都是 `mvn clean verify`：
-
-- **第一次**：換成 OpenTelemetry、收的那一邊與 MQ 的 `traceparent` 都改好之後。355 個裡紅 6 個：`JsonLogFormatTest`（7.4.5）、`EventFlowTest` 4 個與驗收 Q7（7.6.4 的 NullPointerException：事件被丟掉，消費者那幾行沒有 traceId）。
-- **第二次**：修好之後、新的 7 個測試都寫好（7.7.5 的修正也在裡面）。362 個、failsafe 39 個，全綠，5 分 58 秒。
-- **第三次是上面那一份**：最後的 commit。跟第二次比，多了演練與成本的實驗、`application.yml` 寫明抽樣 0.1、H2 的一行輸出。H1～H6、E4、B1 的最後一輪也跑在這一個 commit 上；H1～H3 的「之前」跑在第一個 commit 上。
-
-第 06 章留下的那一個（第 12 站驗收 Q10 偶爾紅），這三次都沒有出現；它還在，沒有修。
-
-（追記，第 08 章：第 12 站 7.7.2 的追記修了它 —— 通知的認領改成租約。）
-
-途中另外跑過幾次只包含受影響測試的子集，沒有算在上面：
-
-| 子集 | 結果 |
-|---|---|
-| 修了舊路的例外與日誌設定之後，新的與受影響的 7 個類別、31 個 | 紅 4 個：`TracesTest` 1 個（traceId 變了，7.6.4）、`InternalTraceparentTest` 2 個與驗收 Q7（`X-Trace-Id` 是 null，7.4.4） |
-| 拿掉 `TracesTest` 之後，`InternalTraceparentTest` 與 Q7 | 全綠 |
-| 舊路改走 Propagator 之後，`OutboxTraceparentTest`、`InternalTraceparentTest`、`EventFlowTest`、Q7，15 個 | 全綠 |
+第 06 章留下的那一個 —— 第 12 站的驗收 Q10 偶爾會紅 —— 在 `d07` 上還在，沒有修；第 08 章修了它（第 12 站 7.7.2：通知的認領改成租約）。
 
 ### 7.13.1 本章其餘檔案的完整內容
 
@@ -4705,7 +4647,7 @@ class OutboxTraceparentTest {
 - **「MQ 帶 traceId 就夠了。」** 只有 traceId，消費者的 parent 只能編、抽樣只能重來；要帶的是寫這一筆事件的那一個 span（`traceparent`），而且要存進 outbox —— relay 送出的時候，那個請求早就結束了（7.6）。
 - **「換了追蹤的實作，舊的訊息照樣能處理。」** 第 12 站的舊路在 OpenTelemetry 上先是丟例外、讓訊息不見，再是換掉 traceId（7.6.4）。換版那一刻佇列裡一定有舊訊息。
 - **「測試綠了，新的那條路就沒問題。」** `@SpringBootTest` 預設把傳遞關掉，用它起的測試，事件走的是舊路（7.6.6）；一個不用 Spring 的測試，還能讓一起跑的 Spring 測試拿不到 traceId（7.4.4）。
-- **「trace 上沒有，就是沒發生。」** 熔斷器擋下的那一張，第一版的 trace 上什麼都沒有（7.7.5）。trace 只看得到開了 span 的地方。
+- **「trace 上沒有，就是沒發生。」** 熔斷器擋下的那一張，不另外留一筆，trace 上什麼都沒有（7.7.5）。trace 只看得到開了 span 的地方。
 - **「父 span 最長的那一個就是慢的。」** 父 span 包含子 span。看 self time；client span 的 self time 是網路與對方的佇列（7.7.3）。
 - **「抽樣 100% 最保險。」** 這一章的下單，每一張 21.9 個 span（7.8）。要的是「出事的時候找得到幾條完整的」，不是「每一條都有」—— 每一條都有的是日誌。
 - **「每一個不正常的指標都該叫醒人。」** 熔斷器沒有流量時會一直開著（7.9.1）；一個原因同時讓五個指標動。叫醒人的是使用者感受得到的那幾個，其他的在排查時看。

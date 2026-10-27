@@ -15,45 +15,6 @@
 > - 一份 **10 萬張訂單、190 萬列、34 秒產生、而且滿足每一條不變量**的種子資料（2.8）。
 > - **10 個 Flyway migration**，以及三個讓它們「破不了」的守門員：檔名與模組歸屬、Entity 的 `@Table` 歸屬、Entity 與 schema 的漂移（2.9）。
 > - **驗收 Q6 變綠**：空資料庫啟動 → Flyway 由 V1 跑到 V10 → `ddl-auto=validate` 通過 → 每一個 CHECK 與索引都在（2.10）。
->
-> 「schema 是什麼樣子」聽起來是一個畫圖的問題。這一章有**四個實測事故**，每一個都在說明它其實是一個**「誰、在什麼時候、用什麼方式改它」**的問題：
->
-> - **讓 Hibernate 管 schema，第二版就壞了。** 2.2.1：`ddl-auto=update`，enum 多了一個 `PICKING`。
->   Hibernate 6 在 MySQL 上把 enum 建成 `enum('PENDING_PAYMENT','PAID','CANCELLED')` 型別，而 `update` **不會改一個已經存在的欄位** ——
->   賣家按下「開始撿貨」：`Data truncated for column 'status' at row 1`。順便，金額變成 `decimal(38,2)`、每個欄位都可以是 `NULL`、沒有任何一個索引。
-> - **一個 migration 兩句 DDL，第二句失敗。** 2.2.2：MySQL 的 DDL 不在交易裡，**第一句已經 commit 了**。
->   修好錯字重新部署 → Flyway 拒絕啟動；照它的建議 `repair` → 再部署 → `Duplicate column name 'paid_at'`。
->   **一個錯字，讓正式環境連續三次部署失敗**，而且每一次的錯誤訊息都不一樣。
-> - **跨模組的外鍵，讓賣家改價時全站無法下單。** 2.2.3：`order_items.product_id → products.id`。
->   賣家在一個 1.5 秒的交易裡批次改價，16 條下單執行緒**在那 1.25 秒內完成了 0 筆**。
->   ⚠️ 而 p99 延遲**只從 46.9 ms 變成 14.8 ms —— 變快了**。看監控的 p99，你會以為外鍵讓系統更好了。
-> - **1 萬張種子訂單，同樣是「批次」，一個 10 秒、一個 0.47 秒。** 2.2.4：JPA 的 `IDENTITY` 主鍵讓 `batch_size=1000` 完全失效 ——
->   伺服器收到 **40,000 句** INSERT；`JdbcTemplate` + `rewriteBatchedStatements` 收到 **20 句**。
->
-> 📌 四個事故分別在 2.9、2.9.4、2.6、2.8 被修好。
->
-> ⚠️ **還有幾個，是寫這一章的途中被這一章自己的實驗抓到的**：
->
-> - **實驗跑在錯的資料庫裡，而且沒有任何錯誤**（2.2.0）：`SpringApplicationBuilder.properties()` 是最低優先序，被 `application-local.yml` 的 `spring.datasource.url` 蓋掉 —— 第一版的每一個實驗都跑在 `shop` 裡。
-> - **schema 的第一個洞，是約束測試寫出來的**（2.5.4）：`UNIQUE (parent_id, name)` 擋不住兩個 `parent_id` 為 `NULL` 的同名頂層分類。22 條非法資料，第一次跑只漏了這一條；V10 用函式索引補上。
-> - **刪掉的 migration 還在執行**（2.9.5）：示範用的 V11 從 `src/main` 刪了，`target/classes` 裡還有 —— Q6 報 `Expected size: 10 but was: 11`，那個跨模組外鍵真的建進了本機的 `shop`；`mvn clean` 之後 Flyway 只給一行 WARN。
-> - **invisible 的索引沒有被設回來**（2.7.2）：實驗中途丟了例外，`idx_orders_buyer_created` 留在 invisible —— 沒有任何錯誤，只是「我的訂單」變成全表掃描。
-> - **加長一個 VARCHAR 要鎖表**（2.9.6）：`order_no VARCHAR(15) → (16)` 在 `orders` 上被拒絕 INPLACE，只能 COPY（1,398 ms、寫入被擋住）；拿掉 `ck_orders_paid` 與 `ck_orders_shipment` 之後，同一句 23 ms。
->
-> 小坑：
->
-> - `-Dgroups=experiment` 遇上寫死在 pom 裡的 `<excludedGroups>` → 一個測試都沒跑，而且 `BUILD SUCCESS`（2.11.1）。
-> - `mvn test -Pseed` 跑 0 個測試：`SeedData` 不叫 `*Test`，surefire 預設掃不到，要加 `-Dtest=SeedData`（2.8.3）。
-> - 實驗用的 `@Entity` 放在 `com.example.shop` 底下，正式的 `ShopApplication` 一啟動就炸 `share the entity name 'LabOrder'`（2.2.0）。
-> - Spring 6 的死鎖例外是 `CannotAcquireLockException`；實驗第一版接錯類別，死鎖直接變成測試錯誤（2.6.2）。
-> - CHECK 裡放子查詢，用 `shop` 帳號執行時報的是 `ALTER command denied`，換 `root` 才看到真正的原因 `ERROR 3815`（2.5.4）。
->
-> 以及**沒達成、部分達成的**：
->
-> - 2.9.6 那個「有 `ck_orders_paid` / `ck_orders_shipment` 就只能 COPY」的條件**沒有找到**，也沒有找到說明它的官方文件（留給練習八）。
-> - `validate` 看不到的第 ⑪ 種不一致（Entity 沒對應到的 `NOT NULL` 欄位）**這一章沒有守門員**，留給練習七（2.4.2）。
-> - US-RPT-1 AC-4 只有 10 萬張訂單的資料，**計時在第 03 章**；INV-2、INV-3 只有對帳 SQL，**排程在第 07 章**；INV-5 是權限，**在第 09 章**（2.11.2）。
-> - 第 01 章的 `reserve()` 沒有寫 `inventory_reservations`，所以 `InvariantReconciliationTest` 在它產生的資料上會是紅的，第 04 章才換掉（2.5.5）。
 
 ---
 
@@ -133,10 +94,10 @@ FLUSH PRIVILEGES;
 mvn test -Pexperiments -Dtest=C1DdlAutoUpdateTest
 ```
 
-> ⚠️ **寫這一章的實驗時踩到的兩個坑**，先講，免得你也踩：
+> ⚠️ **寫這一章的實驗時會踩到的兩個坑**，先講，免得你踩：
 >
 > **① `SpringApplicationBuilder.properties()` 是最低優先序。**
-> 第一版的實驗用 `.properties("spring.datasource.url=...shop_lab")` 指定資料庫，結果**每一個實驗都跑在 `shop` 裡** ——
+> 實驗如果用 `.properties("spring.datasource.url=...shop_lab")` 指定資料庫，**每一個實驗都會跑在 `shop` 裡** ——
 > `.properties()` 設定的是 *default properties*，排在 1.7.2 那五層的**最底下**，被 `application-local.yml` 的 `spring.datasource.url` 蓋掉了。
 > 而且沒有任何錯誤：連線成功、表建成功、只是建在另一個資料庫。改成 `.run("--spring.datasource.url=...")`（命令列參數，最高優先序）才對。
 > （第 01 章的 `B2ConfigTypoTest` 用 `.properties("spring.config.name=...")` 沒事，是因為 `spring.config.name` 本來就沒有人設。）
@@ -606,7 +567,7 @@ Flyway 在 PostgreSQL 上會把整個 V3 包在一個交易裡，失敗就全部
 
 1. **Flyway 的每一個錯誤都是在保護你。** checksum 不符、`FAILED`、版本號重複、順序錯亂 —— 它們都讓應用程式**起不來**，而不是讓它帶著錯的 schema 起來。
 2. **MySQL 的 DDL 不在交易裡**，這是本章所有 migration 規則的根源。
-3. 三條規則：**不改已執行的檔、一個檔一句 DDL、衝突時改名**。第四條（刪了檔要 `mvn clean`）在 2.9.5 —— 那是寫這一章時真的踩到的。
+3. 三條規則：**不改已執行的檔、一個檔一句 DDL、衝突時改名**。第四條（刪了檔要 `mvn clean`）在 2.9.5。
 
 ### 2.2.3 事故三：跨模組外鍵，讓賣家改價時全站無法下單 ★★★
 
@@ -2697,7 +2658,7 @@ B：UPDATE inventory    → 要 X 鎖，但 A 拿著 S 鎖 → 等 A
 **死鎖不是資料錯誤，是吞吐的損失** —— 以及每一次死鎖在應用程式裡都是一個 `CannotAcquireLockException`，如果沒有重試，就是一個 500。
 
 > 📌 **Spring 6 的死鎖例外是 `CannotAcquireLockException`**，不是舊版的 `DeadlockLoserDataAccessException`（已標為 deprecated）。
-> 兩者都是 `PessimisticLockingFailureException` 的子類別 —— **要接住死鎖，接 `PessimisticLockingFailureException`**。這個實驗第一版就是接錯了類別，死鎖直接變成測試錯誤。
+> 兩者都是 `PessimisticLockingFailureException` 的子類別 —— **要接住死鎖，接 `PessimisticLockingFailureException`**。接錯了類別，死鎖會直接變成測試錯誤。
 
 **本專題的規則**：
 
@@ -2863,8 +2824,8 @@ class C7IndexPlanningTest {
 }
 ```
 
-> ⚠️ **`finally` 裡把索引設回 visible 不是潔癖。** 這個實驗的第一版有一個格式字串的錯誤，在 `compare()` 的中間丟了例外 ——
-> 那時候 `idx_orders_buyer_created` 已經被設成 invisible，**而且沒有被設回來**。
+> ⚠️ **`finally` 裡把索引設回 visible 不是潔癖。** 如果 `compare()` 的中間丟了例外（例如一個格式字串的錯誤），
+> 那時候 `idx_orders_buyer_created` 已經被設成 invisible，**而且不會被設回來**。
 > invisible 的索引會繼續被維護（每一次寫入都更新它），只是最佳化器不用它。所以**不會有任何錯誤**，只是「我的訂單」從此變成全表掃描。
 > 修法是在實驗之後查一次 `information_schema.statistics WHERE is_visible = 'NO'`（2.7.5）。
 
@@ -2986,7 +2947,7 @@ class C7IndexPlanningTest {
 > 要自己重現這一段，把報表查詢裡的 `NOW(3)` 換成 `SEED_NOW` 的值（`'2026-09-29 04:00:00'`）。
 > 這跟 2.8.2 的原則一是同一件事：**種子資料固定了「現在」，查詢也要用同一個「現在」。**
 
-> 📌 **專題寫完之後的追記：C7 改成用 `SEED_NOW` 了。** 報表那一句改成綁參數：
+> 📌 **修法：C7 改成用 `SEED_NOW`。** 參考實作的 `ch02` 分支上還是改之前的寫法。報表那一句改成綁參數：
 >
 > ```java
 > compare("US-RPT-1 賣家 90 天報表的範圍（最大的賣家）", """
@@ -2996,7 +2957,7 @@ class C7IndexPlanningTest {
 > ```
 >
 > 綁 `Timestamp`：連線是 `connectionTimeZone=UTC`，跟 `SeedData` 寫入 `created_at` 的方式一樣，送出去的就是 `'2026-09-29 04:00:00'`。逾時掃描那一句照舊用 `NOW(3)`（上面說過，它不受影響）。
-> 在第 09 章結束時的程式碼上、一個全新的資料庫灌好種子資料之後重跑（2026-10-12，load average 4.8）：
+> 在第 09 章結束時的程式碼上、一個全新的資料庫灌好種子資料之後重跑：
 >
 > ```
 >     type=range  key=idx_orders_seller_created          rows=  20900  Extra=Using index condition
@@ -3005,7 +2966,7 @@ class C7IndexPlanningTest {
 >         -> Index range scan on orders using idx_orders_seller_created over (seller_id = 2 AND '2026-07-01 04:00:00.000' <= created_at), …
 > ```
 >
-> 10,928 列 —— 跟上面一樣，而那天已經是 2026-10-12。同一個資料庫、同一天，用 `NOW(3)` 數一次：**9,454 列**，窗口已經開始往後移了。
+> 10,928 列 —— 跟上面一樣，而跑的那天已經是 2026-10-12。同一個資料庫、同一天，用 `NOW(3)` 數一次：**9,454 列**，窗口已經開始往後移了。
 > （那一次的其他段落跟 2.7.2 不一樣，原因都在後面的章節：逾時掃描是 0 列 —— 第 04 章起應用程式一啟動，逾時排程就把那 25 張取消了；「沒有 buyer 相關索引」那一組改走 `idx_orders_created` —— 第 06 章的 V12 加了它。另外 C7 開關索引是 DDL，第 09 章 INV-5（9.11）之後應用程式的帳號沒有這個權限，改用 root 執行。）
 
 **商品搜尋：有沒有複合索引都很快。**
@@ -3126,7 +3087,7 @@ ALTER TABLE orders ALTER INDEX idx_orders_buyer_created VISIBLE;     -- 恢復
 
 直接 `DROP INDEX` 的話，發現刪錯時要重建 —— 在一張 5,000 萬列的 `inventory_ledger` 上，那是幾分鐘的 I/O（[07-mysql/06](../07-mysql/06-schema-migration-flyway.md) 的線上 DDL）。
 
-**但它也有一個陷阱**（上面 ⚠️ 實際發生過）：invisible 的索引**不會報任何錯**。忘了改回來，查詢就默默變慢。
+**但它也有一個陷阱**（上面的 ⚠️）：invisible 的索引**不會報任何錯**。忘了改回來，查詢就默默變慢。
 所以每一次實驗之後、以及第 09 章的上線檢查清單裡，都有這一句：
 
 ```sql
@@ -3551,9 +3512,9 @@ class SeedData {
 > 它現在能動，是因為 Hikari 會優先把同一條執行緒上次還回去的那條連線再借給它 —— 這是連線池的實作細節，不是保證。
 > 萬一拿到不同的連線：`TRUNCATE` 會因為外鍵而失敗（看得到的錯）；更糟的是 `FOREIGN_KEY_CHECKS = 0` 留在某一條連線上被還回連線池，之後借到它的 INSERT 都不檢查外鍵（**看不到的錯**）。
 > 穩當的寫法是把整段放進同一條連線：`jdbc.execute((ConnectionCallback<Void>) c -> { try (Statement st = c.createStatement()) { ... } return null; })`。
-> 本章的 `SeedData` 沒有改（改了就要重跑 2.8.3 的輸出）；你自己寫的時候，請用後者。
+> 上面的 `SeedData` 與參考實作的 `ch02` 分支上還是改之前的寫法；你自己寫的時候，用下面改好的 `truncate()`。
 >
-> 📌 **專題寫完之後的追記：改了，也重跑了。** `truncate()` 改成一個 `ConnectionCallback`，`SET FOREIGN_KEY_CHECKS = 1` 放在 `finally`：
+> 📌 **改好的 `truncate()`。** 整段改成一個 `ConnectionCallback`，`SET FOREIGN_KEY_CHECKS = 1` 放在 `finally`：
 >
 > ```java
 > void truncate() {
@@ -3571,7 +3532,7 @@ class SeedData {
 > }
 > ```
 >
-> 在第 09 章結束時的程式碼、一個全新的資料庫上重跑 2.8.3：**第一次直接失敗** —— `DROP command denied to user 'shop'`。`TRUNCATE` 要 DROP 權限，第 09 章 INV-5（9.11）之後應用程式的帳號只拿 `shop_app` 這個角色，沒有它。寫第 09 章時用的資料庫，種子資料是在這一章就灌好的，之後沒有人在新的資料庫上再跑過這個工具，所以三章都沒有發現。repo 裡的 `truncate()` 現在用 root（測試清理用的同一個管理帳號，9.11）。第二次：
+> 在第 09 章結束時的程式碼、一個全新的資料庫上跑 2.8.3，會直接失敗在 `DROP command denied to user 'shop'`：`TRUNCATE` 要 DROP 權限，第 09 章 INV-5（9.11）之後應用程式的帳號只拿 `shop_app` 這個角色，沒有它。所以 `truncate()` 要改用 root（測試清理用的同一個管理帳號，9.11）。改用 root 之後：
 >
 > ```
 > 訂單編號：隨機 6 碼，100,000 張訂單撞號 61 次（重抽）
@@ -3592,7 +3553,7 @@ mvn test -Pseed -Dtest=SeedData
 
 > ⚠️ **只寫 `mvn test -Pseed` 會跑 0 個測試**（`Tests run: 0`）。surefire 預設只掃描名字是 `*Test`、`Test*`、`*Tests`、`*TestCase` 的類別，
 > 而 `SeedData` 刻意不叫 `SeedDataTest` —— 它不是測試。`-Dtest=SeedData` 會覆蓋這個預設。
-> 這是寫這一章時踩到的：profile 設對了、tag 也對了，就是什麼都沒跑，而且 `BUILD SUCCESS`。
+> profile 設對了、tag 也對了，就是什麼都沒跑，而且 `BUILD SUCCESS`。
 
 ```
 訂單編號：隨機 6 碼，100,000 張訂單撞號 61 次（重抽）
@@ -3629,7 +3590,7 @@ mvn test -Dtest=InvariantReconciliationTest
 
 **撞號 61 次** —— 2.4.4 估算的是 55 次（每天約 1,111 張、90 天），實測在同一個量級。
 
-> 📌 **CHECK 約束在種子資料上的價值。** 這個產生器第一次跑就通過了所有約束 —— 但「通過」這件事本身是有資訊的：
+> 📌 **CHECK 約束在種子資料上的價值。** 這個產生器通過了所有約束 —— 但「通過」這件事本身是有資訊的：
 > 它代表 `decideLifecycle()` 產生的每一張訂單，都滿足「取消 ⇔ 有原因」「已付款 ⇒ 有 `paid_at`」「已出貨 ⇒ 有物流資訊」。
 > 反過來試一次：把 `writeOrders()` 裡的 `shipped ? "黑貓宅急便" : null` 改成 `null`（「忘了填物流商」）再跑，第一批 INSERT 就停在 `Check constraint 'ck_orders_shipment' is violated.`（練習五）。
 > **沒有這些約束，這種 bug 會變成「種子資料裡有 0.2.2 版本一的非法組合」**，然後第 03 章的報表會用這些資料算出一個看起來合理的數字。
@@ -3941,8 +3902,6 @@ CREATE INDEX idx_order_items_created ON order_items (id, product_id);
 **兩條規則同時紅。** 第二條就是 2.2.3 的那個外鍵 —— 它在 code review 之前就會被 `mvn test` 擋下，而且錯誤訊息直接說出「ordering 動了 catalog 的表」。
 
 ### 2.9.5 第四條規則：刪了 migration，要 `mvn clean`
-
-**這一節是寫這一章時真的發生的事。**
 
 上一節的 V11 是一個示範，跑完就刪掉了（`rm src/main/resources/db/migration/V11__...sql`）。接著跑 `EntitySchemaDriftTest` —— 它會啟動 Spring context，也就會跑 Flyway。然後跑驗收 Q6：
 
@@ -4408,7 +4367,7 @@ shop/
 ```
 
 > ⚠️ **為什麼不直接 `mvn test -Dgroups=experiment`？** 因為 `<excludedGroups>` 寫死在設定裡時，`-Dgroups` 和它**同時生效**：
-> 「只跑 experiment」且「排除 experiment」= 什麼都不跑，而且 `BUILD SUCCESS`。這一章的第一版就是這樣 —— 七個實驗一個都沒跑，輸出檔是空的。
+> 「只跑 experiment」且「排除 experiment」= 什麼都不跑，而且 `BUILD SUCCESS`。
 > 用 profile 同時改兩個屬性（`test.excluded=none` 是一個不存在的 tag），才是「換一組測試」。
 
 **`mvn test` 現在跑什麼：**
@@ -4434,7 +4393,7 @@ Q6：從空資料庫套用 10 個 migration → 20 張表（含 flyway_schema_hi
 [INFO] Total time:  12.601 s
 ```
 
-> 📌 **專題寫完之後重跑：`mvn clean verify`。** 上面是寫這一章時跑的 `mvn clean test`。專題寫完之後（2026-10-12），在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）重跑了一次 `mvn clean verify`（load average 7.78 → 6.51）：
+> 📌 **`mvn clean verify`。** 在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）跑 `mvn clean verify`：
 
 ```bash
 mvn clean verify

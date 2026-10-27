@@ -17,7 +17,7 @@
 >
 > - `RateLimitFilter`：自己的另一個服務不算進「每個 IP 每秒 50 次」（8.6.3）。
 > - `TraceFilters`：部署打開 `shop.deployment.edge.trust-traceparent` 時，`/api/**` 接上入口帶來的 `traceparent`（8.8.2）。
-> - 第 12 站的通知：認領改成租約（V35，[第 12 站 7.7.2 的追記](../12-capstone/07-event-driven-order-flow.md)）。
+> - 第 12 站的通知：認領改成租約（V35，[第 12 站 7.7.2](../12-capstone/07-event-driven-order-flow.md)）。
 >
 > 其他都是部署：
 >
@@ -26,49 +26,6 @@
 > - 實驗：I1、K0～K11；`lab/scg`（實驗用的 Spring Cloud Gateway）。
 >
 > 測試 368 個，failsafe 契約驗證 39 個。
->
-> **這一章的實測事故**：
->
-> - **庫存服務多開一台，新的那一台一個請求都沒收到**（8.2）：A 收到 150 個預留、B 0 個。停掉 A 之後的 75 秒，375 張下單 338 張 503，B 還是 0；演練用的 Prometheus 叫醒人的是 `ShopDown{inventory-service}`：「庫存服務掛了」。換位址就要重啟訂單服務：15.5 秒。
-> - **K8s 上擴成 3 台，新的 pod 要等 30～40 秒才分到第一個預留**（8.6.1）：kube-proxy 在建立連線時挑 pod，訂單服務重用連線；之後 10 秒一格看，常常是一台拿全部。
-> - **入口會接著買家給的 traceId 往下記**（8.8.2）：100 個帶著自己 `traceparent` 的請求，入口抽到的 12 個 trace 全部用了買家給的 traceId。訂單服務一信任入口，100 個 `X-Trace-Id` 全部是買家給的。
-> - **入口後面，「每個 IP 每秒 50 次」變成全站共用一個額度**（8.8.3）：每秒 80 個請求、250 個不同的買家，581 個 429 —— 限流的 key 只有一個 IP，是入口的。
-> - **兩層閘道各自加了重試**（8.8.4）：10 個會 503 的 GET，訂單服務收到 80 次（一個 8 次），買家拿到的是 504：外層先放棄了，裡面還在重試。
-> - **庫存服務縮到 0 台，第 12 站的 `ShopDown` 不會響**（8.9.1）：被刪掉的 pod 不是「抓不到」，是從 target 裡消失了。
-> - **之後**：
->   - 一台庫存服務卡住（不是死掉），11 秒後不在 endpoints 裡；這段時間的下單全部成功，卡住那一刻的幾張多花 1 秒左右（8.5.2）。
->   - 改一個設定：掛成檔案的 ConfigMap 53 秒後在 pod 裡變了，應用程式不知道；`rollout restart` 20.7 秒、0 個錯誤（8.7.1）。
->   - 入口拿掉買家的 trace header、訂單服務信任入口、NetworkPolicy 讓只有入口連得到：入口抽到的 trace 全部接上訂單與庫存；付款那一條「入口 → 訂單服務 → MQ → 庫存服務」是一棵樹（8.8.2，README 產出第 4 項）。
->   - 新的告警 `ShopServiceGone` 在縮到 0 台之後 105 秒 firing（8.9.1）。
->
-> **⚠️ 寫這一章途中被自己的實驗抓到的**：
->
-> - **庫存服務對訂單服務限流**（8.6.3）：每秒 40 張下單時，庫存服務回了 40 個 429，`RemoteInventoryApi` 把它當成「我們的錯」，買家拿到 500。第 03 章切開之後就有這個 bug；第 03～07 章的實驗都關掉限流起服務，看不到。
-> - **Prometheus 的權限放錯了 namespace**（8.9.1）：`kustomization.yaml` 的 `namespace` 把 Role 也搬到了 `observability`，Prometheus 的日誌一直是 forbidden，target 是空的。
-> - **K4 第一版卡住了閒著的那一台**（8.5.2）：只錯了 1 張，看起來好像沒事。改成卡住「這一刻訂單服務連著的那一台」。
-> - **K2 第一版從訂單服務那一邊數連線**（8.6.1）：從那裡看，對方是 Service 的 ClusterIP，分不出是哪一個 pod，每一格都是 0。
-> - **實驗用的 Spring Cloud Gateway 起得來，第一個請求就 `NoSuchMethodError`**（8.8.4）：Spring Cloud 2023.0.6 要的 Spring Framework 比 Boot 3.2.5 帶的新。
-> - **K6 第一版用 `curl --parallel --rate`**（8.8.3）：`--rate` 沒有作用，1,600 個請求幾秒內送完、100 個失敗。
->
-> **小坑**：
->
-> - **kubectl 與 cluster 的版本**（8.4.1）：這台筆電的 kubectl 是 1.34，kind v0.33 預設的 node 是 1.37 —— 差 3 個 minor，超過支援的 ±1。Envoy Gateway 1.9 又只支援到 1.36：node 換成 1.36、kubectl 換成 1.37。
-> - **Jaeger v2 沒有 `/api/services`、`/api/traces?service=`**（8.4.5）：要用 `/api/v3`；只有 `/api/traces/{id}` 還在。
-> - **在容器裡對 PID 1 送 `SIGSTOP`，`kill` 回 0，行程照樣在跑**（8.5.2）：要從 node 送。
-> - **`kubectl apply` 不會拿掉 `kubectl patch` 加上去的欄位**（8.7.1）：last-applied 裡沒有它們。
-> - **JDK HttpClient 自己會重送兩種**（8.6.4）：連不上（`ConnectException`）不分方法重連一次；池裡的連線已經被對方關了，只重送 GET、HEAD。
->
-> **這一章沒有達成、或只達成一部分的目標**：
->
-> - **Spring Cloud 那一欄大部分沒有量**：只有 Spring Cloud Gateway 真的跑過（8.8.4）；Eureka、Spring Cloud LoadBalancer、Config Server 用的是官方文件的預設值，標成「沒有量」。
-> - **只有一個 node**：kube-proxy 在別台更新得慢、跨 node 的負載平衡都沒有量；preStop 在這裡量不出差別（8.6.4），不代表多 node 也一樣。（📌 第 09 章寫完之後的追記：三個 node 量了，8.6.6。）
-> - **正式環境的「入口前面那一層」是模擬的**（8.8.3）：用 cluster 裡的一個 pod 扮演雲端的負載平衡器。
-> - **尾端抽樣還是沒有做**（8.9.2）：Collector 已經在 span 的路上，抽樣的規則沒有寫。（📌 第 09 章寫完之後的追記：第 07 章 7.8.4。）
-> - **Jaeger 只有一台**（8.9.3）：Badger 不能多台；Elasticsearch、OpenSearch、Cassandra 都沒有做。
-> - **服務網格只量了預設的重試與成本**（8.10）：mTLS、每一個請求的負載平衡沒有量；量完就拿掉了。
-> - **compose 上，單體停掉會叫醒人兩次**（8.9.1）：`ShopDown` 與 `ShopServiceGone` 一起響。Alertmanager 的抑制還是沒有設（第 07 章 7.11 的那一條）。（📌 第 09 章寫完之後的追記：抑制設了，第 07 章 7.11.1。）
-> - **部署的順序靠一支腳本**（8.4.5）：設定 → migration → 應用程式；沒有 GitOps、沒有 CD。（📌 第 09 章寫完之後的追記：GitOps（Flux）做了，8.4.6。）
-> - **第 07 章的演練沒有在 K8s 上重跑**。
 
 ---
 
@@ -610,7 +567,7 @@ case "${1:-}" in
 esac
 ```
 
-這一章最後一輪實驗前，從刪掉 cluster 開始照著跑了一次：
+從刪掉 cluster 開始照著跑一次：
 
 | 步驟 | 花了 |
 |---|---|
@@ -637,16 +594,16 @@ esac
 
 40 張單一張一張依序送，**全部落在同一個庫存服務的 pod**。這不是巧合，是 8.6 的主題。
 
-> 📌 **Jaeger v2 的查詢**：第 07 章的 compose 用的是 Jaeger v1 的 all-in-one 1.62（v1 在 2025 年底停止維護，8.9.3）。這裡是 v2 2.21：一條 trace 照樣是 `/api/traces/{id}`，但列出服務的 `/api/services`、找 trace 的 `/api/traces?service=…` 都是 404 —— 要改用 `/api/v3/services`、`/api/v3/traces`。K0 第一版印出的服務清單是空的，就是這個原因。
+> 📌 **Jaeger v2 的查詢**：第 07 章的 compose 用的是 Jaeger v1 的 all-in-one 1.62（v1 在 2025 年底停止維護，8.9.3）。這裡是 v2 2.21：一條 trace 照樣是 `/api/traces/{id}`，但列出服務的 `/api/services`、找 trace 的 `/api/traces?service=…` 都是 404 —— 要改用 `/api/v3/services`、`/api/v3/traces`。
 
-### 8.4.6 追記：GitOps —— 部署的順序寫成 dependsOn
+### 8.4.6 GitOps —— 部署的順序寫成 dependsOn
 
-📌 **第 09 章寫完之後補的。** 8.4.5 的部署是一支腳本：設定 → migration（等 Job 跑完）→ 應用程式。這一章開頭說「沒有 GitOps、沒有 CD」。這裡換成 Flux（v2.9.6）：cluster 裡的控制器照著一個 git repo 收斂 cluster，有人用 kubectl 改了什麼，下一輪改回去。
+這一節的程式碼在 `d09` 分支上，實驗要第 09 章的 kind 環境（`scripts/d09-kind.sh`）。8.4.5 的部署是一支腳本：設定 → migration（等 Job 跑完）→ 應用程式，沒有 GitOps、沒有 CD。這裡換成 Flux（v2.9.6）：cluster 裡的控制器照著一個 git repo 收斂 cluster，有人用 kubectl 改了什麼，下一輪改回去。
 
 **順序要寫成結構。** Flux 一次套一個 kustomization，不認 kubectl 的 `-l stage=config`。腳本裡的三行，變成四個 Kustomization 與 `dependsOn`：
 
 ```yaml
-# 13 站第 09 章寫完之後的追記（第 08 章 8.4.6）：GitOps —— Flux 照 repo 收斂 cluster。repo 是 cluster 裡的一個 git server（k8s/lab/git-server）。
+# 13 站 8.4.6：GitOps —— Flux 照 repo 收斂 cluster。repo 是 cluster 裡的一個 git server（k8s/lab/git-server）。
 # 第 08 章 8.4.5 的腳本是「設定 → migration（等 Job 跑完）→ 應用程式」三行；這裡是四個 Kustomization 與 dependsOn：
 #   shop-config  → shop-migrate（force：Job 的 spec 不能改，換版本時刪掉重建；wait：Job 跑完才算好）→ shop-apps → shop-gateway
 # interval：多久看一次 repo、多久把 cluster 改回 repo 的樣子（drift）。kubectl 直接改的，下一輪就被改回去 —— 第 09 章的 kubectl patch 權重也是
@@ -710,7 +667,7 @@ spec:
 四份 kustomization 不重寫 `k8s/kind`，照它產生、再把不屬於自己的那幾個拿掉（`$patch: delete`）：
 
 ```yaml
-# 13 站第 09 章寫完之後的追記（第 08 章 8.4.6）：GitOps。第 08 章 8.4.5 的部署順序（設定 → migration → 應用程式）是腳本裡的三行，
+# 13 站 8.4.6：GitOps。第 08 章 8.4.5 的部署順序（設定 → migration → 應用程式）是腳本裡的三行，
 # GitOps 的控制器（Flux）一次套一個 kustomization、不認 kubectl 的 -l —— 順序要寫成「三個 kustomization ＋ dependsOn」（k8s/gitops/flux.yaml）。
 # 這裡不重寫 k8s/kind，照它產生、再把不屬於這一份的拿掉（$patch: delete）
 # config：namespace、ConfigMap、外部依賴的 ExternalName Service。Secret 不在這裡：它的名字帶內容的 hash（secretGenerator），
@@ -811,15 +768,15 @@ mvn test -Pexperiments -Dtest=K15GitOpsTest -Dk15.flux=<flux 的執行檔>
      git revert、push：回到 2 台：66 秒
 ```
 
-- **① 順序是結構，等待是輪詢。** config 第 2 秒好了，migrate 卻是第 43 秒（Job 第 39 秒跑完）；apps 第 88 秒、gateway 第 92 秒。每一層 `dependsOn` 的等待：後面那一個先看一次、前面的還沒好就說 `dependency … is not ready`，**30 秒之後再看**（kustomize-controller 的 `--requeue-dependency`，預設 30 秒）—— 前面的好了，不會叫醒它（它 watch 的是 source 的 revision 與設定，沒有 `dependsOn` 的那一個）。三層，最多多等 90 秒。8.4.5 的腳本是 `kubectl wait`，好了就走：最後一輪從零部署的時候，`scripts/d09-kind.sh deploy`（設定 → migration → 三個 Deployment 都 rollout 完）從開始到結束 65 秒，Flux 到 `shop-apps` 好了是 88 秒。
-- **② 漂移：kubectl 改的，一分鐘內都被改回。** `scale` 55 秒、`patch` 權重 36 秒（Kustomization 的 interval 是 1 分鐘，每一輪先做一次 server-side 的 dry-run，跟 cluster 不一樣就套上去）。連 `set env` 加的、repo 裡**沒有**的那一個環境變數也被拿掉了 —— 我原本推論它會留著（server-side apply 只刪自己管的欄位），錯了。原因在 Flux 的原始碼（`fluxcd/pkg` 的 `ssa/patch.go` 與 kustomize-controller 的套用設定；讀的是兩個 repo 的 main 分支，不是 v2.9.6 那一版）：每一次套用之前，它把 field manager 的名字**以 `kubectl` 開頭**的那幾筆（`kubectl-set`、`kubectl-patch`、`kubectl-edit`…）改成它自己的，於是那些欄位變成「Flux 管、這一次的 manifest 裡沒有」—— 就刪了。不是 kubectl 改的（另一個控制器、另一個名字的 field manager），repo 裡沒有的欄位會留著。跟 8.7.1 正好相反：`kubectl apply` 不拿掉 `kubectl patch` 加上去的欄位（9.5.4 的 `sessionPersistence` 要用反向的 patch 拿掉），Flux 拿掉。
-- **第 09 章的 `kubectl patch` 權重，在 GitOps 底下一分鐘內就被改回去**：灰度的每一步要是一個 commit。第 09 章與這幾節追記的實驗都直接改 cluster（權重、`scale`、`set env`、改 ConfigMap），要在 Flux 底下跑，得先 `flux suspend kustomization …`。
+- **① 順序是結構，等待是輪詢。** config 第 2 秒好了，migrate 卻是第 43 秒（Job 第 39 秒跑完）；apps 第 88 秒、gateway 第 92 秒。每一層 `dependsOn` 的等待：後面那一個先看一次、前面的還沒好就說 `dependency … is not ready`，**30 秒之後再看**（kustomize-controller 的 `--requeue-dependency`，預設 30 秒）—— 前面的好了，不會叫醒它（它 watch 的是 source 的 revision 與設定，沒有 `dependsOn` 的那一個）。三層，最多多等 90 秒。8.4.5 的腳本是 `kubectl wait`，好了就走：從零部署，`scripts/d09-kind.sh deploy`（設定 → migration → 三個 Deployment 都 rollout 完）從開始到結束 65 秒，Flux 到 `shop-apps` 好了是 88 秒。
+- **② 漂移：kubectl 改的，一分鐘內都被改回。** `scale` 55 秒、`patch` 權重 36 秒（Kustomization 的 interval 是 1 分鐘，每一輪先做一次 server-side 的 dry-run，跟 cluster 不一樣就套上去）。連 `set env` 加的、repo 裡**沒有**的那一個環境變數也被拿掉了 —— server-side apply 只刪自己管的欄位，照理它會留著。原因在 Flux 的原始碼（`fluxcd/pkg` 的 `ssa/patch.go` 與 kustomize-controller 的套用設定；讀的是兩個 repo 的 main 分支，不是 v2.9.6 那一版）：每一次套用之前，它把 field manager 的名字**以 `kubectl` 開頭**的那幾筆（`kubectl-set`、`kubectl-patch`、`kubectl-edit`…）改成它自己的，於是那些欄位變成「Flux 管、這一次的 manifest 裡沒有」—— 就刪了。不是 kubectl 改的（另一個控制器、另一個名字的 field manager），repo 裡沒有的欄位會留著。跟 8.7.1 正好相反：`kubectl apply` 不拿掉 `kubectl patch` 加上去的欄位（9.5.4 的 `sessionPersistence` 要用反向的 patch 拿掉），Flux 拿掉。
+- **第 09 章的 `kubectl patch` 權重，在 GitOps 底下一分鐘內就被改回去**：灰度的每一步要是一個 commit。第 09 章與這一章的實驗都直接改 cluster（權重、`scale`、`set env`、改 ConfigMap），要在 Flux 底下跑，得先 `flux suspend kustomization …`。
 - **③ 部署與回滾都是 commit。** 「庫存服務 3 台」push 之後 78 秒三台都 ready；`git revert`、push，66 秒回到 2 台。GitRepository 15 秒看一次 repo，新的 revision 一出來四個 Kustomization 都被叫醒，可是後面三個要等前面的**套上同一個 revision**（`checkDependencies` 的條件之一），又是 30 秒一次。回滾不用 `rollout undo`（用了，推論下一輪也會被改回去 —— 跟上面的 `patch` 一樣是 kubectl 改的，沒有量）：cluster 的樣子就是 repo 的某一個 commit，8.7.2 的「設定也在 git 裡」在這裡是唯一的路。
 - **決定：`k8s/` 還是腳本部署，`k8s/gitops` 留著當參考。** 理由是上面那一條：這一站的每一個實驗都靠直接改 cluster。正式環境要換，代價是順序的等待（每一層 30 秒，可以調 `--requeue-dependency`）與「所有的改動都要是 commit」—— 後者正是換它的理由。
 
-> ⚠️ **第一版把 Secret 放在 config 那一份**（這一段與下一段是寫作途中的終端輸出，當時沒有存成紀錄）。`kubectl kustomize k8s/gitops/apps` 產生的 Deployment，`secretRef` 是 `shop-secrets` —— 不帶 hash；config 那一份產生的 Secret 叫 `shop-secrets-9897dmht29`。secretGenerator 的名字帶內容的 hash，Deployment 指到它的那個名字，只有兩個在**同一次** kustomize 裡才會被換成帶 hash 的；apps 這一份把 Secret 拿掉了，引用就沒有人換。改成 Secret 跟著 apps：apps 那一份只拿掉 namespace、ConfigMap 與外部依賴的 Service。8.7.3 的 configMapGenerator 是同一件事的另一面。
+> ⚠️ **Secret 要跟著 apps，不能放在 config 那一份**。放在 config 那一份，`kubectl kustomize k8s/gitops/apps` 產生的 Deployment，`secretRef` 是 `shop-secrets` —— 不帶 hash；config 那一份產生的 Secret 叫 `shop-secrets-9897dmht29`。secretGenerator 的名字帶內容的 hash，Deployment 指到它的那個名字，只有兩個在**同一次** kustomize 裡才會被換成帶 hash 的；apps 這一份把 Secret 拿掉了，引用就沒有人換。所以 apps 那一份只拿掉 namespace、ConfigMap 與外部依賴的 Service。8.7.3 的 configMapGenerator 是同一件事的另一面。
 >
-> 小坑：第一次 `git push` 到這個 git server，整個 repo 推不上去（`send-pack: unexpected disconnect while reading sideband packet`）；小的 repo 推得上去，`git -c http.postBuffer=524288000 push` 也推得上去。推論：大的 push 用 chunked 的請求，這個組合收不了 —— 沒有查 lighttpd 的原始碼。
+> 小坑：整個 repo `git push` 到這個 git server，推不上去（`send-pack: unexpected disconnect while reading sideband packet`）；小的 repo 推得上去，`git -c http.postBuffer=524288000 push` 也推得上去。推論：大的 push 用 chunked 的請求，這個組合收不了 —— 沒有查 lighttpd 的原始碼。
 
 ---
 
@@ -858,7 +815,7 @@ I1 的三段在這裡各是什麼樣子：
     }
 ```
 
-卡住哪一台很重要。訂單服務只跟它連著的那一台說話（8.6）；第一版卡住 `pods.get(0)`，那一次剛好是閒著的那一台：150 秒只錯了 1 張，看起來什麼事都沒有。改成「這一刻，訂單服務連進來的連線最多的那一台」：
+卡住哪一台很重要。訂單服務只跟它連著的那一台說話（8.6）；卡住 `pods.get(0)`，可能剛好是閒著的那一台：150 秒只錯 1 張，看起來什麼事都沒有。所以卡住「這一刻，訂單服務連進來的連線最多的那一台」：
 
 ```java
                 if (s == stopAt) {
@@ -916,7 +873,7 @@ I1 的三段在這裡各是什麼樣子：
 - **第 31 秒，它不在 endpoints 裡了**（卡住之後 11 秒）：`readinessProbe` 每 5 秒一次、連續 2 次失敗，加上 kubelet 回報與 EndpointSlice 更新的時間。
 - **第 88 秒，它被重啟了**（卡住之後 68 秒）：`livenessProbe` 每 10 秒、連續 3 次失敗是 30 秒；kubelet 送 SIGTERM，可是行程停住了，收不到 —— 等滿 `terminationGracePeriodSeconds` 的 40 秒才 SIGKILL。
 - **第 97 秒，它回來了**：JVM 重新起來、readiness 通過。
-- **下單全部 201**。卡住之後的那一格（第 20～25 秒）p99 是 1,038 ms。預留的結果全部是 `ok`（一次呼叫裡的重送成功，outcome 記 `ok`，第 07 章 7.7.1）。推論：卡住的那一刻，訂單服務唯一的那一條連線連著它；那一條上的請求等滿 1 秒的 read timeout（第 06 章 6.4.2），用同一個冪等鍵再送一次 —— 開了一條新的連線，落到另一台，之後就一直用那一條。熔斷器一直是 closed。第 45～50 秒那一格也有 903 ms，那時候它已經不在 endpoints 裡了；這一輪的 load 在 9 上下，沒有查是哪幾張、慢在哪裡。
+- **下單全部 201**。卡住之後的那一格（第 20～25 秒）p99 是 1,038 ms。預留的結果全部是 `ok`（一次呼叫裡的重送成功，outcome 記 `ok`，第 07 章 7.7.1）。推論：卡住的那一刻，訂單服務唯一的那一條連線連著它；那一條上的請求等滿 1 秒的 read timeout（第 06 章 6.4.2），用同一個冪等鍵再送一次 —— 開了一條新的連線，落到另一台，之後就一直用那一條。熔斷器一直是 closed。第 45～50 秒那一格也有 903 ms，那時候它已經不在 endpoints 裡了；這台筆電的 load 在 9 上下，沒有查是哪幾張、慢在哪裡。
 
 一台卡住的庫存服務，在這個設定下，代價是幾張下單多等 1 秒。
 
@@ -970,7 +927,7 @@ K2：庫存服務 1 台、每秒 10 張下單；第 30 秒 `kubectl scale --repl
     }
 ```
 
-⚠️ 第一版從訂單服務那一邊數：從那裡看，每一條連線的對方都是 Service 的 ClusterIP，分不出是哪一個 pod —— 每一格都是 0。
+⚠️ 不能從訂單服務那一邊數：從那裡看，每一條連線的對方都是 Service 的 ClusterIP，分不出是哪一個 pod —— 每一格都是 0。
 
 ```
 ═══ 8.6 擴成 3 台：每秒 10 張下單；第 30 秒 kubectl scale --replicas=3 ═══
@@ -1031,13 +988,13 @@ K2：庫存服務 1 台、每秒 10 張下單；第 30 秒 `kubectl scale --repl
 
 ### 8.6.3 ⚠️ 庫存服務對訂單服務限流
 
-8.6.2 的實驗第一次跑的時候（修正之前），擴容之後的下單是這樣：
+修正之前，8.6.2 的實驗擴容之後的下單是這樣：
 
 ```
   下單：擴之前 [201=1226]；擴之後 [201=3454, 429=15, 500=39, 503=130]
 ```
 
-500 是「我們的錯」（429 的 15 張、503 的 130 張是別的原因，這裡沒有細查）。那一次用 `kubectl logs` 數，訂單服務的日誌裡有 40 行：
+500 是「我們的錯」（429 的 15 張、503 的 130 張是別的原因，這裡沒有細查）。用 `kubectl logs` 數，訂單服務的日誌裡有 40 行：
 
 ```
 INVENTORY_ERROR op=reserve status=429：{"type":"/problems/rate-limited","title":"請求太頻繁","status":429,…
@@ -1047,7 +1004,7 @@ INVENTORY_ERROR op=reserve status=429：{"type":"/problems/rate-limited","title"
 
 這個 bug 從第 03 章切開之後就在。第 03～07 章的實驗都用 `shop.rate-limit.enabled=false` 起服務（第 00 章的 `SplitLab.common`），所以看不到；K8s 上用的是正式設定。
 
-用一個測試把它釘住：上限調成每秒 5 次，同一秒裡用訂單服務的服務 token 送 20 次。修正前（那時候這一節還沒有編號，紀錄印的是「8.x」）：
+用一個測試把它釘住：上限調成每秒 5 次，同一秒裡用訂單服務的服務 token 送 20 次。修正前：
 
 ```
 13 站 8.x：上限每秒 5 次；訂單服務的 token 一秒 20 次 → {200=5, 429=15}
@@ -1161,7 +1118,7 @@ INVENTORY_ERROR op=reserve status=429：{"type":"/problems/rate-limited","title"
 - 庫存服務的 Tomcat 是優雅關機（第 12 站 9.5）：收到 SIGTERM 之後不收新的連線，閒置的 keep-alive 連線被關掉，JDK HttpClient 看到之後就從池裡拿掉。
 - JDK HttpClient 自己會重送兩種失敗（JDK 21 的 `jdk.internal.net.http.MultiExchange`）：**連不上**（`ConnectException`）不分 HTTP 方法，重連一次（`jdk.httpclient.disableRetryConnect` 預設 false）；**池裡的連線已經被對方關了**（`ConnectionExpiredException`），只重送 GET、HEAD —— 預留是 PUT，不在裡面。K3 的「沒有回應」是 0：PUT 一次都沒有撞上「已經被關掉的舊連線」。
 
-這不是說 `preStop` 可以拿掉。02-spring-boot/08 的那一段量的是**入口**（負載平衡器的 endpoints 更新得比 kube-proxy 慢）；多個 node 的時候，別台的 kube-proxy 也比較晚知道。這一章只量了「一個 node、服務之間」這一種。（📌 第 09 章寫完之後的追記：三個 node 量了，8.6.6。）
+這不是說 `preStop` 可以拿掉。02-spring-boot/08 的那一段量的是**入口**（負載平衡器的 endpoints 更新得比 kube-proxy 慢）；多個 node 的時候，別台的 kube-proxy 也比較晚知道。這裡只量了「一個 node、服務之間」這一種；三個 node 在 8.6.6。
 
 ### 8.6.5 什麼時候要每一個請求挑一次
 
@@ -1185,9 +1142,9 @@ kube-proxy 的「每一條連線挑一次」，這個專案可以接受，理由
 
 第一種就是「兩套混用」最常見的理由（8.11.4）。
 
-### 8.6.6 追記：三個 node
+### 8.6.6 三個 node
 
-📌 **第 09 章寫完之後補的。** 8.6.4 在一個 node 上量滾動更新，有沒有 `preStop` 都是 0 個錯；推論的原因之一是「kube-proxy 就在同一台」，也說「多個 node 的時候，別台的 kube-proxy 也比較晚知道」—— 沒有量。這裡換成三個 node 的 kind（一個控制面、兩個 worker，`k8s/kind/cluster-3nodes.yaml`），把訂單服務釘在一個 worker、庫存服務的兩台釘在另一個：每一個預留都跨 node。
+這一節的程式碼在 `d09` 分支上，實驗要第 09 章的 kind 環境。8.6.4 在一個 node 上量滾動更新，有沒有 `preStop` 都是 0 個錯；推論的原因之一是「kube-proxy 就在同一台」，也說「多個 node 的時候，別台的 kube-proxy 也比較晚知道」—— 沒有量。這裡換成三個 node 的 kind（一個控制面、兩個 worker，`k8s/kind/cluster-3nodes.yaml`），把訂單服務釘在一個 worker、庫存服務的兩台釘在另一個：每一個預留都跨 node。
 
 ```bash
 kind create cluster --config k8s/kind/cluster-3nodes.yaml        # 之後照 8.4.5 的腳本部署
@@ -1229,35 +1186,33 @@ mvn test -Pexperiments -Dtest=K13MultiNodeTest -Dk3.rate=10
     整段：下單 [201=551]；預留呼叫的結果 {ok=551}；沒有回應的送出 1 次
 ```
 
-- **① 刪掉一個 pod：三台 node 都在第一輪量完之前就拿掉它。** 每一輪依序問控制面、兩個 worker 的 iptables，最後問 EndpointSlice（每一問都是一個 `docker exec` 或 `kubectl`，幾十到一百多毫秒）。四次（連同下面 ⚠️ 的前幾次）都是控制面 206～242 ms、worker 273～312、另一個 worker 327～370、EndpointSlice 438～490 ms —— 跟問的順序一模一樣：這是量法的順序，不是傳播的先後。能說的是：從 `kubectl delete` 送出，到三台 node 的 kube-proxy 都拿掉它，不到 0.4 秒。
+- **① 刪掉一個 pod：三台 node 都在第一輪量完之前就拿掉它。** 每一輪依序問控制面、兩個 worker 的 iptables，最後問 EndpointSlice（每一問都是一個 `docker exec` 或 `kubectl`，幾十到一百多毫秒）。量了四次，都是控制面 206～242 ms、worker 273～312、另一個 worker 327～370、EndpointSlice 438～490 ms —— 跟問的順序一模一樣：這是量法的順序，不是傳播的先後。能說的是：從 `kubectl delete` 送出，到三台 node 的 kube-proxy 都拿掉它，不到 0.4 秒。
 - **②③ 滾動更新：每一個預留都跨 node，有沒有 `preStop` 下單都是 0 個錯。** 每秒 10 張：有 `preStop` 701 張、沒有 551 張，全部 201、預留的結果全是 `ok`。
-- **比一個 node 多了一點：「沒有回應的送出」這一次兩邊各 1 次**（訂單服務自己再送一次就成功了，買家拿到的還是 201）；前一次每秒 10 張（下面 ⚠️ 的第三次，標題印錯了、數字有效）兩邊各 0 次。8.6.4 在一個 node 上四次都是 0。那 1 次是 8.6.4 的第三個推論說的那一種（池裡的連線已經被對方關了、PUT 不自動重送）、還是跨 node 才有的，沒有分開量。`preStop` 也沒有讓它變成 0。
+- **比一個 node 多了一點：「沒有回應的送出」這一次兩邊各 1 次**（訂單服務自己再送一次就成功了，買家拿到的還是 201）；再跑一次是兩邊各 0 次。8.6.4 在一個 node 上四次都是 0。那 1 次是 8.6.4 的第三個推論說的那一種（池裡的連線已經被對方關了、PUT 不自動重送）、還是跨 node 才有的，沒有分開量。`preStop` 也沒有讓它變成 0。
 - 8.6.4 推論的三個原因，第一個（「kube-proxy 就在同一台」）在這裡不成立，下單還是 0 個錯：剩下的兩個 —— 庫存服務的優雅關機、JDK HttpClient 連不上時自己重連一次 —— 加上訂單服務自己的重送，就接住了（推論，這一次也沒有一個一個驗證）。8.6.4 那一句「多個 node 的時候，別台的 kube-proxy 也比較晚知道」：晚，但不到 0.4 秒。
-- **`preStop` 仍然留著**：02-spring-boot/08 量的是入口後面的負載平衡器，那一層不在這裡；這一節只說「服務之間、三個 node、每秒 10 張」沒有它也沒有錯。每秒 30 張的那一次（下面 ⚠️ 的第二次）系統本身就過載，量不出差別。
+- **`preStop` 仍然留著**：02-spring-boot/08 量的是入口後面的負載平衡器，那一層不在這裡；這一節只說「服務之間、三個 node、每秒 10 張」沒有它也沒有錯。每秒 30 張的那一次（下面的 ⚠️）系統本身就過載，量不出差別。
 
-> ⚠️ **K13 跑了四次，前三次各有一個地方沒有量到或印錯，卻都照樣跑完。**
+> ⚠️ **三個 node 有兩件事跟一個 node 不一樣；沒有處理，②③ 量不到東西，實驗卻照樣跑完。**
 >
-> 第一次，②③ 的每一張下單都是 `-1`（客戶端連不上）：
+> **入口連不上。** ②③ 的每一張下單都是 `-1`（客戶端連不上）：
 >
 > ```
 >     整段：下單 [-1=1652]；預留呼叫的結果 {}；沒有回應的送出 0 次
 >     整段：下單 [-1=1351]；預留呼叫的結果 {}；沒有回應的送出 0 次
 > ```
 >
-> 入口的 Service 是 `externalTrafficPolicy: Local` —— Envoy Gateway 1.9.1 的預設（它的 API 定義：`+kubebuilder:default:="Local"`，「traffic will only go to pods on the node receiving the traffic」）。這台筆電的 18880 只對到控制面的 NodePort，而控制面有 taint、Envoy 在 worker 上：從控制面進來的，沒有本地的 Envoy 可以送。`cluster-3nodes.yaml` 第一版的註解寫「NodePort 在每一個 node 上都聽，從哪一台進去都一樣」—— 只有 `Cluster` 才是這樣。一個 node 的時候兩種沒有差別，所以第 08 章一直沒有碰到。
+> 入口的 Service 是 `externalTrafficPolicy: Local` —— Envoy Gateway 1.9.1 的預設（它的 API 定義：`+kubebuilder:default:="Local"`，「traffic will only go to pods on the node receiving the traffic」）。這台筆電的 18880 只對到控制面的 NodePort，而控制面有 taint、Envoy 在 worker 上：從控制面進來的，沒有本地的 Envoy 可以送。NodePort 在每一個 node 上都聽，可是「從哪一台進去都一樣」只有 `Cluster` 才是這樣。一個 node 的時候兩種沒有差別，所以前面幾節一直沒有碰到。
 >
-> 第二次（入口改成 `Cluster`，每秒 30 張），下單有了，可是：
+> **指標讀不到。** 入口改成 `Cluster`（每秒 30 張），下單有了，可是：
 >
 > ```
 >     整段：下單 [201=2597, 503=555]；預留呼叫的結果 {}；沒有回應的送出 0 次
 >     整段：下單 [201=2180, 503=71]；預留呼叫的結果 {}；沒有回應的送出 0 次
 > ```
 >
-> 「預留呼叫的結果 `{}`」「沒有回應的送出 0 次」也不是量出來的：這兩個數字是經過 API server 的 pod proxy 讀訂單服務的 8081，而 NetworkPolicy（8.8.2）只讓 `observability` 連 8081 —— 一個 node 的時候 proxy 從同一台 node 連進來，不受限制；三個 node 的時候它從控制面連到 worker 上的 pod，被擋（`dial tcp …:8081: i/o timeout`，寫作途中直接用 `kubectl get --raw` 試的），讀到的是 null，印出來就是 `{}` 與 0。那一次的 p99 到秒級、滾動更新還沒開始的頭 5 秒就有 503：三個 node 加每秒 30 張，這台筆電本身就過載了（推論那些 503 是隔艙滿了的拒絕，沒有看日誌）。
+> 「預留呼叫的結果 `{}`」「沒有回應的送出 0 次」也不是量出來的：這兩個數字是經過 API server 的 pod proxy 讀訂單服務的 8081，而 NetworkPolicy（8.8.2）只讓 `observability` 連 8081 —— 一個 node 的時候 proxy 從同一台 node 連進來，不受限制；三個 node 的時候它從控制面連到 worker 上的 pod，被擋（`dial tcp …:8081: i/o timeout`，直接用 `kubectl get --raw` 試得出來），讀到的是 null，印出來就是 `{}` 與 0。這一次的 p99 到秒級、滾動更新還沒開始的頭 5 秒就有 503：三個 node 加每秒 30 張，這台筆電本身就過載了（推論那些 503 是隔艙滿了的拒絕，沒有看日誌）。
 >
-> 現在 K13 跑的時候把入口改成 `Cluster`、多加一條讓 node 連得到 8081 的 NetworkPolicy，結束時都拿掉；暖身之後沒有 201、或讀不到預留的指標，就停。
->
-> 第三次（每秒 10 張）的標題印成「每秒 30 張」：K13 自己的暖身讀 `k13.rate`（預設 30），量滾動更新的 K3 讀 `k3.rate`（10）—— 兩個名字。滾動更新的數字是每秒 10 張、有效；改成都讀 `k3.rate` 之後跑第四次，就是上面那一次。① 不經過入口、也不讀指標，四次的數字都有效。
+> K13 跑的時候把入口改成 `Cluster`、多加一條讓 node 連得到 8081 的 NetworkPolicy，結束時都拿掉；暖身之後沒有 201、或讀不到預留的指標，就停。
 
 ---
 
@@ -1286,7 +1241,7 @@ mvn test -Pexperiments -Dtest=K13MultiNodeTest -Dk3.rate=10
   ② kubectl rollout restart（每秒 5 張下單）：20.7 秒滾完；這段時間的下單 [201=104]；之後下單的付款期限 20 分鐘
 ```
 
-- **掛成檔案**：ConfigMap 改成 20m 之後 53 秒，pod 裡的檔案才變（寫這一章途中的另一次是 76 秒）。K8s 的文件：延遲是 kubelet 的同步週期加上它的快取（<https://kubernetes.io/docs/concepts/configuration/configmap/>）。
+- **掛成檔案**：ConfigMap 改成 20m 之後 53 秒，pod 裡的檔案才變（再跑一次是 76 秒）。K8s 的文件：延遲是 kubelet 的同步週期加上它的快取（<https://kubernetes.io/docs/concepts/configuration/configmap/>）。
 - **檔案變了，訂單服務用的還是 15 分鐘**：`configtree` 只在啟動的時候讀。要「檔案一變就生效」，得有人重讀 —— Spring Cloud Kubernetes 的設定重讀，或自己寫一個。
 - **`rollout restart`**：20.7 秒滾完，這段時間 104 張下單全部 201；之後是 20 分鐘。
 
@@ -1304,11 +1259,11 @@ Spring Cloud 的答案是一個 Config Server：設定放在一個 Git repo，�
 - **「不重開就生效」有它自己的代價**：哪些 bean 會重建、重建的那一刻正在處理的請求看到哪一個值、兩台在不同時間生效 —— 每一個都要想。這個專案的設定（逾時、預算、重試、熔斷）大部分在啟動時就建成物件（例如 `RemoteInventoryApi` 的熔斷器與隔艙），換值就是換物件。
 - 我們真的想要「線上調」的，目前只有日誌的等級；Spring Boot 的 actuator 有 `loggers` 端點可以做，這個專案沒有開放它（第 12 站 9.9：管理埠只開放 health、info、prometheus）。
 
-一個這一章**沒有做**的改進：ConfigMap 現在是固定的名字。`kubectl rollout undo` 換回的是 pod 的樣板，**不包括 ConfigMap 的內容**；用 kustomize 的 `configMapGenerator`（名字帶內容的 hash），設定一改名字就變，滾動更新與回滾都會連設定一起帶著走。代價是 migration 的 Job 要跟應用程式在同一個 kustomization 裡才找得到新的名字（8.4.4 把它們分開了）。（📌 第 09 章寫完之後的追記：做了、量了，8.7.3。）
+一個 `k8s/` 裡**沒有做**的改進：ConfigMap 現在是固定的名字。`kubectl rollout undo` 換回的是 pod 的樣板，**不包括 ConfigMap 的內容**；用 kustomize 的 `configMapGenerator`（名字帶內容的 hash），設定一改名字就變，滾動更新與回滾都會連設定一起帶著走。代價是 migration 的 Job 要跟應用程式在同一個 kustomization 裡才找得到新的名字（8.4.4 把它們分開了）。8.7.3 量了它。
 
-### 8.7.3 追記：configMapGenerator —— 設定跟著滾動更新與回滾走
+### 8.7.3 configMapGenerator —— 設定跟著滾動更新與回滾走
 
-📌 **第 09 章寫完之後補的。** 8.7.2 的最後一段說了一個沒有做的改進：ConfigMap 是固定的名字，`kubectl rollout undo` 換回 pod 的樣板、**不換回 ConfigMap 的內容**；用 kustomize 的 `configMapGenerator`（名字帶內容的 hash），設定一改名字就變，滾動更新與回滾都會帶著設定走。代價是 migration 的 Job 找不到新的名字。K14 把三件事都量一次，拿單體的付款期限當例子（K8 的做法：下單的回應相減），權重 100／0。generator 寫在 `target/k14` 的一個 overlay 裡，`k8s/` 底下沒有改：
+這一節的程式碼在 `d09` 分支上，實驗要第 09 章的 kind 環境。8.7.2 的最後一段說了一個沒有做的改進：ConfigMap 是固定的名字，`kubectl rollout undo` 換回 pod 的樣板、**不換回 ConfigMap 的內容**；用 kustomize 的 `configMapGenerator`（名字帶內容的 hash），設定一改名字就變，滾動更新與回滾都會帶著設定走。代價是 migration 的 Job 找不到新的名字。K14 把三件事都量一次，拿單體的付款期限當例子（K8 的做法：下單的回應相減），權重 100／0。generator 寫在 `target/k14` 的一個 overlay 裡，`k8s/` 底下沒有改：
 
 ```bash
 mvn test -Pexperiments -Dtest=K14ConfigGeneratorTest
@@ -1333,7 +1288,7 @@ mvn test -Pexperiments -Dtest=K14ConfigGeneratorTest
 - **③ 代價二：migration 的 Job。** Job 在另一個 kustomization（8.4.4 的理由：Job 的 spec 不能改），它的 `configMapKeyRef` 寫的是固定的名字 —— generator 的名字它不知道：`CreateContainerConfigError: configmap "monolith" not found`。放進同一個 kustomization，名字跟著換了，第一次跑得起來；設定一改，Job 的樣板也跟著變，再 apply 就是 `field is immutable`。
 - **決定**：這個專案不換。設定一改就要重開（8.7.2 的選擇：一次設定的改變 = 一次部署），而 rollout undo 帶不回設定這件事，靠的是「設定也在 git 裡」—— 回滾就是把那一個 commit revert、再部署一次（8.4.6 的 GitOps 正是這樣）。
 
-> ⚠️ **第一版的 overlay 直接產生一個叫 `monolith` 的 ConfigMap**：kustomize 說 base 已經有一個（`behavior must be merge or replace`，K14 第一次的紀錄）；`replace` 的結果還是不帶 hash 的 `monolith` —— base 的那一個本來就不是 generator 產生的（這一句是寫作途中用一個最小的 overlay 重做的：kubectl 1.37.1 內建的 kustomize v5.8.1）。換一個名字、把每一個引用它的地方改過去，才帶得上 hash —— 這也是代價：換成 generator，引用它的每一份 manifest 都要改。
+> ⚠️ **overlay 不能直接產生一個叫 `monolith` 的 ConfigMap**：kustomize 說 base 已經有一個（`behavior must be merge or replace`）；`replace` 的結果還是不帶 hash 的 `monolith` —— base 的那一個本來就不是 generator 產生的（kubectl 1.37.1 內建的 kustomize v5.8.1）。換一個名字、把每一個引用它的地方改過去，才帶得上 hash —— 這也是代價：換成 generator，引用它的每一份 manifest 都要改。
 
 ---
 
@@ -1436,7 +1391,7 @@ spec:
       remove: [traceparent, tracestate, b3, x-b3-traceid, x-b3-spanid, x-b3-parentspanid, x-b3-sampled, x-b3-flags]
 ```
 
-（註解裡的「20 個請求、抽到 4 個」是寫這一章途中的那一次；最後一輪是 100 個、抽到 12 個，下面 K5 的 ①。）
+（註解裡的「20 個請求、抽到 4 個」是另一次；下面 K5 的 ① 是 100 個、抽到 12 個。）
 
 2. **訂單服務信任入口**：一個部署的設定，預設關著：
 
@@ -1518,7 +1473,7 @@ spec:
       ports: [{port: 8081}]
 ```
 
-kind 的網路外掛（kindnet）會執行 NetworkPolicy：套上之後，cluster 裡另一個 pod 連訂單服務的 8080 逾時（下面 K5 的 c），經過入口照樣 200，探針與 Prometheus（8081）照常（K5 之後的實驗都在這個設定下跑）。庫存服務的 8080 也一樣逾時 —— 這一條是寫作途中用一個 curl 的 pod 手動試的，沒有留下紀錄。
+kind 的網路外掛（kindnet）會執行 NetworkPolicy：套上之後，cluster 裡另一個 pod 連訂單服務的 8080 逾時（下面 K5 的 c），經過入口照樣 200，探針與 Prometheus（8081）照常（K5 之後的實驗都在這個設定下跑）。庫存服務的 8080 也一樣逾時（用一個 curl 的 pod 手動試的，K5 沒有量這一條）。
 
 K5 把這三樣拆開來量，四種組合、同一組量法：
 
@@ -1622,11 +1577,11 @@ K5 把這三樣拆開來量，四種組合、同一組量法：
 
 （`k8s/base/config.yaml`，8.4.3。）`native`：Tomcat 的 `RemoteIpValve` 從 `X-Forwarded-For` 的右邊往左看，略過「內部的代理」（預設是私有位址：`10.*`、`172.16`～`31.*`、`192.168.*`……），第一個不是的就是買家。它能信任的前提，跟 8.8.2 一樣：只有入口連得到訂單服務。
 
-⚠️ K6 第一版的 ③ 用 `curl --parallel --rate 80/s`：`--rate` 在 `--parallel` 底下沒有作用，1,600 個請求幾秒內送完、100 個失敗，Redis 裡也掃不到任何一個 key（負載早就結束了）。改成 4 個 `curl` 同時跑、各自一個一個送、每秒 20 個。
+⚠️ ③ 不能用 `curl --parallel --rate 80/s` 送：`--rate` 在 `--parallel` 底下沒有作用，1,600 個請求幾秒內送完、100 個失敗，Redis 裡也掃不到任何一個 key（負載早就結束了）。K6 用 4 個 `curl` 同時跑、各自一個一個送、每秒 20 個。
 
 ### 8.8.4 兩層閘道（K11）
 
-README 原本的誤區寫的是「用了 Spring Cloud Gateway 又用 K8s Ingress，兩套路由規則互相打架」（這一章之後改成 8.14 的說法）。路由規則不只是路徑，還有**重試與逾時**。K11 在入口後面放一個 Spring Cloud Gateway（實驗用，`lab/scg`），它只有一條路由，加上很多人會順手加的那一行：
+用了 Spring Cloud Gateway 又用 K8s Ingress，兩套路由規則會互相打架 —— 路由規則不只是路徑，還有**重試與逾時**。K11 在入口後面放一個 Spring Cloud Gateway（實驗用，`lab/scg`），它只有一條路由，加上很多人會順手加的那一行：
 
 ```yaml
 # 一個團隊「在應用程式這一層」加的閘道：/api/** 轉給訂單服務，順手加上重試（Retry=3 的預設：GET、5xx、再送 3 次）
@@ -1691,7 +1646,7 @@ spec:
 
 三層（入口、Spring Cloud Gateway、訂單服務）各自「再送幾次」，誰都沒有錯 —— 乘起來就是第 06 章 6.3.5 的那張表。**有邏輯的閘道只能有一層**；平台的入口只做 TLS 與轉發，不設重試，逾時比裡面那一層長。
 
-⚠️ 實驗用的 Spring Cloud Gateway 第一版跟訂單服務一樣用 Boot 3.2.5，配 Spring Cloud 2023.0.6（2023.0 支援 Boot 3.2.x，8.3.2）。它起得來，第一個請求就壞：
+⚠️ 實驗用的 Spring Cloud Gateway 如果跟訂單服務一樣用 Boot 3.2.5，配 Spring Cloud 2023.0.6（2023.0 支援 Boot 3.2.x，8.3.2）：它起得來，第一個請求就壞：
 
 ```
 java.lang.NoSuchMethodError: 'java.util.Set org.springframework.http.HttpHeaders.headerSet()'
@@ -1812,13 +1767,13 @@ subjects:
   - {kind: ServiceAccount, name: prometheus, namespace: observability}
 ```
 
-⚠️ 第一版的 Role 與 RoleBinding 寫在 `k8s/observability`，`metadata` 裡寫明了 `namespace: shop`。可是那個資料夾的 `kustomization.yaml` 有 `namespace: observability` —— kustomize 把它們都改成了 `observability`。Prometheus 的日誌一直是：
+⚠️ Role 與 RoleBinding 不能放在 `k8s/observability`，就算 `metadata` 裡寫明了 `namespace: shop`：那個資料夾的 `kustomization.yaml` 有 `namespace: observability` —— kustomize 把它們都改成 `observability`。Prometheus 的日誌會一直是：
 
 ```
 failed to list *v1.Pod: pods is forbidden: User "system:serviceaccount:observability:prometheus" cannot list resource "pods" in API group "" in the namespace "shop"
 ```
 
-target 是空的，K0 第一版印出 `[]`。搬到 `k8s/base` 之後，Prometheus 在下一次重試時找到了三個 target。
+target 是空的。放到 `k8s/base` 之後，Prometheus 在下一次重試時就找到三個 target。
 
 K7：庫存服務 2 台 → 3 台 → 1 台 → 0 台，每一步等 target 跟上；0 台的時候每秒 2 張下單、每 15 秒問一次告警，看 4 分鐘。先用第 12 站（第 07 章改過）的規則：
 
@@ -1862,7 +1817,7 @@ K7：庫存服務 2 台 → 3 台 → 1 台 → 0 台，每一步等 target 跟�
          labels: {severity: warning}
 ```
 
-（註解裡的「pending 30 秒之後自己解除」是寫這一章途中的那一次；最後一輪的舊規則是第 15 秒 pending、第 60 秒解除，上面的紀錄。）
+（註解裡的「pending 30 秒之後自己解除」是另一次；上面那一次是第 15 秒 pending、第 60 秒解除。）
 
 promtool 的測試餵它 K8s 的形狀：兩台、先縮掉一台、再縮掉另一台：
 
@@ -1914,7 +1869,7 @@ promtool 的測試餵它 K8s 的形狀：兩台、先縮掉一台、再縮掉另
 
 `ShopServiceGone{inventory-service}` 第 45 秒 pending、**第 105 秒 firing**（`for: 1m`，加上每 15 秒一次的抓取與評估）。`ShopDown` 一樣在第 45 秒自己解除了 —— 它在 K8s 上剩下的意思是：「這一個 pod 還在，可是抓不到」（8.5.2 卡住的那一台就是這一種；K4 沒有看告警，它那時候響不響沒有量）。
 
-📌 **第 09 章寫完之後的追記：抑制設了。** `ShopServiceGone{job}` 響的時候，同一個 `job` 的 `ShopDown` 不送；Alertmanager 也改成照 severity 分組（一個事故一張單）。H7 把 compose 上單體停掉的那一對告警送進 Alertmanager：原本兩張單，現在一張、只有 `ShopServiceGone`（第 07 章 7.11.1）。
+第 07 章 7.11.1 設了抑制：`ShopServiceGone{job}` 響的時候，同一個 `job` 的 `ShopDown` 不送；Alertmanager 也改成照 severity 分組（一個事故一張單）。H7 把 compose 上單體停掉的那一對告警送進 Alertmanager：原本兩張單，現在一張、只有 `ShopServiceGone`。這一段的設定與 H7 在 `d09` 分支上。
 
 ### 8.9.2 span 送到一個名字：Collector
 
@@ -2004,9 +1959,9 @@ spec:
 
 多一跳，換來的是：後端換成別的、多送一份、在 span 的路上做事（例如第 07 章 7.8.3 的尾端抽樣），都只改這裡，應用程式不用動。
 
-入口的 Envoy 送到 4317（OTLP/gRPC），所以 Collector 多聽一個 4317 —— K0 印出的服務裡有 `shop.shop`，就是從這裡來的。設定裡的註解說 Envoy「只送 gRPC」，說得太滿：我沒有查 Envoy 能不能改用 HTTP 送，只用了 Envoy Gateway 這樣設的結果。跨 namespace 的引用，Gateway API 的規則是要被引用的那一邊用 `ReferenceGrant` 同意；沒有它會怎樣，這裡沒有試。
+入口的 Envoy 送到 4317（OTLP/gRPC），所以 Collector 多聽一個 4317 —— K0 印出的服務裡有 `shop.shop`，就是從這裡來的。設定裡的註解說 Envoy「只送 gRPC」，說得太滿：沒有查 Envoy 能不能改用 HTTP 送，這裡只用了 Envoy Gateway 這樣設的結果。跨 namespace 的引用，Gateway API 的規則是要被引用的那一邊用 `ReferenceGrant` 同意；沒有它會怎樣，這裡沒有試。
 
-尾端抽樣這一章**沒有做**：它要每一個服務都送 100% 的 span 到 Collector（第 07 章 7.8.2 量過，後端收到的量差 10 倍），規則（錯誤、慢的、其他抽 10%）寫在 Collector 的 `tail_sampling`。（📌 第 09 章寫完之後的追記：寫了、量了，第 07 章 7.8.4。）
+尾端抽樣在第 07 章 7.8.4：它要每一個服務都送 100% 的 span 到 Collector（第 07 章 7.8.2 量過，後端收到的量差 10 倍），規則（錯誤、慢的、其他抽 10%）寫在 Collector 的 `tail_sampling`。
 
 ### 8.9.3 Jaeger 的資料放在哪裡（K9）
 
@@ -2083,7 +2038,7 @@ Badger 只能有一個行程打開它（所以 Deployment 用 `strategy: Recreat
     c. 記憶體（working set）：{inventory-service/66sss/app=422, inventory-service/66sss/istio-proxy=40, inventory-service/x2wfp/app=399, inventory-service/x2wfp/istio-proxy=34, order-service/fnrfz/app=479, order-service/fnrfz/istio-proxy=39}
 ```
 
-- **延遲**：每秒 10 張、40 秒，p50 35 → 45 ms、p99 96 → 293 ms。各只跑一次，這台筆電的 p99 很會跳（寫這一章途中的另一次是 177 → 219 ms）。每一張下單多經過三個代理：入口 → 訂單服務的 sidecar；訂單服務 → 自己的 sidecar → 庫存服務的 sidecar。
+- **延遲**：每秒 10 張、40 秒，p50 35 → 45 ms、p99 96 → 293 ms。各只跑一次，這台筆電的 p99 很會跳（再跑一次是 177 → 219 ms）。每一張下單多經過三個代理：入口 → 訂單服務的 sidecar；訂單服務 → 自己的 sidecar → 庫存服務的 sidecar。
 - **記憶體**：每一個 sidecar 34～40 MiB（kubelet 的 working set）；這三個 pod 多了 113 MiB。應用程式的容器是 396～568 MiB。
 - 這兩個數字之外，還有一個控制平面（istiod）要部署、升級，sidecar 的版本要跟著它走。
 
@@ -2131,7 +2086,7 @@ Badger 只能有一個行程打開它（所以 Deployment 用 `strategy: Recreat
 **這一章搬到 K8s，實際付出的**：
 
 - 部署：`k8s/` 底下 23 個檔案（不算實驗用的 `k8s/lab`）、一支腳本。migration 從「部署的一個步驟」變成一個 Job，部署分三步（8.4.4）。
-- 程式：兩處（8.6.3 的限流、8.8.2 的入口信任；通知的租約是途中修的第 12 站的 bug，跟 K8s 無關）。
+- 程式：兩處（8.6.3 的限流、8.8.2 的入口信任；通知的租約修的是第 12 站的 bug，跟 K8s 無關）。
 - 設定：兩個 K8s 才需要的值（`SHOP_DEPLOYMENT_EDGE_TRUST_TRACEPARENT`、`SERVER_FORWARD_HEADERS_STRATEGY`）。
 - 告警：一條（8.9.1）。
 - 被它揭露的：庫存服務對訂單服務限流（8.6.3）—— 第 03 章就有的 bug，換了部署的形狀才看得到。
@@ -2164,7 +2119,7 @@ Badger 只能有一個行程打開它（所以 Deployment 用 `strategy: Recreat
 
 | 名稱 | 種類 | 跑在哪裡 | 守什麼／量什麼 |
 |---|---|---|---|
-| `NotificationClaimTest` | 測試（3 個） | Testcontainers | 通知的認領是一個租約（第 12 站 7.7.2 的追記） |
+| `NotificationClaimTest` | 測試（3 個） | Testcontainers | 通知的認領是一個租約（第 12 站 7.7.2） |
 | `InternalRateLimitTest` | 測試（2 個） | Testcontainers，庫存服務的角色 | 自己的服務不算進每個 IP 的額度；沒有 token 的照樣限流（8.6.3） |
 | `EdgeTraceparentTest` | 測試（1 個） | Testcontainers，`@AutoConfigureObservability` | 入口受信任時，`/api/**` 接上入口的 `traceparent`（8.8.2） |
 | `alerts_test.yml` | promtool（多 1 組） | Docker | K8s 的形狀：少一台不響、一台都沒有了才響（8.9.1） |
@@ -2262,25 +2217,13 @@ TEST_INFRA MySQL 最多同時 5 條連線（max_connections 151）
 [INFO] Total time:  06:15 min
 ```
 
-這一章的整套測試跑了兩次，都是 `mvn clean verify`、都在最後的 commit 上：
-
-- **第一次**：最後一輪實驗之前（程式都改完了）。368 個、failsafe 39 個，全綠，6 分 15 秒。
-- **第二次是上面那一份**：最後一輪實驗的最後一步（I1 跑在第一個 commit 上，其他的實驗、E4、B1 都跑在這一個 commit 上）。
+這一章的整套測試（`mvn clean verify`，最後的 commit）跑了兩次，兩次都是 368 個、failsafe 39 個，全綠。
 
 第 12 站的驗收 Q10（第 06、07 章說它偶爾會紅）這兩次都綠。兩次全綠證明不了一個 8～36 次才紅一次的競態不在了；證明它的是 `NotificationClaimTest` —— 它把那個順序釘住，每一次都走得到。
 
-途中另外跑過幾次只包含受影響測試的子集，沒有算在上面：
-
-| 子集 | 結果 |
-|---|---|
-| Q10 的修正 cherry-pick 過來之後：`NotificationClaimTest`、`MigrationOwnershipTest`、`ServiceDatabaseTest`、`EventFlowTest`、`DeadLetterReplayTest`、驗收，26 個 | 全綠 |
-| `InternalRateLimitTest`，修正之前 | 紅 1 個（8.6.3 的 `{200=5, 429=15}`），這是要它紅的 |
-| 修正之後：`InternalRateLimitTest`、`InternalTraceparentTest`、`InventoryServiceApiTest`、`RateLimitTest`，15 個 | 全綠 |
-| 入口的信任：`EdgeTraceparentTest`、`InternalTraceparentTest`、驗收，14 個 | 全綠 |
-
 ### 8.13.1 本章其餘檔案的完整內容
 
-**`src/main/java/com/example/shop/notification/internal/NotificationHandler.java`**（第 12 站 7.7.2 的追記）
+**`src/main/java/com/example/shop/notification/internal/NotificationHandler.java`**（第 12 站 7.7.2）
 
 ```diff
  import org.springframework.jdbc.core.JdbcTemplate;
@@ -2353,7 +2296,7 @@ TEST_INFRA MySQL 最多同時 5 條連線（max_connections 151）
      }
 ```
 
-**`src/main/resources/db/migration/notification/V35__notification_claim_lease.sql`**（第 12 站 7.7.2 的追記；第 12 站的專案裡是 V26）
+**`src/main/resources/db/migration/notification/V35__notification_claim_lease.sql`**（第 12 站 7.7.2；第 12 站的專案裡是 V26）
 
 ```sql
 -- 7.7.2 的追記（13 站第 08 章）：通知的認領要分得出「有人正在寄」與「上一次寄失敗了」——只看 attempts 分不出來。
@@ -4680,7 +4623,7 @@ class EdgeTraceparentTest {
 }
 ```
 
-**`src/test/java/com/example/shop/notification/internal/NotificationClaimTest.java`**（第 12 站 7.7.2 的追記）
+**`src/test/java/com/example/shop/notification/internal/NotificationClaimTest.java`**（第 12 站 7.7.2）
 
 ```java
 package com.example.shop.notification.internal;
@@ -5080,7 +5023,7 @@ class NotificationClaimTest {
 | 改了 ConfigMap 就生效 | 環境變數不會變；掛成檔案的，53 秒後檔案變了，Spring Boot 不重讀（8.7.1） |
 | 服務網格的 sidecar 預設會重試，所以 503 會被放大 | Istio 1.31 預設只重試連不上、refused-stream 與幾個 gRPC 的狀態，503 不重試（8.10.1）。但入口的重試政策一設下去，沒寫條件就含 503、而且不分方法（8.10.2）—— 每一層都要去看它實際的設定 |
 | Spring Cloud 2023.0 支援 Boot 3.2，所以哪一個 2023.0.x 都可以 | 2023.0.6 在 Boot 3.2.5 上起得來，第一個請求就 `NoSuchMethodError`（8.8.4） |
-| 沒有 `preStop`，滾動更新一定會掉請求 | 在這個組合（一個 node、JDK HttpClient、Tomcat 的優雅關機）上，有沒有都是 0 個錯誤（8.6.4）。這不代表可以拿掉它：入口那一段、多 node 的時候，這裡都沒有量 |
+| 沒有 `preStop`，滾動更新一定會掉請求 | 在這個組合（一個 node、JDK HttpClient、Tomcat 的優雅關機）上，有沒有都是 0 個錯誤（8.6.4）。三個 node、服務之間也是 0 個錯誤（8.6.6）。這不代表可以拿掉它：入口那一段這裡沒有量 |
 
 ---
 

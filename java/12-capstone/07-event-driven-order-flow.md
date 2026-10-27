@@ -14,30 +14,6 @@
 > - **熱點商品的落帳移出下單交易**（7.6）：下單只寫預留列；消費者在 commit 之後計入。一個新的事件 E10，處理「Redis 放進了不存在的庫存」。
 > - **一次 RabbitMQ 停機演練**（7.9）與 **INV-2、INV-3 的對帳排程**（7.10）。
 > - **2 支新的 API**、**2 個 migration**（V13、V14）、**驗收 Q9、Q10、Q11 變綠**：`Skipped` 從 4 變成 1。
->
-> 這一章的實測事故：
->
-> - **落帳訊息掉了，對帳把它變成超賣**（7.2.1）：「commit 之後送一則『請落帳』」，RabbitMQ 停 10 秒 —— 100 件商品賣出 177、178 張訂單，**超賣 77、78 件**。第 06 章的對帳看到「Redis 比 MySQL 少」，盡責地把那些庫存放回了閘門。**MySQL 的每一條 CHECK、每一條不變量都成立。**
-> - **`kill -9` 的那一刻**（7.2.2）：正式的程式、每秒 50 張訂單、隨機 `kill -9`，五輪共 50 次 —— 遺失 0；重複 0～182 則。逐次比對的兩輪裡，每一次 kill 的重複都不超過「死掉的那個行程已經認領、還沒標記」的列數 —— 機器越忙，relay 的一批越大，重複就越多。Outbox 是 at-least-once，不是 exactly-once。
-> - **退款的回應沒回來**（7.2.3）：金流退了錢、回應逾時。沒有冪等鍵，20 筆退款退了 40 次錢 —— **用 `processed_messages` 包住金流呼叫，也是 40 次**。
->
-> ⚠️ **還有幾個，是寫這一章的途中被這一章自己的實驗抓到的**：
->
-> - **一場重試風暴**（7.5.3）：重試佇列「回到原佇列」用 headers exchange，header 叫 `x-shop-target` —— `x-match=all` 不看 `x-` 開頭的 header。一個 SMTP 失敗，3.9 秒裡 **209 次重試、281 則死信**，還有一個消費者收到不該收的事件，**把一張好好的訂單取消了**。修好之後，**舊的綁定還留在 broker 上**。
-> - **RabbitMQ 卡住，整站 503 —— 連商品詳情都是**（7.9.1）：`docker pause` 的 50 秒裡，幾乎每一個請求都是 503。執行緒堆疊說出了一條四層的鏈：relay 在資料庫交易裡等 broker → 它的間隙鎖擋住訂單的 outbox INSERT → 那張訂單手上有 `inventory` 的列鎖 → 18 張訂單排在後面 → 20 條連線用完。**每一層都是對的，錯在 relay 拿著鎖等網路。**
-> - **熱點那一列還在下單交易裡**（7.6.6）：拿掉了 `UPDATE inventory`，但 `INSERT inventory_reservations` 的外鍵檢查照樣要那一列的 S 鎖，跟落帳的 X 鎖互相等。列鎖等待的總時間從每輪 116～176 秒降到 8～16 秒，沒有歸零。
-> - **RabbitMQ 凍結的時候，新的實例起不來**（7.9.4）：正在跑的實例沒事，但新啟動的那一個卡在 listener container 的 `start()` 上 —— 60 秒起不來，沒設上限的那一次 400 秒都沒起來。H6 量到的「啟動 40 秒」，其實是「等到 broker 回來」。
-> - **「新建」與「已經有了」回傳值一樣**（7.8.2）：`INSERT … ON DUPLICATE KEY UPDATE` 在 Connector/J 的預設設定下，兩種都回 1。
->
-> 另外還有幾個比較小、但一樣是實測到的坑：
->
-> - **加一個取消原因要整表複製**（7.6.3）：改 `orders` 的 CHECK，10 萬列 2.25～3.61 秒、期間不能下單 —— 這一章因此沒有加。
-> - **Redis 偏高的代價變了**（7.6.3）：搶購中 `FLUSHALL`，三次實驗、十二輪 FLUSHALL，每輪 3～83 個人拿到 201 之後被取消。第 06 章同樣的偏高只是多一句 409。
-> - **測試之間的訊息**（7.12.1）：實驗留在佇列裡的一千多則訊息，讓下一次的 `EventFlowTest` 三個紅。
-> - **實驗的資料讓對帳紅了**（7.13）：一個診斷實驗只把庫存歸零、沒刪自己的預留，全套測試的 INV-2 抓到差異 1 筆 —— 對帳排程抓到的第一個差異，來自我自己。
-> - **一個 migration 比程式碼新**（7.6.6）：讓第 06 章的程式碼連到這一章的資料庫，要 `ignore-migration-patterns=*:future`，不是 `*:missing`。
->
-> 以及一個**部分達成**的目標：熱點搶購的 p99 < 500 ms（7.6.6）。同樣的程式碼交錯量了三組：機器閒的時候（load 約 5～9），這一章 6 輪裡 5 輪在 150～187 ms，第 06 章 6 輪裡 2 輪；機器忙的時候（10～27），兩者都是秒級。熱點那一列的鎖在三組裡都少了 4 到 20 倍，但它已經不是 p99 的主因。
 
 ## 7.1 學習目標
 
@@ -106,9 +82,9 @@ mvn test -Pexperiments -Dtest=H1LostSettlementTest
 
 - **這一章的實驗會真的停掉 RabbitMQ、真的 `kill -9` 行程。** 實驗結束時會把 RabbitMQ 啟動回來；中途中斷了，記得 `docker start shop-rabbitmq-1`（或 `docker unpause`）。
 - **測試環境預設不送、不收事件**（`src/test/resources/config/application.yml` 的 `shop.messaging.relay-enabled: false`、`consumers-enabled: false`，7.12.1 說為什麼）。要事件流的實驗與測試自己打開。
-- 第 06 章的兩條規矩照舊：**延遲的比較一律交錯執行**（這台機器的 load average 在這一章的實驗期間從 4 到 30 都有，每一段輸出旁邊我都盡量記下了它）；**一次只跑一個實驗**。這一章我又犯了一次後者的變形：H1 跑到一半時，我在旁邊 `mvn compile` 了一次 —— 編譯會改寫正在跑的那個 JVM 用的 `target/classes`。那一次的數字我沒有用，整組重跑了（7.2.1 的是重跑的）。
+- 第 06 章的兩條規矩照舊：**延遲的比較一律交錯執行**（這台機器的 load average 在這一章的實驗期間從 4 到 30 都有，每一段輸出旁邊我都盡量記下了它）；**一次只跑一個實驗**。實驗跑到一半時，也不要在旁邊 `mvn compile` —— 編譯會改寫正在跑的那個 JVM 用的 `target/classes`。
 - 長的實驗一律 `caffeinate -i` 包起來（6.9.2 那一次筆電睡著，100 秒的實驗跑了 9,402 秒）。
-- **這一章的程式碼在途中被自己的實驗改了兩次**：7.9.2（relay 送出時不拿鎖）與 7.9.4（消費者在背景啟動）。7.9.2 之後，每一個經過 relay 的實驗都重跑了；7.9.4 之後重跑了 H5（7.6.6 的最後一組與外鍵對照）、H6、H6b 與全套測試。H1、H2、H7、H8 是 7.9.2 之後、7.9.4 之前量的 —— 7.9.4 只改了消費者在啟動時什麼時候接上 broker。H3、H4、H9 不經過 relay。
+- **這一章的程式碼被自己的實驗改了兩次**：7.9.2（relay 送出時不拿鎖）與 7.9.4（消費者在背景啟動）。7.9.2 之後，每一個經過 relay 的實驗都重跑了；7.9.4 之後重跑了 H5（7.6.6 的最後一組與外鍵對照）、H6、H6b 與全套測試。H1、H2、H7、H8 是 7.9.2 之後、7.9.4 之前量的 —— 7.9.4 只改了消費者在啟動時什麼時候接上 broker。H3、H4、H9 不經過 relay。
 
 ### 7.2.1 事故一：落帳訊息掉了，對帳把它變成超賣 ★★★
 
@@ -189,7 +165,7 @@ mvn test -Pexperiments -Dtest=H1LostSettlementTest
 - **「要落帳」是一列資料，不是一則記憶體裡的訊息。** 它跟訂單在同一個交易裡 —— 訂單 commit 了，它就 commit 了（7.4）。
 - **預留列在下單交易裡就寫了**（只是數量還沒計入 `reserved`，`counted = FALSE`，7.6）。對帳算 Redis 該是多少的時候，會把這些「還沒計入」的也扣掉（`HotStock.GATE_BASE_SQL`，7.6.2）—— 所以就算落帳還沒做，對帳也不會把它們放出去。
 
-> ⚠️ **這個實驗的第一版，naive 的消費者還踩到了另一個坑。** RabbitMQ 停機的那一刻，有一則已經處理完、還沒 ack 的「請落帳」，在重啟之後被重送：`UPDATE` 成功、`INSERT inventory_reservations` 撞上 `uk_reservations_order_product`、交易 rollback、例外丟出去、Spring 預設把它**重新排隊** —— 那一則訊息被處理了 **1,477 次**。那是 11-messaging/06 6.3.4 的無窮迴圈，不是這個實驗要量的東西；上面的數字是把 naive 的消費者改成「失敗就丟掉」（`setDefaultRequeueRejected(false)`）、並且在 7.9.2 改完 relay 之後重跑的（改 relay 之前的那一次是超賣 77、76 件，ours 一樣是 0）。第一版的結果是超賣 74、78 件（其中一輪的 `reserved` 停在 99，就是那一則重送的訊息一直沒成功）。
+> ⚠️ **naive 的消費者照 Spring 的預設，還會踩到另一個坑。** RabbitMQ 停機的那一刻，有一則已經處理完、還沒 ack 的「請落帳」，在重啟之後被重送：`UPDATE` 成功、`INSERT inventory_reservations` 撞上 `uk_reservations_order_product`、交易 rollback、例外丟出去、Spring 預設把它**重新排隊** —— 那一則訊息被處理了 **1,477 次**。那是 11-messaging/06 6.3.4 的無窮迴圈，不是這個實驗要量的東西；上面的數字是把 naive 的消費者改成「失敗就丟掉」（`setDefaultRequeueRejected(false)`）、並且在 7.9.2 改完 relay 之後重跑的（改 relay 之前的那一次是超賣 77、76 件，ours 一樣是 0）。照預設重新排隊的時候，結果是超賣 74、78 件（其中一輪的 `reserved` 停在 99，就是那一則重送的訊息一直沒成功）。
 
 > 📌 **11-messaging/02 的 2.3.2 已經說過：那個「窗」不是 commit 與送出之間的 46 微秒，而是「送訊息這件事失敗」的整段期間** —— 這裡就是 broker 停掉的 10 秒，命中率 100%。
 > 這個專題多出來的是下一步：**第 06 章的對帳把「掉了 77 則訊息」放大成了「超賣 77 件」。** 兩個各自正確的機制（commit 之後才送、Redis 偏低就補回來）疊在一起，變成一個會超賣的系統。
@@ -251,7 +227,7 @@ mvn test -Pexperiments -Dtest=H2RelayKillTest
   計數佇列：收到 1843 則，不同的 eventId 1661 個 │ 遺失 0 │ 重複的 eventId 182 個（多送了 182 則）
 ```
 
-**重複了 182 則。** 一開始我以為這是一個 bug，所以加了上面那兩欄。如果重複只能來自「死掉的行程的租約」，那麼**每一次 kill 的重複數，都不會超過那一刻租約裡的列數**；而租約裡有幾列，取決於 relay 的一批有多大 —— 機器忙、relay 落後、一批就大（`relay-batch` 上限 100）。上面那一次「還沒送出的」最多 175 則，比閒的那一次多了一個數量級。
+**重複了 182 則。** 如果重複只能來自「死掉的行程的租約」，那麼**每一次 kill 的重複數，都不會超過那一刻租約裡的列數**；而租約裡有幾列，取決於 relay 的一批有多大 —— 機器忙、relay 落後、一批就大（`relay-batch` 上限 100）。上面那一次「還沒送出的」最多 175 則，比閒的那一次多了一個數量級。
 
 為了驗證，我用 8 個 `yes > /dev/null` 把 8 核的 CPU 佔滿、等 20 秒，再跑一次（load average 從 11.4 升到 30.3）：
 
@@ -495,7 +471,7 @@ UPDATE outbox_events SET claimed_until = CURRENT_TIMESTAMP(3) + INTERVAL ? MICRO
 
 上面是節錄：沒送出去的那幾列怎麼處理、`message()` 的信封格式（消費端與驗收 Q10 都照這個格式讀）、`loop()`、啟動與停止，在 7.13.1 的完整 `RabbitOutboxRelay` 裡；`OutboxStore` 的完整內容也在那裡。
 
-**這是第二版。** 第一版的 ①～④ 在**同一個交易**裡：claim 的那幾列一直鎖到 confirm 回來才 commit。我當時在這一節寫的理由是「鎖住的只是 `outbox_events` 的幾十列，沒有人在等它們」—— 7.9 的演練證明了這句話是錯的：broker 被 `docker pause` 的時候，那個交易跟著卡住，它的鎖擋住了每一張訂單寫 outbox 的那一句 INSERT，連線池在 20 秒內被用光，**整站 503，連商品詳情都是**。過程與量測在 7.9.2。
+**這是第二版。** 第一版的 ①～④ 在**同一個交易**裡：claim 的那幾列一直鎖到 confirm 回來才 commit，理由是「鎖住的只是 `outbox_events` 的幾十列，沒有人在等它們」—— 7.9 的演練證明了這句話是錯的：broker 被 `docker pause` 的時候，那個交易跟著卡住，它的鎖擋住了每一張訂單寫 outbox 的那一句 INSERT，連線池在 20 秒內被用光，**整站 503，連商品詳情都是**。過程與量測在 7.9.2。
 
 第二版的四步：
 
@@ -703,7 +679,7 @@ for (EventHandler h : handlers) {
 
 #### ⚠️ 第一版：一個 SMTP 失敗，3.9 秒、209 次重試、281 則死信、一張訂單被取消
 
-第一版的 header 叫 `x-shop-target`。`EventFlowTest.mailerDownDeadLetters` 讓模擬的 SMTP 一直失敗、下一張一般商品的訂單，期待：通知重試 5 次之後 `FAILED`、死信佇列 1 則、訂單照常是 `PENDING_PAYMENT`。結果：
+header 如果叫 `x-shop-target`：`EventFlowTest.mailerDownDeadLetters` 讓模擬的 SMTP 一直失敗、下一張一般商品的訂單，期待：通知重試 5 次之後 `FAILED`、死信佇列 1 則、訂單照常是 `PENDING_PAYMENT`。結果：
 
 ```
 NTF-1 AC-4：{status=FAILED, attempts=36}；死信佇列 2 則；訂單 20261002-775165 狀態 CANCELLED
@@ -1032,7 +1008,7 @@ shortages.increment();                                              // shop.inve
 log.warn("HOT_SETTLEMENT_SHORTAGE orderId={} productId={} requested={} available={}（訂單會被取消）", …);
 ```
 
-> 📌 **專題寫完之後的追記**：這一段沒有把閘門減掉的數量加回 Redis。一張買 q > 1 件的訂單在這裡失敗時，Redis 會**偏低**（6.5.3 的 ⚠️ 搬到了這裡）。修法是在 `shortages.increment()` 之前，把「真的存在」的那一部分（`GATE_BASE_SQL`，上限 q）用 `inventory.stock-returned` 加回去 —— 程式碼、理由與前後的實測在 6.5.3 的追記。
+> ⚠️ **這一段沒有把閘門減掉的數量加回 Redis。** 一張買 q > 1 件的訂單在這裡失敗時，Redis 會**偏低**（6.5.3 的 ⚠️ 搬到了這裡）。修法是在 `shortages.increment()` 之前，把「真的存在」的那一部分（`GATE_BASE_SQL`，上限 q）用 `inventory.stock-returned` 加回去 —— 程式碼、理由與前後的實測在 6.5.3。參考實作的 `ch07` 分支上還是改之前的寫法。
 
 `ordering.stock-shortage` 消費者收到它，對訂單套用一個新的事件 —— **E10 `STOCK_SHORTAGE`**。0.5 的轉移表從 6 × 9 變成 6 × 10：
 
@@ -1189,7 +1165,7 @@ git worktree add ../shop-ch06 ch06        # ch06：你自己第 06 章結束時�
 ### done load 9.35 13.46 15.49
 ```
 
-（`load` 是每一次開始前的 load average。第 06 章的 worktree 要帶 `--spring.flyway.ignore-migration-patterns=*:future` 才起得來：資料庫已經套用了 V13、V14，對第 06 章的程式碼來說，那是「未來的」migration —— 我第一次寫成 `*:missing`，Flyway 照樣拒絕啟動，那一次的數字作廢、整組重跑。）
+（`load` 是每一次開始前的 load average。第 06 章的 worktree 要帶 `--spring.flyway.ignore-migration-patterns=*:future` 才起得來：資料庫已經套用了 V13、V14，對第 06 章的程式碼來說，那是「未來的」migration —— 寫成 `*:missing` 的話，Flyway 照樣拒絕啟動。）
 
 | | 第 06 章 | 第 07 章 |
 |---|---|---|
@@ -1245,7 +1221,7 @@ mvn test -Pexperiments -Dtest=H5bDiagnoseTest
 
 **那個共享鎖是外鍵。** `inventory_reservations.product_id → inventory.product_id`（V3 的 `fk_reservations_inventory`）：InnoDB 在 INSERT 子表時，要對父表的那一列加 S 鎖確認它存在。第 02 章 2.6.2 遇過它：那一節的死鎖，就是「外鍵檢查要的 S 鎖」造成的。7.6 把下單交易的 `UPDATE inventory` 拿掉了，**但 `INSERT inventory_reservations` 還在 —— 它照樣要碰那一列，只是從 X 鎖變成 S 鎖。** S 鎖彼此相容，下單的交易之間不再互相排隊；但落帳的消費者每計入一筆，都要拿一次 X 鎖，跟正在下單的那幾十個交易的 S 鎖互相等。
 
-設計 7.6 的時候我把這件事寫在筆記裡當成一個風險（「外鍵的 S 鎖會跟落帳的 X 鎖互相等」），但沒有先量它；H5b 讓它從推測變成了數字。（修正 relay 之前的那一次 H5b，還多一種等待：`outbox_events` 的間隙鎖，64 次取樣 —— relay 的 `FOR UPDATE` 擋住了訂單寫 outbox。7.9.2 的 READ COMMITTED 之後，它不見了。）
+（修正 relay 之前的那一次 H5b，還多一種等待：`outbox_events` 的間隙鎖，64 次取樣 —— relay 的 `FOR UPDATE` 擋住了訂單寫 outbox。7.9.2 的 READ COMMITTED 之後，它不見了。）
 
 **為了確認是外鍵，我在本機把它拿掉、重跑**（`ALTER TABLE inventory_reservations DROP FOREIGN KEY fk_reservations_inventory, ALGORITHM=INPLACE, LOCK=NONE`，0.091 秒；加回去 3.54 秒），有外鍵、沒有外鍵交錯：H5 各兩次（每次兩輪）、H5b 各一次：
 
@@ -1422,7 +1398,7 @@ for (Target t : targets(e)) {
 
 Q10 的通知那一半（7.11.2）：同一則 `order.placed` 同時送 10 次 → `notifications` 1 列、`attempts = 1`。
 
-> ⚠️ **專題寫完之後的追記（13 站第 06 章發現，第 08 章修）：② 的「只有一條會成功認領」，在一個順序下不成立。** 13 站第 06 章的一次整套測試，驗收 Q10 紅了：`notification_attempts=2`。單獨跑 Q10，13 站第 05 章的程式碼上 36 次紅 1 次、第 06 章的程式碼上 8 次紅 1 次 —— 那兩章都沒有碰通知，這是這一章的程式。
+> ⚠️ **② 的「只有一條會成功認領」，在一個順序下不成立。** 驗收 Q10 偶爾會紅：`notification_attempts=2`。
 >
 > 「`attempts` 還是我讀到的那個 n」擋得住**兩條讀到同一個 n**，擋不住這一種：
 >
@@ -1437,7 +1413,7 @@ Q10 的通知那一半（7.11.2）：同一則 `order.placed` 同時送 10 次 �
 > Expected size: 1 but was: 2 in:
 > ```
 >
-> **只看 `attempts`，分不出「有人正在寄」與「上一次寄失敗了」。** 後者必須能再認領 —— AC-4 的重試就是這樣寄第 2～6 次的。分得出來的是一個**租約**，跟 7.4.2 的 relay 同一個做法（V14 的 `outbox_events.claimed_until`）：
+> **只看 `attempts`，分不出「有人正在寄」與「上一次寄失敗了」。** 後者必須能再認領 —— AC-4 的重試就是這樣寄第 2～6 次的。分得出來的是一個**租約**，跟 7.4.2 的 relay 同一個做法（V14 的 `outbox_events.claimed_until`）。下面的 V26 接在第 09 章最後一個 migration（V25）之後：
 >
 > ```sql
 > -- V26__notification_claim_lease.sql
@@ -1469,7 +1445,7 @@ Q10 的通知那一半（7.11.2）：同一則 `order.placed` 同時送 10 次 �
 >
 > 三個決定：
 >
-> - **認領不到，丟例外，不是 `continue`。** 第一版認領不到就跳過 —— 那一份訊息被 ack 掉。如果 A 寄到一半行程死了，A 那一份會被 broker 重新投遞；它一進來就撞上 A 還沒過期的租約，跳過、ack，**這封信就永遠不會寄了**。丟例外（`InFlight`）讓它走 7.5.3 的重試階梯，晚一點再看：那時候不是 `SENT`（跳過），就是租約過期了（再認領）。
+> - **認領不到，丟例外，不是 `continue`。** 認領不到就跳過的話，那一份訊息會被 ack 掉。如果 A 寄到一半行程死了，A 那一份會被 broker 重新投遞；它一進來就撞上 A 還沒過期的租約，跳過、ack，**這封信就永遠不會寄了**。丟例外（`InFlight`）讓它走 7.5.3 的重試階梯，晚一點再看：那時候不是 `SENT`（跳過），就是租約過期了（再認領）。
 > - **寄失敗要放掉租約。** 不然 AC-4 的下一級重試（正式環境 1 秒後）會撞上自己剛蓋的租約。
 > - **租約 10 秒**（`CLAIM_LEASE`）：要比寄一封信的逾時長（不然還在寄，另一份就認領得到），比重試階梯的總長短（1 + 2 + 4 + 8 + 16 = 31 秒；不然行程死掉之後，另一份的重試用完、進了死信，租約都還沒過期）。測試環境的階梯縮短成 3.1 秒，在那裡行程死在寄信裡的話會進死信 —— 沒有測試走這條路。
 >
@@ -1483,9 +1459,9 @@ Q10 的通知那一半（7.11.2）：同一則 `order.placed` 同時送 10 次 �
 >
 > 第三行就是上面「擋不住的一種」，現在的樣子：行程死在寄信與標記之間，那封信可能已經寄出去了；租約過期之後，重送的那一份**再寄一次**。這個窗還在 —— 租約讓它從「馬上」變成「10 秒之後」，沒有讓它消失。
 >
-> 把租約的條件拿掉（突變），只跑 `NotificationClaimTest`：3 個裡紅 2 個。改完之後，整套 `mvn clean verify`：233 個測試全綠、四道覆蓋率門檻都過（4:12）。那一次的 Q10，10 份投遞裡有 1 份剛好撞進了這個窗：日誌裡一行 `EVENT_RETRY consumer=notification.order-events … attempt=1，PT0.1S 後重試：…InFlight…`，100 ms 後重試、看到 `SENT`、跳過 —— `notification_attempts=1`。舊的程式碼遇到同一個順序，會寄第二封。
+> 把租約的條件拿掉（突變），只跑 `NotificationClaimTest`：3 個裡紅 2 個。改完之後，Q10 的 10 份投遞裡如果有 1 份剛好撞進了這個窗，日誌裡會有一行 `EVENT_RETRY consumer=notification.order-events … attempt=1，PT0.1S 後重試：…InFlight…`，100 ms 後重試、看到 `SENT`、跳過 —— `notification_attempts=1`。舊的程式碼遇到同一個順序，會寄第二封。
 >
-> （7.13.1 的完整 `NotificationHandler` 是修正之前的樣子。）
+> （7.13.1 的完整 `NotificationHandler` 是修正之前的樣子。參考實作的 `ch07` 分支上還是改之前的寫法。）
 
 ### 7.7.3 AC-4：重試 5 次、死信、下單不受影響
 
@@ -1497,7 +1473,7 @@ NTF-1 AC-4：{status=FAILED, attempts=6}；死信佇列 1 則；訂單 20261002-
 
 `attempts = 6`：第一次 ＋ 重試 5 次。測試環境的重試階梯縮短成 100、200、400、800、1,600 ms（一樣 5 級、一樣指數，`src/test/resources/config/application.yml`）—— 正式的 1、2、4、8、16 秒要等 31 秒。訂單維持 `PENDING_PAYMENT`：**通知失敗，下單不受影響**，因為下單的交易從來不知道 SMTP 的存在。
 
-> ⚠️ **專題寫完之後的追記（13 站第 02 章）：這個測試有一個競態。** 13 站第 02 章的一次整套 `mvn clean verify`，它紅了：
+> ⚠️ **這個測試有一個競態。** 整套 `mvn clean verify` 偶爾會讓它紅：
 >
 > ```
 > NTF-1 AC-4：{status=FAILED, attempts=6}；死信佇列 0 則；訂單 20261013-442008 狀態 PENDING_PAYMENT
@@ -1506,7 +1482,7 @@ NTF-1 AC-4：{status=FAILED, attempts=6}；死信佇列 1 則；訂單 20261002-
 >  but was: 0
 > ```
 >
-> 通知是 `FAILED`、試了 6 次 —— 只有死信佇列是 0。`RabbitConsumers` 用完重試之後的順序是：**先**呼叫 `handler.onDeadLetter()`（通知的消費者在這裡寫 `FAILED`），**再**把訊息送進死信佇列、等 confirm、ack（7.5.3）。測試等的是「`FAILED`」，等到就立刻讀佇列 —— 中間那幾毫秒，死信還在路上。我手上留下紀錄的 49 次（整套，或單獨跑 `EventFlowTest`）都是 1 則；這是第一次讀早了。
+> 通知是 `FAILED`、試了 6 次 —— 只有死信佇列是 0。`RabbitConsumers` 用完重試之後的順序是：**先**呼叫 `handler.onDeadLetter()`（通知的消費者在這裡寫 `FAILED`），**再**把訊息送進死信佇列、等 confirm、ack（7.5.3）。測試等的是「`FAILED`」，等到就立刻讀佇列 —— 中間那幾毫秒，死信還在路上。
 >
 > 這是從程式碼的順序推出來的，**沒有用確定的方式重現**（要拉長那個窗，得改 `RabbitConsumers` 本身）。產品的行為沒有問題 —— 死信一定會到（送不進去就 nack、重新排隊）。改的是測試：看到 `FAILED` 之後，再等死信到，最多 5 秒：
 >
@@ -1518,7 +1494,7 @@ NTF-1 AC-4：{status=FAILED, attempts=6}；死信佇列 1 則；訂單 20261002-
 >          Properties q = admin.getQueueProperties("shop.notification.order-events.dlq");
 > ```
 >
-> 後面那一句 `isEqualTo(1)` 留著：等到「至少 1 則」之後，還是要剛好 1 則（不能重複送進死信）。改完之後，整套 `mvn clean verify`：230 個測試全綠、四道覆蓋率門檻都過（4:01）。
+> 後面那一句 `isEqualTo(1)` 留著：等到「至少 1 則」之後，還是要剛好 1 則（不能重複送進死信）。參考實作的 `ch07` 分支上還是改之前的寫法。
 
 AC-2「事件發生後 p99 60 秒內」：7.4.3 量到的 commit → 寄出，p99 在 0.17～4.0 秒之間（輪詢間隔 10 ms～1 秒；這一章用的 100 ms 是 0.32～0.43 秒）。RabbitMQ 停掉的時候不會是這樣 —— 7.9 的演練量了它。
 
@@ -1701,7 +1677,7 @@ mvn test -Pexperiments -Dtest=H6bPauseDiagnoseTest
 3. **18 張訂單卡在 `UPDATE inventory`**（`reserve:116`，MySQL：`updating`）—— 排在那一列後面。
 4. **20 條連線用完了**：151 個商品詳情（`available:270`，可售量的那句 SQL）、30 個下單的冪等鍵（`claim:51`）在等連線，3 秒後變成 503。
 
-**RabbitMQ 卡住，商品詳情 503 —— 中間隔了四層。** 每一層都是正確的：relay 等 confirm 是對的（7.4.2）；outbox 跟訂單同一個交易是對的（7.4.1）；下單交易先改父表、再寫子表是對的（2.6.2）；連線逾時變 503 也是對的（4.8.2）。錯在第一層：**relay 在交易裡等 broker**。7.4.2 的第一版寫的理由是「鎖住的只是 outbox 的幾十列，沒有人在等它們」—— 間隙鎖讓**每一個**要寫 outbox 的交易都在等它們，而每一個寫 outbox 的交易手上都還有別的鎖。
+**RabbitMQ 卡住，商品詳情 503 —— 中間隔了四層。** 每一層都是正確的：relay 等 confirm 是對的（7.4.2）；outbox 跟訂單同一個交易是對的（7.4.1）；下單交易先改父表、再寫子表是對的（2.6.2）；連線逾時變 503 也是對的（4.8.2）。錯在第一層：**relay 在交易裡等 broker**。7.4.2 裡第一版的理由是「鎖住的只是 outbox 的幾十列，沒有人在等它們」—— 間隙鎖讓**每一個**要寫 outbox 的交易都在等它們，而每一個寫 outbox 的交易手上都還有別的鎖。
 
 `stop` 沒有那麼嚴重，是因為停掉的 broker 會**立刻拒絕連線**，relay 的交易幾毫秒就 rollback；只有在 RabbitMQ 關機的那幾秒（還在關、連線還沒斷），它會短暫地等 —— 那就是第一次 `stop` 的頭 5 秒那 28 個 503。**`pause` 是比較難的那一種**（5.6.4 就說過）：網路分割、broker 卡在 GC 或磁碟上，看起來都像它。
 
@@ -1719,13 +1695,13 @@ mvn test -Pexperiments -Dtest=H6bPauseDiagnoseTest
   這 25 秒的回應：{下單 201=251, 詳情 200=1255}
 ```
 
-relay **還是**停在 RabbitMQ 用戶端裡（broker 還是凍結的），但連線池「使用中 0、閒置 20、等待 0」，MySQL 那一側 20 條連線都是 `Sleep`、**沒有一條在交易中**。這 25 秒的回應全部是 201、200。（第一次跑修正後的 H6b 時，裡面有 100 個 200：H6b 的第一版沒有清掉上一次的買家，同一個冪等鍵回了同一張訂單。那個沒清乾淨的東西後來還讓全套測試紅了一次，7.13。上面是 H6b 補上清理之後重跑的。）
+relay **還是**停在 RabbitMQ 用戶端裡（broker 還是凍結的），但連線池「使用中 0、閒置 20、等待 0」，MySQL 那一側 20 條連線都是 `Sleep`、**沒有一條在交易中**。這 25 秒的回應全部是 201、200。
 
 > 📌 **「交易裡只有 SQL」（4.3.3）不只是為了熱點列。** 第 04 章用它保護下單交易的持鎖時間；這一節是同一條規則的另一面：**任何等外部系統的程式碼，都不能拿著資料庫的鎖等** —— 包括「只是 outbox 的幾列」。鎖的影響範圍不是你鎖了幾列，是「誰會來碰這幾列附近的東西、他們手上又拿著什麼」。
 
 ### 7.9.3 修正之後的演練
 
-同一個 H6，修正 relay 之後，取樣用自己的連線（帶 `connectionTimeZone=UTC`）。這一節的程式碼在途中又改了一次（7.9.4），所以我一共跑了四次；下面是最後一次（這一章最後的程式碼，開始時 load average 4.2）的完整輸出：
+同一個 H6，修正 relay 之後，取樣用自己的連線（帶 `connectionTimeZone=UTC`）。這一節的程式碼又改了一次（7.9.4），所以一共跑了四次；下面是最後一次（這一章最後的程式碼，開始時 load average 4.2）的完整輸出：
 
 ```
 ═══ 7.9 RabbitMQ 停 60 秒：docker stop shop-rabbitmq-1（第 20～80 秒）═══
@@ -1786,7 +1762,7 @@ relay **還是**停在 RabbitMQ 用戶端裡（broker 還是凍結的），但�
   第二個實例（第 40 秒啟動，RabbitMQ 停著）：啟動花了 1252 ms，readiness HTTP 200 {"status":"UP","components":{"db":{"status":"UP","details":{"database":"MySQL","validationQuery":"isValid()"}},"readinessState":{"status":"UP"}}}
 ```
 
-（`Redis 失敗／跳開` 是 `shop.redis.failures`、`shop.redis.trips` 這 5 秒的增量 —— 6.9.2 的 `RedisGuard`，第二次起才加的一欄，原因在 7.9.5。`pause` 那一半，日誌裡還有一行 `MissedHeartbeatException: Heartbeat missing with heartbeat = 20 seconds`：RabbitMQ 用戶端自己把連線判死。訊息裡的「20 seconds」是心跳的**設定值**，不是等了多久：amqp-client 5.19 把 socket 逾時設成心跳的 1/4（5 秒），連續逾時**超過 8 次**才丟這個例外 —— 也就是大約 45 秒完全沒有資料（專題寫完之後反組譯 `AMQConnection.handleSocketTimeout` 確認的）。）
+（`Redis 失敗／跳開` 是 `shop.redis.failures`、`shop.redis.trips` 這 5 秒的增量 —— 6.9.2 的 `RedisGuard`，第二次起才加的一欄，原因在 7.9.5。`pause` 那一半，日誌裡還有一行 `MissedHeartbeatException: Heartbeat missing with heartbeat = 20 seconds`：RabbitMQ 用戶端自己把連線判死。訊息裡的「20 seconds」是心跳的**設定值**，不是等了多久：amqp-client 5.19 把 socket 逾時設成心跳的 1/4（5 秒），連續逾時**超過 8 次**才丟這個例外 —— 也就是大約 45 秒完全沒有資料（反組譯 `AMQConnection.handleSocketTimeout` 確認的）。）
 
 （每一段輸出最後的「恢復之後：outbox 在第 100 秒清空……」要小心讀：H6 是等第 100 秒的流量結束之後，才開始檢查「清空了沒」，所以那個「第 100 秒」只是**下界**。真正清空的時間要看逐 5 秒的那幾列：最後一次的 `stop`，outbox 在 85～90 秒那一列已經只剩 2 則、未落帳的熱點預留在 90～95 秒那一列剩 1 筆；`pause` 在 80～85 秒那一列，兩者都只剩 1。）
 
@@ -1859,7 +1835,7 @@ mvn test -Pexperiments -Dtest=H6cStartupUnderPauseTest
   60 秒內沒有啟動完成
 ```
 
-**60 秒，起不來。** 第 6 秒之後，啟動執行緒一直停在 `RabbitConsumers.start:186` —— `SimpleMessageListenerContainer.start()`。它會等這個 container 的消費者真的連上 broker、訂閱成功（`getStartupException`），或者等到它自己放棄；放棄之後下一個 container 再等一次。堆疊在兩個地方之間輪流：`BlockingCell.get`（RabbitMQ 用戶端在等 broker 的一個回覆）與 `getStartupException`（container 在等它的消費者回報「啟動好了」），大約 30 秒一輪 —— broker 被凍結，那個回覆永遠不會來。我第一次跑這個實驗的時候沒有設 60 秒的上限，它跑了 400 秒都沒有起來，最後是我把它停掉的。
+**60 秒，起不來。** 第 6 秒之後，啟動執行緒一直停在 `RabbitConsumers.start:186` —— `SimpleMessageListenerContainer.start()`。它會等這個 container 的消費者真的連上 broker、訂閱成功（`getStartupException`），或者等到它自己放棄；放棄之後下一個 container 再等一次。堆疊在兩個地方之間輪流：`BlockingCell.get`（RabbitMQ 用戶端在等 broker 的一個回覆）與 `getStartupException`（container 在等它的消費者回報「啟動好了」），大約 30 秒一輪 —— broker 被凍結，那個回覆永遠不會來。不設 60 秒的上限，它跑了 400 秒都沒有起來。
 
 這違反了 0.6.3「RabbitMQ 掛了：readiness UP」——**不是正在跑的實例，是新的實例**：部署、擴容、被 OOM killer 殺掉之後重啟，都會卡在這裡，直到 broker 回來。`stop` 不會：四次的第二個實例都是一兩秒、最多 4.7 秒就起來了。我的理解是 broker 不在時連線**立刻**被拒絕，container 的消費者很快就回報失敗、改成在背景重試，`start()` 不用等 —— 這一段是從 `stop` 的啟動時間推的，我沒有取 `stop` 時的堆疊。
 
@@ -1890,7 +1866,7 @@ private void startContainers() {
 }
 ```
 
-（第一版沒有那個 `try`：第 3 次 H6 的第二個實例在 `stop` 期間被關掉時，`stop()` 中斷了還卡在 `c.start()` 的執行緒，日誌裡多了一條沒人接的 `UncategorizedAmqpException: java.lang.InterruptedException`。加上之後跑了第 4 次。）
+（沒有那個 `try` 的話：第 3 次 H6 的第二個實例在 `stop` 期間被關掉時，`stop()` 中斷了還卡在 `c.start()` 的執行緒，日誌裡多了一條沒人接的 `UncategorizedAmqpException: java.lang.InterruptedException`。）
 
 relay 本來就在自己的執行緒上（7.4.2），所以只有消費者要改。修正之後的 H6c：
 
@@ -2213,7 +2189,7 @@ mvn clean test
 [INFO] Total time:  04:22 min
 ```
 
-> 📌 **專題寫完之後重跑：`mvn clean verify`。** 上面是寫這一章時跑的 `mvn clean test`。專題寫完之後（2026-10-12），在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）重跑 `mvn clean verify`。第一次在空的資料庫上跑，驗收 Q8 紅了（「登入」那一格 401：Q8 用 2.8.3 種子資料的帳號 `buyer00001@example.com` 登入 —— 第 08 章 8.2.1 的事故一）；先跑 `mvn test -Pseed -Dtest=SeedData`（2.8.3）再跑，全綠。下面是第二次（load average 6.66 → 3.24）：
+> 📌 **`mvn clean verify`。** 在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）跑 `mvn clean verify`。在空的資料庫上，驗收 Q8 會紅（「登入」那一格 401：Q8 用 2.8.3 種子資料的帳號 `buyer00001@example.com` 登入 —— 第 08 章 8.2.1 的事故一）；先跑 `mvn test -Pseed -Dtest=SeedData`（2.8.3）再跑：
 
 ```bash
 mvn clean verify
@@ -2264,9 +2240,9 @@ mvn clean verify
 
 **178 個測試、0 個失敗、1 個跳過**（第 06 章是 160 個、跳過 4 個）。多出來的 18 個：`EventFlowTest` 5 個、`HotSettlementTest` 5 個、`DeadLetterReplayTest` 2 個、`OrderStateMachineTest` 6 個（E10 那一欄的 6 格，61 → 67）。驗收 Q9、Q10、Q11 本來就算在 160 個裡，只是從「跳過」變成「通過」—— 剩下的那一個跳過是 Q7（第 09 章）。
 
-**這不是第一次跑就綠的。** 這一章最後一次全套測試之前的那一次，是 178 個、**2 個失敗**：
+**測試這一側有兩個坑。** 沒有處理的時候，全套測試是 178 個、**2 個失敗**：
 
-- `InvariantReconciliationTest`：INV-2 差異 1 筆 —— 一個商品的 `reserved` 是 151，有效且已計入的預留是 260。那個商品叫 `H6b`：7.9 的診斷實驗每次開始時用 `ON DUPLICATE KEY UPDATE reserved = 0` 把庫存歸零，卻沒有刪掉上一次留下的訂單與預留，結束時也不清。跑過幾次之後，對帳就抓到了它。**對帳排程抓到的第一個差異，來自我自己的實驗。**
+- `InvariantReconciliationTest`：INV-2 差異 1 筆 —— 一個商品的 `reserved` 是 151，有效且已計入的預留是 260。那個商品叫 `H6b`：7.9 的診斷實驗每次開始時用 `ON DUPLICATE KEY UPDATE reserved = 0` 把庫存歸零，卻沒有刪掉上一次留下的訂單與預留，結束時也不清。跑過幾次之後，對帳就抓到了它。
 - `DeadLetterReplayTest.replayAfterFix`：預期死信 1 則，實際 47 則。context 一啟動，relay 就把 outbox 裡別的測試留下的事件送出去了（`skipBacklog` 在那之後才跑）；它們的資料早已被清掉，處理失敗、走完 3.1 秒的重試階梯才進死信 —— 在測試清空死信佇列**之後**。7.9.4 把消費者改到背景啟動之後，這個時間差才落到測試裡面；而原本的斷言 `contains("\"messages\":1")` 寫得太鬆，`"messages":12` 也會通過，我沒辦法確定它以前是真的綠、還是碰巧綠。
 
 修法都在測試這一側：H6b 開始與結束時清掉自己的資料；`DeadLetterReplayTest` 先等死信的數量在一個重試階梯的時間裡不再變，再清空（`TestQueues.purgeDeadLettersWhenQuiet`），斷言改成比對完整的那一筆。修好之後連跑兩次，178 個全綠。

@@ -1,5 +1,7 @@
 # 第 05 章：二元搜尋與答案空間搜尋
 
+> 先備：[第 01 章](./01-foundations-complexity.md) 的複雜度與 [第 02 章](./02-arrays-hashing-sorting.md) 的有序陣列。
+
 ## 5.1 本章目標
 
 讀完本章後，你應該能夠：
@@ -22,10 +24,10 @@
 
 常見單調性有兩種：
 
-1. **陣列值有序**  
+1. **陣列值有序**
    例如 `nums[mid] < target` 時，答案只可能在右邊。
 
-2. **判定函式有序**  
+2. **判定函式有序**
    例如某個速度 `speed` 可行，那比它更快的速度也都可行。
 
 第二種就是所謂的 **答案空間搜尋**。
@@ -38,7 +40,23 @@
 
 ### 5.3.1 找某個值是否存在
 
-這是最標準的版本，例如第 01 章的 704。
+先用 704. Binary Search 練習精確查找。契約是遞增排序且不重複的陣列，找不到回傳 -1：
+
+```ts
+function search(nums: number[], target: number): number {
+  let left = 0;
+  let right = nums.length - 1;
+  while (left <= right) {
+    const mid = left + Math.floor((right - left) / 2);
+    if (nums[mid] === target) return mid;
+    if (nums[mid] < target) left = mid + 1;
+    else right = mid - 1;
+  }
+  return -1;
+}
+```
+
+若目標存在，它始終在閉區間 `[left, right]` 內。比較後可排除 mid，所以更新會跳過它。`left === right` 時仍有一格待檢查；`left > right` 才代表找不到。時間 O(log n)、額外空間 O(1)。空陣列也會直接回傳 -1。
 
 ### 5.3.2 找第一個滿足條件的位置
 
@@ -93,33 +111,33 @@ nums :  [1][3][5][7][9]
 - 找某個值是否存在
 - 直接回傳 index 或 `-1`
 
-### 5.4.2 常見約定二：半開區間 `[left, right)`
+### 5.4.2 lower bound：待檢查區間與答案範圍不同
 
-特色：
+找第一個 `>= target` 的位置時，初始化 `left = 0`、`right = n`。此時應明確分成兩個概念：
 
-- `left` 可能是答案
-- `right` 永遠是「答案之外的一格」
-- 迴圈通常寫成 `while (left < right)`
+- **待檢查元素**位於半開區間 `[left, right)`。
+- **邊界答案**仍可能位於閉區間 `[left, right]`，包含 right。
+- 所有 `index < left` 的元素都 `< target`。
+- 所有 `index >= right` 且仍在陣列內的元素都 `>= target`。
 
-```text
-半開區間：
+若 `nums[mid] >= target`，設定 `right = mid` 後，不需要再檢查 mid，但它仍可能是最終邊界。不能說「right 永遠不可能是答案」。
 
-index:   0  1  2  3  4
-nums :  [1][3][5][7][9]
-         L-----------)
-                     R
-
-意思是：left 可以是答案，但 right 這格不算進搜尋範圍
+```ts
+function lowerBound(nums: number[], target: number): number {
+  let left = 0;
+  let right = nums.length;
+  while (left < right) {
+    const mid = left + Math.floor((right - left) / 2);
+    if (nums[mid] >= target) right = mid;
+    else left = mid + 1;
+  }
+  return left;
+}
 ```
 
-這種寫法很適合：
+結束時 `left === right`，待檢查區間為空，但答案已確定。若全部元素都太小，回傳 n，表示插入到尾端；空陣列回傳 0。時間 O(log n)、額外空間 O(1)。
 
-- 找第一個滿足條件的位置
-- 找最小可行答案
-
-重點不是哪一種絕對更好，而是：
-
-> **同一題只選一種區間約定，並全程一致**
+答案空間二分也常用 `while (left < right)`，但它可以維護的是**閉區間內的可行答案**。不能只從迴圈比較符號判斷區間定義；要把不變量寫清楚。
 
 ---
 
@@ -230,16 +248,16 @@ ok : F  F  F  T  T  T  T
 
 ## 5.7 常見錯誤
 
-1. **區間定義混用**  
+1. **區間定義混用**
    一下用閉區間，一下又用半開區間，最容易造成漏解或死迴圈。
 
-2. **`mid` 更新後沒讓區間縮小**  
+2. **`mid` 更新後沒讓區間縮小**
    例如某些情況寫成 `left = mid`，就可能卡住不動。
 
-3. **忘記二分需要單調性**  
+3. **忘記二分需要單調性**
    若 `ok(x)` 不是單調的，二分就沒有保證。
 
-4. **只顧找到位置，沒做後處理**  
+4. **只顧找到位置，沒做後處理**
    找左界、右界時，最後那個 index 是否越界、是否真符合條件，都要再驗一次。
 
 ---
@@ -262,7 +280,7 @@ ok : F  F  F  T  T  T  T
 
 #### 題意（白話）
 
-有一堆香蕉 `piles`，`piles[i]` 是第 `i` 堆的香蕉數。  
+有一堆香蕉 `piles`，`piles[i]` 是第 `i` 堆的香蕉數。
 Koko 每小時選一堆來吃，若她的速度是 `k`，則一小時最多吃 `k` 根。
 
 給定總時數 `h`，請找出：
@@ -306,10 +324,13 @@ ceil(pile / speed)
 
 #### 參考實作（TypeScript）
 
+題目保證 piles 非空、每堆為正整數，且 `h >= piles.length`。因此最大堆大小一定是可行上界；若沒有這個保證，要先處理無解情況。這段維護的是「最小可行速度在閉區間 `[left, right]` 中」，不是把 right 當成答案之外。
+
 ```ts
 function minEatingSpeed(piles: number[], h: number): number {
   let left = 1;
-  let right = Math.max(...piles);
+  let right = 0;
+  for (const pile of piles) right = Math.max(right, pile);
 
   const canFinish = (speed: number): boolean => {
     let hours = 0;
@@ -323,7 +344,7 @@ function minEatingSpeed(piles: number[], h: number): number {
   };
 
   while (left < right) {
-   // 等同於 (left+right)/2，該寫法可避免超過整數範圍
+   // 取整數中點；此題數值在 number 的安全整數範圍內
    const mid = left + Math.floor((right - left) / 2);
 
    if (canFinish(mid)) {
@@ -344,16 +365,29 @@ function minEatingSpeed(piles: number[], h: number): number {
 
 #### 常見錯誤
 
-1. **把這題當貪心亂猜速度**  
+1. **把這題當貪心亂猜速度**
    真正關鍵是「速度可行性有單調性」，所以應該二分。
 
-2. **上界設錯**  
+2. **上界設錯**
    最大速度設成 `max(piles)` 就夠了，因為再快也沒有必要。
 
-3. **天花板除法寫錯**  
-   TypeScript 可直接寫：`Math.ceil(pile / speed)`  
+3. **天花板除法寫錯**
+   TypeScript 可直接寫：`Math.ceil(pile / speed)`
    （整數語言常見等價寫法是 `(pile + speed - 1) / speed` 的整數除法）
 
 ---
 
-完成 875 後，建議加練：35、34、153、33、1011、2187，把「找邊界」與「答案空間搜尋」兩條主線一起補強。
+## 課後練習路線
+
+| 階段 | 題目 | 練習目的 |
+|------|------|----------|
+| 暖身 | 704. Binary Search；35. Search Insert Position | 先精確查找，再找邊界 |
+| 核心 | 34. Find First and Last Position of Element in Sorted Array | lower bound、upper bound 與找不到的後處理 |
+| 變形 | 875. Koko Eating Bananas | 將最小可行值改寫成單調判定 |
+| 挑戰 | 1011. Capacity To Ship Packages Within D Days | 自行設計判定函式與可行上界 |
+
+自我檢查：對 `[1, 2, 2, 4]` 找 2、3、5，lower bound 各是多少？能否說明每次迴圈都縮小範圍，以及 right 何時仍可作答案？
+
+---
+
+[上一章：04](./04-prefix-sum-hash-table.md) · [課程目錄](./README.md) · [下一章：06](./06-linked-lists.md)

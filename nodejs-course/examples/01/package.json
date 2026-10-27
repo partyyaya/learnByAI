@@ -1,0 +1,26 @@
+{
+  "name": "nodejs-course-chapter-01",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": "24.22.1",
+    "npm": "11.19.1"
+  },
+  "packageManager": "npm@11.19.1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "start": "node --enable-source-maps dist/main.js",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "test": "node -e \"require('node:fs').rmSync('.test-dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && jest --runInBand",
+    "check": "npm run typecheck && npm test && npm run build",
+    "debug": "node --enable-source-maps --inspect-brk=127.0.0.1:9229 dist/main.js"
+  },
+  "devDependencies": {
+    "@jest/globals": "30.2.0",
+    "@types/node": "24.19.2",
+    "jest": "30.2.0",
+    "typescript": "5.9.3"
+  }
+}

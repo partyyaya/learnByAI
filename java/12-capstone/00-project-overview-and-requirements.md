@@ -14,31 +14,6 @@
 > - 一張**「刻意不做」清單**（0.7）—— 這張表跟需求一樣重要。
 > - 一套 `docker compose up` 就起來的環境（MySQL + Redis + RabbitMQ），以及一個**會走路的骨架**（walking skeleton）專案（0.10）。
 > - 一個 **11 題全部 `@Disabled` 的驗收測試類別**（0.12）—— 專題的「完成」定義就是它全部變綠。
->
-> 但在寫任何需求之前，這一章要先讓你看見一件事：
->
-> **需求寫不清楚，不會讓程式編譯失敗，也不會讓測試變紅。它只會讓系統在正式環境裡「照規格」出錯。**
->
-> 這一章有**四個實測事故**，每一個都是「程式碼沒有 bug，需求有」：
->
-> - **同一句「下單後扣庫存」，三種讀法，三種結局。** 0.2.1：限量 100 件、400 人搶。
->   讀法 A **收了 133 個人的錢、只有 100 件貨**，33 筆要退款；
->   讀法 B **有 30 件貨被「下了單不付錢」的人永久佔住**，活動結束時架上是空的、倉庫裡是滿的；
->   只有讀法 C 賣出了 98 件，而且沒有人被退款。**三個版本的程式碼都「正確」實作了那句話。**
-> - **「可以取消訂單」用三個 `boolean` 實作。** 0.2.2：一萬張訂單、九萬八千個事件，
->   每個方法都有「看起來合理」的檢查 —— 結果 **1,951 張單「已取消、但錢收了」、17 張「已取消、但貨出了」、703 筆付款被記了兩次**。
->   **沒有例外、沒有日誌。** 換成狀態機之後，同一份事件序列跑出 0 個非法狀態 ——
->   而且它**逼你回答了一個需求裡沒寫的問題**：「撿貨中的訂單能不能取消？」
-> - **「下單要快」不是需求。** 0.11：同一台機器、同一張表，
->   32 條執行緒全部打同一個熱門商品，**一秒只能成立 678 筆訂單**；
->   只要在交易裡多做 5 毫秒別的事，**掉到 138 筆**；而分散在 1,000 個商品上是 3,838 筆。
->   **「要快」要寫成「單一商品每秒 N 筆」，而 N 要先量。**
-> - **Redis 停掉，整個網站 503。** 0.10.5：什麼都沒改，只是加了 `spring-boot-starter-actuator` 跟 `spring-boot-starter-data-redis`。
->   把 Redis 停掉 —— API 本身完全正常（`/api/ping` 10 ms 回 200），
->   但 `/actuator/health` **回 503**。負載平衡器看到 503，會把**每一台**機器都摘掉。
->   需求寫的是「Redis 掛掉要降級」，預設設定做的是「Redis 掛掉全站下線」。
->
-> 📌 四個事故分別在 0.4、0.5、0.6.1／0.11.5、0.6.3 被「寫進需求」，然後在 04、04、04＋06、00＋06 章被「寫進程式」（對照表在 0.13.2）。
 
 ---
 
@@ -917,11 +892,9 @@ US-<模組>-<編號>  <標題>
 | 4 | —— | 加入購物車 | **不佔庫存**。可售庫存不變 |
 | 5 | 可售庫存 = 3 | 加入 5 件 | **允許**，但回應帶 `warnings: ["INSUFFICIENT_STOCK"]`（真正的擋在下單） |
 
-> ⚠️ **AC-3 原本寫的是「409 `/problems/validation`」，自相矛盾**：0.4 的錯誤類型表裡，`/problems/validation` 對應的是 **400**。
-> 實作（第 03 章）一直回 400，但 03～09 章都沒有測試涵蓋 AC-3，這個矛盾就一路留到專題寫完。
-> 專題完成後補了測試 `CatalogCartApiTest.cartDistinctItemLimit`：先加滿 50 種，再加第 51 種，實測回應是
+> 📌 AC-3 的測試 `CatalogCartApiTest.cartDistinctItemLimit` 不在 03～09 章裡，補在第 09 章結束時的程式碼上。它先加滿 50 種，再加第 51 種，實測回應是
 > `HTTP 400 {"type":"/problems/validation","title":"請求內容不正確","status":400,"detail":"購物車最多 50 種商品",…}`，購物車仍然是 50 列。
-> 已經在車裡的第 50 種商品再加一件，回 200。需求改成以實作為準：**400**。
+> 已經在車裡的第 50 種商品再加一件，回 200。
 
 > 📌 AC-4 就是 0.2.1 的讀法 B 的教訓：**加入購物車就佔庫存 = 讓「永遠不會結帳的人」佔住貨。**
 > 購物車的放棄率比下單後不付款高得多（業界常見數字是 70% 左右）。
@@ -1583,11 +1556,11 @@ readiness 是「負載平衡器要不要把流量送給我」—— 如果 Redis
 | `GET` | `/api/admin/reports/daily-sales` | ADMIN | RPT-3 |
 | `GET` | `/api/admin/audit-logs` | ADMIN | AUD-1 |
 
-> ⚠️ **這是需求階段的草案，跟第 09 章結束時的實作不完全一樣**（專題寫完之後對照 `@*Mapping` 整理）：
+> ⚠️ **這是需求階段的草案，跟第 09 章結束時的實作不完全一樣**（對照 `@*Mapping` 整理）：
 > - 訂單路徑的 `{id}` 實作是 **`{orderNo}`**（0.6.7：訂單對外只用單號，不暴露自增 id；第 03 章 3.4 起）。
-> - **實作多出的**：`POST /api/seller/products/{id}/hot`（標記熱點商品，0.6.1，第 06 章）、`GET /api/admin/dead-letters`、`POST /api/admin/dead-letters/{consumer}/replay`（第 07 章）、`GET /api/ping`（本章 0.10）；專題寫完之後補 US-RPT-2 AC-1 時多了 `GET /api/admin/reports/top-products`（管理員看全站或指定賣家的排行）。
+> - **實作多出的**：`POST /api/seller/products/{id}/hot`（標記熱點商品，0.6.1，第 06 章）、`GET /api/admin/dead-letters`、`POST /api/admin/dead-letters/{consumer}/replay`（第 07 章）、`GET /api/ping`（本章 0.10）；3.7.1 的 US-RPT-2 AC-1 多了 `GET /api/admin/reports/top-products`（管理員看全站或指定賣家的排行）。
 > - **沒有實作的**：`POST /api/admin/products/{id}/takedown`（第 05 章留給練習）、`GET /api/seller/products/{id}`（單一商品改用公開的 `GET /api/products/{id}`，賣家本人看得到自己的草稿，3.4）、`GET /api/cart/items`（用 `GET /api/cart`）。
-> - US-RPT-2 AC-1（`GET /api/seller/reports/top-products`）與 US-RPT-3（`GET /api/admin/reports/daily-sales`）**03～09 章都沒有做**，也沒有被列成「沒達成的目標」—— 這是專題寫完之後才對出來的。之後補上了，設計與實測在 3.7.1 的追記；追溯表 0.12.2 的這兩列跟著改。
+> - US-RPT-2 AC-1（`GET /api/seller/reports/top-products`）與 US-RPT-3（`GET /api/admin/reports/daily-sales`）**03～09 章都沒有做**；設計與實測在 3.7.1，補在第 09 章結束時的程式碼上。
 
 > 📌 狀態轉移用 `POST /orders/{id}/cancel` 而不是 `PATCH /orders/{id} {"status": "CANCELLED"}`。
 > 後者等於讓客戶端**直接寫狀態欄位** —— 那就是 0.2.2 的版本一。
@@ -2764,8 +2737,8 @@ ch09 結束：Skipped  0   （Q7）
 | INV-5 | 用應用程式帳號執行 `UPDATE inventory_ledger`，預期被拒 | 09 | —— |
 | RPT-1 AC-2 | 跨 UTC 午夜的訂單歸屬到正確的台北日期 | 03 | —— |
 | RPT-1 AC-4 | 10 萬張訂單的種子資料 + 計時 | 02、03 | —— |
-| RPT-2 AC-1 | `TopProductsApiTest`（台北午夜、並列、Top 20、空區間、權限）＋ `TopProductsRankTest` | 專題寫完之後（3.7.1 的追記） | —— |
-| RPT-3 | `AdminReportApiTest`（全站、指定賣家等於 RPT-1、依賣家分組、參數、權限）＋ `SiteSalesReportTest` | 專題寫完之後（3.7.1 的追記） | —— |
+| RPT-2 AC-1 | `TopProductsApiTest`（台北午夜、並列、Top 20、空區間、權限）＋ `TopProductsRankTest` | 09 之後（3.7.1） | —— |
+| RPT-3 | `AdminReportApiTest`（全站、指定賣家等於 RPT-1、依賣家分組、參數、權限）＋ `SiteSalesReportTest` | 09 之後（3.7.1） | —— |
 | NTF-1 AC-3 | 同一則訊息投遞 10 次 | 07 | **Q10** |
 | NTF-1 AC-5 | commit 後 `kill -9`（Testcontainers + 子行程） | 07 | **Q9** |
 | 0.6.3 降級矩陣 | 逐格：停掉容器後呼叫 API | 06 | **Q8** |

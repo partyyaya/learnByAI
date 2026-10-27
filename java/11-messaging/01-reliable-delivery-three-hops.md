@@ -697,8 +697,8 @@ docker run -d --name kafka2 --network mq-lab -p 19102:9092 \
 ```
 
 ⚠️ **`KAFKA_PROCESS_ROLES` 這兩行是這個實驗能不能做的關鍵。**
-我第一次把兩台都設成 `broker,controller`、`CONTROLLER_QUORUM_VOTERS=1@kafka1:9093,2@kafka2:9093`，
-結果停掉 kafka2 之後**整個叢集都不能用了**：
+如果把兩台都設成 `broker,controller`、`CONTROLLER_QUORUM_VOTERS=1@kafka1:9093,2@kafka2:9093`，
+停掉 kafka2 之後**整個叢集都不能用了**：
 
 ```
 Error while executing topic command : ... TimeoutException: The request timed out.

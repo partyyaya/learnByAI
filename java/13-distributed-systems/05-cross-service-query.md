@@ -5,42 +5,6 @@
 > **這一章**：處理讀。先量那三個「讀」的頁面（商品頁、購物車、賣家的商品列表）在庫存服務變慢、停掉時會怎樣；再分出哪些讀可以不問 —— 能晚幾秒的，在訂單服務留一份庫存的**副本**（讀模型，CQRS），靠庫存服務的事件更新；不能晚的（出貨之前那一問、補貨之後那一讀）照舊問。然後量副本**晚多久、使用者在那段時間裡看到什麼**；做出重建它的方法並在 10 萬個商品上量；最後把熱點旗標搬回庫存 —— 搬完之後，「下單時哪些品項是熱點」也是一次跨服務的查詢，用同一招。
 >
 > **你手上會有**：從 `d04` 開出來的分支 `d05`。正式程式碼：庫存那一列多一個版本（V28），每一次可售量改變都在同一個交易裡發一則 `inventory.stock-changed`；訂單服務多一張 `stock_levels`（V29，catalog 的表）與它的消費者 `catalog.stock-levels`、重建用的快照端點與管理員端點；商品頁、賣家的商品列表、購物車在切開的部署裡讀副本（單體照舊直接問庫存模組）；熱點旗標搬到 `inventory.hot`（V30～V33），catalog 每秒讀一次熱點名單，標熱點不再在 catalog 的交易裡呼叫庫存。338 個測試、failsafe 39 個契約驗證。
->
-> **這一章的實測事故**：
->
-> - **一個欄位，拖垮整頁**（5.2）：庫存服務每一次讀慢 1 秒，商品頁、購物車、賣家的商品列表全部慢 1 秒；庫存服務停掉，三頁全部 503 —— 商品頁的主體是名稱、價格、說明，只因為「可以賣幾件」拿不到。同一個訂單服務的「我的訂單」不受影響。
-> - **單體的商品頁，本來就晚 5 秒**（5.5）：最後一件被買走之後，另一位買家的商品頁還說「還有 1 件」—— 20 次都在 4,875～4,990 ms 之間，第 12 站 6.4.4 的可售量快取吃滿了。換成副本之後是 80～87 ms（最多 98～112 ms）。兩種部署裡，那一位買家緊接著下單都是 409：真正的判斷在下單時。
-> - **副本晚多久**（5.5）：每秒 20 張下單，`inventory.stock-changed` 從寫進庫存服務的 outbox 到訂單服務的副本寫好 p50 63～67 ms、p99 124～132 ms；每秒 100 張，p50 96～101 ms、p99 269～322 ms、最多 410～455 ms —— 都在 US-PRD-3 AC-4 的 5 秒之內。
-> - **副本是空的時候，每一個商品都是 0 件**（5.6）：第一次上線、或者資料是直接搬進庫存服務的庫（沒有事件）。重建 1,000 個商品 72～84 ms、10 萬個 2,166～2,572 ms；弄壞三種（值錯了、整列不見、漏了事件）共 300 列，每秒 20 張下單的同時重建，事件都送完之後 10 萬列逐列比對：0 列對不上。
-> - **熱點名單晚一秒，兩個方向都安全**（5.7）：剛標成熱點、名單還沒有它 → 那一張走一般的預留（直接計入）；剛取消熱點、名單還有它 → 庫存服務的閘門說「不是熱點」，不扣、不建 key，落帳時照樣計入。
-> - **之後**（5.10）：庫存服務停掉，三頁照樣 200、p50 1.6～4.4 ms；使用者的一天裡，訂單服務打庫存服務 30 → 14 次，讀 20 → 4 次。B1：庫存這一刀的交易內呼叫 1 → **0**，127 種切法裡第 24 → 第 16 名。
->
-> **⚠️ 寫這一章途中被自己的實驗抓到的**：
->
-> - **副本一則事件都沒收到**（5.4.4）：消費者第一版只在訂單服務的角色裡才是一個 bean。庫存服務的 relay 只送「這個行程裡有人訂閱」的事件（第 12 站 9.2.1），那一份清單來自 `EventHandler` 這些 bean（第 03 章 3.7.3 的註解寫得清清楚楚：它們在每一個角色裡都還在）—— 我讓它不在了。F2 的延遲一欄是 `NaN`，日誌裡是 `OUTBOX_UNSUBSCRIBED type=inventory.stock-changed`。
-> - **重建修不了「版本一樣、值卻錯了」**（5.6）：守門的比較寫成 `>`，同一個版本的快照不會覆蓋。改成 `>=` 之前先推出來、之後用 F3 量：`>` 剩 100 列對不上，`>=` 是 0。
-> - **一個 migration 檔寫了兩句 DDL**（5.7）：加欄位、加索引寫在同一個檔裡 —— 第 12 站 2.2.2 規則二（一個檔案一句 DDL：MySQL 的 DDL 各自 commit）。`MigrationOwnershipTest` 抓到，拆成四個檔。
-> - **熱點旗標搬家之後，整套 20 個紅**（5.7.8）：15 個是測試的資料直接寫 `products.hot = TRUE` —— 旗標不在那裡了；`HotToggleApiTest` 是標了熱點馬上下單，名單還沒讀到它；其餘是這一章自己的錯（下面兩條）與預期中的改變。
-> - **單體的庫存服務角色起不來**（5.4.3）：catalog 的 bean 在庫存服務的角色裡也存在（只是沒有人用），它要一個 `StockLevels` —— 第一版只給了單體與訂單服務。
-> - **`stock-changed` 第一版的聚合類型用了 `ORDER`**（5.4.2）：第 04 章的 `PlaceOrderSagaTest` 數這張訂單的 outbox，多了一則。它講的是庫存，改成跟 `inventory.stock-returned` 一樣的 `INVENTORY`。
-> - **F1 第一次在新的程式碼上跑，商品頁說 0 件**（5.6）：種子資料直接寫進庫存服務的庫，副本是空的 —— 第一次上線會發生的事，實驗先遇到了。
->
-> **小坑**：
->
-> - 改了公開介面（`StockVersion` 多一個欄位、`InventoryApi` 多一個方法），不 `mvn clean` 的 `test-compile` 說沒有東西要編譯、一切正常；`clean` 之後 10 個錯誤（第 12 站 2.9.5 的第四條規則，這一章又踩一次）。
-> - 一個參數給兩次（`SplitLab.common` 裡的 `relay-enabled=false`、`Broker.args()` 裡的 `true`），Spring 接成 `"false,true"`，應用程式起不來（第 01 章 1.4.5）。要用 `Split.override`。
-> - MySQL Connector/J 預設回「找到幾列」：`ON DUPLICATE KEY UPDATE` 什麼都沒改，`update()` 也是 1 —— 不能拿它判斷「這一筆比副本裡的新」（5.4.3）。
->
-> **這一章沒有達成、或只達成一部分的目標**：
->
-> - **報表沒有實作新的方案**（5.8）：這一刀不切斷報表（報表讀的五張表都在訂單服務）。「下一刀切訂單時報表怎麼辦」只有分析與 B1 的數字；每個服務一個資料庫帳號（第 02 章 2.4.4 沒做的）也還沒做。（📌 第 09 章寫完之後的追記：帳號做了，第 02 章 2.4.4。）
-> - **讀模型的 lag 量在同一台筆電上**：兩個服務、RabbitMQ、MySQL 都在一台機器，relay 每 100 ms 掃一次 outbox。量到的數字主要是 relay 的節奏，不是網路。
-> - **重建不是事件重放**（5.6）：README 列的是「事件重放重建讀模型」，這個系統的事件不會一直留著（佇列確認之後就刪、outbox 只留 3 天），所以從庫存服務的快照重建。
-> - **副本第一次上線要有人打一次重建**（5.6）：沒有自動化；在那之前商品頁說 0 件。部署流程把它當成一個步驟（第 08 章的 readiness 可以擋）。（📌 追記：readiness 做在第 09 章 9.4.4，不是第 08 章。）
-> - **單體也維護著一份沒有人讀的副本**（5.4.4）：消費者在每一個擁有 catalog 的行程裡都收，單體也是 —— 讓 relay 知道有人要的代價。
-> - **`products.hot` 還在**（5.7）：過渡期的舊副本，沒有人再用它做決定；拿掉它是收縮那一步（第 09 章）。（📌 第 09 章寫完之後的追記：拿掉了，分兩次部署 —— 5.7.9。）
-> - **熱點商品的頁面，切開之後看不到閘門**（5.4.3）：單體的商品頁讀 Redis 的閘門（搶購時最即時）；切開之後讀副本 —— 落帳之後的值，晚幾秒（AC-4 允許）。這一章沒有量搶購時兩者差多少。
-> - **預留仍然是同步的**、庫存服務慢的時候下單一樣慢：讀不問了，寫還要問（第 06 章）。
 
 ---
 
@@ -291,7 +255,7 @@ ALTER TABLE inventory ADD COLUMN version BIGINT NOT NULL DEFAULT 0, ALGORITHM=IN
 
 熱點品項只寫預留列、不碰 `inventory` 那一列（第 12 站 7.6），可售量要等落帳才變 —— 落帳的時候再發。出庫是例外：`on_hand` 與 `reserved` 一起減 1，可售量不變；版本照樣加 1，不發事件。
 
-⚠️ 第一版的聚合類型寫的是 `ORDER`（觸發它的是一張訂單）。第 04 章的 `PlaceOrderSagaTest` 數「這張訂單的 outbox 裡有哪些事件」，多了一則，紅了。這一則講的是庫存，改成跟 `inventory.stock-returned` 一樣的 `INVENTORY`，聚合 id 照樣是觸發它的訂單或商品。
+⚠️ 聚合類型不要寫成 `ORDER`（雖然觸發它的是一張訂單）：第 04 章的 `PlaceOrderSagaTest` 數「這張訂單的 outbox 裡有哪些事件」，會多一則，測試就紅了。這一則講的是庫存，聚合類型跟 `inventory.stock-returned` 一樣用 `INVENTORY`，聚合 id 照樣是觸發它的訂單或商品。
 
 `StockChangedEventsTest`（`inventory.internal`）把一連串操作走一次，數每一則事件的值與版本：
 
@@ -371,7 +335,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON stock_levels TO shop_app;
 5.4 版本 3 → 2 → 3：{9900911=7}；version 3
 ```
 
-小坑：`apply()` 本來想回傳「這一筆有沒有寫進去」，用 `update()` 的回傳值判斷（新增 1、改了 2、沒改 0）。MySQL Connector/J 預設回的是**找到幾列**（`useAffectedRows=false`）：什麼都沒改，也是 1。這個值不能拿來判斷，所以 `apply()` 不回傳任何東西。
+小坑：「這一筆有沒有寫進去」不能用 `update()` 的回傳值判斷（新增 1、改了 2、沒改 0）。MySQL Connector/J 預設回的是**找到幾列**（`useAffectedRows=false`）：什麼都沒改，也是 1。所以 `apply()` 不回傳任何東西。
 
 讀的那一邊，用一個介面把兩種部署分開：
 
@@ -444,7 +408,7 @@ class ReplicaStockLevels implements StockLevels {
 }
 ```
 
-⚠️ 第一版的 `InventoryStockLevels` 只標了 `MONOLITH`。第 03 章的 `InventoryServiceApiTest` 用庫存服務的角色起一個應用程式 —— 起不來：`ProductService required a bean of type 'StockLevels' that could not be found`。catalog 的 bean 在庫存服務的角色裡**也在**（只是沒有人用），它要一個 `StockLevels`。
+⚠️ `InventoryStockLevels` 不能只標 `MONOLITH`。catalog 的 bean 在庫存服務的角色裡**也在**（只是沒有人用），它要一個 `StockLevels`；只標 `MONOLITH`，第 03 章的 `InventoryServiceApiTest` 用庫存服務的角色起一個應用程式 —— 起不來：`ProductService required a bean of type 'StockLevels' that could not be found`。
 
 商品頁、賣家的商品列表、改價、上下架、標熱點之後的回應，都改讀 `StockLevels`：
 
@@ -580,7 +544,7 @@ class ReplicaStockLevels implements StockLevels {
 
 ### 5.4.4 ⚠️ 副本一則都沒收到
 
-第一版的 `StockReplica` 跟 `ReplicaStockLevels` 一樣，標了 `@ConditionalOnServiceRole(ORDER_SERVICE)` —— 副本只有切開的訂單服務需要，消費者也只放在那裡，看起來很合理。F2（5.5）跑下去：
+如果 `StockReplica` 跟 `ReplicaStockLevels` 一樣，標 `@ConditionalOnServiceRole(ORDER_SERVICE)` —— 副本只有切開的訂單服務需要，消費者也只放在那裡，看起來很合理 —— F2（5.5）跑下去是這樣：
 
 ```
 OUTBOX_UNSUBSCRIBED type=inventory.stock-changed：這個應用程式裡沒有消費者訂閱它，標成已送出、不送（每一種只記這一次）
@@ -758,8 +722,6 @@ mvn test -Pexperiments -Dtest=F2StalenessTest
 | B 切開（副本）：p50 / 最多 | 80 / 98 ms | 87 / 112 ms |
 | B 緊接著下單 | 單體 409 × 20、切開 409 × 20 | 單體 409 × 20、切開 409 × 20 |
 
-（第 1 次是 5.4.4 修好之後的第一次；再之前那一次，副本一則都沒收到。）
-
 四件事：
 
 - **副本晚一百毫秒上下，負載大的時候長尾到幾百毫秒。** 大部分是 relay 的節奏（每 100 ms 掃一次）；每秒 100 張的時候，一則事件要排在更多事件後面。都遠在 AC-4 的 5 秒之內。
@@ -862,7 +824,7 @@ class AdminStockLevelsController {
 
 ### 5.6.3 `>` 還是 `>=`
 
-第一版守門的比較寫的是 `>`：版本**比較新**才寫。寫 F3 之前推了一下「副本壞了」有哪幾種：
+守門的比較可以寫成 `>`：版本**比較新**才寫。先看「副本壞了」有哪幾種：
 
 | 壞法 | 副本那一列 | 快照那一列 | `>` | `>=` |
 |---|---|---|---|---|
@@ -870,7 +832,7 @@ class AdminStockLevelsController {
 | 整列不見 | —— | 有 | 修好（新增） | 修好 |
 | **值錯了、版本一樣**（有人手動改了它；一個寫錯的消費者） | 同一個版本、錯的值 | 同一個版本、對的值 | **修不好** | 修好 |
 
-同一個版本就是庫存那一列的同一個狀態，再寫一次無害；比較新的版本（重建途中的事件）照樣不會被快照蓋掉。所以改成 `>=`。改完之後，用 F3 把 `>` 也跑一次，確認推論：
+同一個版本就是庫存那一列的同一個狀態，再寫一次無害；比較新的版本（重建途中的事件）照樣不會被快照蓋掉。所以用 `>=`。F3 用 `>=` 跑一次，再把 `>` 也跑一次，確認推論：
 
 ```bash
 mvn test -Pexperiments -Dtest=F3RebuildTest
@@ -888,7 +850,7 @@ mvn test -Pexperiments -Dtest=F3RebuildTest
   （結束時 load { 5.65 5.39 5.16 }）
 ```
 
-守門的比較暫時改回 `>`，同一個實驗：
+守門的比較暫時改成 `>`，同一個實驗：
 
 ```
      事件都送完之後：對不上的 100 列（10 萬列逐列比對）
@@ -898,7 +860,7 @@ mvn test -Pexperiments -Dtest=F3RebuildTest
 
 ### 5.6.4 副本是空的時候
 
-F1 在這一章的程式碼上第一次跑，商品頁的回應是這樣：
+F1 在這一章的程式碼上，重建副本之前，商品頁的回應是這樣：
 
 ```
   副本還沒建：商品詳情 → {"id":9000008,"sellerId":900001,"name":"d00 商品 7","description":null,"price":100.00,"categoryId":1,"status":"ON_SALE","available":0}
@@ -907,9 +869,9 @@ F1 在這一章的程式碼上第一次跑，商品頁的回應是這樣：
 
 種子資料是直接寫進庫存服務的庫的，沒有事件 —— 副本是空的，**每一個商品都是 0 件**。第一次上線就是這個樣子：舊的商品從來沒有發過 `stock-changed`。下單不受影響（預留問的是庫存服務），但每一個頁面都說賣完了。
 
-這一章沒有把重建自動化：部署之後打一次 `POST /api/admin/stock-levels/rebuild` 是部署流程的一步（1,000 個商品 72～84 ms、10 萬個 2,166～2,572 ms）。要讓「副本還沒建好」的訂單服務不要接流量，是 readiness 的事（第 08 章）。
+這一章沒有把重建自動化：部署之後打一次 `POST /api/admin/stock-levels/rebuild` 是部署流程的一步（1,000 個商品 72～84 ms、10 萬個 2,166～2,572 ms）。要讓「副本還沒建好」的訂單服務不要接流量，是 readiness 的事，做在第 09 章。
 
-> 📌 **第 09 章寫完之後的追記：readiness 做在第 09 章，不是第 08 章。** 第 08 章沒有做它。第 09 章在灰度之前量到了這一節說的樣子：訂單服務接著單體的庫上線，副本只有「有過 `stock-changed` 的商品」，權重還是 0 的時候兩邊各送一次商品頁，一半的商品訂單服務說 0 件（9.4.4）。灰度讓它不能再靠人記得打重建：權重一調上去，沒建好的那一台馬上接到流量。所以 `StockReplicaHealthIndicator`：訂單服務起來之後先數「有幾個商品不在副本裡」，有就自己重建，重建成功之前 readiness 是 DOWN。它只在起來的那一刻檢查一次（9.4.5）。
+第 09 章在灰度之前量到了這一節說的樣子：訂單服務接著單體的庫上線，副本只有「有過 `stock-changed` 的商品」，權重還是 0 的時候兩邊各送一次商品頁，一半的商品訂單服務說 0 件（9.4.4）。灰度讓它不能再靠人記得打重建：權重一調上去，沒建好的那一台馬上接到流量。所以第 09 章做了 `StockReplicaHealthIndicator`：訂單服務起來之後先數「有幾個商品不在副本裡」，有就自己重建，重建成功之前 readiness 是 DOWN。它只在起來的那一刻檢查一次（9.4.5）。
 
 ---
 
@@ -939,7 +901,7 @@ ALTER TABLE inventory ADD INDEX idx_inventory_hot (hot), ALGORITHM=INPLACE, LOCK
 
 副本也帶著它（V32、V33，`stock_levels.hot` 與索引，5.11.1）。
 
-⚠️ 第一版是兩個檔案、每個檔案兩句（加欄位、加索引）。整套測試跑下去，第 12 站的 `MigrationOwnershipTest`：
+⚠️ 加欄位、加索引不能寫在同一個檔案裡。寫成兩個檔案、每個檔案兩句，整套測試跑下去，第 12 站的 `MigrationOwnershipTest` 會紅：
 
 ```
 ✗ V31__catalog_stock_levels_hot.sql：有 2 句 DDL；V10 之後一個檔案只能有一句（MySQL 的 DDL 會各自 commit）
@@ -951,7 +913,7 @@ Expecting empty but was: ["V31__catalog_stock_levels_hot.sql：有 2 句 DDL；V
 "V30__inventory_hot_flag.sql：有 2 句 DDL；V10 之後一個檔案只能有一句（MySQL 的 DDL 會各自 commit）"]
 ```
 
-第 12 站 2.2.2 的規則二：一個檔案一句 DDL —— MySQL 的 DDL 各自 commit，第二句失敗時第一句已經生效，Flyway 卻把整個檔案記成失敗。拆成四個檔案。
+第 12 站 2.2.2 的規則二：一個檔案一句 DDL —— MySQL 的 DDL 各自 commit，第二句失敗時第一句已經生效，Flyway 卻把整個檔案記成失敗。所以拆成四個檔案。
 
 `setHot` 不再是 MANDATORY，它是庫存自己的交易：
 
@@ -1086,7 +1048,7 @@ ordering：這一件不是熱點                         ordering：這一件是
 5.7 ② 剛取消熱點：下單之後 {reserved=0, counted=0, item_hot=1}、閘門的 key 在嗎 false；落帳之後 {reserved=1, counted=1, item_hot=1}
 ```
 
-① 的 Redis 比 MySQL 多 1，是第 12 站 6.5.3 說的「偏高」—— 多放一個人進 MySQL，MySQL 擋得住；熱點對帳會修（安靜的時候一兩分鐘，第 04 章 4.2.2 的追記）。② 的閘門 key 沒有被建回來（名單晚的那一秒，不會讓一個已經不是熱點的商品又有閘門）。**兩個方向，MySQL 的帳都對。**
+① 的 Redis 比 MySQL 多 1，是第 12 站 6.5.3 說的「偏高」—— 多放一個人進 MySQL，MySQL 擋得住；熱點對帳會修（安靜的時候一兩分鐘，第 04 章 4.2.2）。② 的閘門 key 沒有被建回來（名單晚的那一秒，不會讓一個已經不是熱點的商品又有閘門）。**兩個方向，MySQL 的帳都對。**
 
 如果名單錯的不是一秒、是很久呢？方向 ① 的後果是那個商品的搶購全部走 MySQL —— 第 12 站 6.5 之前的樣子：正確，但 2,000 個搶的人都在 MySQL 排隊。方向 ② 的後果只是每一張多一次閘門的往返。
 
@@ -1113,7 +1075,7 @@ ordering：這一件不是熱點                         ordering：這一件是
     }
 ```
 
-順序的理由寫在註解裡：庫存那一步失敗，什麼都沒改（503）；`products.hot` 那一步失敗，只有舊的副本落後，沒有人再用它做決定。`products.hot` 這一欄還在 —— 擴充、遷移、收縮（第 03 章 3.8.5 的表）的「遷移」這一步；拿掉它是收縮，等第 09 章。
+順序的理由寫在註解裡：庫存那一步失敗，什麼都沒改（503）；`products.hot` 那一步失敗，只有舊的副本落後，沒有人再用它做決定。`products.hot` 這一欄還在 —— 擴充、遷移、收縮（第 03 章 3.8.5 的表）的「遷移」這一步；拿掉它是收縮（5.7.9）。
 
 **這一個呼叫移出了 catalog 的交易**：`CrossModuleCallInTxTest`（第 01 章 1.6.6）的清單少了 `catalog → InventoryApi.setHot`，6 → 5 種 —— 剩下的 5 種全部在訂單服務自己的庫裡。
 
@@ -1161,9 +1123,11 @@ ordering：這一件不是熱點                         ordering：這一件是
 
 第 12 站與前幾章的實驗裡，直接寫 `products.hot` 的有 6 個（`E7FlashSaleLoadTest`、`G8`、`H6`、`H8`、`ExternalDrill`、`ExternalLoad`），一樣改成在庫存列上標；用 API 標熱點的（第 03、04 章的實驗）不用改。
 
-### 5.7.9 追記：收縮 —— 拿掉 `products.hot`
+### 5.7.9 收縮 —— 拿掉 `products.hot`
 
-📌 **第 09 章寫完之後補的。** 5.7.6 說 `products.hot` 是過渡期留著的舊副本，「拿掉它是收縮，等第 09 章」—— 第 09 章沒有做。這裡做擴充、遷移、收縮（第 03 章 3.8.5 的表）的最後一步。
+這一節的程式碼在 `d09` 分支上，實驗要第 08、09 章的 kind 環境。
+
+5.7.6 說 `products.hot` 是過渡期留著的舊副本。這裡做擴充、遷移、收縮（第 03 章 3.8.5 的表）的最後一步：拿掉它。
 
 收縮是兩件事：程式不再讀寫那一欄，以及刪掉那一欄。順序只能是這樣，而且是**兩次部署**：
 
@@ -1188,7 +1152,7 @@ ordering：這一件不是熱點                         ordering：這一件是
 -     * 不在 catalog 的交易裡 —— B1 上最後一個「交易內的跨模組呼叫」）→ products.hot（過渡期留著的舊副本，沒有人再用它做決定；第 09 章收縮）。
 -     * 庫存那一步失敗：什麼都沒改（503）；products.hot 那一步失敗：只有舊副本落後，下單照樣看庫存的
 +     * 不在 catalog 的交易裡 —— B1 上最後一個「交易內的跨模組呼叫」）。
-+     * 第 09 章寫完之後的追記（收縮，第 05 章 5.7.9）：第 05 章之後還會再寫一次 products.hot（過渡期的舊副本）、還有一個把它抄到庫存的
++     * 13 站 5.7.9（收縮）：第 05 章之後還會再寫一次 products.hot（過渡期的舊副本）、還有一個把它抄到庫存的
 +     * 管理員端點（5.7.7）。沒有人再用它做決定，這一版不讀也不寫它；欄位在下一次部署才刪（V36）—— 同一次部署就刪，還在跑的舊版會壞
       */
      public ProductDetail setHot(long sellerId, long productId, boolean hot) {
@@ -1294,8 +1258,6 @@ mvn test -Pexperiments -Dtest=M6ContractTest -Dm6.before=9a5e7b1 -Dm6.step1=d42b
 
 兩步各跑一次整套（`mvn clean verify`），都是 375 個、failsafe 39 個，全綠。
 
-> ⚠️ **第一步的第一次整套不算數。** 它跑到一半，我在同一個目錄裡新建了 V36：`CapstoneAcceptanceTest.q6` 從磁碟上數 migration（36 個），classpath 裡是開始時複製過去的那一份（35 個），紅了一個。之後的每一次整套，都在另一個只放著那一個 commit 的目錄裡跑。
-
 ---
 
 ## 5.8 報表該不該直連別人的資料庫
@@ -1308,7 +1270,7 @@ mvn test -Pexperiments -Dtest=M6ContractTest -Dm6.before=9a5e7b1 -Dm6.step1=d42b
 |---|---|---|---|
 | 做法 | 一個只看得到那五張表的唯讀帳號 | 收 `order.*` 等事件，寫成報表要的形狀（例如一天一列） | 每一張報表即時問訂單服務、商品服務…… |
 | 晚多久 | 不晚（或晚一個唯讀副本的複寫延遲） | 事件的延遲（5.5 的量級） | 不晚 |
-| 誰綁住誰 | **表的形狀變成契約**：訂單服務改一個欄位、加一個狀態，報表就壞（4.5.6 的兩個狀態就是例子） | 事件是契約（第 03 章 3.8.6 的追記：可以用 message pact 守） | API 是契約；大範圍的彙總（一個月的銷售）要搬很多資料 |
+| 誰綁住誰 | **表的形狀變成契約**：訂單服務改一個欄位、加一個狀態，報表就壞（4.5.6 的兩個狀態就是例子） | 事件是契約（第 03 章 3.8.6：可以用 message pact 守） | API 是契約；大範圍的彙總（一個月的銷售）要搬很多資料 |
 | 重建 | 不需要 | 需要（從快照開始，5.6；要從頭重放，事件得一直留著） | 不需要 |
 
 **這個系統的答案**：報表是訂單資料的另一種讀法，**它該跟著訂單**。只要訂單沒有切出去，報表留在訂單服務、讀自己的庫；如果有一天訂單切出去，報表跟著它走，或者改成讀模型 —— 不給一個唯讀帳號讓它直連，因為那會讓訂單的表再也不能自由地改。第 02 章 2.4.4 留下的「每個服務一個資料庫帳號」這一章也沒有做：現在兩個服務各自只有一個庫、一個應用程式帳號，唯讀帳號沒有對象。
@@ -1321,7 +1283,7 @@ mvn test -Pexperiments -Dtest=M6ContractTest -Dm6.before=9a5e7b1 -Dm6.step1=d42b
 
 - **拿掉**「商品頁顯示用的可售量」（`GET /stock/{id}/display`）—— 訂單服務的商品頁讀副本，不再打它。`RemoteInventoryApi.availableForDisplay` 改成丟 `UnsupportedOperationException`：一個沒有人用的遠端呼叫，就是一份沒有人守的契約（跟第 03 章 3.4 拿掉 `initialize` 同一個理由）。**端點本身留著**：線上那一版（第 03 章）的訂單服務還在打，`InventoryProviderReleasedPactIT` 照樣驗證它。
 - **新增**「重建副本：可售量與版本的快照」（`GET /stock/snapshot`）。
-- **新增**一則事件的契約：`inventory.stock-changed`，訂單服務讀每一筆的 `productId`、`available`、`version`、`hot`。消費者是 `StockReplica`；提供端用真的補貨產生它（第 03 章 3.8.6 的追記：每一則只標一次，標在 `InventoryEventMessages`）：
+- **新增**一則事件的契約：`inventory.stock-changed`，訂單服務讀每一筆的 `productId`、`available`、`version`、`hot`。消費者是 `StockReplica`；提供端用真的補貨產生它（第 03 章 3.8.6：每一則只標一次，標在 `InventoryEventMessages`）：
 
 ```java
 @ExtendWith(PactConsumerTestExt.class)
@@ -1370,7 +1332,7 @@ class StockChangedPactTest {
 | F3 `F3RebuildTest` | 實驗 | compose、RabbitMQ、10 萬個商品 | 重建要多久；弄壞的三種修不修得好（5.6） |
 | 第 04 章的 E4、第 01 章的 B1 | 實驗（重跑） | —— | 5.10.3、5.10.4 |
 
-預設的測試從第 04 章（含追記）的 331 個變成 338 個（5.11）。
+預設的測試從第 04 章 4.11.2 的 331 個變成 338 個（5.11）。
 
 ### 5.10.2 F1，之後
 
@@ -1566,16 +1528,7 @@ TEST_INFRA MySQL 最多同時 5 條連線（max_connections 151）
 [INFO] Total time:  05:51 min
 ```
 
-**338 個測試**：第 04 章（含追記）的 331 個，加上 `StockChangedEventsTest` 1 個、`StockReplicaTest` 2 個、`HotListStaleTest` 2 個、`HotToggleApiTest` 多 1 個、`StockChangedPactTest` 1 個（`InventoryClientPactTest` 少一個顯示、多一個快照，還是 16 個）。**failsafe 那一段 39 個**：這一次建置的 HTTP 契約與事件 18 個、線上那一版 15 個、訂單服務的事件 6 個。
-
-這一章的整套測試跑了四次：
-
-- **第一次 `mvn test`（334 個，15 個失敗、5 個錯誤）**：熱點旗標剛搬完。5.7.8 的那 20 個。
-- **第二次（334 個，紅 1 個）**：`PlaceOrderSagaTest` —— `stock-changed` 的聚合類型（5.4.2）。
-- **第三次（336 個，全綠）**：那之後加了 `HotToggleApiTest` 的搬家、契約的改動（5.9）、F1 的重建那幾行。
-- **第四次是上面那一份 `mvn clean verify`**，跑在最後一個 commit 上；F1、F2、F3、E4、B1 的最後一輪也是。
-
-途中另外跑過幾次只包含受影響測試的子集，沒有算在上面四次裡。其中只有一次是紅的：讀模型剛做完時跑了 57 個，`ServiceDatabaseTest` 失敗 1 個、`InventoryServiceApiTest` 錯 7 個。前者是 5.4.1 的表沒有登記，後者是 5.4.3 的庫存服務角色起不來。修好之後同樣 57 個全綠。
+**338 個測試**：第 04 章 4.11.2 的 331 個，加上 `StockChangedEventsTest` 1 個、`StockReplicaTest` 2 個、`HotListStaleTest` 2 個、`HotToggleApiTest` 多 1 個、`StockChangedPactTest` 1 個（`InventoryClientPactTest` 少一個顯示、多一個快照，還是 16 個）。**failsafe 那一段 39 個**：這一次建置的 HTTP 契約與事件 18 個、線上那一版 15 個、訂單服務的事件 6 個。
 
 ### 5.11.1 本章其餘檔案的完整內容
 
@@ -3569,7 +3522,7 @@ class StockChangedPactTest {
 - [ ] 說出 `stockChanged()` 為什麼在同一個交易裡讀「剛寫的那幾列」、讀到的值為什麼就是 commit 那一刻的值（5.4.2）。
 - [ ] 把 `StockReplica` 標成只在訂單服務裡，跑 F2，看延遲一欄變成 `NaN`；說出為什麼（5.4.4）。
 - [ ] 跑 F2，說出單體的商品頁為什麼晚了將近 5 秒、副本為什麼只晚一百毫秒上下（5.5）。
-- [ ] 跑 F3；把守門的比較改回 `>` 再跑一次，說出剩下的那 100 列是哪一種（5.6.3）。
+- [ ] 跑 F3；把守門的比較改成 `>` 再跑一次，說出剩下的那 100 列是哪一種（5.6.3）。
 - [ ] 跑 `HotListStaleTest`，說出兩個方向各自的 Redis 與 MySQL 是什麼樣子、為什麼都安全（5.7.5）。
 - [ ] 說出標熱點為什麼先改庫存、再改 `products.hot`，以及 `products.hot` 什麼時候可以拿掉（5.7.6）。
 - [ ] 說出「報表直連別人的資料庫」綁住的是什麼（5.8）。

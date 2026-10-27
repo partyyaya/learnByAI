@@ -4,38 +4,7 @@
 >
 > **這一章**：切開**資料**。第 00 章的兩個資料庫其實是同一份 schema（兩邊都跑了全部的 migration）—— 這一章先用一個實驗讓這件事現形，再讓它們變成真的：庫存服務的庫只有庫存的表，訂單服務的庫一張庫存的表都沒有。然後處理資料庫分開之後消失的三樣東西：**交易**（切斷的交易失敗時留下什麼）、**JOIN**（「每一筆預留都屬於一張存在的訂單」不能再用一句 SQL 檢查）、**同一個時間點**（已經有資料的庫存，怎麼在單體照常營業的時候搬過去）。
 >
-> **你手上會有**：從 `d01` 開出來的分支 `d02`。正式程式碼：migration 依模組分資料夾（25 個檔案，內容一個字都沒改）；ordering 多一個預留 ⇄ 訂單的對帳（`ReservationReconciliation`）與它的排程；建立商品改成發一個 `product.created`（不再在建立商品的交易裡呼叫庫存）；以及第 12 站的一個追記（`OrderJobs`）。`src/test` 多一個 `dist02` 套件（兩個服務、兩個「誠實的」資料庫、四個實驗、一套搬家程式）與四個預設的測試。234 個測試。
->
-> **這一章的實測事故**：
->
-> - **第 00 章的拆分只有一半是真的**（2.2）。第 01 章的「使用者的一天」跑在第 00 章的部署上，第 33 個請求就停了：買家下單 409「庫存不足」—— 賣家剛建立了 100 件。賣家建立商品、補貨、標熱點的每一句庫存 SQL，都送到了**訂單服務的庫**（兩個庫都有一份庫存表），庫存服務的庫一列都沒有，而且沒有任何錯誤。把那份表拿掉，錯誤才變大聲：兩個服務都起不來（`Schema-validation: missing table`），關掉驗證之後建立商品 500（`Table 'shop_d02_order.inventory' doesn't exist`）。
-> - **切斷的交易，第二半失敗之後**（2.5.3）：庫存服務已經 commit、訂單服務的交易接著 rollback，6 種情境。使用者**重做同一件事**（再按一次取消、金流重送回呼、再按一次出貨、排程的下一輪）都會收斂；**改做別的事**就不會 —— 已付款的取消做了一半、賣家接著撿貨出貨：出貨 409「這張訂單有商品庫存不足，即將取消」，但不會有人取消它，它永遠卡在撿貨中；出貨做了一半、賣家改成取消：貨沒出，帳上的庫存少了 1 件。
-> - **預留 ⇄ 訂單的對帳**（2.6）：跨庫的 JOIN 不存在之後，兩邊各問各的、在程式裡比。在切開的部署裡，它找到的跟跨庫 JOIN 一模一樣（100 張沒有訂單的預留，已付款卻已釋放、撿貨中卻已出庫、待付款卻已確認各 1 張），自動釋放了第 00 章那 300 件孤兒；10 萬張訂單、30 萬筆預留的規模，一輪 240～268 ms —— 其中庫存那一邊每一輪都把 30 萬筆整個掃過一次。
-> - **雙寫搬家，四次跑出四種錯**（2.8.3）：單體照常接單、commit 之後在新的庫再寫一次、同時回填舊資料。新的庫寫失敗的交易 1,180～1,640 個（主鍵撞號、外鍵、CHECK、死鎖、斷線），1,000 個商品有 996～1,000 個的庫存對不上；四次裡有三次，回填自己死在死鎖上。停寫搬家（2.8.2）：91 萬列，停寫 12 秒。照著舊庫的變更紀錄追、追上之後停寫（2.8.4）：五張表 0 差異，停寫 1.5 秒。
->
-> **⚠️ 寫這一章途中被自己的實驗抓到的**：
->
-> - **第 12 站的一個 bug：排程裡一張訂單失敗，同一批後面的都不處理**（2.5.3 的 S5'）。`OrderJobs` 的註解說「一張失敗不影響其他張」，實際上只接 `ShopException`；資料庫錯誤 —— 以及切開之後遠端呼叫的每一種失敗 —— 會跳出整個迴圈。修好了，測試是 `OrderJobsIsolationTest`（第 12 站 4.7.1 的追記）。
-> - **第 12 站的一個測試偶發紅：`EventFlowTest.mailerDownDeadLetters` 讀到「死信佇列 0 則」**（2.10）。通知的消費者先寫 `FAILED`、才把訊息送進死信佇列；測試看到 `FAILED` 就立刻讀佇列。49 份紀錄裡都是 1 則，這一次讀早了。改的是測試（第 12 站 7.7.3 的追記）。
-> - **我的搬家程式漏了 11 個商品**（2.8.4）：變更紀錄的號碼是 `AUTO_INCREMENT`，不是 commit 的順序。搬家程式追到紀錄的尾巴時，跳過了還沒 commit 的那幾筆 —— 第 12 站 9.12 J11b（水位線越過還沒 commit 的那一列）的同一個錯。之前跑完的那一次沒有出現，因為搬家程式一直到停寫之後才追上；改成「追上了才停寫」，它才第一次在單體還在寫的時候讀到尾巴。修好之後，一次搬家裡有 14 個號碼比後面的晚 commit。
-> - **搬家程式的第一版，回填途中新的庫斷線就整個停了**（2.8.4）：回填沒有「從上一批接著做」。
-> - **trigger 的代價，第一次的比較不能用**（2.8.4 ④）：拿「營業的前 10 秒」（沒有 trigger）跟「搬家的那 20 秒」（有 trigger）比，有 trigger 的反而快了 49% —— 前 10 秒的 JVM 還沒 JIT。改成先熱身、交錯量。
-> - **C1 的第一版把「交易內的遠端呼叫」數成 17 種**：庫存服務的端點在它自己的交易裡呼叫自己的模組，也被算了進去。只算訂單服務那一側，是 10 種（2.4.7）。
->
-> **小坑**：
->
-> - 搬了 migration 的檔案沒有 `mvn clean`：`Found more than one migration with version 1`（`target/classes` 裡新舊位置各一份）。第 12 站 2.9.5 的第四條規則，這一章踩了兩次（2.4.1）。
-> - 第 12 站的 `ddl-auto=validate` 檢查「整個單體」的實體：兩個服務跑同一個 jar、各接一個只有自己的表的庫，都起不來。實驗裡關掉它；庫存服務還要關掉「建立第一個管理員」（它的庫沒有 `users`）（2.4.6）。
-> - 兩個庫在同一台 MySQL、兩個服務用同一個帳號：**訂單服務的帳號讀得到庫存服務的庫** —— 授權跟著角色走，不跟著服務走（2.4.4）。
->
-> **這一章沒有達成、或只達成一部分的目標**：
->
-> - **7 種切斷的交易，只修了 1 種**（建立商品，2.7）。其他 6 種在切開的部署裡仍然是兩個交易；對帳找得到它們留下的不一致，自動修得了的只有「沒有訂單、或訂單已取消」的預留（2.6.4）。真正的修法是第 04 章的 Saga（📌 第 04 章修了其他 6 種，4.10.4）。
-> - **對帳漏了一種**：出貨做了一半、改成取消（C2 的 S4'）—— 已取消的訂單、已出庫的預留。對帳只看「還佔著庫存」的預留與「還沒結束」的訂單，這一種兩邊都不在。（📌 第 04 章寫完之後的追記：這一種在 Saga 上不會再發生 —— 出庫只在 `SHIPPED` commit 之後才做，2.5.3 的追記、第 04 章 4.10.6。）
-> - **搬家只做了資料。** 停寫、追完、核對之後，「把流量切到庫存服務」與「切過去之後怎麼搬回來」只有討論（2.8.5，第 09 章）。binlog 的變更擷取（Debezium、MySQL 的複寫）也沒有做。（📌 第 09 章寫完之後的追記：binlog 的變更擷取做了，2.8.6、第 09 章 9.6.8。）
-> - **每個服務一個資料庫帳號，沒有做**：第 12 站的 migration 把角色名稱寫死了（2.4.4）。（📌 第 09 章寫完之後的追記：做了 —— 每個服務一個角色，由 Flyway 的 afterMigrate callback 授權，2.4.4；共用一個庫的那一段它擋住了什麼，第 09 章 9.4.6。）
-> - **trigger 的代價量了兩次，結果不一樣**：吞吐少 1% 與少 8%，p99 多 7 ms 與 22 ms（2.8.4 ④）—— 方向一致、大小不確定。（📌 追記：各 10 秒 × 10 輪再跑三次：0～4%，比輪與輪之間的雜訊小得多 —— 2.8.4 ④。）
-> - **實驗裡兩個庫在同一台 MySQL 上**：跨庫的 JOIN 寫得出來（拿來當標準答案）、搬家沒有真的網路。停寫搬家的 12 秒是下限。
+> **你手上會有**：從 `d01` 開出來的分支 `d02`。正式程式碼：migration 依模組分資料夾（25 個檔案，內容一個字都沒改）；ordering 多一個預留 ⇄ 訂單的對帳（`ReservationReconciliation`）與它的排程；建立商品改成發一個 `product.created`（不再在建立商品的交易裡呼叫庫存）；以及第 12 站的一個修正（`OrderJobs`）。`src/test` 多一個 `dist02` 套件（兩個服務、兩個「誠實的」資料庫、四個實驗、一套搬家程式）與四個預設的測試。234 個測試。
 
 ---
 
@@ -201,7 +170,7 @@ git switch -c d02 d01
 mkdir -p src/test/java/com/example/shop/dist02
 ```
 
-> 📌 **這一章途中找到第 12 站的一個 bug 與一個偶發紅的測試**：2.5.3 的 S5'（排程一張訂單失敗，同一批的其他張都不處理，第 12 站 4.7.1 的追記）、`EventFlowTest.mailerDownDeadLetters` 讀死信佇列讀得太早（2.10，第 12 站 7.7.3 的追記）。照著改了的話，這個分支也帶著它們 —— 整套 `mvn clean verify` 多一個測試（`OrderJobsIsolationTest`）。
+> 📌 **這個分支也帶著第 12 站的一個 bug 修正與一個測試的修正**：2.5.3 的 S5'（排程一張訂單失敗，同一批的其他張都不處理，第 12 站 4.7.1）、`EventFlowTest.mailerDownDeadLetters` 讀死信佇列讀得太早（2.10，第 12 站 7.7.3）。照著改了的話，整套 `mvn clean verify` 多一個測試（`OrderJobsIsolationTest`）。
 
 ### 2.4.1 migration 依模組分資料夾
 
@@ -247,14 +216,14 @@ mvn -q spring-boot:run -Dspring-boot.run.arguments="--spring.datasource.url=jdbc
 
 驗證通過、沒有要跑的 migration。（看到這幾行就可以 Ctrl-C。）
 
-> ⚠️ **搬完檔案一定要 `mvn clean`。** 第一次沒有 clean 就跑：
+> ⚠️ **搬完檔案一定要 `mvn clean`。** 沒有 clean 就跑：
 > ```
 > org.flywaydb.core.api.FlywayException: Found more than one migration with version 1
 > Offenders:
 > -> …/target/classes/db/migration/V1__account_create_tables.sql (SQL)
 > -> …/target/classes/db/migration/account/V1__account_create_tables.sql (SQL)
 > ```
-> `target/classes` 裡舊位置的檔案還在 —— 第 12 站 2.9.5 的第四條規則（刪了 migration，要 `mvn clean`），搬檔案也算刪。這一章踩了兩次：第二次是示範 `MigrationOwnershipTest` 變紅（下面那一段）、把 V18 搬走又搬回來之後（`version 18`）。
+> `target/classes` 裡舊位置的檔案還在 —— 第 12 站 2.9.5 的第四條規則（刪了 migration，要 `mvn clean`），搬檔案也算刪。下面示範 `MigrationOwnershipTest` 變紅、把 V18 搬走又搬回來之後，也要 `mvn clean`（不然是 `version 18`）。
 
 還有四個地方用「`db/migration/` 底下直接就是檔案」的假設讀這個資料夾，要一起改：
 
@@ -290,7 +259,7 @@ mvn -q spring-boot:run -Dspring-boot.run.arguments="--spring.datasource.url=jdbc
 |---|---|
 | 單體（第 12 站、這一章的正式程式碼） | `classpath:db/migration`（預設，沒有改） |
 | 庫存服務 | `classpath:db/migration/inventory,classpath:db/migration/shared` |
-| 訂單服務（其他八個模組）（📌 第 09 章寫完之後的追記：是其他**七個** —— 模組一共八個，庫存是其中一個；第 03 章 3.7.2 的程式碼註解也寫成「庫存以外的八個」） | 其他每一個資料夾，加上 `shared` |
+| 訂單服務（其他七個模組） | 其他每一個資料夾，加上 `shared` |
 
 跑完之後兩個庫各有什麼（C1 ③ 的前兩行）：
 
@@ -343,15 +312,15 @@ version	script
   訂單服務的帳號（shop）讀庫存服務的庫：SELECT COUNT(*) FROM shop_d02_inv.inventory → 4（讀得到）
 ```
 
-**訂單服務的帳號讀得到庫存服務的庫** —— 2.3.4 的 ② 那一格：「看帳號」。這一站的實驗沒有修它（兩個庫在同一台機器上，是實驗的簡化），但正式環境裡兩種做法擇一：
+**訂單服務的帳號讀得到庫存服務的庫** —— 2.3.4 的 ② 那一格：「看帳號」。這一章的實驗沒有修它（兩個庫在同一台機器上，是實驗的簡化），但正式環境裡兩種做法擇一：
 
 - 兩個服務在**兩台 MySQL**（2.3.4 的 ③）：連不到，就讀不到。
-- 同一台 MySQL 上：**每個服務一個角色、一個帳號**（`inventory_app`、`ordering_app`……）。卡住的地方是第 12 站的 migration 把角色名稱寫死了（`TO shop_app`），而跑過的 migration 不能改內容（checksum）。出路有三條，這一章一條都沒有走：兩台 MySQL（同一個角色名稱在兩台機器上是兩個不同的角色）；同一台、只在庫存服務的部署多跑一段授權（例如只有庫存服務的 `spring.flyway.locations` 才包含的 Flyway callback `afterMigrate.sql` —— 不能寫成 `db/migration/inventory/` 裡的新 migration，單體也跑那個資料夾）；搬到自己的 repo 時，新的 baseline 用 Flyway 的 placeholder 寫角色名稱。
+- 同一台 MySQL 上：**每個服務一個角色、一個帳號**（`inventory_app`、`ordering_app`……）。卡住的地方是第 12 站的 migration 把角色名稱寫死了（`TO shop_app`），而跑過的 migration 不能改內容（checksum）。出路有三條：兩台 MySQL（同一個角色名稱在兩台機器上是兩個不同的角色）；同一台、只在庫存服務的部署多跑一段授權（例如只有庫存服務的 `spring.flyway.locations` 才包含的 Flyway callback `afterMigrate.sql` —— 不能寫成 `db/migration/inventory/` 裡的新 migration，單體也跑那個資料夾）；搬到自己的 repo 時，新的 baseline 用 Flyway 的 placeholder 寫角色名稱。
 
-📌 **第 09 章寫完之後的追記：走了第二條出路。** 每個服務一個角色（`inventory_app`、`order_app`）、一個帳號（`inventory_svc`、`order_svc`）；角色的權限由 Flyway 的 **afterMigrate callback** 給，放在 migration 之外的資料夾 —— 只有 `locations` 包含它的部署會跑：
+**走第二條出路。** 這一段的程式碼在 `d09` 分支上（第 09 章結束的 `9a5e7b1` 之後的 commit），部署的部分用第 08、09 章的 kind 環境。每個服務一個角色（`inventory_app`、`order_app`）、一個帳號（`inventory_svc`、`order_svc`）；角色的權限由 Flyway 的 **afterMigrate callback** 給，放在 migration 之外的資料夾 —— 只有 `locations` 包含它的部署會跑：
 
 ```sql
--- 13 站第 09 章寫完之後的追記（第 02 章 2.4.4）：庫存服務自己的角色。shop_app 是每一個 migration 寫死的名字（跑過的不能改內容），
+-- 13 站 2.4.4：庫存服務自己的角色。shop_app 是每一個 migration 寫死的名字（跑過的不能改內容），
 -- 兩個服務都拿它，訂單服務的帳號就讀得到庫存的表。這裡另外給一個只有庫存的表與 shared 的角色，庫存服務的帳號只拿它。
 -- Flyway 的 callback：只有「這個資料夾在 locations 裡」的部署會跑它（庫存服務的 Job；共用一個庫的那一段，單體的 Job 兩個都跑）。
 -- 每一次 migrate 之後都跑：GRANT 本來就可以重複。權限跟 shop_app 對同一張表的一樣 —— ServiceGrantsTest 守這一條
@@ -374,7 +343,7 @@ GRANT EXECUTE ON PROCEDURE purge_audit_logs TO inventory_app;
              - configMapRef: {name: shop-common}
              - configMapRef: {name: order-service}
              - secretRef: {name: shop-secrets}
-+            # 13 站第 09 章寫完之後的追記（第 02 章 2.4.4）：這個服務自己的資料庫帳號（SHOP_DB_USER、SHOP_DB_PASSWORD）。
++            # 13 站 2.4.4：這個服務自己的資料庫帳號（SHOP_DB_USER、SHOP_DB_PASSWORD）。
 +            # 寫在 shop-secrets 後面：envFrom 有同一個 key 時，後面的蓋掉前面的
 +            - secretRef: {name: order-service-db}
            ports:
@@ -549,7 +518,7 @@ dist02/
 
 - **`spring.flyway.locations`**：2.4.2 的那張表。`withoutInventory()` 列出 `db/migration` 底下除了 `inventory` 的每一個資料夾 —— 之後多一個模組的資料夾，不用改這裡。
 - **`ddl-auto=none`**：2.2 ② 的那兩行 `Schema-validation: missing table`。第 12 站的 `validate` 是對的（schema 只由 Flyway 管，Hibernate 只檢查），但它檢查的是**整個單體**的實體。拆開之後，每個服務該驗證的只有自己的實體 —— 那要等程式碼也分開（每個服務一個 jar）。實驗裡兩個服務跑同一個 jar，只好關掉。
-- **`bootstrap-admin.enabled=false`**：第 12 站「一個管理員都沒有時建立第一個」（US-ACC-3 AC-3）會查 `users` —— 庫存服務的庫沒有這張表，起不來。**同一個 jar、兩個角色**（哪些 bean 該在哪個服務上活著）是第 08 章的事；這一章用開關湊過去。（📌 追記：是第 03 章 3.7 做的，不是第 08 章。）
+- **`bootstrap-admin.enabled=false`**：第 12 站「一個管理員都沒有時建立第一個」（US-ACC-3 AC-3）會查 `users` —— 庫存服務的庫沒有這張表，起不來。**同一個 jar、兩個角色**（哪些 bean 該在哪個服務上活著）是第 03 章 3.7 的事；這一章用開關湊過去。
 
 **`RemoteInventory`：13 個方法全部走 HTTP**
 
@@ -866,16 +835,16 @@ mvn test -Pexperiments -Dtest=C2BrokenTransactionTest
 
 兩個都是「兩邊各自都正確」：S3' 的訂單服務說「已付款、撿貨中」，庫存服務說「這張訂單的預留已經釋放」；各自的不變量（第 12 站的 INV-1～INV-5）全部成立。錯的是 2.5.2 那張表。
 
-> 📌 **第 04 章寫完之後的追記：S3'、S4' 在 Saga 上重跑過了，兩個都收斂**（第 04 章 4.10.6 的 E7：同一個失敗的注入、同樣的下一步，事件走 RabbitMQ）。失敗的那一刻，兩個庫**都沒變** —— 付款、取消、出貨、逾時的交易裡已經沒有遠端呼叫，通知庫存的事件跟訂單的狀態寫在同一個交易裡，rollback 就兩個都沒有。S3' 的賣家照常撿貨、出貨（取消沒有發生，買家看到的是那一次的 500）；S4' 改成取消之後，預留釋放、退款單建了，`on_hand` 一件都沒少。最後跑一輪對帳：0 張。
+> 📌 **S3'、S4' 在第 04 章的 Saga 上重跑過，兩個都收斂**（第 04 章 4.10.6 的 E7：同一個失敗的注入、同樣的下一步，事件走 RabbitMQ）。失敗的那一刻，兩個庫**都沒變** —— 付款、取消、出貨、逾時的交易裡已經沒有遠端呼叫，通知庫存的事件跟訂單的狀態寫在同一個交易裡，rollback 就兩個都沒有。S3' 的賣家照常撿貨、出貨（取消沒有發生，買家看到的是那一次的 500）；S4' 改成取消之後，預留釋放、退款單建了，`on_hand` 一件都沒少。最後跑一輪對帳：0 張。
 
-> ⚠️ **S5' 是這一章找到的第 12 站的 bug。** 第一次跑這個實驗時，S5' 是這樣：
+> ⚠️ **S5' 碰到的是第 12 站的一個 bug。** 沒有修的話，S5' 是這樣：
 > ```
 >   S5' 逾時排程：第一張（失敗）             │    — │ PENDING_PAYMENT │ RELEASED   │ 100 / 0                 │ — / 0
 >       第二張（沒有注入失敗）              │    — │ PENDING_PAYMENT │ HELD       │ 100 / 1                 │ — / 0
 >       排程丟出例外：SQLException: d02: injected failure after the remote inventory call
 > ```
 > 同一輪排程有兩張逾時的訂單，第一張失敗，**第二張就沒有被取消** —— 例外跳出了整個迴圈。`OrderJobs` 的註解寫著「每張訂單各自一個交易：一張失敗不影響其他張」（第 12 站 4.7.1 ①），但 `applyEach()` 只接 `ShopException`（業務上的拒絕）；資料庫錯誤（死鎖、鎖等待逾時）是 `DataAccessException`，不在裡面。在單體裡這很少見；**切開之後，遠端呼叫的每一種失敗（逾時、連不上、對方 500）都是這一種例外**，而且失敗的那一張排在最前面（`ORDER BY payment_deadline`）—— 它每一輪都會再失敗一次，後面的訂單一張都取消不了。
-> 修法是多接一層 `RuntimeException`（記一筆 ERROR、繼續下一張），測試是 `OrderJobsIsolationTest`（第 12 站，`ordering.internal`）：用一個 trigger 讓第一張的取消在資料庫裡失敗，看第二張。修正前紅（`UncategorizedSQLException` 跳出 `cancelExpired()`），修正後 `取消了 1 張；第一張（注入失敗）PENDING_PAYMENT、第二張 CANCELLED`。細節在第 12 站 4.7.1 的追記。上面那張表是修正之後跑的。
+> 修法是多接一層 `RuntimeException`（記一筆 ERROR、繼續下一張），測試是 `OrderJobsIsolationTest`（第 12 站，`ordering.internal`）：用一個 trigger 讓第一張的取消在資料庫裡失敗，看第二張。修正前紅（`UncategorizedSQLException` 跳出 `cancelExpired()`），修正後 `取消了 1 張；第一張（注入失敗）PENDING_PAYMENT、第二張 CANCELLED`。細節在第 12 站 4.7.1。上面那張表是修正之後跑的。
 
 **這一節的結論：**
 
@@ -1957,7 +1926,7 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
         drained = System.nanoTime();
 ```
 
-> ⚠️ **回填也要能接著做。** 搬家程式的第一版，新的庫在回填途中斷線（實驗第 8 秒起的那 2 秒），整個執行緒就停了 —— 回填沒有「從上一批接著做」，只能整張表重來。改成寫不進去就等一下、同一批再來一次（寫的是整列的值，重做無妨）：
+> ⚠️ **回填也要能接著做。** 新的庫在回填途中斷線（實驗第 8 秒起的那 2 秒），回填如果不能「從上一批接著做」，整個執行緒就停了，只能整張表重來。所以寫不進去就等一下、同一批再來一次（寫的是整列的值，重做無妨）：
 > ```java
 >                 try {
 >                     if (overwrite) upsert(dst, table, rows); else insertIgnore(dst, table, rows);
@@ -1969,7 +1938,7 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
 >                 }
 > ```
 
-加上這個修正、並改成「追上了才停寫」之後的第一次，結果是這樣的：
+搬家程式如果把變更紀錄的號碼當成順序（讀到哪一號，就記下「這一號以前都處理過了」），追上了才停寫，結果是這樣的：
 
 ```
 ═══ 2.8.4 ③ 舊的庫是唯一寫入者：trigger 記下變更，回填之後照著追；最後停寫、追完、核對（load { 9.70 6.62 5.08 }）═══
@@ -1987,13 +1956,13 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
     inventory 的 reserved 對不上的商品：11 個，差的件數合計 12
 ```
 
-> ⚠️ **我的搬家程式漏了東西：11 個商品的庫存對不上，4 筆預留、7 筆帳沒搬過去。** 跟 ② 不一樣的是，這一次的「漏」完全可以解釋 —— 而且第 12 站已經犯過一次同樣的錯。
+> ⚠️ **搬家程式漏了東西：11 個商品的庫存對不上，4 筆預留、7 筆帳沒搬過去。** 跟 ② 不一樣的是，這一次的「漏」完全可以解釋 —— 而且第 12 站已經犯過一次同樣的錯。
 >
-> 變更紀錄的 `seq` 是 `AUTO_INCREMENT`：**號碼在 trigger 的 `INSERT` 那一刻就發了，那一列卻要等它的交易 commit 才看得到。** 號碼小的交易可以比號碼大的晚 commit。第一版的搬家程式讀到 101 號，就記下「101 以前都處理過了」—— 而 100 號那時候還在路上（它的交易還沒 commit）；等它 commit 了，搬家程式已經不會再回頭看。
+> 變更紀錄的 `seq` 是 `AUTO_INCREMENT`：**號碼在 trigger 的 `INSERT` 那一刻就發了，那一列卻要等它的交易 commit 才看得到。** 號碼小的交易可以比號碼大的晚 commit。搬家程式讀到 101 號，就記下「101 以前都處理過了」—— 而 100 號那時候還在路上（它的交易還沒 commit）；等它 commit 了，搬家程式已經不會再回頭看。
 >
 > 第 12 站 9.12 的 J11b 是同一件事：對帳的水位線越過了一筆還沒 commit 的帳，那一筆就永遠不會被加進累計。那一次的修法是「水位線只前進到夠舊的帳」（5 分鐘）。
 >
-> **之前跑完的那一次沒有出現**（再之前的一次，回填途中新的庫斷線，搬家程式整個停了 —— 上面那一段的修正），因為搬家程式一直沒追上：它落在後面幾萬筆，讀到的永遠是「早就 commit 了」的紀錄，最後在停寫之後一口氣追完。這一次我改成「追上了才停寫」—— 搬家程式第一次在單體還在寫的時候讀到紀錄的**尾巴**，正在 commit 的那幾個交易就在那裡。
+> **這個錯只有在搬家程式追上的時候才看得到。** 搬家程式如果一直落在後面幾萬筆，讀到的永遠是「早就 commit 了」的紀錄，最後在停寫之後一口氣追完 —— 漏不掉。「追上了才停寫」，搬家程式才會在單體還在寫的時候讀到紀錄的**尾巴**，正在 commit 的那幾個交易就在那裡。
 
 修法：記下「洞」—— 比讀到的最大號碼小、但還沒看到的號碼 —— 每一輪再問一次；**過了 60 秒還沒出現，才當成 rollback**（60 秒大於 `innodb_lock_wait_timeout` 的 50 秒：一個交易拿到號碼之後，最久還要等這麼久才 commit）。停寫的時候，先確認舊庫上沒有進行中的交易（`information_schema.innodb_trx`），剩下的洞才全部當成 rollback：
 
@@ -2058,7 +2027,7 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
 ```
 
 - **五張表、逐列比對全部是 0。** 新的庫斷線的那 2 秒，搬家程式重試了 19 次 —— 變更紀錄還在舊的庫裡，等它回來接著追就好。② 那幾百個「寫不進去就算了」的交易（488～560 個），在這裡不存在。
-- **號碼的洞**：發現 14 個，**14 個後來全部補上了** —— 14 次「號碼小的交易比號碼大的晚 commit」，第一版會把它們全部跳過。0 個過期；停寫時舊庫上沒有進行中的交易，所以也沒有洞要當成 rollback。
+- **號碼的洞**：發現 14 個，**14 個後來全部補上了** —— 14 次「號碼小的交易比號碼大的晚 commit」，不記洞的話會把它們全部跳過。0 個過期；停寫時舊庫上沒有進行中的交易，所以也沒有洞要當成 rollback。
 - **停寫 1,482 ms**：追完最後的變更、核對。① 是 12 秒。這段時間主要是核對（兩個庫各掃一次五張表）；真的 5,000 萬筆帳，核對也要分段做（例如只核對「這一次搬家期間變過的那些主鍵」，加上事前已經做過的全表核對）。
 - **落後的那一行**：回填的十幾秒裡，紀錄一直累積（單體照常營業）；回填完之後搬家程式開始追，追的速度比單體寫的速度快，落後才降下來。**這是「能不能不停機」的真正條件：搬家程式追的速度，要比單體寫的速度快。** 追不上，就永遠等不到停寫的那一刻。
 
@@ -2079,11 +2048,11 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
   有 trigger  │ 下單 4,635 張（每秒 232）│ p50 23.1 ms │ p99 52.6 ms
 ```
 
-吞吐只少 1%、p50 一樣、p99 多 7 ms。方向一致（有 trigger 比較慢、尾巴比較長），大小不確定 —— 一張訂單多 9 句 `INSERT`，在這台機器上是幾個百分點的量級。要更確定，就要更多輪、更長的時間；這一章沒有做。搬家通常只開幾天，這個代價多半付得起；它的另一個代價是**每一張表都要裝、要記得拆**。
+吞吐只少 1%、p50 一樣、p99 多 7 ms。方向一致（有 trigger 比較慢、尾巴比較長），大小不確定 —— 一張訂單多 9 句 `INSERT`，在這台機器上是幾個百分點的量級。要更確定，就要更多輪、更長的時間（下面的 📌）。搬家通常只開幾天，這個代價多半付得起；它的另一個代價是**每一張表都要裝、要記得拆**。
 
-> ⚠️ **為什麼要交錯量。** C4 第一版是拿「營業的前 10 秒」（沒有 trigger）跟「③ 那 20 秒」（有 trigger）比 —— 第一次的對照每秒 136 張，③ 每秒 203 張：**有 trigger 比沒有快**。不是 trigger 讓它變快，是第一段的 JVM 剛起來、還沒 JIT（同一個單體，第一次跑 10 秒的數字一定吃虧）。之後先熱身 5 秒，代價改用交錯量（第 00 章 0.2.1 的做法）。
+> ⚠️ **為什麼要交錯量。** 拿「營業的前 10 秒」（沒有 trigger）跟「③ 那 20 秒」（有 trigger）比，對照是每秒 136 張，③ 每秒 203 張：**有 trigger 比沒有快**。不是 trigger 讓它變快，是第一段的 JVM 剛起來、還沒 JIT（同一個單體，第一次跑 10 秒的數字一定吃虧）。所以先熱身 5 秒，代價用交錯量（第 00 章 0.2.1 的做法）。
 
-> 📌 **第 04 章寫完之後的追記：多量幾輪 —— 「少 8%」是雜訊。** 在第 02 章的程式碼上，`C4DataMigrationTest` 多一個只量這一件事的方法：單體起來、裝好變更紀錄、熱身 5 秒，然後有／沒有 trigger 各 10 秒、交錯 10 輪，每一輪各印一行（第一版只印合計，看不出輪與輪之間差多少）：
+> 📌 **多量幾輪 —— 「少 8%」是雜訊。** `C4DataMigrationTest` 多一個只量這一件事的方法（程式碼在 `d04` 分支上：第 04 章結束的 `4512f05` 之後的 commit `a208c4e`；下面的數字是在第 02 章的程式碼上量的）：單體起來、裝好變更紀錄、熱身 5 秒，然後有／沒有 trigger 各 10 秒、交錯 10 輪，每一輪各印一行（只印合計的話，看不出輪與輪之間差多少）：
 >
 > ```diff
 >                  (freeze1 - drained) / 1e6, diff.isEmpty() ? "沒有" : diff);
@@ -2209,7 +2178,7 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
 | | trigger（這一節） | binlog 的變更擷取（Debezium、Maxwell…） | MySQL 的複寫（只複寫這幾張表） |
 |---|---|---|---|
 | 寫入的額外成本 | 每一列多一句 `INSERT`，在同一個交易裡 | 幾乎沒有：讀的是 MySQL 本來就在寫的 binlog | 同左 |
-| 順序 | 號碼不是 commit 的順序 —— 要處理洞（這一節的 ⚠️） | **binlog 就是 commit 的順序**，沒有洞的問題 | 同左 |
+| 順序 | 號碼不是 commit 的順序 —— 要處理洞（2.8.4 的 ⚠️） | **binlog 就是 commit 的順序**，沒有洞的問題 | 同左 |
 | 要多架什麼 | 不用 | 一個常駐的擷取服務（Debezium 通常搭 Kafka） | 新的庫要是一台 MySQL，設成 replica、加表的過濾 |
 | 新的庫可以長得不一樣嗎 | 可以（搬家程式自己寫） | 可以 | 不行：表要一樣 |
 
@@ -2217,11 +2186,13 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
 
 這一節最重要的結論不是工具，是那條原則：**搬家的時候，只能有一個寫入者。** ② 的每一種錯，都來自兩個寫入者；③ 的每一個步驟，都是為了讓新的庫只是一個副本，直到切換的那一刻。
 
-> 📌 **第 09 章寫完之後的追記：上面的四步，加一個灰度就不成立。** 第 09 章 9.2 照這四步切過去，只多做一件事 —— 先切 10% 的流量試試看：搬家程式繼續追，庫存服務接新的庫。灰度的那一段，新的庫同時被庫存服務與搬家程式寫，「直到切換的那一刻」變成了一段時間：庫存超賣，而這一節的核對說兩個庫一樣（灰度寫進新的庫的，被搬家程式蓋掉了）。第 09 章把順序反過來：**程式先搬、資料最後搬**（9.3.4）—— 兩個服務先接舊的庫，灰度、回滾都在同一份資料上做；資料最後一次切，用的是這一節的搬家程式，加上遷移期的對帳（9.6.3）、切換時一起搬的共用表的幾列（9.6.4），以及上面「回得來嗎」那一段的反方向搬家程式（9.6.6、9.7）。
+> 📌 **上面的四步，加一個灰度就不成立。** 第 09 章 9.2 照這四步切過去，只多做一件事 —— 先切 10% 的流量試試看：搬家程式繼續追，庫存服務接新的庫。灰度的那一段，新的庫同時被庫存服務與搬家程式寫，「直到切換的那一刻」變成了一段時間：庫存超賣，而這一節的核對說兩個庫一樣（灰度寫進新的庫的，被搬家程式蓋掉了）。第 09 章把順序反過來：**程式先搬、資料最後搬**（9.3.4）—— 兩個服務先接舊的庫，灰度、回滾都在同一份資料上做；資料最後一次切，用的是這一節的搬家程式，加上遷移期的對帳（9.6.3）、切換時一起搬的共用表的幾列（9.6.4），以及上面「回得來嗎」那一段的反方向搬家程式（9.6.6、9.7）。
 
-### 2.8.6 追記：binlog 的變更擷取
+### 2.8.6 binlog 的變更擷取
 
-📌 **第 09 章寫完之後補的。** 2.8.5 的表說「binlog 的變更擷取（Debezium、Maxwell…）」是正式環境更常見的做法，這一站一直用 trigger。這裡做一個讀 binlog 的搬家程式（`BinlogCopier`，在第 09 章的實驗目錄），其他都不變：
+這一節的程式碼在 `d09` 分支上（第 09 章結束的 `9a5e7b1` 之後的 commit），實驗（M11）要第 08、09 章的 kind 環境。
+
+2.8.5 的表說「binlog 的變更擷取（Debezium、Maxwell…）」是正式環境更常見的做法，前面一直用 trigger。這裡做一個讀 binlog 的搬家程式（`BinlogCopier`，在第 09 章的實驗目錄），其他都不變：
 
 - **只拿 binlog 來知道「哪一個主鍵變了」**，搬的時候照 2.8.4 的做法，再去正本讀現在的那一列、整列寫過去（正本沒有了就刪）。寫過去的永遠是正本現在的樣子：同一列變了三次只搬一次，回填與 binlog 重疊的那一段搬兩次也一樣。
 - **接上 binlog** 用 mysql-binlog-connector-java（`com.zendesk` 發布的 0.31.0；Debezium 的 MySQL connector 底下用的是它的一個 fork）：像一台 replica 一樣連上 MySQL（這台 compose 的 MySQL 8.0 預設就開著 binlog、ROW 格式）。帳號要有 `REPLICATION SLAVE`、`REPLICATION CLIENT`（實驗用 root），`server_id` 不能跟別的 replica 撞。
@@ -2274,8 +2245,8 @@ mvn test -Pexperiments -Dtest=C4DataMigrationTest
 | `ServiceDatabaseTest` | **測試**（預設的測試組） | Testcontainers | 庫存的資料夾＋`shared`、其他資料夾＋`shared`，各自從空資料庫跑得起來，剛好是自己的表與授權（2.4.5） |
 | `ReservationReconciliationTest` | **測試** | Testcontainers | 對帳：X-1、X-2 釋放；X-3、X-4、X-5 告警；grace 之內的、一致的不動（2.6.5） |
 | `ProductCreatedFlowTest` | **測試** | Testcontainers（真的 relay、RabbitMQ） | 建立商品 → `product.created` → 庫存列與 INITIAL 帳；「沒有庫存列」的那段時間（2.7.5） |
-| `OrderJobsIsolationTest` | 測試（第 12 站 4.7.1 的追記） | Testcontainers | 同一批排程裡一張訂單的取消丟出資料庫錯誤，另一張照樣取消（2.5.3 的 S5'） |
-| `EventFlowTest.mailerDownDeadLetters` | 測試（改；第 12 站 7.7.3 的追記） | Testcontainers（真的 RabbitMQ） | 看到 `FAILED` 之後，等死信到了才讀佇列（2.10） |
+| `OrderJobsIsolationTest` | 測試（第 12 站 4.7.1） | Testcontainers | 同一批排程裡一張訂單的取消丟出資料庫錯誤，另一張照樣取消（2.5.3 的 S5'） |
+| `EventFlowTest.mailerDownDeadLetters` | 測試（改；第 12 站 7.7.3） | Testcontainers（真的 RabbitMQ） | 看到 `FAILED` 之後，等死信到了才讀佇列（2.10） |
 | `MigrationOwnershipTest` | 測試（改） | —— | 多一條規則：資料夾 = 模組（2.4.1） |
 | `CatalogCartApiTest`、驗收 Q6、`CrossModuleCallInTxTest` | 測試（改） | Testcontainers | 交付 `product.created`；`Files.walk`；清單 12 → 11 種（2.4.1、2.7.5） |
 | `C1SharedSchemaTest` | 實驗 | 兩個服務、一個 JVM（`shop_d02_order`、`shop_d02_inv`） | 三種部署跑使用者的一天：SQL 落在哪一個庫（2.2、2.4.7、2.7.6） |
@@ -2343,7 +2314,7 @@ mvn test -Pexperiments -Dtest=K1SplitLatencyTest      # 然後 K2、K3、K5，�
                                    │ 庫存服務 [.1-18311-exec-5] [6acde08a952a04e12a67d08d040d2801-a7d03ee94d23ac38] c.e.shop.dist00.LabInventoryService      : D00_RESERVE orderId=2 traceparent=null
 ```
 
-（K3 的連線池逐秒的那 60 行、K5 的 ① 在 2.10 列的紀錄裡；這裡只摘要。）
+（K3 的連線池逐秒的那 60 行、K5 的 ① 沒有列出來；這裡只摘要。）
 
 | | 第 00 章 | 第 01 章之後 | 第 02 章之後 | 這一章有沒有改到它 |
 |---|---|---|---|---|
@@ -2499,7 +2470,7 @@ mvn test -Pexperiments -Dtest=B1BoundaryMapTest -Dd01.range=ch09
 | 2. 庫存拆成獨立服務（**含獨立資料庫**）、下單改成 Saga | 兩種部署 | 7 種交易、12 種呼叫的清單；5 種讀移出交易 | **獨立的資料庫**：誠實的兩個庫、`ServiceDatabaseTest`；7 種交易 → 6 種（建立商品改成事件）；對帳 X-1～X-5；Saga 仍在第 04 章 |
 | 3. 跨服務報表 | 商品頁的可售量 | reporting 讀的 5 張表 | 庫存這一刀不切斷任何報表（B1）；維運查詢會壞（2.6.7） |
 | 4. 一條完整的 trace | K5 | （沒有變） | （沒有變） |
-| 5. 基礎設施選型 | 維運清單 | （沒有變） | 「同一個 jar、兩個角色」：`ddl-auto`、`bootstrap-admin` 這種開關（2.4.6）—— 第 03 章 3.7（原本寫第 08 章；追記）|
+| 5. 基礎設施選型 | 維運清單 | （沒有變） | 「同一個 jar、兩個角色」：`ddl-auto`、`bootstrap-admin` 這種開關（2.4.6）—— 第 03 章 3.7 |
 
 ---
 
@@ -2548,7 +2519,7 @@ shop/                                                          ← 分支 d02（
         └── EventFlowTest.java                                 ← 第 12 站 7.7.3 的追記（等死信到了再讀佇列）
 ```
 
-**沒有新的 migration**（只有搬家），**沒有改任何一支 API 的回應**（`OpenApiContractTest` 照樣綠）。正式程式碼的改動有三組：migration 分資料夾（2.4.1）、對帳（2.6）、建立商品改成事件（2.7）；加上第 12 站的兩個追記（一個 bug、一個測試的競態）。
+**沒有新的 migration**（只有搬家），**沒有改任何一支 API 的回應**（`OpenApiContractTest` 照樣綠）。正式程式碼的改動有三組：migration 分資料夾（2.4.1）、對帳（2.6）、建立商品改成事件（2.7）；加上第 12 站的兩個修正（一個 bug、一個測試的競態）。
 
 完整跑一次（預設的 Testcontainers；C1～C4 標了 `experiment`，不在裡面）：
 
@@ -2567,19 +2538,13 @@ TEST_INFRA MySQL 最多同時 25 條連線（max_connections 151）
 [INFO] Total time:  04:14 min
 ```
 
-**234 個測試**：第 01 章的 230 個，加上 `ServiceDatabaseTest`、`ReservationReconciliationTest`、`ProductCreatedFlowTest`，以及第 12 站的追記帶來的 `OrderJobsIsolationTest`。
+**234 個測試**：第 01 章的 230 個，加上 `ServiceDatabaseTest`、`ReservationReconciliationTest`、`ProductCreatedFlowTest`，以及第 12 站的修正帶來的 `OrderJobsIsolationTest`。
 
-**這是第四次。** 前三次：
-
-- **第一次（234 個，全綠，4:16）**：2.8.4 修好搬家程式的「洞」之前。
-- **第二次（234 個，全綠，4:14）**：修好之後。那之後又改了 `dist02` 的實驗程式碼與兩行註解（都不在預設的測試組裡），所以再跑一次，讓這一節的輸出就是最後的程式碼。
-- **第三次（234 個，1 個紅）**：`EventFlowTest.mailerDownDeadLetters`，`expected: 1 but was: 0` ——「死信佇列 0 則」，而通知是 `FAILED`、試了 6 次。這一章沒有碰通知與死信：第 12 站的 `RabbitConsumers` 先呼叫 `onDeadLetter()`（寫 `FAILED`）、才把訊息送進死信佇列，測試看到 `FAILED` 就立刻讀佇列 —— 那一刻死信還在路上。我手上 49 份紀錄裡都是 1 則，這是第一次讀早了；原因是從程式碼的順序推出來的，沒有用確定的方式重現。改的是測試（等死信到了再讀，最多 5 秒），記在第 12 站 7.7.3 的追記。
-
-兩個第 12 站的追記（4.7.1、7.7.3），都先在第 12 站的專案上跑過整套（230 個，全綠），才帶到這個分支。
+**`EventFlowTest.mailerDownDeadLetters` 偶爾會紅**：`expected: 1 but was: 0` ——「死信佇列 0 則」，而通知是 `FAILED`、試了 6 次。這一章沒有碰通知與死信：第 12 站的 `RabbitConsumers` 先呼叫 `onDeadLetter()`（寫 `FAILED`）、才把訊息送進死信佇列，測試看到 `FAILED` 就立刻讀佇列 —— 那一刻死信可能還在路上。很少發生；原因是從程式碼的順序推出來的，沒有用確定的方式重現。改的是測試（等死信到了再讀，最多 5 秒），記在第 12 站 7.7.3。
 
 ### 2.10.1 本章其餘檔案的完整內容
 
-正文已經完整列出的：`ReservationReconciliation`、`ReconciliationJobs`（2.6.4）、`ReservationReconciliationTest`（2.6.5）、`ServiceDatabaseTest`（2.4.5）、`ProductCreatedFlowTest`（2.7.5）。只改了幾行、正文已經列出那幾行的：`ShopProperties`、`EventTypes`（2.6.4、2.7.3）、`MigrationOwnershipTest`、驗收 Q6、`CutEvaluator`、`d00-change-coupling.sh`（2.4.1）、`CatalogCartApiTest`、`CrossModuleCallInTxTest`（2.7.5）。`OpTag`、`Probe` 只是把 class 與幾個成員改成 `public`；`RemoteInventoryApi`（第 00 章）多三行，把對帳的三個方法交給本地。第 12 站的追記改到的 `OrderJobs`、`OrderJobsIsolationTest` 在第 12 站 4.7.1 的追記裡，`EventFlowTest` 改的那幾行在 7.7.3 的追記裡。
+正文已經完整列出的：`ReservationReconciliation`、`ReconciliationJobs`（2.6.4）、`ReservationReconciliationTest`（2.6.5）、`ServiceDatabaseTest`（2.4.5）、`ProductCreatedFlowTest`（2.7.5）。只改了幾行、正文已經列出那幾行的：`ShopProperties`、`EventTypes`（2.6.4、2.7.3）、`MigrationOwnershipTest`、驗收 Q6、`CutEvaluator`、`d00-change-coupling.sh`（2.4.1）、`CatalogCartApiTest`、`CrossModuleCallInTxTest`（2.7.5）。`OpTag`、`Probe` 只是把 class 與幾個成員改成 `public`；`RemoteInventoryApi`（第 00 章）多三行，把對帳的三個方法交給本地。第 12 站的修正改到的 `OrderJobs`、`OrderJobsIsolationTest` 在第 12 站 4.7.1 裡，`EventFlowTest` 改的那幾行在 7.7.3 裡。
 
 下面是其餘每一個新增或改過的檔案（`d02` 分支上的版本）：
 
@@ -5750,9 +5715,9 @@ public final class D01Workload {
 2. **消失的不是外鍵，是交易**（2.5）：第 12 站沒有跨模組的外鍵，參照完整性一直是交易給的。切開之後，10 種交易內的遠端呼叫各是兩個交易；讓第二個失敗，重做同一件事會收斂，改做別的事就不會。
 3. **JOIN 換成對帳**（2.6）：放在 ordering、透過 `InventoryApi`、兩個方向各掃一次、只自動修 X-1、X-2。在切開的部署裡，它找到的跟跨庫 JOIN 一樣，30 萬筆預留一輪 250 ms 左右。
 4. **建立商品從一個交易變成一個事件**（2.7）：判斷的關鍵是「另一邊會不會拒絕」。7 種切斷的交易少了 1 種，需求跟著改。
-5. **搬家只能有一個寫入者**（2.8）：停寫搬家 12 秒；雙寫四次四種錯；照著變更紀錄追、最後停寫 1.5 秒核對，0 差異 —— 途中找到自己搬家程式的一個 bug（號碼不是 commit 的順序）。
+5. **搬家只能有一個寫入者**（2.8）：停寫搬家 12 秒；雙寫四次四種錯；照著變更紀錄追、最後停寫 1.5 秒核對，0 差異 —— 變更紀錄的號碼不是 commit 的順序，搬家程式要處理「洞」。
 
-途中還找到第 12 站的一個 bug（排程一張失敗，整批停下，第 12 站 4.7.1 的追記）與一個偶發紅的測試（7.7.3 的追記）。**第 00 章的四個代價，這一章仍然一個都沒有減少**（2.9.2）：剩下的 6 種切斷的交易、下單路徑上的遠端呼叫，要等第 04 章。
+這一章也修了第 12 站的一個 bug（排程一張失敗，整批停下，第 12 站 4.7.1）與一個偶發紅的測試（7.7.3）。**第 00 章的四個代價，這一章仍然一個都沒有減少**（2.9.2）：剩下的 6 種切斷的交易、下單路徑上的遠端呼叫，要等第 04 章。
 
 ### 2.12.1 驗收清單
 

@@ -11,33 +11,6 @@
 > - **一個 3 分 45 秒的 `mvn verify`**（8.10）：188 個測試、四個覆蓋率門檻（整體 92.6%；`ordering` 96.6%、`inventory` 93.7%、`payment` 93.1%）。在一個空的容器裡（沒有 compose、沒有 `~/.m2`、UTC）是 4 分 21 秒（8.8）。
 > - **一個獨立行程的壓測工具**（8.6）：正式的 jar 一個行程、壓測工具一個行程，客戶端的程式碼跟 E7、G10、G8、H6 一模一樣；連線池與 Redis 的數字經過 JMX 讀。**0.6.2 的七列第一次全部在負載下量過：五列達成。**
 > - **10 個新的測試**（8.9.2）、一份 CI 的流程（8.8）、0.10.6 的腳本變成的 `HealthProbeTest`（8.9.1）。沒有新的 migration、沒有新的 API；正式程式碼改了 4 個檔案。
->
-> 這一章的實測事故：
->
-> - **換一個空的資料庫，178 個綠燈裡有 4 個靠著那台筆電**（8.2.1）：紅了 2 個（Q8 停掉的是 compose 的 Redis、用的是種子資料的帳號；Q9 的子行程連到了 compose），compose 一停又紅 1 個（Q6 寫死了 `localhost:3306`），**還有 1 個永遠綠：對帳測試從 3.9 秒變成 0.008 秒 —— 它在一張空表上對帳。**
-> - **4 分半鐘裡，兩分鐘在等 Tomcat 關門**（8.2.2）：起一個應用程式 1 秒，關掉它 12.1 秒 —— Tomcat 叫醒 Acceptor 時挑了一個 VPN 介面的位址，連線逾時 2 秒、再等 10 秒。一行 `server.address: 127.0.0.1`，整套少了 99 秒。
-> - **覆蓋率 88.9%、`ordering` 94.1%，而六個訂單動作與金流回呼的 HTTP 入口，一個都沒有成功地跑過**（8.7.2）：賣家日報表 0%；第 07 章的對帳排程一行都沒被執行過，而且它的 SQL 已經跟測試的那一份不一樣（少了 INV-3'）；一個公開的 API 沒有任何人呼叫。
-> - **七個一行的 bug，抓到六個 —— 但其中一個讓建置卡住 19 分鐘**（8.7.5）：退款的冪等鍵換成每次一個 UUID，186 個測試全綠（它只有一個實驗在證明）；`RedisGuard` 改回失敗一次就跳開，一個沒有上限的 `await()` 永遠等下去；冪等鍵的租約判斷反過來，只有覆蓋率逼出來的那一個測試抓得到。
-> - **熱點下單的 p99：機器有餘裕時 12 輪全部 < 500 ms，被佔滿時兩種量法一樣是 3.9～5.6 秒**（8.6.2）。之前那些秒級的數字，主因是這台機器很忙，不是客戶端在同一個 JVM。只有獨立行程量得到的一件：**新啟動的實例，第一個 10 秒是 1.0～2.7 秒。**
->
-> ⚠️ **還有幾個，是寫這一章的途中被這一章自己的實驗抓到的**：
->
-> - **Spring Boot 管理的 Testcontainers 跟 Docker 29 講不上話**（8.4.1）：1.19.7、1.21.3 都說「找不到 Docker」—— 其實是 API 1.32 被拒絕；1.21.4 才可以。
-> - **埠**（8.4.4）：隨機的對外埠每一次 `docker start` 都換一個；改成固定之後綁在 127.0.0.1，**`docker stop` 變成了 `docker pause`** —— 已經連著的 Lettuce 收不到 reset，每一個指令等滿 500 ms。
-> - **一個從第 06 章就在的 bug**（8.4.5）：Redis 失敗一次、`RedisGuard` 還沒跳開時，熱門排行把「失敗」當成「沒有快取」，改查 MySQL、回一份沒有 `X-Degraded` 的資料 —— 6.4.5 改了跳開的門檻，三個呼叫端暗中依賴舊的行為。
-> - **7.9.5 的推測有了證據**（8.6.5）：機器很忙、RabbitMQ 恢復的那一刻，Redis 失敗 4 次、跳開 1 次，熱點下單 503 五秒 —— 5 秒 × 每秒 10 張 ≈ 50，量到 53。
-> - **4.8.3 的推測不成立**（8.6.3）：虛擬執行緒只用 12～13 條連線（4.8.3 量到的是 8～11 條），在獨立行程裡一樣 —— 不是量測的偏差。決定照舊（不開），理由換了。
-> - **7.16 說 7.12.1 的規矩「有一半可以拿掉」，量了之後是 8 條裡的 1 條**（8.5）：把消費者對每一個測試都打開，8 個紅 —— 7.12.1 承認沒驗證過的那個推理是對的。
-> - **測試與量測工具自己的 bug**：一個在 `kill -9` 之前就失敗、活了一個半小時的子行程（8.4.3）；一個把「讀不到」當成 0 的壓測工具（8.6.1：連線池「從來沒有人等過」）；一個應用程式根本沒起來、壓測卻照樣開始送的腳本（8.6.4）；CI 的映像檔裡沒有 `docker` 這個程式（8.8.2）；**我自己在這一章加的一個測試，在 CI 上漏到了下一個測試**（8.8.2）。
->
-> 另外還有幾個比較小、但一樣是實測到的坑：
->
-> - **JaCoCo 把「呼叫丟出例外」的那一行算成沒有執行**（8.7.2）—— 那幾行的正確讀法是「沒有被成功地呼叫過」；門檻沒過時 `WARNING` 只說「bundle shop」，Maven 在第一個沒過的 `check` 就停（8.7.4）。
-> - **MySQL 卡住（不是停掉）的時候，readiness 要 5 秒才回 503**，完整的 health 10 秒不回答；我的第一個猜測（Hikari 的 `validationTimeout`）只對了一半（8.9.1）。
-> - **「兩個命令就能跑起來」在這台機器上是三個**：8080 被另一個專案佔著（8.8.3）。
-> - 一個 `while (false)` 讓一個實驗的兩次「沒有紅的」其實一個測試都沒跑 —— 它根本沒編譯過（8.5）；覆蓋率的 agent 要在實驗裡關掉（8.4.2）。
->
-> 以及**沒達成、部分達成的**：商品詳情的 p99 50 ms（12 輪裡 7 輪）；熱點下單的 p99 500 ms（機器有餘裕時 12 / 12，飽和時與新實例的前 10 秒沒有）；CI 的流程在 GitHub 上一次都沒有跑過（推到遠端是對外的動作，用一個乾淨的容器代替）；忙的那一次演練是哪一個 Redis 呼叫失敗、虛擬執行緒為什麼是 13 條、6.9.2 那 48 個逾時的原因 —— 都沒有找到。
 
 ## 8.1 學習目標
 
@@ -58,7 +31,7 @@
 
 ### 8.2.0 實驗環境
 
-第 07 章結束時，`mvn clean test` 是這樣（這一章開始的那天早上重跑一次，load average 4.1 → 6.1）：
+第 07 章結束時，`mvn clean test` 是這樣（重跑一次，load average 4.1 → 6.1）：
 
 ```
 [WARNING] Tests run: 178, Failures: 0, Errors: 0, Skipped: 1
@@ -270,7 +243,7 @@ mvn test -Pexperiments -Dtest=I1ContextCloseTest#whereCloseWaits
 
 照 Tomcat 的規則，前面六個都是 link-local（跳過），**第一個「IPv6、不是 loopback、不是 link-local」的，是 `utun4` 上的 `2606:4700:…` —— VPN 的介面，連它要等滿 2 秒逾時。** 那就是 `Net.poll` 的 2 秒；叫不醒 Acceptor，再加 10 秒。
 
-（我沒有關掉 VPN 再量一次：那是這台機器的使用者的設定，不是我該動的。所以「VPN 關掉就沒事」是從上面這張表推的，不是量到的。可以確定的是下面這一組。）
+（我沒有關掉 VPN 再量一次。所以「VPN 關掉就沒事」是從上面這張表推的，不是量到的。可以確定的是下面這一組。）
 
 修法不需要動 VPN：**讓測試的 Tomcat 只聽 127.0.0.1**。綁的是 loopback，`unlockAccept` 就直接連 127.0.0.1：
 
@@ -297,16 +270,16 @@ mvn test -Pexperiments -Dtest=I1ContextCloseTest#loopbackOnly
 
 **少了 99 秒；8 次 × 12 秒是 96 秒。** 第 04、05 章說「每一題各起一個應用程式，所以慢」—— 起一個應用程式不到 1 秒，慢的是關掉它。
 
-> ⚠️ **自己重跑 I1 之前要知道的一件事。** 上面 I1 的三段輸出，是在加這一行設定**之前**量的。`src/test/resources/config/application.yml` 對每一個測試都生效，包括 `-Pexperiments` 的實驗 —— 所以在這一章結束時的程式碼上，`I1ContextCloseTest` 裡標著「預設（萬用位址）」的那一組（`closeTime`、`whereCloseWaits`，以及 `loopbackOnly` 的一半），其實也綁在 127.0.0.1，量不到 12 秒。要在本章的程式碼上重現，讓「預設」那一組自己帶 `--server.address=0.0.0.0`（例如 `run("預設（萬用位址）", 2, "--server.address=0.0.0.0")`，或加進 `args()`）。注意 0.0.0.0 是 IPv4 的萬用位址，照上面的規則 Tomcat 挑的會是第一個「IPv4、不是 loopback、不是 link-local」的位址，不是 `::` 那一組；這個組合我沒有量過。
+> ⚠️ **自己重跑 I1 之前要知道的一件事。** 上面 I1 的三段輸出，是在加這一行設定**之前**量的。`src/test/resources/config/application.yml` 對每一個測試都生效，包括 `-Pexperiments` 的實驗 —— 所以在這一章結束時的程式碼上，`I1ContextCloseTest` 裡標著「預設（萬用位址）」的那一組（`closeTime`、`whereCloseWaits`，以及 `loopbackOnly` 的一半），其實也綁在 127.0.0.1，量不到 12 秒。要在本章的程式碼上重現，讓「預設」那一組自己帶 `--server.address=::`：8.2 量的時候 `server.address` 沒有設定，Tomcat 綁的就是 `::`（上面 UnlockProbe 的第一行）。不要用 0.0.0.0：那是 IPv4 的萬用位址，照上面的規則 Tomcat 挑的會是第一個「IPv4、不是 loopback、不是 link-local」的位址，不是 `::` 那一組；這個組合沒有量過。
 >
-> 📌 **專題寫完之後的追記：repo 裡改了，用的是 `::` 而不是 0.0.0.0。** 8.2 量的時候 `server.address` 沒有設定，Tomcat 綁的就是 `::`（上面 UnlockProbe 的第一行），所以要重現原本的條件，「預設」那一組要帶的是 `--server.address=::`。`I1ContextCloseTest` 多了一個常數，`closeTime`（含暖機）、`whereCloseWaits`、`loopbackOnly` 的「預設」組都帶上它：
+> `I1ContextCloseTest` 用一個常數，`closeTime`（含暖機）、`whereCloseWaits`、`loopbackOnly` 的「預設」組都帶上它（參考實作的 `ch08` 分支上還是改之前的寫法）：
 >
 > ```java
 > /** 8.2 量的「預設」是沒有設定 server.address 的 Tomcat —— 綁 ::。測試設定已經改成 127.0.0.1（8.2.2），「預設」組要自己綁回來 */
 > static final String WILDCARD = "--server.address=::";
 > ```
 >
-> 在第 09 章結束時的程式碼上重跑三個方法（2026-10-12，load average 4.0；這台筆電的 VPN 還開著）：
+> 在第 09 章結束時的程式碼上重跑三個方法（load average 4.0；這台筆電的 VPN 還開著）：
 >
 > ```
 > ═══ 8.2 驗收測試的一個應用程式：啟動與關閉各花多久 ═══
@@ -427,8 +400,6 @@ curl -s --unix-socket /var/run/docker.sock http://localhost/v1.44/version
 | 1.21.3 | Could not find a valid Docker environment |
 | 1.21.4 | `TEST_INFRA testcontainers 啟動 9,516 ms`，`OrderStateMachineTest` 67 個綠 |
 
-（1.21.4 的第一次是 `NullPointerException` —— 我自己的程式碼：`RabbitMQContainer` 多呼叫了一個 `withAdminPassword(null)`。拿掉之後就是上表那一行。）
-
 ```xml
 <!-- 8.4.1：Boot 3.2.5 管理的是 1.19.7。它跟 Docker Engine 29（最低 API 1.44）講不上話，錯誤訊息卻是「找不到 Docker」；1.21.3 也一樣，1.21.4 才可以 -->
 <testcontainers.version>1.21.4</testcontainers.version>
@@ -491,7 +462,7 @@ org.springframework.boot.env.EnvironmentPostProcessor=com.example.shop.support.T
 
 **② 不用 `@Testcontainers` + `@ServiceConnection`。** 那是給 `@SpringBootTest` 用的；這個專案最重要的測試 —— 驗收題、實驗 —— 是 `new SpringApplicationBuilder(ShopApplication.class).run(...)` 自己起應用程式的（每一題要自己的埠、要被關掉、Q9 還要被 `kill -9`）。System properties 是兩種寫法都讀得到的地方。
 
-**③ 跟 compose 同一個映像檔、同一組伺服器參數、同一份初始化腳本。** `mysql:8.0`、`utf8mb4_0900_ai_ci`、`+00:00`、`REPEATABLE-READ`，以及 `docker/mysql-init/01-databases.sql`。測試的 MySQL 跟開發、正式環境的不一樣，測到的就是另一個資料庫的行為 —— 第 02 章的時區、第 04 章的隔離等級都是在這些參數上量的。（初始化腳本是第二版才加的：第一版少了它，驗收 Q6 的 `shop` 帳號在 `shop_q6` 上 `Access denied for user 'shop'@'%' to database 'shop_q6'`，8.4.3。）
+**③ 跟 compose 同一個映像檔、同一組伺服器參數、同一份初始化腳本。** `mysql:8.0`、`utf8mb4_0900_ai_ci`、`+00:00`、`REPEATABLE-READ`，以及 `docker/mysql-init/01-databases.sql`。測試的 MySQL 跟開發、正式環境的不一樣，測到的就是另一個資料庫的行為 —— 第 02 章的時區、第 04 章的隔離等級都是在這些參數上量的。（少了初始化腳本，驗收 Q6 的 `shop` 帳號在 `shop_q6` 上 `Access denied for user 'shop'@'%' to database 'shop_q6'`，8.4.3。）
 
 **④ 等到第一個 Spring Boot 應用程式啟動才起。** 第一版是 JUnit 一開始（`launcherSessionOpened`）就起。結果是單獨跑一個 0.8 秒的單元測試要等 15 秒：
 
@@ -615,7 +586,7 @@ Runnable forgetLoginUser = () -> {
   工作負載的操作：{下單 成功=162, 交付事件 成功=14, 付款 → INVALID_STATE=8, 付款 成功=66, 付款逾時 成功=7, 出貨 → INVALID_STATE=18, 出貨 → TEMPORARILY_UNAVAILABLE=5, 出貨 成功=13, 撿貨 → INVALID_STATE=2, 撿貨 成功=19, 確認收貨 → INVALID_STATE=11, 確認收貨 成功=11, 買家取消 成功=46, 賣家取消 → INVALID_STATE=2, 賣家取消 成功=16}
 ```
 
-（第一版每一步都隨便挑：庫存 40 件很快賣完，85 次下單被擋、只有 1 張出貨、0 張完成 —— 對帳對的大多是「取消」。改成八成挑合法的、庫存 150 件之後是上面這樣。）`出貨 → TEMPORARILY_UNAVAILABLE=5` 是 7.6.4 的「熱點的落帳還沒完成，不能出貨」—— 交付事件的時機是亂數，有幾次出貨排在落帳之前。
+（每一步都隨便挑的話：庫存 40 件很快賣完，85 次下單被擋、只有 1 張出貨、0 張完成 —— 對帳對的大多是「取消」。八成挑合法的、庫存 150 件，是上面這樣。）`出貨 → TEMPORARILY_UNAVAILABLE=5` 是 7.6.4 的「熱點的落帳還沒完成，不能出貨」—— 交付事件的時機是亂數，有幾次出貨排在落帳之前。
 
 測試先檢查「有東西被對到」—— 六種最後狀態至少四種：
 
@@ -710,7 +681,7 @@ mvn test -Pexperiments -Dtest=I3LettuceStopTest
    ……（到第 9 秒都是每秒 9～10 個立刻失敗）
 ```
 
-（「第 3 秒 docker stop」印在「2 秒」那一列之前，是因為那一列是在下一秒開始時才印的。這個實驗前後跑了兩次，第一次 25 秒、第二次 10 秒並多印了例外訊息與 `lsof`，兩次的形狀一樣。）
+（「第 3 秒 docker stop」印在「2 秒」那一列之前，是因為那一列是在下一秒開始時才印的。這個實驗跑了兩次（25 秒、10 秒），兩次的形狀一樣。）
 
 **綁 0.0.0.0：`docker stop` 的那一刻，已經連著的那條連線收到 reset，之後每一個指令立刻失敗。綁 127.0.0.1：那條連線收不到任何東西 —— 對 Lettuce 來說它還活著，每一個指令送進去、等滿 500 ms。** `lsof` 說兩種情況下，stop 之後主機上都沒有人在聽那個埠了；差別在**已經建立的那條連線**被怎麼處理。這是 Docker Desktop 的轉送層在兩種綁定下的行為差異，我觀察到了，但沒有往裡面查（另一個小實驗用**新的**連線去連 127.0.0.1 那個埠，stop 之後是立刻 `refused` —— 會等的只有舊的那一條）。
 
@@ -867,7 +838,7 @@ I4c 第 1 次 purgeDeadLettersWhenQuiet 換成直接清空死信佇列｜load { 
 I4c 第 2 次 purgeDeadLettersWhenQuiet 換成直接清空死信佇列｜load { 5.15 6.19 6.33 }｜203 秒｜('188', '1', '0', '1')｜紅的：['com.example.shop.api.DeadLetterReplayTest.replayAfterFix']
 ```
 
-（I4c 的第一版是把等待的迴圈改成 `while (false)` —— Java 說那是 unreachable statement，編譯不過，6 秒就結束了，兩次都沒有跑任何測試。上面是改成「一開始就清空、直接 return」之後重跑的。）
+（I4c 是改成「一開始就清空、直接 return」。如果把等待的迴圈改成 `while (false)`，Java 說那是 unreachable statement，編譯不過，6 秒就結束，一個測試都沒有跑。）
 
 - **③ 清空消費者的佇列：拿掉，兩次全綠。** 它防的是「上一次留下的」，而每一次建置的 RabbitMQ 都是新的。但我沒有刪掉它，而是改成只在 compose 模式下做 —— 用 `-Dshop.test.infra=compose` 跑這些測試的人，broker 還是那一台活了好幾天的：
 
@@ -946,7 +917,7 @@ relay、消費者、庫存排程預設打開（跟 E7、H5 一樣）；要關掉
 改了的只有三個地方，各有理由：
 
 - **token**：沒有 Spring 的 context，拿不到 `AccessTokens` 這個 bean。`TestTokens` 的規矩是「不自己組 JWT」（自己組的會跟正式的分家，壓測照樣 201），所以 `shared.security.LoadTestTokens` 放在跟 `AccessTokens` 同一個套件，直接用正式的類別簽。
-- **連線池與 Redis 的計數器**：E7 每 5 ms 在同一個 JVM 裡讀 Hikari 的 MXBean；隔著行程，改成每 100 ms 經過 **JMX** 讀同一個 MBean（`com.zaxxer.hikari:type=Pool (HikariPool-1)`）—— 粗了 20 倍，所以「連線池：等待最多」這一欄**不能**跟同一個 JVM 的版本直接比。Redis 的失敗與跳開，經過 JMX 讀 Spring Boot 的 Metrics endpoint。⚠️ 第一版走的是 HTTP 的 `/actuator/metrics`：`SecurityConfig` 的 `anyRequest().denyAll()` 擋掉了（401），而我寫的 `metric()` 把「不是 200」當成 0 —— **連線池、Redis 的數字會全部是 0，而且沒有任何錯誤**。一次 2 秒的煙霧測試才看出來；現在讀不到就印一行 `⚠️ 指標讀不到`、回 NaN，不回 0。（沒有為了壓測去打開 `/actuator/metrics`：它本來就不該對外。）
+- **連線池與 Redis 的計數器**：E7 每 5 ms 在同一個 JVM 裡讀 Hikari 的 MXBean；隔著行程，改成每 100 ms 經過 **JMX** 讀同一個 MBean（`com.zaxxer.hikari:type=Pool (HikariPool-1)`）—— 粗了 20 倍，所以「連線池：等待最多」這一欄**不能**跟同一個 JVM 的版本直接比。Redis 的失敗與跳開，經過 JMX 讀 Spring Boot 的 Metrics endpoint。⚠️ 不要走 HTTP 的 `/actuator/metrics`：`SecurityConfig` 的 `anyRequest().denyAll()` 會擋掉（401），`metric()` 如果把「不是 200」當成 0 —— **連線池、Redis 的數字會全部是 0，而且沒有任何錯誤**（一次 2 秒的煙霧測試就看得出來）。所以讀不到就印一行 `⚠️ 指標讀不到`、回 NaN，不回 0。（沒有為了壓測去打開 `/actuator/metrics`：它本來就不該對外。）
 - **應用程式的設定**：測試的 `src/test/resources/config/application.yml` 不在 jar 裡，那裡面的「每 IP 每秒 100 萬次」要用參數帶進去（所有請求都從 127.0.0.1 來）。
 
 它**沒有**改的一件事：**它還是在同一台機器上**。三個 JVM、MySQL、Redis、RabbitMQ 一樣搶這 8 個核心。獨立的行程拿掉的是「同一個 JVM」的那一部分 —— 共用的 GC 停頓、共用的 safepoint、幾千條執行緒擠在同一個排程器裡、Lettuce 的 I/O 執行緒跟壓測執行緒搶 CPU。「同一台機器」的那一部分，它拿不掉；那要第二台機器，這個專題沒有。所以每一段輸出旁邊照樣記 load average。
@@ -1057,7 +1028,7 @@ I6 就是那一組：第 04 章的 E7 原封不動（一般商品、封閉式 20
 | 5xx | 封閉式 8 輪裡 4 輪有 1～3 個 503 | 0 |
 | 應用程式那個 JVM 的執行緒最多 | 292～294 | 89～93 |
 
-（完整的輸出留在我自己的 `I6-virtual-threads.log`，不在 shop repo 裡，這一章不提供；每一輪都是 `reserved=500 明細=500 RESERVE 帳=500`。獨立行程的暖機輪：平台 3,269～3,553 ms、虛擬 2,543～3,937 ms，不列入。）
+（完整的輸出這一章不提供；每一輪都是 `reserved=500 明細=500 RESERVE 帳=500`。獨立行程的暖機輪：平台 3,269～3,553 ms、虛擬 2,543～3,937 ms，不列入。）
 
 **4.8.3 的形狀，在獨立行程裡原封不動地出現了：** 封閉式負載下，虛擬執行緒的 p99 每一輪都比較好、沒有 503；開放式負載下互有勝負，平台執行緒多半比較好。
 
@@ -1075,13 +1046,13 @@ I6 就是那一組：第 04 章的 E7 原封不動（一般商品、封閉式 20
 |---|---|---|
 | `search` | 100 rps，隨機關鍵字 | D6 的那 14 個關鍵字 × 5 個分類，排序 `price,asc`，一頁 20 筆 |
 | `place` | 50 rps，分散在 1,000 個商品 | 工具自己建 1,000 個商品（不碰種子資料的庫存），每一張訂單一位新的買家 |
-| `orders` | 100 rps | 每一個請求一位**隨機的**種子買家（2.8.2 的 1001～21000，包含 3,000 張訂單的那一位）（3.9.2 的 D6 有一個 bug：隨機的買家 id 在組 header 的那一刻就決定了，那 300 次其實是同一位買家；這裡每一個請求各自抽一位。D6 本身在專題寫完之後才修，修前修後的對照在 3.9.2） |
+| `orders` | 100 rps | 每一個請求一位**隨機的**種子買家（2.8.2 的 1001～21000，包含 3,000 張訂單的那一位）（3.9.2 的 D6 有一個 bug：隨機的買家 id 在組 header 的那一刻就決定了，那 300 次其實是同一位買家；這裡每一個請求各自抽一位。D6 本身的修正與修前修後的對照在 3.9.2） |
 | `callback` | 50 rps | 先用 HTTP 建好 500 張訂單與 500 筆付款（不計時），再照時間表送真的簽章的回呼 |
 | `report` | 5 rps，90 天 | 賣家 2（種子資料裡最大的賣家），2026-07-01～09-28（跟 D6 同一個區間） |
 
 全部是開放式負載、延遲從預定送出的時間算起，每一種暖機一輪、量兩輪（「我的訂單」量三輪）；整組跑兩次（`scripts/i7-detail-orders.sh`，load average 4.3～6.0）。商品詳情照樣跟同一個 JVM 的 G10 交錯 —— 為了只差「同一個 JVM」這一件事，獨立行程的那一個也關掉了 relay、消費者與庫存排程（G10 在測試的設定下跑，它們本來就是關的）。
 
-⚠️ **關掉它們的第一版，是一個工具自己的 bug。** 第一版把 `relay-enabled` 放在 `APP_ARGS` 裡又給了一次 —— 命令列上同一個參數出現兩次，Spring 把兩個值合成 `"true,false"`，應用程式沒起來；而腳本照樣開始送，壓測工具卡在一個連不上的埠上。修法有兩個：開關改成 `RELAY`、`CONSUMERS`、`INVENTORY_JOBS` 三個環境變數（8.6.1），每一個參數只出現一次；以及送之前先確認應用程式真的起來了：
+⚠️ **關掉它們的時候，小心一個工具自己的 bug。** 如果把 `relay-enabled` 放在 `APP_ARGS` 裡又給一次 —— 命令列上同一個參數出現兩次，Spring 把兩個值合成 `"true,false"`，應用程式起不來；而腳本照樣開始送，壓測工具卡在一個連不上的埠上。做法有兩個：開關用 `RELAY`、`CONSUMERS`、`INVENTORY_JOBS` 三個環境變數（8.6.1），每一個參數只出現一次；以及送之前先確認應用程式真的起來了：
 
 ```bash
 for i in $(seq 1 120); do curl -sf localhost:18080/api/ping >/dev/null && break; sleep 0.5; done
@@ -1114,7 +1085,7 @@ if ! curl -sf localhost:18080/api/ping >/dev/null; then echo "  ⚠️ 應用程
   external  付款回呼 每秒 50 次、10 秒 HTTP {200=500} │ p50    9.2  p95   17.2  p99   35.5  最慢   51.9 ms │ 到目前為止 PAID 1500 張
 ```
 
-（第二次的完整輸出留在我自己的 `I7-slo.log`，這一章不提供；下表列兩次全部的量測輪。）
+（第二次的完整輸出這一章不提供；下表列兩次全部的量測輪。）
 
 | 0.6.2 | 負載 | SLO | 量到的（不含暖機輪） | |
 |---|---|---|---|---|
@@ -1188,7 +1159,7 @@ if ! curl -sf localhost:18080/api/ping >/dev/null; then echo "  ⚠️ 應用程
 
 **7.9.5 的形狀出現了：RabbitMQ 恢復之後，熱點下單 53 個 503，一般下單同時全是 201。** 這一次有那一欄：80～85 秒 **Redis 失敗 4 次、跳開 1 次**；那 10 秒的「等連線」是 0（所以不是連線池）。跳開一次 = 5 秒內熱點下單一律 503（6.9.1 的艙壁），H6 的熱點每秒 10 張 —— **5 秒 × 10 張 ≈ 50，量到的是 53。** 數字對得上。
 
-所以 7.9.5 的推測，這一次有了證據：**機器很忙的時候，RabbitMQ 恢復的那一刻（relay 一口氣送一千多則、消費者一口氣落帳），Redis 的指令逾時、`RedisGuard` 跳開，熱點下單照 0.6.3 回 503 五秒。** 它是 0.6.3「Redis 掛了」那一欄的行為（503，不是錯的 201），不是錯帳。我能說的就到這裡：那 4 次失敗是哪一個呼叫、為什麼在那一刻逾時，我沒有看到 —— 那一次應用程式的日誌被下一次演練覆蓋掉了（`target/loadtest-app.log` 只留最後一次），這是我的工具的疏失。同一個「忙」的條件下 `pause` 那一次沒有 503：RabbitMQ 在 85～90 秒就把 outbox 送完了（1,197 → 3），沒有那一波。
+所以 7.9.5 的推測，這一次有了證據：**機器很忙的時候，RabbitMQ 恢復的那一刻（relay 一口氣送一千多則、消費者一口氣落帳），Redis 的指令逾時、`RedisGuard` 跳開，熱點下單照 0.6.3 回 503 五秒。** 它是 0.6.3「Redis 掛了」那一欄的行為（503，不是錯的 201），不是錯帳。我能說的就到這裡：那 4 次失敗是哪一個呼叫、為什麼在那一刻逾時，我沒有看到 —— 那一次應用程式的日誌被下一次演練覆蓋掉了（`target/loadtest-app.log` 只留最後一次）。同一個「忙」的條件下 `pause` 那一次沒有 503：RabbitMQ 在 85～90 秒就把 outbox 送完了（1,197 → 3），沒有那一波。
 
 還有一件我沒有查的：**忙的 `stop` 那一次，RabbitMQ 回來之後 20 秒，outbox 還在長**（1,188 → 1,413）；閒的時候 `stop` 是 5～10 秒就清空（1,302 → 2）。7.9.3 第 1 次也是這個形狀，當時推測「broker 開機要重新載入 quorum 佇列，機器又很忙」。這一次一樣只是推測：我沒有量 `docker start` 之後 RabbitMQ 多久才接受連線。
 
@@ -1530,7 +1501,7 @@ M7 冪等鍵的租約判斷反過來｜load { 6.74 7.99 7.20 }｜177 秒｜('179
 
 依 8.3 的四層看，抓到這七個突變的測試：第 ① 層 1 個（`TrendingDegradedTest`：M6）、第 ② 層 5 個（M1、M2、M5、M7，以及補了測試之後的 M3）、第 ③ 層 1 個（驗收 Q10：M4）。**第 ④ 層（Q9，`kill -9`）一個都沒有抓到** —— 它守的是「行程死掉的時候事件不會掉」，不是任何一行邏輯；它花 11～13 秒，是在為另一種 bug 付錢。反過來，最便宜的第 ① 層只抓到一個，因為這七個突變有六個都在「SQL 與交易」裡，那一層的單元測試碰不到。
 
-> ⚠️ **專題寫完之後的追記（13 站第 08 章）：M4 的那一行已經不在了。** Q10 抓到 M4，是因為 10 份投遞同時到、讀到同一個 `attempts`。但「條件是 `attempts` 還是 n」本身就擋不住另一個順序 —— 一份在另一份認領之後、寄完之前才讀（7.7.2 的追記）。Q10 偶爾紅（`notification_attempts=2`），抓到的就是它：**同一個驗收測試，在這裡是突變的偵測器，在那裡是一個真的 bug 的偵測器，只是它只有在時機剛好時才看得到後者。** 修正把認領改成租約（V26 `claimed_until`），`AND attempts = ?` 跟著拿掉了。同一個意思的突變換成「拿掉租約的條件」，只跑 `NotificationClaimTest`：3 個裡紅 2 個（第 ② 層，每一次都紅，不靠時機）。
+> ⚠️ **M4 的那一行已經不在了。** Q10 抓到 M4，是因為 10 份投遞同時到、讀到同一個 `attempts`。但「條件是 `attempts` 還是 n」本身就擋不住另一個順序 —— 一份在另一份認領之後、寄完之前才讀（7.7.2）。Q10 偶爾紅（`notification_attempts=2`），抓到的就是它：**同一個驗收測試，在這裡是突變的偵測器，在那裡是一個真的 bug 的偵測器，只是它只有在時機剛好時才看得到後者。** 修正把認領改成租約（V26 `claimed_until`），`AND attempts = ?` 跟著拿掉了。同一個意思的突變換成「拿掉租約的條件」，只跑 `NotificationClaimTest`：3 個裡紅 2 個（第 ② 層，每一次都紅，不靠時機）。參考實作的 `ch08` 分支上還是改之前的寫法。
 
 > 📌 **覆蓋率與突變回答不同的問題：** 覆蓋率問「這一行有沒有被執行」，突變問「這一行錯了，有沒有人會發現」。M3 的那一行覆蓋率是 100%，意義是 0%。
 > 這一節是手工的七個，挑的是我知道重要的地方；工具（例如 PIT）會在每一行自動做這件事 —— 對一個要起容器的測試套件來說，一個突變 3 分鐘，七個就是 25 分鐘。這是練習三。
@@ -1580,7 +1551,7 @@ jobs:
 
 **整個流程只有一行在做事：`mvn -B -ntp verify`。** 那是刻意的 —— CI 做的事跟你在筆電上打的命令一模一樣，CI 紅了，你在自己的機器上打同一行就看得到同一個紅燈。CI 裡沒有任何「只在 CI 才跑」的步驟，也沒有任何「CI 上跳過」的測試。
 
-**這個專題的 shop repo 沒有放到 GitHub 上，這個檔案在 GitHub 上一次都沒有跑過。** 推到一個遠端是一個對外的動作，不是我在這裡該替你做的。所以 8.8.2 用另一個方法確認「它在一台什麼都沒有的機器上跑得起來」。
+**這個專題的 shop repo 沒有放到 GitHub 上，這個檔案在 GitHub 上一次都沒有跑過。** 所以 8.8.2 用另一個方法確認「它在一台什麼都沒有的機器上跑得起來」。
 
 ### 8.8.2 一台真的什麼都沒有的機器
 
@@ -1761,9 +1732,9 @@ ping={"service":"shop","time":"2026-10-05T07:35:57.295304Z"} readiness={"status"
 
 **1 秒的時候是 3 秒，不是 1 秒 —— 那個猜測只對了一半。** 3 秒是 `connection-timeout`（0.10.4 設的 3,000 ms）：驗證失敗、那一條連線被丟掉之後，Hikari 要建一條新的，而 MySQL 卡著，建不起來，等滿 `connection-timeout`。所以 readiness 的回答時間大約是兩個逾時裡比較長的那一個。（這是從兩個數字推的；我沒有再試第三組。）
 
-這兩個數字還說了一件事：**這個專案的設定本身不對。** HikariCP 的文件寫的是 `validationTimeout` 要比 `connectionTimeout` 小；這裡是預設的 5,000 對 0.10.4 的 3,000，反過來了，而 Boot 3.2.5 用的 HikariCP 5.0.1 不會替你改正（它只檢查兩個值有沒有小於 250 ms）。readiness 的那 5 秒，就是這個組合。下一步是把 `spring.datasource.hikari.validation-timeout` 設得比 3,000 小（例如 1,000～2,000）；這一章沒有改設定，也沒有在改了之後再量。
+這兩個數字還說了一件事：**這個專案的設定本身不對。** HikariCP 的文件寫的是 `validationTimeout` 要比 `connectionTimeout` 小；這裡是預設的 5,000 對 0.10.4 的 3,000，反過來了，而 Boot 3.2.5 用的 HikariCP 5.0.1 不會替你改正（它只檢查兩個值有沒有小於 250 ms）。readiness 的那 5 秒，就是這個組合。下一步是把 `spring.datasource.hikari.validation-timeout` 設得比 3,000 小（例如 1,000～2,000）。
 
-> 📌 **專題寫完之後的追記：改了，也量了。** `application.yml`（正式的設定，不只是測試）加了一行：
+> 📌 **改了，也量了。** `application.yml`（正式的設定，不只是測試）加了一行（參考實作的 `ch08` 分支上還是改之前的寫法）：
 >
 > ```yaml
 > spring:
@@ -1774,7 +1745,7 @@ ping={"service":"shop","time":"2026-10-05T07:35:57.295304Z"} readiness={"status"
 > ```
 >
 > 先用 `javap -c` 確認 HikariCP 5.0.1 自己不會改正這個組合：`HikariConfig.validateNumerics()` 對 `validationTimeout` 只檢查它是不是小於 250 ms（`com.zaxxer.hikari.timeoutMs.floor`），小於就改回預設的 5,000；**沒有任何一行拿它跟 `connectionTimeout` 比**。另外看到 `PoolBase.isConnectionDead` 呼叫的是 `isValid(max(1000, validationTimeout) / 1000)` —— 傳給 JDBC 的是**整秒**、最少 1 秒，所以 1,000～1,999 的效果一樣。
-> 在第 09 章結束時的程式碼上（再加上專題寫完之後的其他修正）跑整套 `mvn clean verify`，`HealthProbeTest` 那四列：
+> 在第 09 章結束時的程式碼上跑整套 `mvn clean verify`，`HealthProbeTest` 那四列：
 >
 > ```
 > 0.10.6 全部正常                   health HTTP 200（417 ms）       liveness HTTP 200（5 ms）         readiness HTTP 200（3 ms）
@@ -1783,7 +1754,7 @@ ping={"service":"shop","time":"2026-10-05T07:35:57.295304Z"} readiness={"status"
 > 0.10.6 全部恢復                   health HTTP 200（18 ms）        liveness HTTP 200（5 ms）         readiness HTTP 200（5 ms）
 > ```
 >
-> readiness 從 5 秒變成 3 秒 —— 跟上面 `-Dspring.datasource.hikari.validation-timeout=1000` 那一次一樣，這一次是設定本身。完整的 health 照舊 10 秒不回答（這一段說了沒有往下查，現在也還沒有）。
+> readiness 從 5 秒變成 3 秒 —— 跟上面 `-Dspring.datasource.hikari.validation-timeout=1000` 那一次一樣，這一次是設定本身。完整的 health 照舊 10 秒不回答。
 > 一個要留意的代價：負載很高的時候（這個專題量過 load 27～29），`isValid` 如果超過 1 秒，一條其實健康的連線會被判成死的、丟掉重建。整套測試、第 09 章的驗收都是綠的；E7、G6、H5、H8 這幾個在高負載下數 503 的實驗沒有重跑。
 
 對 Kubernetes 來說這個 5 秒不是問題 —— readiness probe 的預設逾時是 1 秒，逾時就算失敗，結果一樣是「摘掉」。對「完整的 health 10 秒不回答」我沒有往下查：它不被拿來決定流量（0.10.6），但它每被打一次，就佔住一條 Tomcat 的執行緒 10 秒以上。
@@ -3772,7 +3743,7 @@ Q9 在 `kill -9` 之前失敗，那個子行程活了一個半小時，連著 co
 
 **⑭ 「指標讀不到的時候回 0 就好」**
 
-壓測工具的第一版隔著 HTTP 讀 `/actuator/metrics`，被 Spring Security 擋掉，讀到的全部是 0（8.6.1）—— 一個「連線池從來沒有人等過」的漂亮表格。**讀不到要大聲說**，0 是一個很有說服力的假數字。
+壓測工具如果隔著 HTTP 讀 `/actuator/metrics`，會被 Spring Security 擋掉，讀到的全部是 0（8.6.1）—— 一個「連線池從來沒有人等過」的漂亮表格。**讀不到要大聲說**，0 是一個很有說服力的假數字。
 
 ---
 
@@ -3800,7 +3771,7 @@ Q9 在 `kill -9` 之前失敗，那個子行程活了一個半小時，連著 co
 - [ ] 說出 8.2.1 那四個測試各自靠著什麼，以及為什麼 `InvariantReconciliationTest` 的 0.008 秒比紅燈更值得注意。
 - [ ] 說出 `TestInfra` 為什麼同時是 `LauncherSessionListener` 與 `EnvironmentPostProcessor`；單獨跑 `OrderStateMachineTest`，確認沒有任何容器被起（沒有 `TEST_INFRA` 那一行）。
 - [ ] 跑 `I3LettuceStopTest`，說出 127.0.0.1 與 0.0.0.0 兩種綁定在 `docker stop` 之後的差別，以及它對 Q8 的影響。（8.4.4 量的是 Docker Desktop 的轉送層；Linux 原生的 Docker 上不一定是同一個樣子。）
-- [ ] 跑 `I1ContextCloseTest#loopbackOnly`。本章結束時測試設定已經綁 127.0.0.1（8.2.2 的 ⚠️），「預設」那一組要先改成自己帶 `--server.address=::`（8.2.2 的追記：專題寫完之後 repo 裡已經這樣改了），才是在比兩種綁定。你的機器上，關閉要多久？如果不是 12 秒，列出這台機器的網路介面（`NetworkInterface.getNetworkInterfaces()`），照 8.2.2 的規則找 Tomcat 會挑到哪一個位址。
+- [ ] 跑 `I1ContextCloseTest#loopbackOnly`。本章結束時測試設定已經綁 127.0.0.1（8.2.2 的 ⚠️），「預設」那一組要先改成自己帶 `--server.address=::`（8.2.2），才是在比兩種綁定。你的機器上，關閉要多久？如果不是 12 秒，列出這台機器的網路介面（`NetworkInterface.getNetworkInterfaces()`），照 8.2.2 的規則找 Tomcat 會挑到哪一個位址。
 - [ ] 把 `TrendingService.top10()` 改回第一版，跑 `TrendingDegradedTest`，看它紅；說出這個 bug 為什麼第 06 章的 Q8、G8 都抓不到。
 - [ ] `mvn clean verify`，打開 `target/site/jacoco/index.html`，在 `inventory` 裡找一行沒跑到的，說出它屬於 8.7.2 的哪一種。
 - [ ] 選一個 I8 的突變（例如 M3），自己改一次、跑一次，再改回來。

@@ -14,45 +14,6 @@
 > - **驗收 Q5 變綠**（5.8.4）：`Skipped` 從 6 變成 5。
 > - **稽核**（5.9）：9 種動作、三種寫法。第 04 章留下的三個「第 05 章寫進 `audit_logs`」全部兌現。
 > - **登入失敗鎖定**（5.6）：0.6.3 那個「Redis 掛了要不要鎖」的取捨，寫成程式，而且真的把 Redis 停掉量過。
->
-> 這一章的主題是**信任**：誰可以進門、進門之後可以碰什麼、碰了之後留下什麼。
-> 安全的 bug 跟併發的 bug 有一個共同點：**功能測試全綠**。登入成功、下單成功、別人的訂單也確實是 404 —— 問題出在「攻擊者會做、正常使用者不會做」的那些事。
-> 所以這一章的每一個事故，都是站在攻擊者那一邊實際做一次、量出來的：
->
-> - **加上 Spring Security 的那一刻**（5.2.1）：只加依賴，readiness 還是 200；**寫下第一個 `SecurityFilterChain` 的那一刻**，readiness 變成 401 —— 負載平衡器會把每一台都摘掉。
->   同一份設定裡明明 `permitAll` 的金流回呼與登入也是 401，真正的原因（CSRF 的 403）被 `/error` 蓋掉了。
-> - **403 洩漏了什麼**（5.2.2）：一個沒有任何訂單的買家，**6.5 秒猜了 20,000 個訂單編號**，從 21 個 403 估出「這家店一天約 1,050 張訂單」（實際 1,187）。
-> - **登入的三個洞**（5.2.3）：
->   - 「帳號不存在」比「密碼錯誤」快了 **73.7 ms** —— 回應時間就告訴你這個 email 有沒有註冊過。
->   - 失敗 5 次就鎖定，但 MySQL 認為 `bùyer`、`ｂｕｙｅｒ` 跟 `buyer` 是同一個帳號：用 20 個變體各猜 5 次，**猜了 100 次，帳號沒有被鎖**。
->   - 50 個請求同時送出：**50 個全部通過「失敗幾次了？」的檢查**，規則是 5 次。
-> - **同一個 refresh token 同時送出**（5.2.4）：10 個同時送，**換出 10 個都還活著的新 token**，50 輪全部如此。重放偵測一次都沒有觸發。
-> - **稽核跟著交易走**（5.2.5）：付款回呼簽章錯誤 → 401，`audit_logs` **0 筆**；金額不符 → ERROR 日誌有、稽核 **0 筆**。
->   反過來的寫法：賣家取消一張**已出貨**的訂單，回 409 —— 稽核卻記下了一筆「賣家已取消」。
->
-> ⚠️ **還有三個，是寫這一章的途中被這一章自己的測試抓到的**：
->
-> - **404 一樣、時間不一樣**（5.8.3）：「存在但不是你的」比「不存在」多寫一筆稽核，**慢了 2 ms**。一次請求就有 **94～98%** 的機率分得出來 —— 404 的規則被回應時間打穿了。
-> - **覆蓋掃描的第一版**（5.5.5）：把路徑變數代入 `1` 打每一支 API，結果 `POST /api/admin/users/1/suspend` 回了 200 —— **種子資料的管理員被停權了**。
-> - **Redis「停掉」和「卡住」不一樣**（5.6.4）：我原本以為 Redis 掛了，每次登入都要等 500 ms 的逾時。`docker stop` 量了 5 次，4 次是立刻失敗；改用 `docker pause` 才每次都等滿逾時。
->
-> 另外還有幾個比較小、但一樣是實測到的坑：
->
-> - 非 Web 的 context（`OrderFlowTest`、驗收 Q6）裡沒有 `HttpSecurity`，加上 `SecurityConfig` 之後 14 個測試全部起不來（5.5.2）。
-> - Spring Security 預設的 JWT 驗證器容許 **60 秒**的時鐘誤差：「15 分鐘」的 token 實際上活 16 分鐘（5.5.4）。
-> - BCrypt 只看前 72 bytes：註冊時的密碼是 93 bytes，用「前 72 bytes 一樣、後面完全不同」的密碼登入 → **通過**（5.4.2）。
-> - 信任 `X-Forwarded-For` 的設定下，同一台機器換 25 個 header 值登入 25 次，**IP 限流一次都沒有觸發**（5.6.4）。
-> - Connector/J 預設的 `INSERT ... ON DUPLICATE KEY UPDATE` 在「什麼都沒改」時也回報 1 列（5.10）。
->
-> 以及**沒達成、部分達成的**：
->
-> - US-ORD-2 AC-4（金額不符）與 US-ORD-5 AC-4（越權次數）的**告警**：稽核寫進去了、偵測的 SQL 也有了，告警留給第 09 章（5.8.4、5.11.3）。US-ORD-6 AC-5 的通知在第 07 章。
-> - 0.6.5 的限流只做了登入的「每 IP 每分鐘 20 次」，而且是**單機**的；全站與下單的限流在第 06 章（5.6.4）。
-> - 0.6.3「登入 × Redis 掛了」：fail-open 與退避做了，「並告警」只做到一個計數器 `shop.login.lockout.degraded`（5.6.4）。
-> - 兩種 404 的回應時間差沒有完全消除：一次請求猜對的機率還有 53～55%（5.8.3）。
-> - US-ACC-3 AC-3（第一個管理員）只有手動的 `boot-test.sh`，自動化在第 08 章（5.10）。
-> - 強制下架（`POST /api/admin/products/{id}/takedown`）沒有做，留給練習六（5.3.1）。
-> - `audit_logs.trace_id` 現在寫的都是 NULL，等第 09 章把 traceId 放進 MDC（5.9.2）。
 
 ---
 
@@ -403,7 +364,7 @@ BCrypt cost 10 在這台機器上一次約 74 ms（這個數字本身就是安�
 
 重跑方式：`docker exec -it shop-mysql-1 mysql --default-character-set=utf8mb4 -ushop -pshop shop`，再逐一執行 `SELECT id FROM users WHERE email = 'bùyer00001@example.com';` 這樣的查詢（加上 `--default-character-set=utf8mb4`，確保重音與全形字元原樣送到伺服器）。
 
-（專題寫完之後，在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上照這個方式重跑了一次：七個字串的結果跟上面一模一樣 —— 六個是 1001，結尾多一個空白的那個沒有對到。）
+（在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上照這個方式重跑了一次：七個字串的結果跟上面一模一樣 —— 六個是 1001，結尾多一個空白的那個沒有對到。）
 
 所以 30 個變體，MySQL 全部認為是同一個帳號；`naiveLockout` 的鎖定 key 用 Java 的 `toLowerCase`，**大小寫的 10 個變體合併成一個 key，重音與全形的 20 個各自是一個 key**：
 
@@ -453,7 +414,7 @@ static Result naive(JdbcTemplate jdbc, TransactionTemplate tx, RefreshTokens tok
 }
 ```
 
-（`expires_at > CURRENT_TIMESTAMP(3)` 在 SQL 裡比，是因為這個實驗的第一版把 `expires_at` 轉成 `Timestamp` —— 然後撞上 4.5.2 的 `ClassCastException: LocalDateTime cannot be cast to Timestamp`。同一個坑，這次是在實驗程式自己身上。）
+（`expires_at > CURRENT_TIMESTAMP(3)` 在 SQL 裡比，是因為把 `expires_at` 轉成 `Timestamp` 會撞上 4.5.2 的 `ClassCastException: LocalDateTime cannot be cast to Timestamp`。）
 
 一個交易、先檢查再寫入、單執行緒測起來完全正確：用過的 token 再送一次 → `REJECTED`。
 
@@ -665,7 +626,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJzaG9wIiwic3ViIjoiMTAwMSIs.
 6. **帳號**（5.4、5.6、5.7、5.10）：`PasswordConfig`、`Email`、`Utf8Bytes`、`Account`、`Accounts`、`AuthDtos`、`RefreshTokens`、`LoginAttempts`、`IpLoginLimiter`、`AccountService`、`LoginService`、`BootstrapAdmin`、兩個 Controller；`ProblemType` 加上 `EMAIL_UNAVAILABLE`（5.4.1）。
 7. **資料層級權限與既有模組的稽核**（5.8、5.9.3）：`OrderRepository.existsByOrderNo`、`OrderAccess`、`OrderCommands`、`OrderQueryService`、`ProductService`、`JdbcPaymentService`。
 8. **新的測試**（5.11.1）：`AuthApiTest`、`JwtGuardTest`、`SecurityRouteCoverageTest`、`IdorMatrixTest`、`AuditPlacementTest`、`JdbcAuditLogTest`；驗收 Q5 拿掉 `@Disabled`（5.8.4）；用 `mvn test -Dtest=OpenApiContractTest -Dopenapi.update=true` 更新 OpenAPI 快照（5.3.1）。
-9. **整體驗證**（5.12、5.11.2、5.10）：`mvn clean test`、`smoke5.sh`、`boot-test.sh`；實驗 F1～F8 用 `-Pexperiments` 各自跑（5.2.0）。
+9. **整體驗證**（5.12、5.11.2、5.10）：`mvn clean verify`、`smoke5.sh`、`boot-test.sh`；實驗 F1～F8 用 `-Pexperiments` 各自跑（5.2.0）。
 
 每一個檔案的完整內容，不是在正文，就是在 5.12.1。
 
@@ -706,7 +667,7 @@ public Me register(RegisterRequest req) {
 這是 3.2.1「Controller 直接回傳 Entity」的反方向：那一節是「回應帶出了不該出去的欄位」，這裡是「請求帶進了不該進來的欄位」。**DTO 是一份清單：上面沒有的，就不存在。**
 `AuthApiTest.register` 送的 body 同時帶了 `role` 與 `roles`，檢查回應與 `user_roles` 都只有 `BUYER`（5.11）。
 
-> ⚠️ 註解裡那個 `TransactionTemplate`，是寫這一段時差點掉進去的坑：第一個念頭是把兩句 INSERT 抽成一個 `@Transactional long insertBuyer(...)`，再從 `register()` 呼叫它。
+> ⚠️ 註解裡那個 `TransactionTemplate`，是在避開一個坑：把兩句 INSERT 抽成一個 `@Transactional long insertBuyer(...)`，再從 `register()` 呼叫它。
 > **同一個物件裡的 `this.insertBuyer()` 不經過 Spring 的代理**，`@Transactional` 不會生效 —— 兩句 INSERT 各自 autocommit。第二句（`user_roles`）失敗的話，`users` 裡就留下一個沒有任何角色的帳號。
 > 這跟 4.2.2 那段 ⚠️「`reserve()` 沒有交易代理」是同一件事。程式碼看起來有交易，實際上沒有，而且不會有任何警告。
 
@@ -1033,7 +994,7 @@ class SecurityConfig {
 
 **`/error` 要放行**：5.2.1 的 B' 階段。真正的錯誤（不管是 403 還是 500）被 Servlet 容器轉發到 `/error` 時，不應該再被要求登入一次。
 
-**`@ConditionalOnWebApplication`** 是後來加的。`SecurityConfig` 的第一版沒有它，加上之後跑既有的測試：
+**`@ConditionalOnWebApplication`** 不能少。`SecurityConfig` 沒有它的話，跑既有的測試：
 
 ```
 Caused by: org.springframework.beans.factory.UnsatisfiedDependencyException: Error creating bean with name 'shopSecurity' defined in class path resource [com/example/shop/shared/security/SecurityConfig.class]: Unsatisfied dependency expressed through method 'shopSecurity' parameter 0: No qualifying bean of type 'org.springframework.security.config.annotation.web.builders.HttpSecurity' available: expected at least 1 bean which qualifies as autowire candidate. Dependency annotations: {}
@@ -1114,7 +1075,7 @@ mvn test -Dtest=JwtGuardTest
 
 幾格值得說明：
 
-- **「同一把金鑰、HS512」被拒絕**，是因為 `macAlgorithm(MacAlgorithm.HS256)`：解碼器只接受一種演算法。這一格的第一版其實寫錯了 —— Nimbus 的 `MACSigner` 要求 HS512 的金鑰至少 64 bytes，本機的金鑰只有 38 bytes，第一版的測試偷偷把金鑰重複了一次再簽，簽出來的是**另一把金鑰**。改成用 `javax.crypto.Mac` 以同一把 38 bytes 的金鑰直接算 HMAC-SHA512，結果一樣是 401，這一格才算真的測到了「演算法」而不是「金鑰」。
+- **「同一把金鑰、HS512」被拒絕**，是因為 `macAlgorithm(MacAlgorithm.HS256)`：解碼器只接受一種演算法。這一格容易測錯 —— Nimbus 的 `MACSigner` 要求 HS512 的金鑰至少 64 bytes，本機的金鑰只有 38 bytes，測試如果把金鑰重複一次再簽，簽出來的是**另一把金鑰**。`JwtGuardTest` 用 `javax.crypto.Mac` 以同一把 38 bytes 的金鑰直接算 HMAC-SHA512，結果一樣是 401，這一格才算真的測到了「演算法」而不是「金鑰」。
 - **「沒有 roles」→ 403**，不是 401：簽章、issuer、時間都對，所以它是一個合法的身分，只是沒有任何角色。`/api/orders/**` 要 `ROLE_BUYER` → 403。
 - **issuer 不是 shop → 401**。同一把金鑰在別的地方也被拿來簽 token 的話（例如另一個內部工具共用了設定），issuer 是最後一道區隔。
 
@@ -1211,9 +1172,9 @@ Expecting empty but was: ["GET /api/me"]
 
 這就是「新增了一支 API、忘了加規則」那一天會看到的東西。
 
-**⚠️ 這個測試的第一版把種子資料的管理員停權了**
+**⚠️ 路徑變數代入 `1`，會把種子資料的管理員停權**
 
-第一版代入路徑變數的方式是 `replaceAll("\\{[^}]+}", "1")`：所有的 `{id}`、`{productId}` 都換成 `1`。跑完之後順手查了一下 `audit_logs`：
+如果代入路徑變數的方式是 `replaceAll("\\{[^}]+}", "1")`：所有的 `{id}`、`{productId}` 都換成 `1`。跑完之後查 `audit_logs`：
 
 ```
 action	actor_id	target_type	target_id
@@ -1225,12 +1186,12 @@ ACCESS_DENIED	990901	PRODUCT	1
 
 `USER_SUSPENDED`、`target_id = 1`。那一列的輸出是 `POST /api/admin/users/{id}/suspend  匿名 401 │ 三個角色 200` —— **200**。測試用一個「三個角色都有」的 token 打了 `POST /api/admin/users/1/suspend`，而 id 1 是種子資料的 `admin@example.com`。它真的被停權了。
 
-那一次的副作用還有：對商品 1 的三次 `ACCESS_DENIED`（測試的使用者不是商品 1 的賣家 —— 至少這部分如設計運作），以及一個 `DELETE /api/cart/items/1`（測試使用者的購物車，本來就是空的）。
+副作用還有：對商品 1 的三次 `ACCESS_DENIED`（測試的使用者不是商品 1 的賣家 —— 至少這部分如設計運作），以及一個 `DELETE /api/cart/items/1`（測試使用者的購物車，本來就是空的）。
 
-修正是把路徑變數一律代入**不存在**的值（`999999999`、`19990101-000000`），讓每一支 API 都停在「找不到」，不會真的改到任何東西；跑完再清掉測試使用者的購物車。修正之後的輸出就是上面那一份：`suspend` 是 404，`audit_logs` 沒有留下任何一列。（管理員的狀態用一句 `UPDATE users SET status = 'ACTIVE' WHERE id = 1` 改回來了。）
+修正是把路徑變數一律代入**不存在**的值（`999999999`、`19990101-000000`），讓每一支 API 都停在「找不到」，不會真的改到任何東西；跑完再清掉測試使用者的購物車。修正之後的輸出就是上面那一份：`suspend` 是 404，`audit_logs` 沒有留下任何一列。（管理員已經被停權的話，用一句 `UPDATE users SET status = 'ACTIVE' WHERE id = 1` 改回來。）
 
 > 📌 **一個「只檢查狀態碼」的測試，也會改到資料。** 安全層之所以讓它通過，正是因為它帶著一個權限很大的 token。
-> 覆蓋掃描這類「把每一支 API 都打一次」的測試，要嘛連到一個用完即丟的資料庫（第 08 章的 Testcontainers），要嘛保證每一個請求都打在不存在的資源上。這一次兩個都沒有做，第一次跑就付出了代價。
+> 覆蓋掃描這類「把每一支 API 都打一次」的測試，要嘛連到一個用完即丟的資料庫（第 08 章的 Testcontainers），要嘛保證每一個請求都打在不存在的資源上。兩個都沒有做，第一次跑就會付出代價。
 
 ### 5.5.6 `CurrentUserResolver`：從 JWT 產生，型別不變
 
@@ -1503,8 +1464,6 @@ assertThat(diff).isLessThan(50);
 ACC-2 AC-2：密碼錯誤 p50 79.8 ms、帳號不存在 p50 79.2 ms、差 0.6 ms
 ```
 
-（5.12 的完整測試裡再跑了一次：75.6 ms、74.9 ms，差一樣是 0.6 ms。）
-
 比的是中位數（9 次取第 5 個），不是平均：一次 GC 停頓就能讓平均值偏掉幾十毫秒，CI 上會變成一個時好時壞的測試。
 
 > 📌 **「停權」的訊息為什麼可以不一樣？** 停權的檢查在**密碼驗證成功之後**。能看到「帳號已停權」的人，一定知道這個帳號的密碼 —— 他已經知道帳號存在了。
@@ -1680,7 +1639,7 @@ EXPLAIN SELECT id FROM users WHERE email = 'buyer00001@example.com' AND email = 
 
 （這兩句只選 `id`。`Accounts.findByEmail()` 實際的查詢還選了 `password_hash` 等不在索引裡的欄位，`Extra` 那一欄會跟上面不同。）
 
-（專題寫完之後，在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上跑了這兩句：第一句 `type: range`、`Extra: Using where; Using index`，第二句 `type: const`、`ref: const`、`Extra: Using index`，都是 `key: uk_users_email`、`rows: 1` —— 跟上面一樣。）
+（在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上跑了這兩句：第一句 `type: range`、`Extra: Using where; Using index`，第二句 `type: const`、`ref: const`、`Extra: Using index`，都是 `key: uk_users_email`、`rows: 1` —— 跟上面一樣。）
 
 > 📌 **這個洞的根源在第 02 章。** 2.3 選 `utf8mb4_0900_ai_ci`，理由只有一個：讓 UNIQUE 不分大小寫（US-ACC-1 AC-2）。那時候沒有人想到「不分重音」也是它的一部分 —— 因為那時候還沒有任何東西在 Java 裡算 email 的 key。
 > **一個欄位的定序，是一條沒有寫在任何程式碼裡的比較規則。** 只要有第二個地方（Redis、快取、另一個服務）也在比較同一個值，兩邊的規則就必須明確地對齊。
@@ -1790,8 +1749,8 @@ class IpLoginLimiter {
 
 固定窗、單機、一個 `ConcurrentHashMap`。它有固定窗的邊界問題（[10-redis/10](../10-redis/10-rate-limit-and-idempotency.md) 的 10.2.3：邊界那一秒放進 2 倍流量），在這裡可以接受：它只是 Redis 掛掉那幾十秒裡的底線。`AuthApiTest.perIpLimit`：同一個 IP 送 20 次 → 401，第 21 次 → 429，帶 `Retry-After`。
 
-> ⚠️ **專題寫完之後的追記：這個測試自己也會撞到那個邊界。** 13 站第 01 章的第一次整套 `mvn clean verify` 紅了這一題：`Status expected:<429> but was:<401>`。日誌的時間：前一個測試在 17:18:59.4 結束，下一個測試類別在 17:19:01.4 開始，`perIpLimit` 花了 1.7 秒 —— 21 個請求**跨過了 17:19:00**。窗是用 `now / 60_000` 切的，第 21 個請求落在新的一分鐘，計數從 1 開始，於是 401。（這是從時間戳推出來的，沒有刻意在 :59 秒起跑去重現。）
-> 修法只改測試：離整分鐘不到 5 秒就先等到下一分鐘。
+> ⚠️ **這個測試自己也會撞到那個邊界。** 整套 `mvn clean verify` 有可能紅在這一題：`Status expected:<429> but was:<401>`。紅的那一次，日誌的時間：前一個測試在 17:18:59.4 結束，下一個測試類別在 17:19:01.4 開始，`perIpLimit` 花了 1.7 秒 —— 21 個請求**跨過了 17:19:00**。窗是用 `now / 60_000` 切的，第 21 個請求落在新的一分鐘，計數從 1 開始，於是 401。（這是從時間戳推出來的，沒有刻意在 :59 秒起跑去重現。）
+> 修法只改測試：離整分鐘不到 5 秒就先等到下一分鐘。參考實作的 `ch05` 分支上還是改之前的寫法（5.12.1 的 `AuthApiTest` 也是）。
 >
 > ```java
 > long intoMinute = System.currentTimeMillis() % 60_000;
@@ -1831,7 +1790,7 @@ done
 
 `IpLoginLimiter` 是記憶體裡的計數，每次重新啟動都歸零，所以兩種設定各啟動一次。
 
-（專題寫完之後，在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上照上面的指令原樣跑了一次，兩行輸出跟這一節開頭的一模一樣：`none` 第 21 次起 429，`native` 25 次都是 401。）
+（在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上照上面的指令原樣跑了一次，兩行輸出跟這一節開頭的一模一樣：`none` 第 21 次起 429，`native` 25 次都是 401。）
 
 `RemoteIpValve` 只信任「從內部代理送來的」`X-Forwarded-For`，而它預設的內部代理清單包含 `127.0.0.1` 與 `10.x`、`192.168.x`、`172.16～31.x`。這次的請求從本機送出，所以被當成「從代理來的」。在正式環境，負載平衡器會在 `X-Forwarded-For` 的最後面附上它看到的真正來源，`RemoteIpValve` 從右往左取第一個不受信任的位址 —— 偽造的值在左邊，不會被採用。
 **但只要應用程式也能從內部網路被直接存取**（另一個服務、一台跳板機、設定錯的安全群組），攻擊者就可以自己帶 `X-Forwarded-For`。這件事屬於部署的設定（第 09 章），但它直接決定了這一節的限流與 `audit_logs.ip` 欄位可不可信。
@@ -1887,7 +1846,7 @@ Rotation rotate(String raw) {
 | 0 列 | `used_at` 是 NULL | `EXPIRED_OR_REVOKED`：過期了，或停權時被撤銷了 | 401 |
 
 10 個請求同時送同一個 token：它們的 `UPDATE` 搶同一列的 X 鎖，**只有第一個**的 `WHERE used_at IS NULL` 成立。第一個 commit 之後，其他 9 個的 `UPDATE` 才拿到鎖 —— 這時 `UPDATE` 是 current read，看到 `used_at` 已經有值，影響 0 列。
-**重讀用 `FOR UPDATE`。** 寫到這裡時，我的理由是 4.6.2 的教訓：一般的 `SELECT` 在 REPEATABLE READ 底下讀的是快照，那裡的 `used_at` 還是 NULL，9 個重放會被誤判成「過期」。
+**重讀用 `FOR UPDATE`。** 直覺的理由是 4.6.2 的教訓：一般的 `SELECT` 在 REPEATABLE READ 底下讀的是快照，那裡的 `used_at` 還是 NULL，9 個重放會被誤判成「過期」。
 但量過之後，**在這個方法目前的寫法下，這個理由不成立**。把重讀改成一般的 `SELECT`、再跑一次 F4：
 
 ```
@@ -2391,7 +2350,7 @@ for (String key : new String[]{"password", "newPassword", "refreshToken", "Autho
 assertThat(audit.detail(Map.of("revokedSessions", 3, "oldPrice", 299))).contains("revokedSessions");
 ```
 
-清單裡最後一個 `revokedRefreshTokens` 是**我自己的程式碼**：停權的稽核（5.10）第一版的 detail 叫 `Map.of("revokedRefreshTokens", revoked)` —— 撤銷了幾個 refresh token，一個完全無害的數字。寫完 `JdbcAuditLog` 回頭讀停權那一段時才注意到，它的鍵名含有 `token`，會被這個檢查擋下（測試的最後一個鍵就是它）：停權的交易會在寫稽核那一步丟 `IllegalArgumentException`，整個停權 rollback、回 500。改名成 `revokedSessions`。
+清單裡最後一個 `revokedRefreshTokens` 來自**本專題自己的程式碼**：停權的稽核（5.10）的 detail 記的是撤銷了幾個 refresh token，一個完全無害的數字，很自然會叫 `revokedRefreshTokens`。但它的鍵名含有 `token`，會被這個檢查擋下（測試的最後一個鍵就是它）：停權的交易會在寫稽核那一步丟 `IllegalArgumentException`，整個停權 rollback、回 500。所以停權的鍵名是 `revokedSessions`。
 **一個寬鬆的檢查，會有誤判**；這裡選擇誤判（擋下無害的鍵名），而不是漏判（放過一個真的 token）—— 誤判會在第一次執行時就變成 500，漏判永遠不會被發現。
 
 ### 5.9.3 修正之後
@@ -2436,7 +2395,7 @@ AUD：金額不符 → 400；PAYMENT_AMOUNT_MISMATCH 1 筆
 
 `accessDenied` 這個測試在 5.8.3 之後多了一行 `await()`：`ACCESS_DENIED` 改成背景寫入，測試要等它出現。
 
-**`@Transactional` 的測試收不回 REQUIRES_NEW。** `CatalogCartApiTest` 是第 03 章的 `@Transactional` MockMvc 測試（每個測試結束時 rollback，3.9.1）。它有一個「別人的商品 → 404」的測試，這一章之後會寫一筆 `ACCESS_DENIED` —— 而那筆在測試的交易**之外** commit（背景寫入更是如此），rollback 收不回來。第一次跑完全部測試，`audit_logs` 裡留下了 `ACCESS_DENIED 90002 PRODUCT …`。
+**`@Transactional` 的測試收不回 REQUIRES_NEW。** `CatalogCartApiTest` 是第 03 章的 `@Transactional` MockMvc 測試（每個測試結束時 rollback，3.9.1）。它有一個「別人的商品 → 404」的測試，這一章之後會寫一筆 `ACCESS_DENIED` —— 而那筆在測試的交易**之外** commit（背景寫入更是如此），rollback 收不回來。不清的話，跑完全部測試，`audit_logs` 裡會留下 `ACCESS_DENIED 90002 PRODUCT …`。
 修法是 `@AfterTransaction`：在測試交易結束**之後**執行的清理（寫在 `@AfterEach` 裡的 `DELETE` 會在測試交易裡執行，然後跟著一起被 rollback）：
 
 ```java
@@ -2541,7 +2500,7 @@ public Me suspend(long adminId, long userId) {
 ```
 
 三件事在同一個交易裡：`users.status = 'SUSPENDED'`（條件式：`WHERE status = 'ACTIVE'`）、撤銷全部 refresh token、寫稽核。5.7.3 的 AC-6 就是從這裡來的：refresh 立即失敗，因為 token 都被撤銷了；access token 不受影響，因為它不查資料庫。
-（`revokedSessions` 就是 5.9.2 那個被改過名字的鍵。）
+（`revokedSessions` 就是 5.9.2 那個不能叫 `revokedRefreshTokens` 的鍵。）
 
 **第一個管理員：`BootstrapAdmin`**（US-ACC-3 AC-3：「管理員帳號由環境變數建立，不存在任何預設帳密」）
 
@@ -2602,8 +2561,8 @@ shop:
   users: 1 ops-admin@example.com ADMIN
 ```
 
-**「email 不是 email」那一格是一個真的意外留下來的。** 第一次跑這個實驗時，我在 zsh 裡用一個沒有加引號的變數傳參數：`EXTRA="--...email= --...password="`，然後 `java -jar ... $EXTRA`。zsh 預設不對變數做字詞分割，兩個參數被當成**一個** —— email 的值變成了 `" --shop.security.bootstrap-admin.password="`，`strip()` 之後是 `--shop.security.bootstrap-admin.password=`。而那時的 `BootstrapAdmin` 沒有檢查 email 的格式，**應用程式啟動成功**，`shop_boot` 裡多了一個 email 是 `--shop.security.bootstrap-admin.password=` 的管理員。
-那是 shell 的錯，但它說明了一件事：部署時傳錯參數是會發生的，而這段程式碼只會在「第一次部署」那一刻執行一次 —— 不會有第二次機會發現它。所以補上了格式檢查。
+**「email 不是 email」那一格防的是一個真的會發生的意外。** 在 zsh 裡用一個沒有加引號的變數傳參數：`EXTRA="--...email= --...password="`，然後 `java -jar ... $EXTRA`。zsh 預設不對變數做字詞分割，兩個參數被當成**一個** —— email 的值變成了 `" --shop.security.bootstrap-admin.password="`，`strip()` 之後是 `--shop.security.bootstrap-admin.password=`。`BootstrapAdmin` 如果不檢查 email 的格式，**應用程式啟動成功**，`shop_boot` 裡多了一個 email 是 `--shop.security.bootstrap-admin.password=` 的管理員。
+那是 shell 的錯，但它說明了一件事：部署時傳錯參數是會發生的，而這段程式碼只會在「第一次部署」那一刻執行一次 —— 不會有第二次機會發現它。所以要檢查格式。
 
 注意每一格的第一行都是 `Started ShopApplication`：`ApplicationRunner` 在 context 啟動**之後**才執行，所以日誌先說「啟動了」，例外才出現。它真的會讓應用程式起不來嗎？另外量一次「沒有給」的情況，同時每 50 ms 打一次 readiness：
 
@@ -2628,7 +2587,7 @@ wait $PID; echo "exit code = $?"
 
 Tomcat 還沒開始聽 port 的那段時間，`curl` 會印出 `000`。）
 
-專題寫完之後，在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上照這個指令原樣跑了一次（load average 4.5）：
+在第 05 章結束時的程式碼、一個全新的資料庫（灌了 2.8.3 的種子資料）上照這個指令原樣跑了一次：
 
 ```
   91 000
@@ -2641,9 +2600,9 @@ exit code = 1
 **本機與驗收 Q6**：`application-local.yml` 給了一組本機用的帳密 `admin@example.com` / `local-dev-only-admin-password`（跟 `shop/shop` 的資料庫帳密一樣，只存在你的筆電上；完整內容見 5.12.1）。種子資料的 `shop` 裡已經有 `admin@example.com`，所以它不會被用到；驗收 Q6 從一個空的 `shop_q6` 啟動，它就會被用到 —— 這一章的完整測試裡，Q6 的日誌有一行 `BOOTSTRAP_ADMIN_CREATED id=1 email=a***@example.com`。**這兩行不能省**：Q6 用預設的 `local` profile 從空的 `shop_q6` 啟動，少了它們，`BootstrapAdmin` 會丟 `IllegalStateException`，Q6 就起不來。
 `lab` profile（第 00～01 章的實驗，連 `shop_lab`）沒有 Flyway 管理的 `users` 表，所以 `application-lab.yml` 用 `bootstrap-admin.enabled: false` 關掉它。
 
-> ⚠️ **專題寫完之後的追記（13 站第 09 章）：兩個行程同時第一次啟動，輸的那一個起不來。** 13 站第 09 章在 K8s 上讓單體與另一個也擁有 account 模組的服務接同一個空的庫、同時第一次起來，單體的 `RESTARTS` 是 1，上一次的日誌：`Duplicate entry 'a***@example.com' for key 'users.uk_users_email'`。兩邊都看到「沒有管理員」、都去建，輸的那一邊撞到唯一索引，`ApplicationRunner` 丟例外，應用程式起不來；K8s 把它重開，第二次看到「已經有了」，就好了。
+> ⚠️ **兩個行程同時第一次啟動，輸的那一個起不來。** 兩個行程接同一個空的庫、同時第一次起來，兩邊都看到「沒有管理員」、都去建，輸的那一邊撞到唯一索引（`Duplicate entry 'a***@example.com' for key 'users.uk_users_email'`），`ApplicationRunner` 丟例外，應用程式起不來；在 K8s 上它會被重開（`RESTARTS` 是 1），第二次看到「已經有了」，就好了。
 >
-> 這個專題自己也會遇到：**兩台同時對一個新的庫第一次部署**。上面的四格實驗都只起一個行程，碰不到它。
+> 這個專題會遇到它的情境：**兩台同時對一個新的庫第一次部署**。上面的四格實驗都只起一個行程，碰不到它。
 >
 > `BootstrapAdminRaceTest`（`account.internal`）把那個順序釘住：A 檢查的時候還沒有管理員（第一次的 `adminCount()` 回 0），A 建的時候庫裡已經有同一個 email 的管理員（測試的 Spring context 起來時建的那一個）。修正前：
 >
@@ -2671,7 +2630,7 @@ exit code = 1
 >          log.warn("BOOTSTRAP_ADMIN_CREATED id={} email={}（請把 SHOP_BOOTSTRAP_ADMIN_PASSWORD 從部署設定中移除）", id, Email.mask(email));
 > ```
 >
-> 修正之後兩個情境都綠；整套 `mvn clean verify` 235 個測試全綠（專題原本的 233 個，加上這兩個）。
+> 修正之後兩個情境都綠；在第 09 章結束時的程式碼（加上其他幾章的修正）上，整套 `mvn clean verify` 235 個測試全綠。參考實作的 `ch05` 分支上還是改之前的寫法（5.12.1 的 `BootstrapAdmin` 也是），也沒有 `BootstrapAdminRaceTest`。
 >
 > 為什麼不在一開始就加一把鎖（例如 `SELECT … FOR UPDATE` 或分散式鎖），讓兩邊排隊？因為「建第一個管理員」只會發生一次，撞到的時候只要知道「是不是別人剛建好」就夠了 —— 唯一索引已經是那把鎖，問題只在輸的那一邊怎麼解讀它。
 
@@ -2838,58 +2797,7 @@ shop/
 
 **沒有新的 migration。** `users`、`user_roles`、`refresh_tokens`、`audit_logs` 在第 02 章就建好了（V1、V8），這一章是它們第一次被寫入。第 02 章當時多想的那幾個欄位 —— `refresh_tokens.used_at`、`revoked_at`、`idx_audit_action` —— 這一章全部用上了；`audit_logs.trace_id` 現在寫進去的是 NULL，等第 09 章把 traceId 放進 MDC。
 
-```bash
-mvn clean test
-```
-
-```
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.105 s -- in com.example.shop.shared.audit.internal.JdbcAuditLogTest
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.024 s -- in com.example.shop.shared.error.ShopExceptionTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.899 s -- in com.example.shop.schema.SchemaConstraintTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.014 s -- in com.example.shop.schema.EntitySchemaDriftTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.454 s -- in com.example.shop.schema.InvariantReconciliationTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.060 s -- in com.example.shop.architecture.TableOwnershipTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.007 s -- in com.example.shop.architecture.MigrationOwnershipTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.002 s -- in com.example.shop.architecture.MapperXmlSafetyTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.027 s -- in com.example.shop.architecture.ConfigKeyGuardTest
-Q3：先後送兩次 → 201 20261001-149258、200 20261001-149258；同鍵不同內容 → 422 /problems/idempotency-key-reused
-Q3：同一個鍵同時送 10 次 → {201=1, 409（Retry-After: 1）=9}；出現過的訂單編號 [20261001-100320]；資料庫裡這位買家的訂單 2 張
-Q1：HTTP 409 /problems/insufficient-stock，productId=9900102；殘留：{orders=0, items=0, reservations=0, reserved_a=0, ledger_a=1/0, idem_keys=0, cart=2}（庫存帳下單前 1/0）
-Q1：補貨後用同一個鍵重送 → HTTP 201 20261001-145098；購物車剩 0 項
-Q5：B 讀自己的 → 200；A 讀 B 的 → 404；A 讀不存在的 → 404；兩個 404 的 body 相同 = true；稽核 {actor_id=21077, actor_role=BUYER, target_type=ORDER, target_id=20261001-991607, ip=127.0.0.1}
-Q6：從空資料庫套用 11 個 migration → 20 張表（含 flyway_schema_history）、CHECK 25 / 25、具名索引 31 / 31；validate 通過
-Q4：size=5   → HTTP 200，5 張訂單、15 個明細，SQL 3 句
-Q4：size=20  → HTTP 200，20 張訂單、60 個明細，SQL 3 句
-Q4：size=45  → HTTP 200，45 張訂單、135 個明細，SQL 3 句
-Q2：{201 =1, 409 /problems/insufficient-stock=99}；available = 0
-[WARNING] Tests run: 11, Failures: 0, Errors: 0, Skipped: 5, Time elapsed: 68.18 s -- in com.example.shop.acceptance.CapstoneAcceptanceTest
-[INFO] Tests run: 61, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.029 s -- in com.example.shop.ordering.internal.OrderStateMachineTest
-AUD：簽章錯誤 → 401；PAYMENT_SIGNATURE_INVALID 1 筆
-AUD：賣家取消 PAID → 成功；ORDER_CANCELLED_BY_SELLER 1 筆
-AUD：賣家取消 SHIPPED → 409；ORDER_CANCELLED_BY_SELLER 0 筆（訂單狀態 SHIPPED）
-AUD：別人的訂單（查詢 + 取消）→ 404；ACCESS_DENIED 2 筆；不存在的訂單 → 404；ACCESS_DENIED 0 筆
-AUD：金額不符 → 400；PAYMENT_AMOUNT_MISMATCH 1 筆
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.001 s -- in com.example.shop.ordering.internal.AuditPlacementTest
-ORD-3 AC-3：取消 60 張、歷史 60 筆、RELEASE 60 筆；INV-2 {reserved=0, held=0}
-ORD-3 AC-5：{CANCELLED/RELEASED/SUCCEEDED/1=50}；例外 0；INV-2 {reserved=0, held=0}
-[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.482 s -- in com.example.shop.ordering.internal.OrderRaceRegressionTest
-[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.692 s -- in com.example.shop.ordering.internal.OrderFlowTest
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.730 s -- in com.example.shop.api.OrderApiTest
-[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.543 s -- in com.example.shop.api.CatalogCartApiTest
-[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.357 s -- in com.example.shop.api.IdorMatrixTest
-[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.041 s -- in com.example.shop.api.JwtGuardTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.135 s -- in com.example.shop.api.SecurityRouteCoverageTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.324 s -- in com.example.shop.api.OpenApiContractTest
-ACC-2 AC-2：密碼錯誤 p50 75.6 ms、帳號不存在 p50 74.9 ms、差 0.6 ms
-[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 7.082 s -- in com.example.shop.api.AuthApiTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.985 s -- in com.example.shop.architecture.EntityTableOwnershipTest
-[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.107 s -- in com.example.shop.architecture.ModuleBoundaryTest
-[WARNING] Tests run: 143, Failures: 0, Errors: 0, Skipped: 5
-[INFO] BUILD SUCCESS
-[INFO] Total time:  01:37 min
-```
-
-> 📌 **專題寫完之後重跑：`mvn clean verify`。** 上面是寫這一章時跑的 `mvn clean test`。專題寫完之後（2026-10-12），在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）重跑了一次 `mvn clean verify`（load average 6.16 → 8.68）：（上面那段輸出，在參考實作的分支整理之後沒有在同一個版本上重跑過：測試數是照程式碼推算的。這一次是實跑。）
+在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）跑 `mvn clean verify`：
 
 ```bash
 mvn clean verify
@@ -2928,11 +2836,11 @@ mvn clean verify
 [INFO] Total time:  01:35 min
 ```
 
-143 個測試、跳過 5 個 —— 跟上面一樣。`verify` 比 `test` 多做的是打包 jar（`spring-boot:repackage`）；覆蓋率門檻要到第 08 章才有。
+`verify` 比 `test` 多做的是打包 jar（`spring-boot:repackage`）；覆蓋率門檻要到第 08 章才有。
 
 **143 個測試、`Skipped: 5`**（第 04 章是 120 個、6 個 skipped）。新增的 23 個：`AuthApiTest` 12、`AuditPlacementTest` 5、`IdorMatrixTest` 2、`JwtGuardTest` 2、`SecurityRouteCoverageTest` 1、`JdbcAuditLogTest` 1。Q5 本來就算在那 120 個裡（skipped），變成通過不影響總數，只讓 `Skipped` 少 1。
 
-驗收測試 68 秒（第 04 章是 56 秒）：Q5 又啟動了一個完整的應用程式。第 08 章會處理這件事。
+驗收測試 68 秒（第 04 章是 53 秒）：Q5 又啟動了一個完整的應用程式。第 08 章會處理這件事。
 
 `ModuleBoundaryTest` 的 6 條規則、`TableOwnershipTest`、`EntityTableOwnershipTest`、`ConfigKeyGuardTest` 全綠 —— 依賴表沒有改（5.3.2），`application-*.yml` 裡新的設定鍵（`bootstrap-admin.*`）都在 `ShopProperties` 裡有對應。`InvariantReconciliationTest` 仍然是 0：這一章的測試與實驗沒有碰庫存。
 

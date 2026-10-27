@@ -15,44 +15,6 @@
 > - **驗收 Q1、Q2、Q3 變綠**（4.4.5、4.5.4）：`Skipped` 從 9 變成 6。
 > - **兩個排程**：付款逾時取消、出貨 7 天自動完成。**三台同時跑也不會重複處理**，而且不需要分散式鎖（4.7）。
 > - **一組打真 HTTP API 的搶購壓測**，以及一個用數字做出的決定：**虛擬執行緒先不開**（4.8）。
->
-> 這一章的主題是**併發**。併發的 bug 有一個共同點：**單元測試全綠、手動點十次都對，只有「同時」的時候才錯。**
-> 所以這一章的每一個事故，都是用 `CountDownLatch` 讓執行緒在同一瞬間出發、實際量出來的：
->
-> - **四種扣庫存的寫法**（4.2.1）
->   - 100 個人搶最後 1 件：「讀了再寫」成立了 **100 張訂單**。
->   - 2,000 人搶 500 件：`@Version` 樂觀鎖**只賣出 32 件，468 件賣不掉**。
->   - 同一場加上「衝突就重試 10 次」：賣出 280 件、花了 7.5 秒、白做了 **17,347 次**交易。
-> - **接住了例外，卻變成 500**（4.2.2）：在 `@Transactional` 方法裡 `catch` 住「庫存不足」、回傳一個「已售完」的結果 —— 呼叫端收到的卻是 `UnexpectedRollbackException`。
->   搶最後 1 件的 100 人裡，**99 人看到「系統錯誤」**。
-> - **兩個品項、相反的順序**（4.2.3）：一半的訂單是 [A, B]、另一半是 [B, A]，5 秒內 **832 次死鎖**。先排序 → **0 次**。
-> - **前端送來的 `149`**（4.2.4）：一個真的 JavaScript 客戶端把 `149.00` 送成 `149`。
->   價格比對用 `equals` → **500 個商品全部被判定為「價格已變動」**，沒有一個人下得了單。
-> - **排程與回呼在同一毫秒**（4.2.5）：「先讀狀態、再更新」的寫法，跑 300 回合：
->   - **296 張**訂單變成「已付款，但預留的庫存已經被釋放」；
->   - **4 張**變成「錢收了、訂單取消了、沒有退款」。
->   - 而每小時的庫存對帳（INV-2）**一張都看不出來**。
->
-> ⚠️ **還有兩個，是寫這一章的途中被這一章自己的測試抓到的**：
->
-> - **條件式 UPDATE 影響 0 列之後的「重新讀取」**（4.6.2）：在 REPEATABLE READ 底下，重讀讀到的還是**同一個快照**。
->   300 回合的競態測試，**300 個付款回呼全部失敗** —— 錢收了，系統卻沒有記下來。
-> - **冪等鍵**（4.5.3）：`INSERT` 撞到重複鍵之後，接著 `SELECT ... FOR UPDATE`。同一個鍵同時送 10 次，**4～8 次死鎖、回 500**。
->
-> 另外還有四個比較小、但一樣是實測到的坑：
->
-> - Connector/J 把 `DATETIME` 讀成 `LocalDateTime`：重送下單回 500（4.5.2）。
-> - 一個 Problem Details 回應裡出現**兩個 `status`**：前端讀到的 `status` 是 `"PICKING"`（4.6.5）。
-> - JDBC 改了狀態，JPA 卻回傳舊的 Entity：確認收貨之後，回應說「已出貨」（4.6.5）。
-> - 壓測時，連線池逾時被當成 **500** 而不是 503（4.8.2）。
->
-> 這一章**沒有達成、或只部分達成**的目標：
->
-> - **US-ORD-1b AC-2 的 p99 < 500 ms 沒有達成**（4.8.1）：正確性八輪全對，但封閉式負載的 p99 是 1.4～4.2 秒；0.6.2 的開放式負載（200 rps）四輪只有一輪達成。延遲交給第 06 章。
-> - **0.6.2 標「第 04 章」量測的另外兩列沒有量**：`POST /api/orders`（一般商品，50 rps 分散在 1,000 個商品）與付款回呼（50 rps）。本章只量了熱點商品（4.8）與單次回呼的耗時（4.6.3）。
-> - **US-ORD-1b 那段 ⚠️ 說「第 04 章會量出」的悲觀鎖等鎖逾時**，本章沒有量，留在練習三（4.12.2）。
-> - **US-ORD-2 AC-3 的 `audit_logs`、AC-4 的告警、US-ORD-6 AC-5 的通知與稽核**只做了一半（4.9.2）：回應碼、退款做了；稽核在第 05 章、通知在第 07 章、告警在第 09 章。US-ORD-1 AC-8（429 限流）在第 06 章。
-> - **一個已知問題**：付款回呼的金額如果有三位小數，目前回 500 而不是 400（4.6.3、練習九）。專題寫完之後才修，修法與前後的實測在 4.6.3 的追記。
 
 ---
 
@@ -1052,7 +1014,7 @@ expected: "✗"
  but was: "→CANCELLED+R"
 ```
 
-第一版的測試沒有 `.as(c.toString())`。那時候 Maven 的輸出只有 `everyCellOfTheTable(Cell)[23]` 和 `expected: "✗" but was: "→CANCELLED+R"` ——
+如果測試沒有 `.as(c.toString())`，Maven 的輸出只有 `everyCellOfTheTable(Cell)[23]` 和 `expected: "✗" but was: "→CANCELLED+R"` ——
 `@ParameterizedTest(name = "{0}")` 設定的名字**只有 IDE 看得到**，surefire 的純文字報告只印索引。
 你得自己數到第 23 格才知道是哪裡錯了。**一個失敗的測試，要讓看 CI 日誌的人不用打開 IDE 就知道錯在哪。**
 
@@ -2083,7 +2045,7 @@ Current cur = attempt == 0 ? current(orderId) : currentForUpdate(orderId);
 
 排程贏的比例特別高，是因為回呼的交易多做了一件事（先鎖 `payments`、寫 `SUCCEEDED`），晚一步才碰到 `orders`。
 
-> ⚠️ **專題寫完之後的追記（13 站第 01 章）：重讀修好了，重讀**之後**的那一句讀沒有。** E5 比的是「逾時排程 vs 回呼」：`PAID + E4` 什麼都不做，不需要退款。換成「**買家取消** vs 回呼」，`PAID + 取消` 要退款 —— 而「要退哪一筆」是 `sideEffects()` 裡的 `payments.succeededPaymentOf(orderId)` 查的，一句**一般的 SELECT**。它跟上面那一句重讀在同一個交易裡，用的是同一個快照：交易的第一句一般讀取建立的那一個（第 05 章之後，那一句是 `OrderAccess.buyers()`：查這張訂單是不是你的，5.8.1）。
+> ⚠️ **重讀修好了，重讀**之後**的那一句讀沒有。** E5 比的是「逾時排程 vs 回呼」：`PAID + E4` 什麼都不做，不需要退款。換成「**買家取消** vs 回呼」，`PAID + 取消` 要退款 —— 而「要退哪一筆」是 `sideEffects()` 裡的 `payments.succeededPaymentOf(orderId)` 查的，一句**一般的 SELECT**。它跟上面那一句重讀在同一個交易裡，用的是同一個快照：交易的第一句一般讀取建立的那一個（第 05 章之後，那一句是 `OrderAccess.buyers()`：查這張訂單是不是你的，5.8.1）。
 >
 > 回呼的交易如果整個落在「取消的第一句讀」與「取消的 UPDATE」之間：UPDATE 影響 0 列 → `FOR UPDATE` 重讀看到 `PAID` → 狀態機說可以取消、要退款 → `succeededPaymentOf()` 用舊快照，看不到那一筆 `SUCCEEDED` → **不建退款單**。這不是推測：`CancelRefundSnapshotTest` 用一個外層交易先做那一句讀、等另一條執行緒把回呼整個做完，再在同一個交易裡呼叫 `cancelByBuyer()`：
 >
@@ -2101,7 +2063,7 @@ Current cur = attempt == 0 ? current(orderId) : currentForUpdate(orderId);
 >   訂單 CANCELLED、付款 SUCCEEDED、退款單 [BUYER_CANCEL]
 > ```
 >
-> **加鎖讀會不會帶來死鎖？** 這一段的第一版寫的是「會」：回呼拿著付款列的鎖、還沒改到訂單時，取消已經改了訂單、又要 `FOR SHARE` 讀那一列付款 —— 兩邊互等。**那是錯的，而且是沒有對照狀態機就下的結論。** `FOR SHARE` 那一句只在狀態機說「要退款」時才執行（`sideEffects()` 裡的 `d.refund()`），而要退款的取消，訂單一定已經是 `PAID` 或 `PICKING`（`OrderStateMachine`：`PENDING_PAYMENT` 的取消是 `Decision.to(CANCELLED)`，不帶退款；`PAID`、`PICKING` 的取消才是 `toWithRefund`）—— 也就是讓它變成已付款的那個回呼**早就 commit 了**，鎖也放了。
+> **加鎖讀會不會帶來死鎖？** 看起來會：回呼拿著付款列的鎖、還沒改到訂單時，取消已經改了訂單、又要 `FOR SHARE` 讀那一列付款 —— 兩邊互等。**但對照狀態機，這個交錯不會發生。** `FOR SHARE` 那一句只在狀態機說「要退款」時才執行（`sideEffects()` 裡的 `d.refund()`），而要退款的取消，訂單一定已經是 `PAID` 或 `PICKING`（`OrderStateMachine`：`PENDING_PAYMENT` 的取消是 `Decision.to(CANCELLED)`，不帶退款；`PAID`、`PICKING` 的取消才是 `toWithRefund`）—— 也就是讓它變成已付款的那個回呼**早就 commit 了**，鎖也放了。
 >
 > 最接近的情境是**同一張訂單付了兩次錢**：第二筆的回呼鎖住第二筆付款、還沒套用到訂單，取消這時 `FOR SHARE` 掃這張訂單的付款，一定會撞到第二筆。`CancelVsSecondPaymentTest` 把它釘住：回呼鎖住第二筆之後停 500 ms，取消在這段時間裡進來：
 >
@@ -2111,7 +2073,7 @@ Current cur = attempt == 0 ? current(orderId) : currentForUpdate(orderId);
 > 訂單 CANCELLED、退款單 [{payment_id=2, reason=BUYER_CANCEL}, {payment_id=3, reason=DUPLICATE_PAYMENT}]
 > ```
 >
-> 沒有死鎖。取消等第二筆的鎖；回呼那一邊，訂單是 `PAID`，`PAID + PAY_SUCCEEDED（另一筆）` 是 `REFUND_ONLY`（「付了兩次錢」）—— 只建一張退款單，**不改訂單那一列**，不需要等取消手上的鎖，互等不成立。（寫這個測試時我預期第二筆的退款原因是 `LATE_PAYMENT`；實際是 `DUPLICATE_PAYMENT`，因為回呼讀到的訂單還是 `PAID` —— 兩種都是全額退款，結果正確。）這個測試留在測試組裡，守住「加鎖讀不會讓這個交錯死鎖」。這個測試加進來之後，整套 `mvn clean verify`：229 個測試全綠、四道覆蓋率門檻都過（4:11）。
+> 沒有死鎖。取消等第二筆的鎖；回呼那一邊，訂單是 `PAID`，`PAID + PAY_SUCCEEDED（另一筆）` 是 `REFUND_ONLY`（「付了兩次錢」）—— 只建一張退款單，**不改訂單那一列**，不需要等取消手上的鎖，互等不成立。（第二筆的退款原因是 `DUPLICATE_PAYMENT`，不是 `LATE_PAYMENT`，因為回呼讀到的訂單還是 `PAID` —— 兩種都是全額退款。）這個測試留在測試組裡，守住「加鎖讀不會讓這個交錯死鎖」。參考實作的 `ch04` 分支上還是改之前的寫法。
 
 ### 4.6.3 付款回呼：驗簽、金額、冪等、晚到的錢
 
@@ -2212,8 +2174,8 @@ public final class CallbackSignature {
 - **金鑰從設定來**：`ShopProperties.Payment.callbackSecret`，`@Size(min = 32)`；`application-local.yml` 有一把本機用的（`shop.payment.callback-secret: local-dev-only-payment-callback-secret-0123`），`application-prod.yml` 是 `${SHOP_PAYMENT_CALLBACK_SECRET}`（1.7.6：正式環境的祕密只從環境變數來，不進 repo）。
   `ShopProperties.payment` 是 `@NotNull`：少了這個設定，應用程式啟動就會失敗。`ShopProperties` 與兩個 yml 的全文在 4.10.1。
 
-> 📌 **專題寫完之後的追記：三位小數的金額，修在 `canonical()` 自己身上。**
-> 第 09 章結束後的程式碼上修的（下面的測試類別 `OrderHttpFlowTest` 是第 08 章才有的 HTTP 流程測試），但改的地方從本章起就沒動過，在這一章的程式碼上一樣適用：
+> 📌 **三位小數的金額，修在 `canonical()` 自己身上。**
+> 下面的測試類別 `OrderHttpFlowTest` 是第 08 章才有的 HTTP 流程測試；改的地方從本章起就沒動過，在這一章的程式碼上一樣適用：
 >
 > ```java
 > public static String canonical(long paymentId, String providerTxnId, BigDecimal amount, boolean succeeded) {
@@ -2253,7 +2215,7 @@ public final class CallbackSignature {
 > [INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.323 s -- in com.example.shop.api.OrderHttpFlowTest
 > ```
 >
-> （輸出裡的 `traceId` 省略了。）課文建議把測試放在 `OrderFlowTest`，實際放在 `OrderHttpFlowTest`：`OrderFlowTest` 直接呼叫 Service，驗不到 HTTP 的 400。另外加了一個不起 Spring 的 `CallbackSignatureTest`（`100`、`100.0`、`100.00`、`100.000` 簽出同一個值；`298.001` 是 `VALIDATION`）。
+> （輸出裡的 `traceId` 省略了。）練習九建議把測試放在 `OrderFlowTest`，這裡放在 `OrderHttpFlowTest`：`OrderFlowTest` 直接呼叫 Service，驗不到 HTTP 的 400。另外加了一個不起 Spring 的 `CallbackSignatureTest`（`100`、`100.0`、`100.00`、`100.000` 簽出同一個值；`298.001` 是 `VALIDATION`）。參考實作的 `ch04` 分支上還是改之前的寫法。
 
 **記錄**（`JdbcPaymentService.record()`）：
 
@@ -2716,9 +2678,9 @@ class OrderJobs implements SchedulingConfigurer {
 一個交易取消 100 張訂單，任何一張失敗，另外 99 張都會 rollback。而且那個交易會拿著 100 張訂單、以及它們所有商品的 `inventory` 列的鎖，**一直拿到最後一張處理完** —— 一個熱點商品的 15 分鐘前的訂單，會讓那個商品在排程執行的這段時間裡都下不了單。
 每張一個交易：每個交易只鎖一張訂單和它自己的幾個商品，持鎖時間是毫秒等級。
 
-> ⚠️ **專題寫完之後的追記（13 站第 02 章）：「一張失敗不影響其他張」只對了一半。** 每張訂單各自一個交易是對的 —— 一張 rollback 不會帶走別張。但 `applyEach()` 只接 `ShopException`（業務上的拒絕：狀態不允許、訂單不存在）。資料庫錯誤 —— 死鎖、鎖等待逾時（4.2.3、4.5.3 都量過它們會發生）—— 是 Spring 的 `DataAccessException`，不在裡面：它會**跳出整個迴圈**，同一批後面的訂單這一輪都不處理。
+> ⚠️ **「一張失敗不影響其他張」只對了一半。** 每張訂單各自一個交易是對的 —— 一張 rollback 不會帶走別張。但 `applyEach()` 只接 `ShopException`（業務上的拒絕：狀態不允許、訂單不存在）。資料庫錯誤 —— 死鎖、鎖等待逾時（4.2.3、4.5.3 都量過它們會發生）—— 是 Spring 的 `DataAccessException`，不在裡面：它會**跳出整個迴圈**，同一批後面的訂單這一輪都不處理。
 >
-> 在單體裡，後果通常只是「晚 30 秒」：下一輪會再撈到它們。除非失敗的那一張**每一輪都失敗** —— 它排在最前面（`ORDER BY payment_deadline`），後面的就一直等。13 站第 02 章把庫存切成另一個服務之後撞到它：`release()` 變成一次遠端呼叫，遠端呼叫的每一種失敗（逾時、連不上、對方 500）都是這一種例外。
+> 在單體裡，後果通常只是「晚 30 秒」：下一輪會再撈到它們。除非失敗的那一張**每一輪都失敗** —— 它排在最前面（`ORDER BY payment_deadline`），後面的就一直等。庫存切成另一個服務之後（第 13 站），`release()` 變成一次遠端呼叫，遠端呼叫的每一種失敗（逾時、連不上、對方 500）都是這一種例外。
 >
 > `OrderJobsIsolationTest`（`ordering.internal`）把它釘住：兩張過期的訂單，用一個 trigger 讓第一張的取消在資料庫裡失敗（寫狀態歷史的那一句被拒絕），看第二張。修正前：
 >
@@ -2743,7 +2705,7 @@ class OrderJobs implements SchedulingConfigurer {
 > 4.7.1 ①：取消了 1 張；第一張（注入失敗）PENDING_PAYMENT、第二張 CANCELLED
 > ```
 >
-> 業務上的拒絕記 WARN、其他的記 ERROR：前者是「這張單現在不能取消」（正常），後者是「有東西壞了」（要有人看）。這個測試加進來之後，整套 `mvn clean verify`：230 個測試全綠、四道覆蓋率門檻都過（4:03）。
+> 業務上的拒絕記 WARN、其他的記 ERROR：前者是「這張單現在不能取消」（正常），後者是「有東西壞了」（要有人看）。參考實作的 `ch04` 分支上還是改之前的寫法。
 
 **② 走的是跟「買家取消」同一條路**（`transitions.apply()`）。排程沒有自己的 `UPDATE`，所以 4.6 的每一條規則 —— 條件式 UPDATE、locking read 重讀、狀態機、副作用、歷史 —— 自動適用。
 `OrderHistory.Actor.system()` 讓歷史記下「是排程做的」。
@@ -2985,7 +2947,7 @@ Architecture Violation [Priority: MEDIUM] - Rule '資料存取只能出現在模
 Method <com.example.shop.shared.web.GlobalExceptionHandler.handleNoConnection(java.lang.Exception)> has annotation member of type <org.springframework.jdbc.CannotGetJdbcConnectionException> in (GlobalExceptionHandler.java:0)
 ```
 
-**1.6.2 的規則抓到了寫這一章的人。** `shared.web` 不准依賴 `org.springframework.jdbc`（資料存取只能在模組的 `internal` 裡），**連 annotation 裡的一個 class 參照都不行**。
+**1.6.2 的規則擋下了這個修正。** `shared.web` 不准依賴 `org.springframework.jdbc`（資料存取只能在模組的 `internal` 裡），**連 annotation 裡的一個 class 參照都不行**。
 正確的修正是往上找一層抽象：`CannotGetJdbcConnectionException` 的父類別是 `org.springframework.dao.DataAccessResourceFailureException`，它在 Spring 的**資料存取抽象**（`dao`）裡，不屬於任何一種特定技術：
 
 ```java
@@ -3126,14 +3088,14 @@ class OrderFlowTest {
 
 （`OrderFlowTest` 的 14 個測試全文在 4.10.1。）
 
-`paidTwice` 的第一版寫錯了：它先付一次、訂單變成 `PAID`，再呼叫 `startPayment()` 開第二筆付款 —— **然後測試自己紅了**：
+`paidTwice` 如果寫成先付一次、訂單變成 `PAID`，再呼叫 `startPayment()` 開第二筆付款 —— **測試自己會紅**：
 
 ```
 com.example.shop.shared.error.ShopException: 這張訂單不是待付款狀態
 ```
 
 **那不是 bug，是規則**：已付款的訂單不能再建立付款（`startPayment` 檢查 `PENDING_PAYMENT`）。
-所以「付了兩次錢」只有一種發生方式：**兩筆付款都在待付款時就建立了**（兩個分頁），然後兩筆都成功。改正之後的測試照這個順序寫，也順便把「已付款不能再開付款」寫成了斷言。
+所以「付了兩次錢」只有一種發生方式：**兩筆付款都在待付款時就建立了**（兩個分頁），然後兩筆都成功。上面的測試照這個順序寫，也順便把「已付款不能再開付款」寫成了斷言。
 一個寫錯的測試讓你重新讀了一次需求 —— 這種紅燈跟抓到 bug 一樣有價值。
 
 14 個測試：
@@ -3256,45 +3218,7 @@ shop/
             └── openapi/shop-api.json                               ← + 8 個 operation
 ```
 
-```bash
-mvn clean test
-```
-
-```
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.059 s -- in com.example.shop.shared.error.ShopExceptionTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.948 s -- in com.example.shop.schema.SchemaConstraintTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.051 s -- in com.example.shop.schema.EntitySchemaDriftTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.665 s -- in com.example.shop.schema.InvariantReconciliationTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.055 s -- in com.example.shop.architecture.TableOwnershipTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.022 s -- in com.example.shop.architecture.MigrationOwnershipTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.007 s -- in com.example.shop.architecture.MapperXmlSafetyTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.070 s -- in com.example.shop.architecture.ConfigKeyGuardTest
-Q3：先後送兩次 → 201 20260930-484525、200 20260930-484525；同鍵不同內容 → 422 /problems/idempotency-key-reused
-Q3：同一個鍵同時送 10 次 → {201=1, 409（Retry-After: 1）=9}；出現過的訂單編號 [20260930-670434]；資料庫裡這位買家的訂單 2 張
-Q1：HTTP 409 /problems/insufficient-stock，productId=9900102；殘留：{orders=0, items=0, reservations=0, reserved_a=0, ledger_a=1/0, idem_keys=0, cart=2}（庫存帳下單前 1/0）
-Q1：補貨後用同一個鍵重送 → HTTP 201 20260930-361750；購物車剩 0 項
-Q6：從空資料庫套用 11 個 migration → 20 張表（含 flyway_schema_history）、CHECK 25 / 25、具名索引 31 / 31；validate 通過
-Q4：size=5   → HTTP 200，5 張訂單、15 個明細，SQL 3 句
-Q4：size=20  → HTTP 200，20 張訂單、60 個明細，SQL 3 句
-Q4：size=45  → HTTP 200，45 張訂單、135 個明細，SQL 3 句
-Q2：{201 =1, 409 /problems/insufficient-stock=99}；available = 0
-[WARNING] Tests run: 11, Failures: 0, Errors: 0, Skipped: 6, Time elapsed: 55.61 s -- in com.example.shop.acceptance.CapstoneAcceptanceTest
-[INFO] Tests run: 61, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.153 s -- in com.example.shop.ordering.internal.OrderStateMachineTest
-ORD-3 AC-3：取消 60 張、歷史 60 筆、RELEASE 60 筆；INV-2 {reserved=0, held=0}
-ORD-3 AC-5：{CANCELLED/RELEASED/SUCCEEDED/1=50}；例外 0；INV-2 {reserved=0, held=0}
-[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.202 s -- in com.example.shop.ordering.internal.OrderRaceRegressionTest
-[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.821 s -- in com.example.shop.ordering.internal.OrderFlowTest
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.749 s -- in com.example.shop.api.OrderApiTest
-[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.000 s -- in com.example.shop.api.CatalogCartApiTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.414 s -- in com.example.shop.api.OpenApiContractTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.911 s -- in com.example.shop.architecture.EntityTableOwnershipTest
-[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.119 s -- in com.example.shop.architecture.ModuleBoundaryTest
-[WARNING] Tests run: 120, Failures: 0, Errors: 0, Skipped: 6
-[INFO] BUILD SUCCESS
-[INFO] Total time:  01:18 min
-```
-
-> 📌 **專題寫完之後重跑：`mvn clean verify`。** 上面是寫這一章時跑的 `mvn clean test`。專題寫完之後（2026-10-12），在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）重跑了一次 `mvn clean verify`（load average 6.09 → 5.83）：（上面那段輸出，在參考實作的分支整理之後沒有在同一個版本上重跑過：測試數是照程式碼推算的。這一次是實跑。）
+在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）跑 `mvn clean verify`：
 
 ```bash
 mvn clean verify
@@ -3327,12 +3251,10 @@ mvn clean verify
 [INFO] Total time:  01:07 min
 ```
 
-120 個測試、跳過 6 個 —— 跟上面一樣。`verify` 比 `test` 多做的是打包 jar（`spring-boot:repackage`）；覆蓋率門檻要到第 08 章才有。
+`verify` 比 `test` 多做的是打包 jar（`spring-boot:repackage`）；覆蓋率門檻要到第 08 章才有。
 
 **120 個測試、`Skipped: 6`**（第 03 章是 34 個、9 個 skipped）。Q1、Q2、Q3 變綠；Q6 的數字跟著 V11 變成 11 個 migration、25 個 CHECK。
-驗收測試花了 56 秒 —— Q1～Q4、Q6 各自啟動一個完整的應用程式。第 08 章會處理這件事。
-
-`InvariantReconciliationTest`（2.5.5 的對帳）排在這次執行的前面，所以它檢查的是**上一次**留下來的資料庫 —— 包括本章所有實驗跑過之後的狀態。它仍然是 0：這一章所有的測試與實驗都**自己清掉了自己的資料**，種子資料的 INV-2、INV-3 沒有被弄亂。
+驗收測試花了 53 秒 —— Q1～Q4、Q6 各自啟動一個完整的應用程式。第 08 章會處理這件事。
 
 ### 4.10.1 本章其餘檔案的完整內容
 
@@ -6651,7 +6573,7 @@ Q1 還會綠嗎？再對調回來呢？寫下你從中學到的「怎麼寫一�
 **練習九（20 分鐘）：三位小數的金額**
 
 4.6.3 留下的已知問題：回呼的 `amount` 如果是 `298.001`，`CallbackSignature.canonical()` 的 `setScale(2, RoundingMode.UNNECESSARY)` 會丟 `ArithmeticException`，目前變成 500。
-先用 `curl` 送一次確認（簽章隨便填 —— `canonical()` 在驗簽之前就執行了），再把它改成 400 `/problems/validation`，並在 `OrderFlowTest` 加一個測試守住它。（做完再對照 4.6.3 的追記：專題寫完之後的修法、三個選項的比較，以及為什麼測試最後沒有放在 `OrderFlowTest`。）
+先用 `curl` 送一次確認（簽章隨便填 —— `canonical()` 在驗簽之前就執行了），再把它改成 400 `/problems/validation`，並在 `OrderFlowTest` 加一個測試守住它。（做完再對照 4.6.3：修法、三個選項的比較，以及為什麼測試最後沒有放在 `OrderFlowTest`。）
 **改在哪一層最好？** `CallbackRequest` 上的 `@Digits(integer = 10, fraction = 2)`、`record()` 裡接住例外、還是 `canonical()` 自己檢查？各自擋得住哪些呼叫路徑？
 
 **練習十（30 分鐘）：`held()` 的 `FOR UPDATE` 鎖了什麼？**

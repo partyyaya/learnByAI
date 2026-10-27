@@ -2080,7 +2080,7 @@ class Q1TestcontainersTest {
 
 **① 「Could not find a valid Docker environment」，而 `docker ps` 明明是好的。**
 
-本站寫這一節的時候第一次跑就撞上這個：
+錯誤長這樣：
 
 ```
 ═══ 10.6.3 為什麼 Testcontainers 說「找不到 Docker」═══

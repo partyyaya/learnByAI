@@ -12,42 +12,6 @@
 > - **三道自動防線**：編譯器（package-private）、ArchUnit 的 6 條模組規則、一個掃描 SQL 字串的表歸屬測試（1.6）。
 > - 一套 **local / prod** 分開的設定、一個啟動時就驗證的 `ShopProperties`、一個「缺環境變數就拒絕啟動」的檢查，
 >   以及一個**在 `mvn test` 就抓到設定鍵打錯字**的守門員（1.7）。
->
-> 「模組邊界」聽起來像是架構師的潔癖。這一章有**四個實測事故**，每一個都在說明它不是：
->
-> - **為了快，繞過了庫存模組。** 1.2.1：後台「批次匯入補貨」直接 `UPDATE inventory`，比走 API 快了 **52 倍**（每筆 1.99 ms → 0.038 ms）。
->   一小時後對帳：**500 個商品、10,000 件庫存「帳外」**—— 沒有人知道是誰、什麼時候、為什麼加的。
->   ⚠️ 而且 1.6.3 會證明：**ArchUnit 的 6 條規則對這段程式碼全部綠燈。**
->   真正的解法也不是「禁止」，而是**請庫存模組開一個批次 API** —— 實測 0.052 ms/筆，跟繞過去幾乎一樣快。
-> - **設定檔少打一個字母。** 1.2.2：`timeout: 500ms` 寫成 `timeot: 500ms`。
->   Spring Boot **沒有任何警告**，Redis 的逾時從 **0.51 秒變成 60.01 秒** —— 那是 Lettuce 的預設值。
->   0.6.3 那張降級矩陣的前提（「Redis 掛了 0.5 秒就放棄」）就這樣默默消失了。
-> - **正式環境少了 8 個環境變數，應用程式「啟動成功」。** 1.7.4：`Started ShopApplication in 1.731 seconds`、liveness `UP`。
->   直到第一個請求進來，才在一百多行的堆疊深處出現 `UnknownHostException: ${SHOP_DB_HOST}` —— 字面上的 `${SHOP_DB_HOST}`。
-> - **把模組呼叫換成 HTTP，延遲幾乎沒變，資料卻開始出錯。** 1.2.3：同一個 JVM、同一台 MySQL，
->   HTTP 版的 p50 只多了 **0.24 ms**。但下單 1,000 筆、其中 55 筆在預留之後失敗 ——
->   直接呼叫的版本**訂單 945 張、預留 945 件**；HTTP 版**訂單 945 張、預留 1,000 件**，**55 筆孤兒預留**永遠佔著庫存。
->   **拆成服務的代價不是延遲，是交易。**
->
-> 📌 四個事故分別在 1.6、1.7.5、1.7.4、1.3 被修好或被說清楚。
->
-> ⚠️ **寫這一章途中被自己的實驗抓到的**：
->
-> - **`ConfigKeyGuardTest` 第一次跑，抓到的是我們自己。** 設定處理器剛加進 `pom.xml`，Maven 的增量編譯沒有重新編譯 `ShopProperties`，
->   annotation processor 沒有執行 —— 4 筆 `shop.*` 設定鍵被報成未知（已知屬性 2,320 個）；`mvn clean` 之後 2,323 個、全部通過（1.7.5）。
-> - **約束的預設訊息只翻了一半。** 第一版 `ShopProperties` 沒有寫 `message`，輸出是 `必須短於  or equal to 60 minutes` —— 它跟著 JVM 的語系走（1.7.3）。
->
-> 小坑：
->
-> - ArchUnit 1.x 預設把「規則什麼都沒檢查到」當成失敗：一條針對 `shared.messaging`（第 07 章才有）的肯定句規則，現在就紅（1.6.3 違規四）。
-> - Spring Modulith 的 `@NamedInterface` 寫在正式程式碼的 `package-info.java` 上，只加 `test` 範圍的依賴會編譯失敗：`package org.springframework.modulith does not exist`（1.6.5）。
-> - 環境變數名稱打錯字（`SPRING_DATA_REDIS_TIMEOT=5s`）照樣 `Started ShopApplication in 1.749 seconds`，`ConfigKeyGuardTest` 也看不到它（1.7.2）。
->
-> 以及**沒達成、部分達成的**：
->
-> - **驗收 Q11（broker 隔離）**：規則五已經寫好，但現在沒有任何 broker 程式碼可以檢查，要等第 07 章才算通過（1.8）。
-> - **`PlaceOrderService` 的「跨模組、同一個交易」沒有任何測試直接呼叫它**（1.5.4）。1.2.3 的交易實驗是在測試裡自己組 `insertOrder()` + `inventory.reserve()`；
->   「庫存不足時訂單一起 rollback」沒有在正式的 `placeOrder()` 上驗證過。第 02 章會把這個簡化版刪掉，第 04 章再寫完整版。
 
 ---
 
@@ -2123,7 +2087,7 @@ public class ShopApplication { ... }
 | `@Valid`（在 `Order`、`Security` 上） | 明確宣告「驗證要遞迴進巢狀的 record」。Spring Boot 綁定時其實已經會驗證每一個**有值被綁進去**的巢狀物件；`@Valid` 是官方文件建議的寫法，保證連「一個值都沒綁到」的巢狀物件也會被驗證（見下面的 ⚠️） |
 | `ignoreUnknownFields = false` | `shop.*` 底下出現**任何**沒有對應欄位的鍵 → 啟動失敗。這是 1.2.2 的解藥（只對 `shop.*` 有效） |
 
-> ⚠️ **專題寫完之後的更正：這一格原本寫的是「沒有它，`Order` 裡的 `@DurationMax` 不會被檢查」—— 那是錯的。** 當時沒有量，寫的是一般 Bean Validation 的規則（巢狀物件要 `@Valid` 才會被遞迴驗證）。
+> ⚠️ **一般 Bean Validation 的規則是「巢狀物件要 `@Valid` 才會被遞迴驗證」；但在這裡，拿掉 `@Valid`，`Order` 裡的 `@DurationMax` 一樣會被檢查。**
 > 拿掉 `@Valid` 實測（Spring Boot 3.2.5，`ApplicationContextRunner`）：
 >
 > | 設定 | 沒有 `@Valid` 的結果 |
@@ -2191,7 +2155,7 @@ java -jar target/shop-0.0.1-SNAPSHOT.jar --shop.security.jwt-secret=short
 
 三種錯誤都在**啟動的 1.5 秒內**失敗，而且訊息直接指向問題。
 
-> ⚠️ **為什麼每個約束都自己寫 `message`？** 第一版沒有寫，輸出是這樣的：
+> ⚠️ **為什麼每個約束都自己寫 `message`？** 不寫的話，輸出是這樣的：
 >
 > ```
 >     Reason: 必須短於  or equal to 60 minutes
@@ -2622,7 +2586,7 @@ mvn clean test
 [INFO] Total time:  02:15 min
 ```
 
-> 📌 **專題寫完之後重跑：`mvn clean verify`。** 上面是寫這一章時跑的 `mvn clean test`。專題寫完之後（2026-10-12），在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）重跑了一次 `mvn clean verify`（load average 3.71 → 3.98）：
+> 📌 **`mvn clean verify`。** 在本章結束時的程式碼上、用一套全新的 compose（空的資料庫）再跑一次 `mvn clean verify`：
 
 ```bash
 mvn clean verify
@@ -2782,7 +2746,7 @@ Spring Boot 對未知的鍵是沉默的。`shop.*` 用 `ignoreUnknownFields = fa
 用 0.15.2 練習八的屬性中介排除它們：`<excludedGroups>${test.excluded}</excludedGroups>`，`test.excluded` 預設 `experiment`。
 （如果你做過 0.15.2 練習八，`A3HotRowCeilingTest` 身上是 `@Tag("benchmark")`、`test.excluded` 是 `benchmark`：一起改成 `experiment`，之後各章都用這個名字。）
 **確認 `mvn test` 從 2 分 15 秒降到 10 秒以內**，而 `mvn test -Dtest.excluded=none -Dgroups=experiment` 只跑那三個。
-（專題寫完之後的更正：這一題第一版要你在 surefire 直接寫死 `<excludedGroups>experiment</excludedGroups>`、再用 `-Dgroups=experiment` 只跑實驗 —— 那正是 0.15.2 練習八的 ⚠️ 說不能做的事：exclude 優先，照做的話 `-Dgroups=experiment` 一個測試都跑不到。第 02 章 2.11.1 在真的專案上踩到了同一個坑。）
+（不要在 surefire 直接寫死 `<excludedGroups>experiment</excludedGroups>`、再用 `-Dgroups=experiment` 只跑實驗 —— 那正是 0.15.2 練習八的 ⚠️ 說不能做的事：exclude 優先，`-Dgroups=experiment` 會一個測試都跑不到。第 02 章 2.11.1 會再遇到同一個坑。）
 `B1BypassOwnerTest` 要不要也加？（提示：它有 assert 嗎？它在驗證什麼？）
 
 **練習二（20 分鐘）：讓 1.2.1 的繞過在第一道防線就被擋住**

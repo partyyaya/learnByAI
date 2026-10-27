@@ -13,30 +13,6 @@
 > - **INV-5**（9.11）：應用程式的帳號只拿一個角色，`inventory_ledger` 與 `audit_logs` 只能 SELECT、INSERT；稽核的一年保留期由一個預存程序做。
 > - **增量對帳**（9.12）：2,000 萬列的帳本，每小時那一次 18～30 ms（全掃是 122～130 秒）；每週一次全掃校正。
 > - **一份會自己跑的上線檢查清單**（9.13），以及 **201 個測試、0 個失敗、0 個跳過、4 分 07 秒**的 `mvn clean verify`（9.15）；一個空的容器裡 4 分 45 秒。
->
-> 這一章的實測事故：
->
-> - **第一次把日誌留下來，裡面最多的不是我要找的 Redis，是 1,300 行 ERROR**（9.2.1）：`order.completed` 沒有任何消費者訂閱，relay 把「被退回」當成失敗、馬上放回去重送。**120 張訂單確認收貨之後，relay 永遠卡在最前面那 100 筆上**，新訂單的「訂單成立」通知 30 秒都沒寄出；那 30 秒裡同樣的 100 個事件被送了 24,831 次。這一行 ERROR 從第 07 章起就在每一次建置的日誌裡。
-> - **這台機器上每一個容器的 `docker stop` 寬限都是 1 秒，不是 10 秒**（9.2.2）：shell form 的 `sh` 不轉送 SIGTERM，exec form 的 JVM 收到了，可是關機要 2 秒以上 —— 兩種都是結束碼 137（被 KILL），一行關機日誌都沒有。連 compose 的 RabbitMQ 也是 1.4 秒被 KILL。
-> - **用應用程式自己的帳號，刪一筆庫存帳、再把庫存改回去：對帳說 0**（9.2.3）。對帳只抓得到「改得不一致」。
-> - **監控打開的第一分鐘，就響了一個真的**（9.10.4）：退款的死信佇列裡躺著 3 則，最舊的放了 4 天 —— 測試清掉了退款單，消費者重試 6 次之後送進死信，沒有任何人知道。
-> - **「下單變慢」的告警，在 Redis 恢復之後 4 分 23 秒才響，響了 31 秒自己好**（9.10.5）：只看 5 分鐘窗的規則，在事故結束之後才叫醒人。
-> - **對帳那一句 SQL 在 2,000 萬列時選錯了執行計畫**（9.12.2）：130 秒；一個 `IGNORE INDEX`，5.6 秒。compose 那台真的資料（60 萬列）也一樣：1,369 ms → 154 ms —— 第 07 章 7.10 量到的 1.4 秒就是那個慢的計畫。
->
-> ⚠️ **還有幾個，是寫這一章的途中被這一章自己的實驗抓到的**：
->
-> - **一個「第一次發生才註冊」的計數器，「任何一次就告警」的第一次永遠不會響**（9.10.2）：序列一出現就是 1，`increase()` 沒有前一個點。`promtool` 的測試證明了，然後被「任何一次」型告警用到、原本第一次發生才註冊的那 3 個指標改成啟動時就註冊，並用一個測試守住告警用到的全部 13 個。
-> - **網路上任何人都可以替自己的請求指定 traceId**（9.8.4）：Boot 3.2 的 Brave 預設收 `traceparent`、`b3`、`X-B3-*`。我的第一次測試說「不收」—— 那是我的 shell 寫錯了。
-> - **增量對帳的第一版不會漏帳，因為它會等鎖；但它拿到鎖之後，新的帳一筆都寫不進去**（9.12.3）：`INSERT … SELECT` 是鎖定讀，S4 等了 3.0 秒。改成快照讀之後，「水位線越過還沒 commit 的那一列」才真的會發生 —— 一個每小時都會響的假差異，靠 5 分鐘的 margin 避開。
-> - **第 08 章加的 `refundResponseLostOnce` 依賴測試方法的順序**（9.2.1）：模擬金流的 `reset()` 沒有把呼叫次數歸零。我加了一個測試、順序一變，它就紅。我的第一個猜測（非同步的訊息漏到下一個測試）是錯的。
-> - **測試的連線數第一次撞到 MySQL 的 151 條**（9.14.2）：這一章多了兩種 context 設定。加 `@DirtiesContext` 之後全綠，可是高峰**還是 152** —— 只是剛好沒出錯。測試的連線池閒置下限改成 2 之後，高峰 24。
-> - **INV-5 之後，應用程式的帳號在 migration 跑完之前連不進資料庫**（9.11.3）：Testcontainers 用它來確認容器起好了，於是連容器都起不來。
-> - **compose 把 `migrate` 的命令依 shell 的規則切開，URL 裡的 `&` 被當成命令分隔**（9.4.2）：Flyway 只收到一個參數，印出使用說明、結束碼 0 —— `service_completed_successfully` 照樣放行了應用程式。
-> - **「容器比 `java -jar` 快」**是我在 9.6 中途的推測，交錯量測之後推翻了：主機 96～280 ms、容器 103～1,054 ms。
->
-> 另外還有幾個比較小、但一樣是實測到的坑：`JDK_JAVA_OPTIONS` 讓 java 在 stderr 印一行 `NOTE: Picked up …`、Spring 的 banner 7 行 —— 都破壞「一行一個 JSON」（9.7、9.13）；改了 bind mount 進去的 `prometheus.yml`，`compose up` 不會讓它重讀（9.13）；resolved 的通知帶著最後一次 firing 的摘要（9.10.6）；只有 EXECUTE 權限的帳號，Connector/J 讀不到預存程序的 OUT 參數（9.11.4）；Hikari 的 `idle-timeout` 只吃毫秒，寫 `10s` 讓 110 個測試起不來（9.14.2）；Spring 6.1 的 `ThreadPoolTaskScheduler` 沒有 `setTaskDecorator`（9.8.3）。
->
-> 以及**沒達成、部分達成的**：熱點下單 p99 500 ms 在 4 顆 CPU 時 12 輪裡 11 輪，2 顆 CPU 時沒有，**新實例的第一輪還是 0.7～3.2 秒**（暖機沒有實作）；商品詳情 p99 50 ms 這一章沒有重量（還是第 08 章的「部分」）；告警只送到一個本機的收件人，沒有接真的值班系統；CI 的流程在 GitHub 上還是一次都沒跑過；資料庫的連線有 TLS、但不驗證憑證；備份、高可用照 0.7 第 11 項不做；`X-Forwarded-For` 沒有負載平衡器可以測。第 08 章留下的幾個「沒找到原因」，這一章只回答了一部分（9.2.1、9.6.3）。
 
 ## 9.1 學習目標
 
@@ -58,7 +34,7 @@
 
 ### 9.2.0 實驗環境
 
-這一章開始的那天早上，先在新的位置重跑一次第 08 章的建置（第 08 章的 shop repo 原本放在一個暫存目錄裡，系統的清理程式刪掉了 163 個檔案與五個分支的 ref；git 的物件都還在，從 HEAD 還原、clone 到一個不會被清的位置，再重建 ch02～ch08 的分支）：
+先在第 08 章的程式碼上重跑一次建置：
 
 ```
 TEST_INFRA testcontainers 啟動 11,683 ms：mysql jdbc:mysql://localhost:56079/shop、redis localhost:56070、rabbitmq localhost:56075
@@ -68,7 +44,7 @@ TEST_INFRA testcontainers 啟動 11,683 ms：mysql jdbc:mysql://localhost:56079/
 [INFO] Total time:  03:31 min
 ```
 
-（load average 3.6 → 3.8。）跟第 08 章結束時一樣：188 個、跳過 1 個（Q7）。
+跟第 08 章結束時一樣：188 個、跳過 1 個（Q7）。
 
 機器還是同一台：8 核、16 GB，Docker Desktop 的 VM 分到 8 核、7.65 GB，Docker Engine 29.1.3。compose 的那一組 MySQL、Redis、RabbitMQ 還開著，裡面是第 02 章的 10 萬張種子訂單、60 萬 9,905 列庫存帳，以及第 02～08 章每一個實驗留下來的東西。
 
@@ -225,14 +201,12 @@ for (OutboxStore.Row r : rows) {
 
 新訂單 210 ms 收到通知；`OUTBOX_UNROUTABLE` 0 行，`OUTBOX_UNSUBSCRIBED` 1 行。
 
-B 也要有一個測試。第一版是「把 `refund.requested` 的綁定拿掉，等那一列的 `claimed_until` 在 3 秒以上之後」—— 用突變驗證它（把 `retryLater` 換回 `release`）：**突變存活了**。認領本身就會蓋上 30 秒的租約，那個條件在送出的途中本來就成立；而且綁定拿掉的那幾百毫秒裡，`release` 版本也只重送了一次。第二版讓綁定消失整整 2 秒，數 `shop.outbox.rejected{reason=unroutable}`：
+B 也要有一個測試。只「把 `refund.requested` 的綁定拿掉，等那一列的 `claimed_until` 在 3 秒以上之後」是不夠的 —— 用突變驗證它（把 `retryLater` 換回 `release`）：**突變存活了**。認領本身就會蓋上 30 秒的租約，那個條件在送出的途中本來就成立；而且綁定拿掉的那幾百毫秒裡，`release` 版本也只重送了一次。所以測試讓綁定消失整整 2 秒，數 `shop.outbox.rejected{reason=unroutable}`：
 
 ```
 修正：9.2.1 拓撲壞了 2 秒多：refund.requested 被 broker 退回 1 次；下一張訂單照樣通知
 突變：9.2.1 拓撲壞了 2 秒多：refund.requested 被 broker 退回 17 次；下一張訂單照樣通知   → FAILURE
 ```
-
-（我在這裡犯了一個錯：用 `git checkout` 還原突變時，把還沒 commit 的計數器修改一起還原掉了 —— 重新套用了一次。）
 
 加了這個測試之後，另一個測試紅了：第 08 章 8.7.5 加的 `refundResponseLostOnce`，「金流被呼叫 2 次」變成 3 次。我的第一個猜測是 8.8.2 那一種 —— 我的新測試有一則訊息漏到了下一個測試。二分之後：只有跟 `brokenBindingBacksOff` 一起跑時紅，單獨跑、跟另一個新測試一起跑都綠。原因不是非同步：
 
@@ -295,7 +269,7 @@ RabbitMQ 好好關機要 1.4 秒 —— 比 1 秒多一點點，所以每一次�
 | v2，`-t 30` | 2.1 秒 | 143 | 388 | 14 | 3 | 395 | **0** |
 | v2，`-t 30` ＋ `server.shutdown=graceful` | 3.0 秒 | 143 | 435 | 13 | 4 | 348 | **0** |
 
-（load 5～9。我的客戶端第一次跑完一組之後 JVM 沒有結束 —— `newFixedThreadPool` 的執行緒不是 daemon，卡了 10 分鐘，殺掉、加一行 `System.exit` 重跑。）
+（load 5～9。）
 
 三件事：
 
@@ -522,7 +496,7 @@ container shop-app-1 exited (1)
 
 27.5 秒，結束碼 1。三件事：
 
-**① `shop-mysql-1` 被重建了**（`Up 9 seconds`）。repo 從暫存目錄搬到新的位置，`./docker/mysql-init` 這個 bind mount 的絕對路徑變了，compose 判定 MySQL 的設定不同。資料在具名的 volume 裡，沒事 —— 但如果它是正式環境的資料庫、而 volume 是匿名的，這一次重建就是一次資料遺失。
+**① `shop-mysql-1` 被重建了**（`Up 9 seconds`）。repo 換過位置，`./docker/mysql-init` 這個 bind mount 的絕對路徑變了，compose 判定 MySQL 的設定不同。資料在具名的 volume 裡，沒事 —— 但如果它是正式環境的資料庫、而 volume 是匿名的，這一次重建就是一次資料遺失。
 
 **② `migrate` 印出了 Flyway 的使用說明。** 看 compose 實際傳給容器的參數：
 
@@ -759,8 +733,6 @@ Spring Boot 3.2 還沒有內建的結構化日誌（3.4 才有），所以用 lo
 9.7 {…,"stack_trace":"java.sql.SQLException: Duplicate entry 'x***@example.com'\n\t... 70 common frames omitted\nWrapped by: java.lang.IllegalStateException: 外層\n…"}
 ```
 
-（這個測試第一次紅了 —— 我把 epoch 毫秒 1,791,262,568,123 算成 03:36，它其實是 04:56。錯的是我的期望值，不是編碼器。）
-
 `$1`、`$2` 的群組參照可以用；堆疊從根本原因開始印，連例外訊息裡的 email 也遮了。
 
 ### 9.7.2 現在的日誌裡有沒有個資
@@ -814,7 +786,7 @@ Q7 ④ 再下 20 張：回應的 traceId 不同的有 0 個；outbox 的 order.p
 
 每一格都是 null 或 0。還有一件我沒想到的：**一張成功的訂單，在請求的執行緒上一行日誌都沒有。** 出事的時候，「這張訂單是哪一個請求建的」只能從別的地方往回找。
 
-（這個測試在紅之前，先因為它自己的兩個 bug 紅過：第一版讓同一位買家連下 21 張 —— 0.6.5 的「每位使用者每分鐘 10 張」從第 11 張起擋掉了，只寄了 10 封信；以及一個 `findFirst()` 遇到 `map` 出來的 null 丟了 NPE。）
+（④ 用 20 位買家：同一位買家連下 21 張的話，0.6.5 的「每位使用者每分鐘 10 張」從第 11 張起就擋掉了。）
 
 ### 9.8.2 一個依賴，修好兩格
 
@@ -892,7 +864,7 @@ Q7 ④ 再下 20 張：回應的 traceId 不同的有 20 個；outbox 的 order.
 
 **Q7 綠了。** `6ac47feb…` 出現在回應的 header、請求執行緒的日誌、outbox 那一列、消費者寄信的那一行。
 
-**排程。** Q7 問的是「請求」；但付款逾時、自動完成、對帳這些排程也會寫事件。它們沒有 HTTP 請求，沒有 traceId。第一版想在 Spring 的那一個 `ThreadPoolTaskScheduler` 上掛一個 `TaskDecorator` —— **編譯不過：Spring 6.1.6 的 `ThreadPoolTaskScheduler` 沒有 `setTaskDecorator`**（6.2 才有）。改成用 Boot 的 `ThreadPoolTaskSchedulerBuilder` 設定一個自己的子類別，覆寫那幾個 `schedule*` 方法：每一次執行開一個新的 trace。一個地方涵蓋 `OrderJobs`、`InventoryJobs`、`OutboxMaintenance` 與這一章新加的排程，以後新加的也一樣（`shared.observability.TracedJobs`，全文在 9.15.1）：
+**排程。** Q7 問的是「請求」；但付款逾時、自動完成、對帳這些排程也會寫事件。它們沒有 HTTP 請求，沒有 traceId。直覺的做法是在 Spring 的那一個 `ThreadPoolTaskScheduler` 上掛一個 `TaskDecorator` —— **編譯不過：Spring 6.1.6 的 `ThreadPoolTaskScheduler` 沒有 `setTaskDecorator`**（6.2 才有）。改成用 Boot 的 `ThreadPoolTaskSchedulerBuilder` 設定一個自己的子類別，覆寫那幾個 `schedule*` 方法：每一次執行開一個新的 trace。一個地方涵蓋 `OrderJobs`、`InventoryJobs`、`OutboxMaintenance` 與這一章新加的排程，以後新加的也一樣（`shared.observability.TracedJobs`，全文在 9.15.1）：
 
 ```
 9.8 排程：下單（直接呼叫 Service，沒有 HTTP）trace_id=null；付款逾時取消 trace_id=6ac480bbf818ad73a5e741e53efa3632
@@ -904,7 +876,7 @@ Q7 ④ 再下 20 張：回應的 traceId 不同的有 20 個；outbox 的 order.
 
 Brave 預設會「接著」請求裡的 trace：W3C 的 `traceparent`，以及 B3 的 `b3`、`X-B3-*`。這是分散式追蹤的本意（上游的服務把 traceId 傳下來），但這個專題的應用程式**就是最外層**，前面沒有 gateway。
 
-我第一次的測試說「不收」：每一個帶了 `traceparent` 的請求，回應的 traceId 都是新的。可是那個測試寫錯了 —— 這個環境的 shell 是 zsh，`${h:+-H "$h"}` 不會被拆成兩個參數，curl 收到的 header 名稱前面多了一個空白，伺服器根本不認得它。直接寫死 header、用 `curl -v` 看實際送出去的東西：
+測試的時候要確認 header 真的送出去了：在 zsh 裡，`${h:+-H "$h"}` 不會被拆成兩個參數，curl 收到的 header 名稱前面多了一個空白，伺服器根本不認得它 —— 每一個請求的 traceId 都是新的，看起來像「不收」。直接寫死 header、用 `curl -v` 看實際送出去的東西：
 
 ```
 > traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
@@ -1038,9 +1010,9 @@ management:
         http.server.requests: 50ms,100ms,150ms,200ms,250ms,300ms,500ms,1s,2s
 ```
 
-序列從 214 變成 247（2 個 URI 各 10 個桶）。
+序列從 214 變成 247。
 
-> ⚠️ **專題寫完之後的更正：括號裡的算式只解釋得了 20 條，不是 33 條。** 在本章結束時的程式碼上，同一個 jar、同一組請求，只差這一行設定開或關（`--management.metrics.distribution.slo.http.server.requests=` 把它清空），交錯量兩輪：
+> ⚠️ **多出來的 33 條，是桶的只有 20 條。** 在本章結束時的程式碼上，同一個 jar、同一組請求，只差這一行設定開或關（`--management.metrics.distribution.slo.http.server.requests=` 把它清空），交錯量兩輪：
 >
 > ```
 > == with-slo     序列 276 條；shop_ 開頭 58；http_server_requests 29
@@ -1049,9 +1021,7 @@ management:
 > == no-slo-2     序列 256 條；shop_ 開頭 58；http_server_requests 9
 > ```
 >
-> 依名稱比對，兩邊只差 20 條 `http_server_requests_seconds_bucket`：`/api/ping` 200 與 `UNKNOWN` 401（管理埠之外打 `/actuator/prometheus` 被擋的那一次）兩組標籤，各 10 個桶（9 個門檻加 `+Inf`）。214 → 247 的另外 13 條，來自那兩次量測之間的其他改動（214 那一次 `shop_` 開頭的只有 16 條），不是桶；是哪幾條，當時沒有留下逐名的清單，現在查不出來。（276 跟上面的 214、247 不能直接比：那是本章最後的程式碼，指標比當時多。）
-
-（我一開始在註解裡寫「key 不加中括號，YAML 會把它拆成三層」—— 量了兩種寫法，結果一樣，更正。量第一次的時候還犯了一個錯：`kill` 之後只等 2 秒就重新打包 jar，舊的行程在關機途中從被覆蓋的 jar 裡載入類別失敗、沒有結束、佔著那個埠 —— 第一次量到的「序列 0」是那個舊行程，作廢重量。）
+> 依名稱比對，兩邊只差 20 條 `http_server_requests_seconds_bucket`：`/api/ping` 200 與 `UNKNOWN` 401（管理埠之外打 `/actuator/prometheus` 被擋的那一次）兩組標籤，各 10 個桶（9 個門檻加 `+Inf`）。214 → 247 的另外 13 條，來自那兩次量測之間的其他改動（214 那一次 `shop_` 開頭的只有 16 條），不是桶；是哪幾條，沒有逐名的清單。（276 跟上面的 214、247 不能直接比：那是本章最後的程式碼，指標比那兩次多。）
 
 ### 9.9.4 不是應用程式的指標
 
@@ -1149,7 +1119,7 @@ docker run --rm -v "$PWD":/rules -w /rules --entrypoint promtool prom/prometheus
 
 **④ 沒有響。** `increase()` 需要兩個點才算得出增加了多少；序列的第一個點就是 1，它沒有「之前」可以比。一個攻擊者送的第一個偽造回呼，不會讓任何人知道 —— 要等第二個。
 
-（那一次另外還有三個「失敗」是我的期望值沒寫 annotations：`promtool` 比對的是整份 annotations，沒寫就等於期望沒有。補上之後，④ 改寫成「描述陷阱」的測試：期望它不響，註解寫清楚為什麼。）
+（期望值要寫 annotations：`promtool` 比對的是整份 annotations，沒寫就等於期望沒有，一樣算失敗。9.15.1 的 `alerts_test.yml` 裡，④ 是一個「描述陷阱」的測試：期望它不響，註解寫清楚為什麼。）
 
 修法在程式碼裡：被「任何一次」型告警用到的計數器，**在啟動時就先註冊成 0**（`shop.payment.callback.rejected` 的兩個 reason、`shop.outbox.rejected` 的四個 reason、每一個消費者的 `shop.events.lag`）。然後寫一個測試把這件事守住 —— 以後有人加了一條告警、卻忘了先註冊，或者名字打錯了：
 
@@ -1198,7 +1168,7 @@ compose 的 `app` profile 加上 Prometheus（v3.5.0）：抓應用程式的管�
 
 ### 9.10.5 演練：停機之後多久響、恢復之後多久安靜
 
-告警的價值在「出事的時候響」。用真的停機觸發它：`scripts/j8b-alert-drill.sh` 在背景每秒送 5 張下單，按時間表停、起一個容器，每 5 秒問一次 Prometheus。（下單的位址在腳本裡寫死成 `http://localhost:18090` —— 9.4.2 的 `SHOP_HTTP_PORT=18090`；用別的埠要改腳本裡那一行。專題寫完之後，repo 裡的腳本改成讀同一個 `SHOP_HTTP_PORT`，預設照舊 18090。流量來自測試程式碼裡的 `loadtest/StopDuringLoad`，所以要先 `mvn test-compile`。腳本全文在 9.15.1。）
+告警的價值在「出事的時候響」。用真的停機觸發它：`scripts/j8b-alert-drill.sh` 在背景每秒送 5 張下單，按時間表停、起一個容器，每 5 秒問一次 Prometheus。（下單的位址在腳本裡寫死成 `http://localhost:18090` —— 9.4.2 的 `SHOP_HTTP_PORT=18090`；用別的埠要改腳本裡那一行。流量來自測試程式碼裡的 `loadtest/StopDuringLoad`，所以要先 `mvn test-compile`。腳本全文在 9.15.1。）
 
 **RabbitMQ：第 31 秒停、第 151 秒起**（1,350 張下單全部 201 —— 0.6.3「RabbitMQ 掛了照樣下單」）：
 
@@ -1255,7 +1225,7 @@ compose 的 `app` profile 加上 Prometheus（v3.5.0）：抓應用程式的管�
 
 **一個「下單變慢」的告警，在問題結束 4 分多鐘之後才叫醒人，響了半分鐘就自己好了。** 被它叫醒的人打開系統，什麼都看不到。原因是：5 分鐘窗裡還留著停機那一段的慢請求，`for: 5m` 從第 57 秒開始算 —— 它衡量的是「過去 5 分鐘」，不是「現在」。
 
-修法是多加一個 1 分鐘的窗：兩個窗都超過 1% 才算（5xx 那一條一樣）。問題一結束，1 分鐘的窗很快就降下來，pending 就斷了。用 `promtool` 把這個形狀寫成測試（2 分鐘正常、1 分鐘 10.7% 很慢、之後恢復）。我第一次挑了 7 分、9 分這兩個時間點檢查，**新舊規則都通過** —— 照時間算，舊的規則只在 7m15～7m45 之間 firing，我挑的時間點都在外面。改成 7m30s：
+修法是多加一個 1 分鐘的窗：兩個窗都超過 1% 才算（5xx 那一條一樣）。問題一結束，1 分鐘的窗很快就降下來，pending 就斷了。用 `promtool` 把這個形狀寫成測試（2 分鐘正常、1 分鐘 10.7% 很慢、之後恢復）。檢查的時間點要挑在舊規則 firing 的那一段裡：照時間算，舊的規則只在 7m15～7m45 之間 firing，挑 7 分、9 分的話，**新舊規則都通過**。挑 7m30s：
 
 ```
 == 第一版（只有 5 分鐘窗）：
@@ -1378,7 +1348,7 @@ FLUSH PRIVILEGES;
 
 ### 9.11.3 ⚠️ 誰壞了
 
-**測試的清理。** 第 05 章 5.9 寫過：「第 09 章會讓應用程式的資料庫帳號沒有 `audit_logs` 的 UPDATE / DELETE。到那時，這些測試的清理要換一個帳號。」數一數：**41 個檔、68 句**（`DELETE FROM inventory_ledger …`、`DELETE FROM audit_logs …`、`DELETE a FROM audit_logs a JOIN …`）。它們全部改成 `TestInfra.adminJdbc()` —— root、`shop` 這個資料庫。壓測工具清自己的帳，改用一條 root 的連線。（用一支腳本機械地換，換錯了一處：`c.jdbc.update(` 裡的 `jdbc` 前面是一個 `.`，被我換成了 `c.com.example…`，編譯錯誤抓到了。）
+**測試的清理。** 第 05 章 5.9 寫過：「第 09 章會讓應用程式的資料庫帳號沒有 `audit_logs` 的 UPDATE / DELETE。到那時，這些測試的清理要換一個帳號。」數一數：**41 個檔、68 句**（`DELETE FROM inventory_ledger …`、`DELETE FROM audit_logs …`、`DELETE a FROM audit_logs a JOIN …`）。它們全部改成 `TestInfra.adminJdbc()` —— root、`shop` 這個資料庫。壓測工具清自己的帳，改用一條 root 的連線。
 
 **Testcontainers 起不來。** `MySQLContainer` 起好容器之後，會用設定的帳號連那個資料庫，確認它準備好了 —— 它用的是 `shop`：
 
@@ -1447,7 +1417,7 @@ DELIMITER ;
 GRANT EXECUTE ON PROCEDURE purge_audit_logs TO shop_app;
 ```
 
-第一版用一個 OUT 參數回傳刪了幾列。程序建得起來，應用程式一呼叫：
+如果用一個 OUT 參數回傳刪了幾列，程序建得起來，應用程式一呼叫：
 
 ```
 Caused by: java.sql.SQLException: Parameter number 2 is not an OUT parameter
@@ -1468,11 +1438,11 @@ Connector/J 要先讀程序的定義，才知道哪一個參數是 OUT；而 `sh
 > 📌 **「只能新增」與「保留期限」天生衝突**：保留期限就是一種刪除。解法不是放寬權限，而是**把刪除變成一個有條件的操作**，條件寫在資料庫裡，而不是寫在應用程式的 `WHERE` 裡。
 > 收緊權限的那一天，壞掉的不只是那兩張表的 UPDATE：41 個測試檔、Testcontainers 的啟動、驗收 Q6、驅動程式讀不到 OUT 參數 —— 每一個都是「之前有 ALL 權限，所以沒有人注意到它依賴什麼」。
 
-> 📌 **專題寫完之後的追記：還有兩個這一天壞掉、當時沒有被發現的。** 在本章結束時的程式碼上、一個**全新的**資料庫裡重跑第 02 章的工具與實驗：
-> - **`SeedData`（2.8.3）第一句就失敗**：`DROP command denied to user 'shop'` —— `TRUNCATE` 要 DROP 權限，`shop_app` 沒有。寫這一章時用的資料庫，種子資料是第 02 章灌的，之後沒有人在新的資料庫上再跑過它；`mvn test` 用的 Testcontainers 也不灌種子資料，所以整套建置都是綠的。
+> ⚠️ **還有兩個收緊權限之後壞掉、建置看不到的。** 在本章結束時的程式碼上、一個**全新的**資料庫裡重跑第 02 章的工具與實驗：
+> - **`SeedData`（2.8.3）第一句就失敗**：`DROP command denied to user 'shop'` —— `TRUNCATE` 要 DROP 權限，`shop_app` 沒有。compose 那台資料庫的種子資料是第 02 章灌的，之後不會再跑它；`mvn test` 用的 Testcontainers 也不灌種子資料，所以整套建置都是綠的。
 > - **`C7IndexPlanningTest`（2.7.2）**：開關索引（`ALTER INDEX … INVISIBLE`、`CREATE INDEX`）是 DDL，一樣被拒。
 >
-> 兩個都改成用測試清理那一個管理帳號（`TestInfra.adminJdbc()`，root）執行 DDL，查詢與寫入照舊用 `shop`。第 02～07 章其他做 DDL 的實驗沒有逐一檢查（有些用自己的 lab 資料庫或 root 連線，不會受影響）：它們是那一章的實驗，該在那一章的程式碼上跑；在這一章之後的程式碼上跑，用應用程式帳號做 DDL 的那幾個會撞到同一面牆。**「之前有 ALL 權限」藏住的依賴，最晚會在第一次換一個新環境時出現 —— 這一次是在專題寫完之後。**
+> 兩個都改成用測試清理那一個管理帳號（`TestInfra.adminJdbc()`，root）執行 DDL，查詢與寫入照舊用 `shop`。參考實作的 `ch09` 分支上還是改之前的寫法。第 02～07 章其他做 DDL 的實驗沒有逐一檢查（有些用自己的 lab 資料庫或 root 連線，不會受影響）：它們是那一章的實驗，該在那一章的程式碼上跑；在這一章之後的程式碼上跑，用應用程式帳號做 DDL 的那幾個會撞到同一面牆。**「之前有 ALL 權限」藏住的依賴，最晚會在第一次換一個新環境時出現。**
 
 ---
 
@@ -1488,7 +1458,7 @@ Connector/J 要先讀程序的定義，才知道哪一個參數是 OUT；而 `sh
 | 500 萬列 | **35,082 ms** | **39,859 ms** |
 | 2,000 萬列（資料 1,228 MB、索引 767 MB） | **130,634 ms** | **122,073 ms** |
 
-（load 3.5～4.9。這一組我第一次造的資料違反了 `inventory` 的 CHECK —— `reserved` 大於 `on_hand` —— 庫存表是空的，500 萬、2,000 萬那兩列量到的「0 ms」作廢重跑。）
+（load 3.5～4.9。）
 
 60 萬 → 500 萬，資料 8 倍，時間 **100 倍**。buffer pool 只有 128 MB，500 萬列放不下。照 500 萬 → 2,000 萬的比例推，5,000 萬列一次 INV-3 大約 5 分鐘；INV-3' 是另一次全掃 —— 每小時 10 分鐘左右的全表掃描（外推，沒有量）。
 
@@ -1580,9 +1550,9 @@ Map<String, Long> checkIncremental(java.time.Duration margin) {
 
 這是推論。`IncrementalReconciliationTest` 把它做出來：交易 A 插了商品 X 的一筆帳、先不 commit；交易 B 插了商品 Y 的一筆、commit；這時對帳一次；A commit；再對帳兩次。margin 0（天真的版本）與 margin 2 秒各一次。
 
-**第一版，margin 0 那一個沒有紅** —— A commit 之後，差異還是 0。而且那個測試類別比預期多花了 10 秒，剛好是交易 A 的 `release.await(10, SECONDS)`。
+**如果「併進累計」是一句 `INSERT … SELECT`，margin 0 那一個不會紅** —— A commit 之後，差異還是 0。而且那個測試類別會多花 10 秒，剛好是交易 A 的 `release.await(10, SECONDS)`。
 
-第一版的「併進累計」是一句 `INSERT … SELECT`。在 InnoDB 裡，**`INSERT … SELECT` 的 SELECT 是鎖定讀**，不是快照讀：它碰到 A 那一列還沒 commit 的帳，就停下來等；10 秒後 A 等不到放行、自己 commit 了，它才繼續，讀到的是已經 commit 的那一列 —— 所以累計是對的。**我的預期錯了：第一版不會漏帳，因為它會等。**
+在 InnoDB 裡，**`INSERT … SELECT` 的 SELECT 是鎖定讀**，不是快照讀：它碰到 A 那一列還沒 commit 的帳，就停下來等；10 秒後 A 等不到放行、自己 commit 了，它才繼續，讀到的是已經 commit 的那一列 —— 所以累計是對的。**`INSERT … SELECT` 不會漏帳，因為它會等。**
 
 那「會等」有沒有代價？三個 MySQL 連線（J11e）：S1 插一筆帳、8 秒後才 commit；S2 是對帳的 `INSERT … SELECT`、拿到鎖之後再拿 5 秒；S3、S4 是新的下單，各插一筆帳：
 
@@ -1680,7 +1650,7 @@ Map<String, Long> checkIncremental(java.time.Duration margin) {
 
 ### 9.13.2 設定：兩個我以為的事
 
-**環境變數怎麼寫。** 9.2.2 J2 的容器我用 `SHOP_ORDER_JOBS_ENABLED=false` 關排程，當時在筆記裡寫「寫錯了，正確是 `SHOP_ORDER_JOBSENABLED`」—— 那是我記得的 relaxed binding 規則，沒有量。用 `--debug` 的條件報告直接看 `OrderJobs` 這個排程有沒有被建立：
+**環境變數怎麼寫。** 9.2.2 J2 的容器用 `SHOP_ORDER_JOBS_ENABLED=false` 關排程。我以為這是錯的、正確是 `SHOP_ORDER_JOBSENABLED` —— 那是我記得的 relaxed binding 規則，沒有量。用 `--debug` 的條件報告直接看 `OrderJobs` 這個排程有沒有被建立：
 
 ```
 SHOP_ORDER_JOBS_ENABLED=false    → OrderJobs:  Did not match
@@ -1688,7 +1658,7 @@ SHOP_ORDER_JOBSENABLED=false     → OrderJobs:  Did not match
 （沒有設）                         → OrderJobs matched
 ```
 
-**兩種都可以**（Spring Boot 也接受把 `-` 寫成 `_` 的舊寫法）。我的說法錯了，更正。
+**兩種都可以**（Spring Boot 也接受把 `-` 寫成 `_` 的舊寫法）。
 
 **少了一個秘密。** `prod` profile、給了其他所有環境變數、就是沒有 `SHOP_JWT_SECRET`：
 
@@ -1701,7 +1671,7 @@ Binding to target com.example.shop.shared.config.ShopProperties failed:
     Reason: JWT 金鑰至少 32 bytes（256 bits，0.6.5）
 ```
 
-3 秒內失敗、退出 —— 結果是對的。但訊息會讓人以為是「金鑰太短」：沒有解開的佔位符被當成字面值 `${SHOP_JWT_SECRET}` 綁了進去，再被長度驗證擋下。第 01 章有一個 `UnresolvedPlaceholderCheck` 專門抓這件事，這一次它沒有機會跑 —— Tomcat 啟動時要建 `RateLimitFilter`，就先把 `ShopProperties` 綁了。（這一次我第一次跑用的是一個過期的 jar，比 `logging.config` 那一行還早打包，所以日誌是文字格式 —— 重新打包之後，32 行裡 25 行是 JSON，另外 7 行是 banner，9.7.3。）
+3 秒內失敗、退出 —— 結果是對的。但訊息會讓人以為是「金鑰太短」：沒有解開的佔位符被當成字面值 `${SHOP_JWT_SECRET}` 綁了進去，再被長度驗證擋下。第 01 章有一個 `UnresolvedPlaceholderCheck` 專門抓這件事，這一次它沒有機會跑 —— Tomcat 啟動時要建 `RateLimitFilter`，就先把 `ShopProperties` 綁了。（這一次的日誌，32 行裡 25 行是 JSON，另外 7 行是 banner，9.7.3。）
 
 ### 9.13.3 清單本身
 
@@ -1759,7 +1729,7 @@ Caused by: org.flywaydb.core.internal.exception.FlywaySqlException: Unable to ob
 
 `CatalogCartApiTest`、`OpenApiContractTest`、`DeadLetterReplayTest` 的 context 起不來。Testcontainers 的 MySQL，`max_connections` 是預設的 151；Spring 的測試會快取每一種不同設定的 context，**每一個都留著一個固定 20 條的 Hikari 連線池**（Hikari 預設 `minimum-idle` 等於上限）。這一章多了兩種新的 context 設定（`IncrementalReconciliationTest`、`AuditRetentionTest`），我的推測是總數第一次超過了 151。
 
-讓建置自己說出來：`TestInfra` 在 JUnit 結束的那一刻（`launcherSessionClosed`）印出 MySQL 的 `Max_used_connections`。（第一版放在 JVM 的 shutdown hook，一行都沒印出來 —— 那時 Testcontainers 自己的 hook 可能已經把容器收了。）
+讓建置自己說出來：`TestInfra` 在 JUnit 結束的那一刻（`launcherSessionClosed`）印出 MySQL 的 `Max_used_connections`。（放在 JVM 的 shutdown hook 的話，一行都印不出來 —— 那時 Testcontainers 自己的 hook 可能已經把容器收了。）
 
 | 這一次建置 | 結果 | 連線的高峰 |
 |---|---|---|
@@ -1767,7 +1737,7 @@ Caused by: org.flywaydb.core.internal.exception.FlywaySqlException: Unable to ob
 | 加上 `@DirtiesContext`（用完就關） | 200 / 0 / 0 / 0 | **152** |
 | ＋ 測試的連線池閒置下限 2、閒置 10 秒收掉 | 200 / 0 / 0 / 0 | **24** |
 
-推測成立。但第二列說明了一件事：**加了 `@DirtiesContext` 之後全綠，高峰還是 152 —— 只是這一次剛好沒有任何一個 context 在那一刻要連線。** 如果我只看綠燈，會以為修好了。真正的修法在第三列：只在測試的設定裡讓閒置的連線收掉（上限照舊 20，並發的測試量的還是同一個池；正式環境照舊是固定 20 條）。（第一次我寫成 `idle-timeout: 10s` —— `hikari.*` 直接綁到 `HikariConfig` 的 `long`，只吃毫秒，110 個測試的 context 起不來、39 秒就結束。）
+推測成立。但第二列說明了一件事：**加了 `@DirtiesContext` 之後全綠，高峰還是 152 —— 只是這一次剛好沒有任何一個 context 在那一刻要連線。** 如果我只看綠燈，會以為修好了。真正的修法在第三列：只在測試的設定裡讓閒置的連線收掉（上限照舊 20，並發的測試量的還是同一個池；正式環境照舊是固定 20 條）。（`idle-timeout` 不能寫成 `10s` —— `hikari.*` 直接綁到 `HikariConfig` 的 `long`，只吃毫秒；寫成 `10s`，110 個測試的 context 起不來、39 秒就結束。）
 
 > 📌 **一個「剛好沒出錯」的綠燈，跟一個紅燈一樣需要解釋。** 這一節如果沒有那一行「最多同時 152 條連線」，第二次建置的全綠就會被當成修好了；下一個加了一個 context 的人，會在一個毫不相干的測試上看到 `Too many connections`。
 
@@ -1863,8 +1833,6 @@ TEST_INFRA MySQL 最多同時 25 條連線（max_connections 151）
 [INFO] Total time:  04:07 min
 ```
 
-（load average 6.75 → 5.74。）
-
 **201 個測試、0 個失敗、0 個跳過。** 0.12.1 寫的「專題的『完成』定義就是：這個類別裡沒有任何一個 `@Disabled`，而且全部綠燈」—— 從第 00 章的 `Skipped: 11` 一路到這裡：
 
 ```
@@ -1917,19 +1885,19 @@ TEST_INFRA MySQL 最多同時 25 條連線（max_connections 151）
 | 每小時的對帳（2,000 萬列） | 122～130 秒（全掃，錯的計畫） | 18～30 ms（增量）；每週全掃 5.6 秒 |
 | `mvn clean verify` | 3:45 | 4:07（乾淨的容器 4:45） |
 
-> 📌 **專題寫完之後的追記。** 寫完第 09 章之後，又在這一章的程式碼上做了幾件事，各自寫在發現它的那一章：
+> 📌 **這一章的程式碼上還有幾個修正，各自寫在發現它的那一章。** 參考實作的 `ch09` 分支上還是改之前的寫法。
 >
 > | 改了什麼 | 寫在 |
 > |---|---|
-> | 付款回呼的金額三位小數：500 → 400 | 4.6.3 的追記 |
-> | 熱點商品一單買多件、落帳不夠時 Redis 偏低：只加回真的存在的那一部分 | 6.5.3 的追記 |
-> | US-RPT-2 AC-1（銷售排行）、US-RPT-3（全站報表）：三支新的 API，沒有新的 migration | 3.7.1 的追記 |
-> | Hikari 的 `validation-timeout: 1000`（MySQL 卡住時 readiness 5 秒 → 3 秒） | 8.9.1 的追記 |
-> | `SeedData`、C7 在 INV-5 之後跑不起來 | 9.11.4 的追記、2.7.2 與 2.8.2 的追記 |
-> | C7 的報表查詢用 `SEED_NOW`、`SeedData.truncate()` 在同一條連線上、I1 的「預設」組自己綁 `::` | 2.7.2、2.8.2、8.2.2 的追記 |
-> | 程式碼註解裡指錯的節號（四十一行）、j8b 的埠改讀 `SHOP_HTTP_PORT` | 各章附錄的說明 |
+> | 付款回呼的金額三位小數：500 → 400 | 4.6.3 |
+> | 熱點商品一單買多件、落帳不夠時 Redis 偏低：只加回真的存在的那一部分 | 6.5.3 |
+> | US-RPT-2 AC-1（銷售排行）、US-RPT-3（全站報表）：三支新的 API，沒有新的 migration | 3.7.1 |
+> | Hikari 的 `validation-timeout: 1000`（MySQL 卡住時 readiness 5 秒 → 3 秒） | 8.9.1 |
+> | `SeedData`、C7 在 INV-5 之後跑不起來 | 9.11.4、2.7.2 與 2.8.2 |
+> | C7 的報表查詢用 `SEED_NOW`、`SeedData.truncate()` 在同一條連線上、I1 的「預設」組自己綁 `::` | 2.7.2、2.8.2、8.2.2 |
+> | 程式碼註解裡指錯的節號（四十一行） | 各章附錄的說明 |
 >
-> 全部改完之後的 `mvn clean verify`（2026-10-12，load average 4.9 → 6.7）：
+> 上面這幾個改完之後的 `mvn clean verify`：
 >
 > ```
 > TEST_INFRA MySQL 最多同時 24 條連線（max_connections 151）
@@ -1939,7 +1907,9 @@ TEST_INFRA MySQL 最多同時 25 條連線（max_connections 151）
 > [INFO] Total time:  04:02 min
 > ```
 >
-> 201 → 226：CART-1 的 50 種上限 1 個（3.6.1 的追記）、回呼三位小數 3 個、熱點落帳 1 個、兩張報表 20 個。這一章正文、驗收清單裡的「201」是第 09 章結束時的數字，沒有改。
+> 201 → 226：CART-1 的 50 種上限 1 個（3.6.1）、回呼三位小數 3 個、熱點落帳 1 個、兩張報表 20 個。這一章正文、驗收清單裡的「201」是改之前的數字。
+>
+> 另外還有七個修正，也各自寫在那一節：取消時少退一筆錢（4.6.2）、排程一張失敗整批停下（4.7.1）、`perIpLimit` 撞到整分鐘（5.6.4）、兩台同時第一次啟動搶著建管理員（5.10）、single-flight 讀了兩次（6.4.3）、通知的認領（7.7.2）、死信的測試讀得太早（7.7.3）。這七個也改完之後，整套 `mvn clean verify` 是 235 個測試、全綠（4 分 17 秒）。
 
 ### 9.15.1 本章其餘檔案的完整內容
 

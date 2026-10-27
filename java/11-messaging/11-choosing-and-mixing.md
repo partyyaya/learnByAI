@@ -1167,8 +1167,8 @@ routing key 打錯 → 500 則、0 個例外（[01 章 1.3.1](./01-reliable-deli
 > `DefaultErrorHandler` 的 `FixedBackOff(0, 9)`。
 >
 > **② 把「應該會怎樣」實際跑一次。**
-> [08 章 8.3](./08-kafka-consumer-group-and-offset.md) 那個 rebalance 實驗**做錯了三次**
-> 才做對 —— 其中一次量到的是遺失不是重複。
+> [08 章 8.3](./08-kafka-consumer-group-and-offset.md) 那個 rebalance 實驗有**三種錯的做法**
+> —— 其中一種量到的是遺失不是重複。
 > ⚠️ **「我以為」跟「我量過」之間的距離，就是事故發生的地方。**
 >
 > **③ 問「這個保證值多少錢」，而不是「哪個比較安全」。**

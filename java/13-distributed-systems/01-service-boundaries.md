@@ -4,34 +4,7 @@
 >
 > **這一章**：不再憑感覺選刀。先做三把尺 —— **跨模組的同步呼叫、交易邊界、變更耦合** —— 在第 12 站的單體上跑一遍「使用者的一天」（八個模組的 35 支 API 全部走到），量出模組之間的每一條線；再把八個模組所有可能的切法（127 種）一一算出「這一刀會切斷什麼」。然後做「先拆模組、再拆行程」的第一步：**還沒拆的時候**，先把邊界上「現在很便宜、切開之後很貴」的那一類呼叫修掉，再用一個測試守住。
 >
-> **你手上會有**：從 `d00` 開出來的分支 `d01`。`src/test` 多一個 `dist01` 套件（三把尺、工作負載、兩個實驗、一個守門測試）；正式程式碼改了三個類別（`ProductService`、`CartService`、`PlaceOrderService`），另外帶著第 12 站的兩個追記（`ProductCache`、`JdbcPaymentService`，都是這一章途中找到的 bug）—— 沒有新的 migration，沒有改任何一支 API 的回應。230 個測試。
->
-> **這一章的實測事故**：
->
-> - **第 00 章只量到一種交易**（1.2）。同一刀（把庫存切出去）其實切斷了 **7 種交易**：下單、付款回呼、出貨、買家取消、賣家取消、逾時排程、**建立商品**；以及 **12 種同步呼叫**，其中 10 種發生在呼叫端的交易裡。第 00 章的實驗走到的是下單那一種。
-> - **127 種切法裡，庫存排第 96**（1.5）。第 1 名是 notification：0 種交易、0 種同步呼叫，只有 5 種事件跨過去；第 2 名是 account。**每一種把庫存切出去的切法，都至少切斷 6 種交易。**
-> - **一個唯讀的頁面，也會拖垮整個服務**（1.6.5）。切開的部署，庫存服務的可售量查詢慢 3 秒，每秒看 20 次購物車 —— 第 12 站的寫法：購物車 400 次裡 225 次 503、訂單服務的連線池 20 條全滿（最多 62 個請求在排隊）、跟庫存無關的「我的訂單」p50 從 9.8 ms 變成 2,064 ms。把那一次查詢移到交易外面（這一章的改動）：購物車 400 次全部 200（每一次都慢 3 秒）、「我的訂單」p50 8.9 ms、連線池最多 1 條在用。
->
-> **⚠️ 寫這一章途中被自己的實驗抓到的**：
->
-> - **第一版的工作負載少走了 3 支 API**，也沒走到管理員報表的 `groupBy=seller` —— account 因此看起來「跟誰都沒有關係」。補齊之後，多出一條「reporting 直接讀 `users` 表」的線（1.4.4）。**量邊界的工具，只量得到你走過的路。**
-> - **同一份程式碼連跑兩次，B1 的數字不一樣。** 資料庫每次重建，商品與使用者的 id 每次都從同一個號碼開始；Redis 卻沒有清 —— 第二次的熱門排行直接走了上一次留下的快取，「讀別人的表」少了 3 句。B1 起來之後先清空自己的 Redis database（1.4.5）。
-> - **d01 的第一次整套 `mvn clean verify` 紅了一個第 12 站的測試**：`AuthApiTest.perIpLimit`，預期 429、拿到 401。不是這一章的改動造成的 —— 那 21 個請求剛好跨過整分鐘，第 12 站的固定窗從 1 重新計數（1.9，第 12 站 5.6.4 的追記）。
-> - **推「`succeededPaymentOf` 能不能移出取消的交易」時，找到第 12 站的一個 bug：已付款、已取消、沒有退款單。** 買家取消的交易第一句讀就建立了快照；金流回呼如果整個落在那一句讀與取消的 UPDATE 之間，取消照樣成立，但「退哪一筆」那一句讀還在用舊快照，看不到那一筆 `SUCCEEDED`。用一個確定性的測試重現（`訂單 CANCELLED、付款 SUCCEEDED、退款單 []`），改成當前讀（`FOR SHARE`）之後是 `退款單 [BUYER_CANCEL]`（1.6.7，第 12 站 4.6.2 的追記）。
-> - **第 00 章沒找到原因的那一個偶發失敗，找到了**：`ProductCacheTest.singleFlight` 的「MySQL 讀了 2 次」。用 latch 把推測的交錯釘住，穩定重現；修法是搶到讀取權之後再看一次快取（第 12 站 6.4.3 的再追記）。這個分支已經包含這個修正。
->
-> **小坑**：
->
-> - `OrderJobs` 只在 `shop.order.jobs-enabled=true` 時才存在。工作負載要直接呼叫逾時排程，第一版拿不到這個 bean（`No bean named 'orderJobs' available`）。改成打開排程、把間隔拉到 1 小時，啟動之後等它自己的第一次跑完再開始量（1.4.4）。
-> - 把讀移出交易之後，B1 數到的「commit 的交易」從 191 個變成 227 個。不是變多了：原本包在同一個交易裡的幾句讀，現在各自 autocommit，各算一個（1.6.5）。
->
-> **這一章沒有達成、或只達成一部分的目標**：
->
-> - **工作負載不是正式環境的流量。** 每一個功能只走一兩次，所以 1.5 的排名看的是切斷了「幾**種**」，不是「每秒切斷幾次」。真的要做決定，要拿正式環境的請求比例加權 —— 這一章沒有那份資料。
-> - **事件只看得到工作負載觸發的那幾種**：10 種事件走到 8 種（`order.completed` 沒有消費者，`refund.failed` 沒有觸發）。
-> - **還在交易裡的 12 種跨模組呼叫，一種都沒拿出來**（1.6.7）。它們全是「寫」，要拿出來就得換掉 `@Transactional` —— 那是第 04 章的 Saga。這一章只保證它們不會再變多。
-> - **「熱點商品」這個業務能力散在三個模組裡**（1.3.3）：看出來了，沒有修。要修，庫存模組得有自己的一份熱點旗標與快取，那是另一個工程。（📌 第 04 章寫完之後的追記：留給第 05 章，第 04 章 4.14。）（📌 再追記：第 05 章 5.7 搬了 —— 旗標的擁有者是庫存。）
-> - 變更耦合用的仍是課程參考實作的 git 歷史，0.3.3 的 ⚠️ 照樣成立：數字不能直接搬，方法可以。
+> **你手上會有**：從 `d00` 開出來的分支 `d01`。`src/test` 多一個 `dist01` 套件（三把尺、工作負載、兩個實驗、一個守門測試）；正式程式碼改了三個類別（`ProductService`、`CartService`、`PlaceOrderService`），另外帶著第 12 站的兩個 bug 修正（`ProductCache`、`JdbcPaymentService`）—— 沒有新的 migration，沒有改任何一支 API 的回應。230 個測試。
 
 ---
 
@@ -214,7 +187,7 @@ mkdir -p src/test/java/com/example/shop/dist01
 
 （1.6.5 的 B2 還會再多用幾個，到時候一起改；完整的 `SplitLab` 在 1.9.1。）
 
-> 📌 **第 12 站有三個追記，是寫這一章途中找到的**：6.4.3 的再追記（single-flight 的「讀了 2 次」）、4.6.2 的追記（取消時少退一筆錢，1.6.7）、5.6.4 的追記（`perIpLimit` 撞到整分鐘）。照著改了的話，這個分支也帶著它們 —— 這一章的實驗不依賴它們，但整套 `mvn clean verify` 會多三個測試（1.9）。
+> 📌 **這個分支也帶著第 12 站的三個修正**：6.4.3 （single-flight 的「讀了 2 次」）、4.6.2 （取消時少退一筆錢，1.6.7）、5.6.4 （`perIpLimit` 撞到整分鐘）。這一章的實驗不依賴它們，但整套 `mvn clean verify` 會多三個測試（1.9）。
 
 ### 1.4.1 第一把：跨模組的同步呼叫
 
@@ -663,9 +636,9 @@ public class SqlTap implements QueryInterceptor {
     }
 ```
 
-> ⚠️ **小坑：`OrderJobs` 只在 `shop.order.jobs-enabled=true` 時存在。** 第 00 章的支架把排程關掉了（`--shop.order.jobs-enabled=false`），第一次跑 B1 就停在 `No bean named 'orderJobs' available`。改成打開排程、間隔拉到 1 小時：排程啟動時會自己先跑一次（空的資料庫，什麼都不做），等 1 秒再把記錄清空，之後它不會再自己跑。
+> ⚠️ **小坑：`OrderJobs` 只在 `shop.order.jobs-enabled=true` 時存在。** 第 00 章的支架把排程關掉了（`--shop.order.jobs-enabled=false`），照用的話 B1 會停在 `No bean named 'orderJobs' available`。所以 B1 打開排程、間隔拉到 1 小時：排程啟動時會自己先跑一次（空的資料庫，什麼都不做），等 1 秒再把記錄清空，之後它不會再自己跑。
 
-> ⚠️ **寫這一章途中被自己的實驗抓到的：第一版的工作負載少走了 3 支 API。** 停權、下架、從購物車刪除，第一版都沒有；管理員日報也只打了不帶 `groupBy` 的那一種。那一版的結果裡，account 的五個數字全是 0 —— 「account 跟誰都沒有關係」。補齊之後，`GET /api/admin/reports/daily-sales?groupBy=seller` 走到了 reporting 裡**唯一**一句 `JOIN users` 的 SQL：account 多了一條「被 reporting 直接讀表」的線。所以 B1 現在會印出「走過的 API」，拿去跟第 12 站 `SecurityRouteCoverageTest` 的那張表比 —— 八個模組的 API 一共 35 支（`/api/ping` 與管理員看稽核、死信的 3 支屬於 shared，不算），35 支都要在。**量邊界的工具只量得到你走過的路；你沒走到的那一條，在報表上就是「沒有耦合」。**
+> ⚠️ **工作負載少走幾支 API，就會少看到線。** 少了停權、下架、從購物車刪除這 3 支，管理員日報也只打不帶 `groupBy` 的那一種，account 的五個數字會全是 0 —— 「account 跟誰都沒有關係」。走齊了，`GET /api/admin/reports/daily-sales?groupBy=seller` 走到 reporting 裡**唯一**一句 `JOIN users` 的 SQL：account 多了一條「被 reporting 直接讀表」的線。所以 B1 會印出「走過的 API」，拿去跟第 12 站 `SecurityRouteCoverageTest` 的那張表比 —— 八個模組的 API 一共 35 支（`/api/ping` 與管理員看稽核、死信的 3 支屬於 shared，不算），35 支都要在。**量邊界的工具只量得到你走過的路；你沒走到的那一條，在報表上就是「沒有耦合」。**
 
 ### 1.4.5 跑起來：B1
 
@@ -694,7 +667,7 @@ public class SqlTap implements QueryInterceptor {
         }
 ```
 
-> ⚠️ **那一段 `flushDb()` 是後來加的。** 第一版沒有它：同一份程式碼連跑兩次，第二次「讀別人的表」少了 3 句、「commit 的交易」少了 1 個。原因是 B1 每次重建資料庫，商品、使用者的 id 每次都從同一個號碼開始，而 Redis 的 14 號 database 還留著上一次的東西 —— 熱門排行的快取讓 `GET /api/products/trending` 根本沒有查 MySQL。同樣留著的還有商品快取與熱點商品的閘門（`stock:hot:{id}`，數量是上一次剩下的）。**量測要可以重複，每一次都要從同一個狀態開始，資料庫與快取都是。**
+> ⚠️ **少了那一段 `flushDb()`，量測不能重複。** 同一份程式碼連跑兩次，第二次「讀別人的表」少了 3 句、「commit 的交易」少了 1 個。原因是 B1 每次重建資料庫，商品、使用者的 id 每次都從同一個號碼開始，而 Redis 的 14 號 database 還留著上一次的東西 —— 熱門排行的快取讓 `GET /api/products/trending` 根本沒有查 MySQL。同樣留著的還有商品快取與熱點商品的閘門（`stock:hot:{id}`，數量是上一次剩下的）。**量測要可以重複，每一次都要從同一個狀態開始，資料庫與快取都是。**
 
 ```bash
 mvn test -Pexperiments -Dtest=B1BoundaryMapTest -Dd01.range=ch09      # ch09：你第 12 站結束時的分支或 tag（變更耦合用）
@@ -1461,7 +1434,7 @@ Expecting empty but was: ["cart → CatalogApi.snapshots", "cart → InventoryAp
 | `ordering → InventoryApi.reserve`、`holdHot`、`confirm`、`consume`、`release` | 預留的狀態必須跟訂單的狀態一起變（1.5.3） | Saga、補償、對帳（第 04 章） |
 | `ordering → CartApi.removeItems` | 下單成立 = 購物車清掉（US-ORD-1 AC-4） | 改成事件（訂單成立之後清），或接受「清不掉」（第 04 章） |
 | `ordering → PaymentApi.create`、`record`、`requestRefund` | 付款紀錄、退款單跟訂單狀態一起變 | 第 04 章 |
-| `ordering → PaymentApi.succeededPaymentOf` | 它是**讀**，但它決定同一個交易裡的寫（取消時要不要建退款單），跟訂單狀態的條件式更新綁在一起（第 12 站 4.6）。推這一行的時候發現它在第 12 站就有一個窗口，已經改成當前讀（`FOR SHARE`，表下面的 📌） | 第 04 章 |
+| `ordering → PaymentApi.succeededPaymentOf` | 它是**讀**，但它決定同一個交易裡的寫（取消時要不要建退款單），跟訂單狀態的條件式更新綁在一起（第 12 站 4.6）。它在第 12 站就有一個窗口，已經改成當前讀（`FOR SHARE`，表下面的 📌） | 第 04 章 |
 | `catalog → InventoryApi.initialize` | 商品與它的期初庫存一起建立 —— 1.2 那個「建立商品」的交易 | 第 04 章（或第 02 章：庫存列晚一點出現，可售量先當 0） |
 | `catalog → InventoryApi.setHot` | `MANDATORY`：commit 之後才建立 Redis 閘門 | 跟 1.3.3 的熱點一起處理 |
 
@@ -1479,7 +1452,7 @@ Expecting empty but was: ["cart → CatalogApi.snapshots", "cart → InventoryAp
 ④ commit：一張「已付款、已取消、沒有退款」的訂單
 ```
 
-**推這張圖的時候，我本來接著要寫「第 12 站把它放在交易裡，所以沒有這個窗口」—— 寫之前去核對，發現不對。** 第 12 站的取消交易是這樣走的（12 站 4.6）：
+**第 12 站把它放在交易裡，也沒有完全關掉這個窗口。** 第 12 站的取消交易是這樣走的（12 站 4.6）：
 
 1. 第一句是一般的 SELECT（`OrderAccess.buyers()`：這張訂單是不是你的）—— InnoDB 在這裡建立這個交易的**一致性讀快照**（REPEATABLE READ）。
 2. 條件式 `UPDATE orders … WHERE status = 'PENDING_PAYMENT'`。
@@ -1504,7 +1477,7 @@ Expected size: 1 but was: 0 in:
   訂單 CANCELLED、付款 SUCCEEDED、退款單 [BUYER_CANCEL]
 ```
 
-加鎖讀會不會帶來死鎖？我第一次推的時候說「會」：回呼拿著付款列的鎖、還沒碰到訂單，取消又要讀那一筆付款 —— 互等。**沒有對照狀態機就下結論，錯了**：只有訂單已經是 `PAID`（讓它變成 `PAID` 的回呼早就 commit 了）的取消才會走到這一句。最接近的情境是同一張訂單付了兩次錢、第二筆的回呼與取消同時進行；`CancelVsSecondPaymentTest` 把它釘住，結果兩邊都成功、兩筆都退 —— 回呼看到訂單是 `PAID`，只建退款單、不改訂單那一列，不等取消手上的鎖。測試、修法與這一段推論的更正，在第 12 站 4.6.2 的追記。
+加鎖讀會不會帶來死鎖？乍看會：回呼拿著付款列的鎖、還沒碰到訂單，取消又要讀那一筆付款 —— 互等。**對照狀態機就知道不會**：只有訂單已經是 `PAID`（讓它變成 `PAID` 的回呼早就 commit 了）的取消才會走到這一句。最接近的情境是同一張訂單付了兩次錢、第二筆的回呼與取消同時進行；`CancelVsSecondPaymentTest` 把它釘住，結果兩邊都成功、兩筆都退 —— 回呼看到訂單是 `PAID`，只建退款單、不改訂單那一列，不等取消手上的鎖。測試與修法在第 12 站 4.6.2。
 
 **兩個結論：**
 
@@ -1548,11 +1521,11 @@ Expected size: 1 but was: 0 in:
 | `B1BoundaryMapTest` | 實驗（`@Tag("experiment")`） | compose 的 MySQL、Redis；一個行程、一個資料庫 `shop_d01` | 三把尺量到的每一條線、127 種切法（1.4、1.5） |
 | `B2CartCascadeTest` | 實驗 | 切開的部署（第 00 章的兩個 JVM、兩個資料庫） | 可售量查詢慢 3 秒時的購物車與「我的訂單」（1.6.5） |
 | `CrossModuleCallInTxTest` | **測試**（預設的測試組） | Testcontainers | 呼叫端開著交易的跨模組呼叫只有清單上那 12 種（1.6.6） |
-| `ProductCacheTest.singleFlightLateMiss` | 測試（第 12 站 6.4.3 的再追記） | Testcontainers | 「讀快取沒命中」與「搶讀取權」之間的那個交錯，MySQL 只讀 1 次 |
-| `CancelRefundSnapshotTest` | 測試（第 12 站 4.6.2 的追記，1.6.7） | Testcontainers | 金流回呼落在取消的「第一句讀」與 UPDATE 之間 → 已付款的那一筆要有退款單 |
-| `CancelVsSecondPaymentTest` | 測試（第 12 站 4.6.2 的追記） | Testcontainers | 同一張訂單第二筆付款的回呼與取消同時進行 → 不死鎖、兩筆都退 |
+| `ProductCacheTest.singleFlightLateMiss` | 測試（第 12 站 6.4.3） | Testcontainers | 「讀快取沒命中」與「搶讀取權」之間的那個交錯，MySQL 只讀 1 次 |
+| `CancelRefundSnapshotTest` | 測試（第 12 站 4.6.2，1.6.7） | Testcontainers | 金流回呼落在取消的「第一句讀」與 UPDATE 之間 → 已付款的那一筆要有退款單 |
+| `CancelVsSecondPaymentTest` | 測試（第 12 站 4.6.2） | Testcontainers | 同一張訂單第二筆付款的回呼與取消同時進行 → 不死鎖、兩筆都退 |
 
-預設的測試組從第 00 章的 226 個，變成 230 個（1.9）：這一章的守門員 1 個、第 12 站的追記 3 個。
+預設的測試組從第 00 章的 226 個，變成 230 個（1.9）：這一章的守門員 1 個、第 12 站的修正 3 個。
 
 ### 1.8.2 回頭量：四個代價
 
@@ -1671,7 +1644,7 @@ shop/                                                       ← 分支 d01（從
         └── CancelVsSecondPaymentTest.java                  ← 第 12 站 4.6.2 的追記：加鎖讀不會死鎖
 ```
 
-**沒有新的 migration、沒有新的 API、沒有改任何一支 API 的回應。** 正式程式碼的五個檔案裡，三個是這一章的「先拆模組」（1.6），兩個是第 12 站的追記（這一章途中找到的兩個 bug）。
+**沒有新的 migration、沒有新的 API、沒有改任何一支 API 的回應。** 正式程式碼的五個檔案裡，三個是這一章的「先拆模組」（1.6），兩個是第 12 站的修正。
 
 完整跑一次（預設的 Testcontainers；B1、B2 標了 `experiment`，不在裡面）：
 
@@ -1690,19 +1663,13 @@ TEST_INFRA MySQL 最多同時 25 條連線（max_connections 151）
 [INFO] Total time:  04:11 min
 ```
 
-**230 個測試**：第 00 章的 226 個，加上這一章的 `CrossModuleCallInTxTest`，以及第 12 站的追記帶來的 `ProductCacheTest.singleFlightLateMiss`、`CancelRefundSnapshotTest`、`CancelVsSecondPaymentTest`。（開始時 load { 4.96 4.64 5.03 }。）
+**230 個測試**：第 00 章的 226 個，加上這一章的 `CrossModuleCallInTxTest`，以及第 12 站的修正帶來的 `ProductCacheTest.singleFlightLateMiss`、`CancelRefundSnapshotTest`、`CancelVsSecondPaymentTest`。
 
-**這是第五次。** 前四次：
-
-- **第一次（228 個，1 個紅）**：`AuthApiTest.perIpLimit`，預期 429、拿到 401。這一章沒有碰登入 —— 那 21 個請求從 17:18:59.5 送到 17:19:01.2，跨過了整分鐘，第 12 站的固定窗從 1 重新計數。修的是測試（離整分鐘不到 5 秒就等下一分鐘），記在第 12 站 5.6.4 的追記。
-- **第二次（228 個，全綠，4:33）**：那時還沒有 `CancelRefundSnapshotTest`。
-- **第三次（229 個，全綠，4:07）**：加上 1.6.7 找到的退款修正。
-- **第四次（229 個，全綠，4:08）**：改了 B1（`flushDb()`，1.4.5）之後再跑的 —— B1 不在預設的測試組裡，但要讓這一節的輸出就是當時最後的程式碼。
-- 最後加了 `CancelVsSecondPaymentTest`（第 12 站 4.6.2 的追記：查證「加鎖讀會不會死鎖」），再跑一次，就是上面那一次。
+> ⚠️ **沒有第 12 站 5.6.4 的修正，`AuthApiTest.perIpLimit` 偶爾會紅：預期 429、拿到 401。** 跟這一章無關 —— 測試的 21 個請求如果跨過整分鐘（例如從 17:18:59.5 送到 17:19:01.2），第 12 站的固定窗會從 1 重新計數。修的是測試（離整分鐘不到 5 秒就等下一分鐘），這個分支帶著它。
 
 ### 1.9.1 本章其餘檔案的完整內容
 
-正文已經完整列出的：`Probe`、`OpTag`、`ApiTap`、`SqlTap`（1.4.1、1.4.2）、`CrossModuleCallInTxTest`（1.6.6）。第 12 站的追記改到的 `ProductCache`、`ProductCacheTest`、`AuthApiTest`、`JdbcPaymentService`，改的那幾行在第 12 站 6.4.3、5.6.4、4.6.2 的追記裡。下面是其餘每一個新增或改過的檔案（`d01` 分支上的版本）：
+正文已經完整列出的：`Probe`、`OpTag`、`ApiTap`、`SqlTap`（1.4.1、1.4.2）、`CrossModuleCallInTxTest`（1.6.6）。第 12 站的修正改到的 `ProductCache`、`ProductCacheTest`、`AuthApiTest`、`JdbcPaymentService`，改的那幾行在第 12 站 6.4.3、5.6.4、4.6.2 裡。下面是其餘每一個新增或改過的檔案（`d01` 分支上的版本）：
 
 **`src/test/java/com/example/shop/dist01/CutEvaluator.java`**（1.4.3 第三把尺、1.5 的 127 種切法）
 
@@ -3248,7 +3215,7 @@ class PlaceOrderService implements OrderingApi {
 }
 ```
 
-**`src/test/java/com/example/shop/ordering/internal/CancelRefundSnapshotTest.java`**（第 12 站 4.6.2 的追記；1.6.7）
+**`src/test/java/com/example/shop/ordering/internal/CancelRefundSnapshotTest.java`**（第 12 站 4.6.2；1.6.7）
 
 ```java
 package com.example.shop.ordering.internal;
@@ -3383,7 +3350,7 @@ class CancelRefundSnapshotTest {
 }
 ```
 
-**`src/test/java/com/example/shop/ordering/internal/CancelVsSecondPaymentTest.java`**（第 12 站 4.6.2 的追記：加鎖讀不會讓「第二筆付款 vs 取消」死鎖）
+**`src/test/java/com/example/shop/ordering/internal/CancelVsSecondPaymentTest.java`**（第 12 站 4.6.2：加鎖讀不會讓「第二筆付款 vs 取消」死鎖）
 
 ```java
 package com.example.shop.ordering.internal;
@@ -3561,7 +3528,7 @@ class CancelVsSecondPaymentTest {
 reporting 不呼叫任何人，卻直接讀 5 張別人的表（1.4.5）；notification 不被任何人呼叫，卻收 5 種事件。三把尺各量一種線，**少看一把，就會把一條線當成不存在**（1.4.2 的 📌：第二把尺看不到 Redis）。
 
 **「工具說耦合是 0，就是 0。」**
-第一版的工作負載少走了 3 支 API，account 的五個數字全是 0（1.4.4）。量出來的「沒有」，只代表「走過的路上沒有」。先確認覆蓋率，再相信 0。
+工作負載少走 3 支 API，account 的五個數字就全是 0（1.4.4）。量出來的「沒有」，只代表「走過的路上沒有」。先確認覆蓋率，再相信 0。
 
 **「把讀移出交易，資料就會不一致。」**
 不加鎖的讀（一致性讀）在交易裡也擋不住「讀完之後別人改了」（1.6.4）。移出交易失去的，是「幾句讀看到同一個時間點」（1.6.3 的購物車）—— 切開之後它本來就不存在。真正需要加鎖讀的地方（`SELECT … FOR UPDATE`），一個都沒有移。
@@ -3579,7 +3546,7 @@ ArchUnit 看得到「A 類別引用 B 類別」，看不到「這個呼叫發生
 第 00 章切了庫存、量了下單；這一章先問「該切在哪裡」：
 
 1. **做了三把尺**（1.4）：跨模組的同步呼叫（Spring AOP 的 Advisor，搭 `@Transactional` 已經有的自動代理）、交易邊界（MySQL 驅動的 query interceptor）、變更耦合（git 歷史）。全部在 `src/test`，正式程式碼不用改。
-2. **跑了一個使用者的一天**（1.4.4），35 支模組 API 全部走到 —— 第一版少走 3 支，就少看到一條線。
+2. **跑了一個使用者的一天**（1.4.4），35 支模組 API 全部走到 —— 少走 3 支，就少看到一條線。
 3. **算了 127 種切法**（1.5）：notification 第 1、account 第 2、inventory 第 96。每一種切出 inventory 的切法都至少切斷 6 種交易，因為預留同時被庫存與訂單兩條規則綁著（1.5.3，聚合）。
 4. **先拆模組**（1.6）：還沒拆的時候，把 5 種跨模組的讀移出本地交易。在一個行程裡，行為一模一樣、230 個測試全綠；在切開的部署裡，「可售量慢 3 秒」從拖垮整個訂單服務，變成只有購物車慢（B2）。
 5. **守住它**（1.6.6）：一個測試確保「在交易裡呼叫別的模組」只有清單上的 12 種，而且只會變少。

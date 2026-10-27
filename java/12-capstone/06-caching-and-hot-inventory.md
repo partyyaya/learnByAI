@@ -15,33 +15,6 @@
 > - **熱門排行**（6.8）：每分鐘一句有索引的 SQL，存在 Redis 1 分鐘。
 > - **2 支新的 API**（6.3.1）、**1 個 migration**（V12）。
 > - **驗收 Q8 變綠**（6.9.3）：`Skipped` 從 5 變成 4。
->
-> 快取的 bug 跟前兩章的 bug 都不一樣：**它不會讓任何請求失敗**。每一個請求都回 200，格式正確、商品存在 —— 只是價格是 10 分鐘前的，或者「已售完」其實還有 100 件。
-> 所以這一章的每一個事故，都是量「回應正確，但內容錯了」的次數：
->
-> - **刪快取的時機**（6.2.1）：改價的交易裡刪快取 → **200 次有 199 次**，1 秒後快取裡還是舊價格，而且會留 10 分鐘。
->   教科書的「commit 之後刪」在 200 次裡都對 —— 但在「快取剛好過期」的那一刻改價，**100 次有 2 次**一樣留下舊價格。
-> - **快取擊穿**（6.2.2）：200 個請求同時讀一個剛過期的商品，MySQL 收到 **22～200 次**一模一樣的查詢；single-flight 之後每台機器 1 次。
-> - **快取命中了，MySQL 還是收到 5 句**（6.2.3）：方法上一個 `@Transactional(readOnly = true)`，1,000 次快取命中 = **5,005 句、拿 1,000 次連線**，一句真正的查詢都沒有。
-> - **閘門過了，訂單沒成立**（6.2.4）：100 個買家帶著舊價格搶購，Redis 減了 100、訂單一張都沒成立。第二波 100 個帶對價格的買家全部看到「已售完」—— **100 件商品一件都沒賣出去**。沒有錯誤日誌，MySQL 的每一條不變量都成立。
-> - **鎖在 commit 之前放掉**（6.2.5）：`@Transactional` 方法裡 `finally { unlock(); }`，對帳讀到還沒 commit 的庫存 —— **20 輪裡 2～3 輪少賣**。
->
-> ⚠️ **還有四個，是寫這一章的途中被這一章自己的實驗抓到的**：
->
-> - **版本號擋不住的那一次**（6.4.2）：本專題的寫法在「過期瞬間」的 100 次裡也有 **1 次**留下舊價格。版本號只保證「舊的蓋不掉新的」—— commit 之後那一次寫入碰上了 Redis 逾時，新的根本沒寫進去。
-> - **斷路器把一次卡頓放大成洪水**（6.4.5、6.9.2）：Redis 一批指令逾時 → 斷路器跳開 → 5 秒內每秒 1,000 個請求全部改讀 MySQL，**每秒 1,272 句、p95 2～4 秒**。演練裡 Redis 掛 60 秒，MySQL 是平常的 **5.4～5.5 倍**。每一格的狀態碼都對 —— 照 Q8 的標準，這是綠燈。
-> - **降級路徑自己的 500**（6.9.2）：`docker pause` 的演練裡，**7 次出現 5 個 500**。第一個猜測（`CompletionException`）是一條真的路，但不是那一條；保留完整日誌之後抓到的是 `RedisGuard` 裡的一個競態 —— 專門負責「Redis 失敗了改走降級」的那個類別，在幾十個執行緒**同時**失敗時丟出 NPE。
-> - **一個第 02 章的測試紅了**（6.11）：驗收 Q4 插的種子訂單一插進去就已經付款逾時，第 04 章的排程剛好在那 14 秒裡掃到它們。這個 bug 從第 04 章就在，這一章讓它現形。
->
-> 另外還有幾個比較小、但一樣是實測到的坑：
->
-> - **限流把連點算成 10 次**（6.7.1）：數請求的版本，買家連點一次（同一個冪等鍵送 10 次），接下來 5 張新訂單**全部 429** —— 第 04 章叫客戶端「用同一個鍵重試」，重試的人被懲罰。
-> - **Redis 掛了，限流就變成 N 倍**（6.7.3）：兩台機器，Redis 正常時放行 10 張，Redis 停掉時 **20 張**。
-> - **熱點退回 MySQL**（6.9.1）：Redis 掛了，熱點商品每秒 600 個下單改走 MySQL —— 跟搶購無關的一般商品下單，p50 從 **11～16 ms**（熱點回 503 的做法）**變成 2.3～6.9 秒**。
-> - **改了 migration 的一行註解**（6.8.1）：checksum 變了，**每一個應用程式都起不來**。
-> - **測試用 SQL 建商品**（6.4.1）：同一個 id 重建，`version` 又是 0，快取裡上一次的名稱、價格一直留著。
->
-> 以及一個**沒有達成**的目標：熱點搶購的 p99 < 500 ms（6.5.4）。閘門讓搶不到的人快了兩個數量級，p99 還是 3.7～4.9 秒 —— 搶到的那 500 人仍然排在同一列 MySQL 後面。第 07 章會回來處理它。
 
 ---
 
@@ -87,9 +60,9 @@ mvn test -Pexperiments -Dtest=G1CacheInvalidationTest
 四個細節：
 
 - **這一章的實驗會真的停掉 Redis**（`docker stop` / `docker pause`，5.6.4 學到兩種都要做）。實驗結束時會把它啟動回來；如果你中途中斷了實驗，記得 `docker unpause shop-redis-1; docker start shop-redis-1` —— `pause` 模式中斷時，Redis 停在凍結的狀態，`start` 救不回來，要 `unpause`。
-- **這一章的延遲數字，一律是「同一段時間、交錯執行」的比較。** 寫這一章時，這台機器比第 04 章量 E7 的時候忙得多（背景有好幾個桌面程式，閒置時 load average 也有 7 左右）：同一份第 05 章的程式碼，第 04 章時 E7 的開放式 p99（平台執行緒）是 366～659 ms，這一章重跑是 3,765～10,471 ms（6.5.4）。**不要拿這一章的數字跟第 04 章的直接比。**
-- **一次只跑一個實驗。** 寫這一章時我犯過一次錯：上一組實驗還在背景跑，就啟動了下一組，兩個 JVM 同時改同一個商品 —— 那一次的數字全部作廢（6.4.2 會提到）。
-- **跑之前要知道的前置條件、時間與開關。** 每一個實驗類別的完整程式碼都在 6.11.1。G3、G8、G10 用 `root`／`root`（0.10 的 compose）直連 MySQL 讀 `Questions`；G7、G8、G9 與驗收 Q8 會真的對名為 `shop-redis-1` 的容器下 `docker stop`／`pause`。驗收 Q8 的「登入」那一格用的是 2.8.3 種子資料的帳號 `buyer00001@example.com`：資料庫裡沒有種子資料，`mvn clean test` 會在 Q8 紅（登入 401）—— 專題寫完之後在空的資料庫上重跑才發現，第 08 章 8.2.1 的事故一是同一件事。幾個實驗的長度由程式裡的固定等待決定：G1 的兩個方法一共改價 800 次、每次等 1 秒，**至少 13～14 分鐘**；G7 是暖機 1 輪加 10 輪、每輪 10 秒，每一輪之間還要停、啟 Redis；G8 每種模式 100 秒，預設 `stop`、`pause` 兩種都跑；G10 是 6 輪、每輪 10 秒。只想跑一個方法，用 `-Dtest='類別#方法'`。另外有四個只出現在程式裡的開關：`-Donly3=true`（G1 的「過期瞬間」只跑 ③，6.4.2）、`-Donly600=true`（G7 只跑每秒 600 個那一組）、`-Dg8.modes=pause`（G8 只跑一種）、`-Dg8.log=WARN`（G8 裡應用程式的日誌層級，預設 `ERROR`，看不到 `RedisGuard` 的跳開警告）。
+- **這一章的延遲數字，一律是「同一段時間、交錯執行」的比較。** 量這一章的實驗時，這台機器比第 04 章量 E7 的時候忙得多（背景有好幾個桌面程式，閒置時 load average 也有 7 左右）：同一份第 05 章的程式碼，第 04 章時 E7 的開放式 p99（平台執行緒）是 366～659 ms，這一章重跑是 3,765～10,471 ms（6.5.4）。**不要拿這一章的數字跟第 04 章的直接比。**
+- **一次只跑一個實驗。** 上一組實驗還在背景跑就啟動下一組，兩個 JVM 會同時改同一個商品 —— 那一次的數字全部不能用。
+- **跑之前要知道的前置條件、時間與開關。** 每一個實驗類別的完整程式碼都在 6.11.1。G3、G8、G10 用 `root`／`root`（0.10 的 compose）直連 MySQL 讀 `Questions`；G7、G8、G9 與驗收 Q8 會真的對名為 `shop-redis-1` 的容器下 `docker stop`／`pause`。驗收 Q8 的「登入」那一格用的是 2.8.3 種子資料的帳號 `buyer00001@example.com`：資料庫裡沒有種子資料，`mvn clean test` 會在 Q8 紅（登入 401），第 08 章 8.2.1 的事故一是同一件事。幾個實驗的長度由程式裡的固定等待決定：G1 的兩個方法一共改價 800 次、每次等 1 秒，**至少 13～14 分鐘**；G7 是暖機 1 輪加 10 輪、每輪 10 秒，每一輪之間還要停、啟 Redis；G8 每種模式 100 秒，預設 `stop`、`pause` 兩種都跑；G10 是 6 輪、每輪 10 秒。只想跑一個方法，用 `-Dtest='類別#方法'`。另外有四個只出現在程式裡的開關：`-Donly3=true`（G1 的「過期瞬間」只跑 ③，6.4.2）、`-Donly600=true`（G7 只跑每秒 600 個那一組）、`-Dg8.modes=pause`（G8 只跑一種）、`-Dg8.log=WARN`（G8 裡應用程式的日誌層級，預設 `ERROR`，看不到 `RedisGuard` 的跳開警告）。
 
 ### 6.2.1 事故一：刪快取的時機 ★★★
 
@@ -230,7 +203,7 @@ mvn test -Pexperiments -Dtest=G3CacheHitConnectionTest
 
 **快取命中，MySQL 一樣收到 5 句，每一次都拿一條連線。** general log 說出了那 5 句是什麼：Spring 的 `JpaTransactionManager` 開一個唯讀交易，要先告訴 MySQL「這是唯讀的」、「關掉 autocommit」，結束時 `commit`、再把兩個設定改回去。**一句真正的查詢都沒有，但交易的開與關就是 5 句、5 次來回、一條連線。**
 
-> ⚠️ **專題寫完之後的更正**：這一句原本寫的是「5 句、**一次**來回」—— 錯了，當時沒有量。JDBC 的這幾個呼叫各自是一次「送出、等回答」：用 Connector/J 在同一條連線上把五個呼叫各自計時 2,000 輪（MySQL 是 0.10 的 compose，load average 3.5）：
+> ⚠️ **5 句是 5 次來回，不是一次。** JDBC 的這幾個呼叫各自是一次「送出、等回答」：用 Connector/J 在同一條連線上把五個呼叫各自計時 2,000 輪（MySQL 是 0.10 的 compose）：
 >
 > ```
 > ═══ 唯讀交易的開與關，2,000 輪（Connector/J，同一條連線）═══
@@ -256,7 +229,7 @@ private Optional<ProductCache.Core> load(long id) {
 }
 ```
 
-（這個 `load()` 本身也是一次修正的結果：第一次把熱點判斷 `hotProducts()` 接上快取時，那個方法上沒有交易，快取沒命中 → `products.findById()` → 讀 `category.getId()` → `LazyInitializationException`，`OrderFlowTest` 的 14 個測試有 13 個因此失敗。）
+（`load()` 一定要自己開交易：熱點判斷 `hotProducts()` 接上快取時，如果那個方法上沒有交易，快取沒命中 → `products.findById()` → 讀 `category.getId()` → `LazyInitializationException`，`OrderFlowTest` 的 14 個測試有 13 個會因此失敗。）
 
 > 📌 **`@Transactional(readOnly = true)` 不是免費的。** 它在第 03 章是對的：那時候每一次讀都要查資料庫，多 4 句交易控制的指令只是小小的額外成本。
 > 加上快取之後，「每一次讀都要查資料庫」不成立了，那 5 句就變成全部的成本。**交易的範圍應該跟著「真的會碰資料庫的那一段」走，而不是跟著方法走。**
@@ -341,7 +314,7 @@ V1、V2 的對帳：拿鎖 → 讀 MySQL → `SET` Redis → 放鎖。
 
 兩種情境：A 只有補貨；B 補貨之外還有取消（`reserved − 1`，commit 之後 Redis `+1`，**不拿鎖** —— 取消在訂單的交易裡，6.6 會說為什麼它不該拿鎖）。
 
-**這個實驗的第一版量錯了。** 第一版讓對帳一直跑到所有操作結束，最後一次對帳在沒有任何操作的時候執行，把之前造成的偏差全部抹平了 —— 三種寫法幾乎都是 0。真實的對帳是每分鐘一次，兩次對帳之間，它弄出來的偏差會一直留著。所以改成：每一輪補貨 200 次，**對帳只在前 2/3 的期間跑**，看結束時 Redis − MySQL 是多少；每種跑 20 輪。
+**對帳不能一直跑到所有操作結束。** 那樣量，最後一次對帳在沒有任何操作的時候執行，會把之前造成的偏差全部抹平 —— 三種寫法幾乎都是 0。真實的對帳是每分鐘一次，兩次對帳之間，它弄出來的偏差會一直留著。所以：每一輪補貨 200 次，**對帳只在前 2/3 的期間跑**，看結束時 Redis − MySQL 是多少；每種跑 20 輪。
 
 ```bash
 mvn test -Pexperiments -Dtest=G5LockAroundTransactionTest
@@ -365,7 +338,7 @@ mvn test -Pexperiments -Dtest=G5LockAroundTransactionTest
 
 **V3：沒有任何一輪少賣**，有 2 輪多算 1 —— 那是安全的方向（6.5.3）。
 
-**我原本預測 V2 在情境 B 會出錯**：取消不拿鎖，對帳在「取消 commit 之前」讀 MySQL、在「取消的 `+1` 之後」`SET`，一樣會蓋掉一次 `+1`。**這 20 輪沒有量到。** 那個窗口在推理上存在，但它要求取消的 commit 與 `+1` 兩件事都剛好落在對帳「讀」與「寫」之間的幾百微秒裡，這個實驗量不出來。所以這一章最後選 V3 的理由不是「V2 量到了錯」—— 6.6 會說明。
+**照推理，V2 在情境 B 也會出錯**：取消不拿鎖，對帳在「取消 commit 之前」讀 MySQL、在「取消的 `+1` 之後」`SET`，一樣會蓋掉一次 `+1`。**這 20 輪沒有量到。** 那個窗口在推理上存在，但它要求取消的 commit 與 `+1` 兩件事都剛好落在對帳「讀」與「寫」之間的幾百微秒裡，這個實驗量不出來。所以這一章最後選 V3 的理由不是「V2 量到了錯」—— 6.6 會說明。
 
 > 📌 **「鎖要包住交易」：拿鎖可以在交易裡，放鎖一定要在 commit 之後。**
 > `@Transactional` 的方法裡 `try { ... } finally { unlock(); }` 是錯的 —— `finally` 比 commit 早。要嘛在交易**外面**拿鎖、放鎖（`lock → TransactionTemplate.execute → unlock`），要嘛把放鎖登記在 `afterCompletion`（`DistributedLock.unlockAfterTransaction`，6.3.3）。
@@ -412,9 +385,9 @@ mvn test -Dtest=OpenApiContractTest -Dopenapi.update=true
 
 **記憶體滿了怎麼辦？** 0.10 的 compose 用的是 `--maxmemory 256mb --maxmemory-policy noeviction`：記憶體滿了不淘汰任何 key，而是拒絕寫入新資料的指令（`OOM command not allowed when used memory > 'maxmemory'`）。所以上面那一欄 TTL 就是本專題的「淘汰策略」：除了 `stock:{id}`，每一種 key 都有 TTL，記憶體靠到期回收，不靠淘汰；`stock:{id}` 沒有 TTL，但它的個數就是熱點商品的個數。
 
-真的滿了會怎樣：Lettuce 收到的是一個指令錯誤，Spring 把它轉成 `RedisSystemException` —— 它也是 `DataAccessException`，所以 `RedisGuard`（6.3.3）把它當成一次 Redis 失敗，1 秒內 3 次就跳開，**整欄一起降級**：熱點下單 503、商品詳情走 MySQL，跟 Redis 掛掉的樣子一樣。這一章沒有實測記憶體滿的情境。
+真的滿了會怎樣：Lettuce 收到的是一個指令錯誤，Spring 把它轉成 `RedisSystemException` —— 它也是 `DataAccessException`，所以 `RedisGuard`（6.3.3）把它當成一次 Redis 失敗，1 秒內 3 次就跳開，**整欄一起降級**：熱點下單 503、商品詳情走 MySQL，跟 Redis 掛掉的樣子一樣。
 
-> 📌 **專題寫完之後的追記：實測了。** 一台 `redis:7.2 --maxmemory 2mb --maxmemory-policy noeviction`，用 Spring Data Redis 3.2.5（Lettuce 6.3.2）一直塞 100 KB 的 key，滿了之後各試一種指令：
+> 📌 **實測記憶體滿的情境。** 一台 `redis:7.2 --maxmemory 2mb --maxmemory-policy noeviction`，用 Spring Data Redis 3.2.5（Lettuce 6.3.2）一直塞 100 KB 的 key，滿了之後各試一種指令：
 >
 > ```
 > ═══ 塞了 8 個 100 KB 的 key 之後，SET 失敗 ═══
@@ -531,7 +504,7 @@ private void refreshCacheAfterCommit(Product p) {
 
 `update`（改價）、`publish`、`unpublish`（US-PRD-4 AC-1：下架 1 秒內從詳情頁消失）、`setHot` 四個方法都呼叫它。`ProductCacheTest` 的兩個測試：改價之後**下一次**讀就是新價格；下架之後買家立刻 404、賣家本人還看得到（US-PRD-3 AC-2）。
 
-> ⚠️ **繞過 `ProductService` 改資料庫的人，快取不會知道。** 寫這一章時，這件事先咬了測試：第 04 章的 `OrderFlowTest`、驗收 Q1～Q5 都用 SQL 直接建商品（`INSERT INTO products ...`）、測完刪掉，下一個測試再用**同一個 id** 建一次。
+> ⚠️ **繞過 `ProductService` 改資料庫的人，快取不會知道。** 這件事會先咬到測試：第 04 章的 `OrderFlowTest`、驗收 Q1～Q5 都用 SQL 直接建商品（`INSERT INTO products ...`）、測完刪掉，下一個測試再用**同一個 id** 建一次。
 > 新插入的那一列 `version = 0`，快取裡上一次留下的也是 `version = 0` —— `0 >= 0`，新的值寫不進去，舊的名稱、價格、狀態一直留著。
 > 測試的修法是 `TestRedis.forgetProducts()`：用 SQL 建、刪商品的測試，清理時一併刪掉那個商品的 `product:v1:`、`stock:`、`available:` 三個 key，另外也刪掉熱門排行的 `trending:24h:top10`（全文在 6.11.1）。
 > **正式環境一樣**：維運用 SQL 修資料（改錯的價格、補一個下架），快取裡的值會留到 TTL 到期（最多 10 分鐘多）。修資料的 SOP 要加一步：刪掉那幾個商品的快取 key。
@@ -552,7 +525,7 @@ Caused by: io.lettuce.core.RedisCommandTimeoutException: Command timed out after
 
 逾時的是**實驗自己**的 `redis.delete()`（模擬 TTL 到期的那一行）。這是一個重要的線索：**32 條執行緒不停讀同一個 key 的時候，這個環境裡的 Redis 指令真的會偶爾超過 500 ms**（0.10.4 設的逾時）。
 
-讓實驗自己的 Redis 操作在逾時時重試，再跑兩次 —— 這一次是我犯了 6.2.0 說的那個錯：前一組重跑還在背景執行，兩個 JVM 同時在改同一個商品，第 1 次的資料全部作廢（MySQL 的版本號每一輪跳 2）。確認沒有重疊之後的那一次：
+讓實驗自己的 Redis 操作在逾時時重試，再跑一次：
 
 ```
   ② commit 之後刪         1 秒後仍是舊價格：  0 / 100 次（累計 Redis 失敗 0 次）
@@ -647,10 +620,10 @@ Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
 
 `loading` 是一個 `ConcurrentHashMap<Long, CompletableFuture>`：第一個沒命中的請求放進一個 future、自己去讀；之後到達的人看到 future 已經在了，就等它（`join()`）。讀完之後從 map 移除 —— **single-flight 只合併「同時」的讀取，不是另一層快取**。
 
-> ⚠️ **專題寫完之後的追記：`ProductCacheTest.singleFlight` 偶發地讀了 2 次。** 在 13 站第 00 章的分支上（這個類別與它的測試都沒有改）連跑三次整套 `mvn clean verify`，第二次這一題紅了：`expected: 1 but was: 2`，另外兩次是綠的。用同樣的情境在一個 JVM 裡重複 200 輪、再在 8 個 `yes` 佔滿 CPU（load 33）時重複 200 輪：400 輪都是 1 次，沒有重現。
-> 讀上面這段程式碼，看得到一個窗口：一個請求讀 Redis 沒命中之後、`putIfAbsent` 之前，如果負責讀的那一個剛好讀完、寫進 Redis、從 `loading` 移除，它就會成為新的讀取者，再讀一次 MySQL（多讀一次，資料不會錯）。在「搶到讀取權之後再看一次 Redis」可以關掉這個窗口 —— 但我沒有重現它，**不能確定這就是那一次的原因**，所以程式碼沒有改，只記在這裡。
+> ⚠️ **`ProductCacheTest.singleFlight` 偶發地讀了 2 次。** 整套 `mvn clean verify` 偶爾會紅在這一題：`expected: 1 but was: 2`。用同樣的情境在一個 JVM 裡重複 200 輪、再在 8 個 `yes` 佔滿 CPU（load 33）時重複 200 輪：400 輪都是 1 次，沒有重現。
+> 讀上面這段程式碼，看得到一個窗口：一個請求讀 Redis 沒命中之後、`putIfAbsent` 之前，如果負責讀的那一個剛好讀完、寫進 Redis、從 `loading` 移除，它就會成為新的讀取者，再讀一次 MySQL（多讀一次，資料不會錯）。在「搶到讀取權之後再看一次 Redis」可以關掉這個窗口。
 >
-> 📌 **再追記（13 站第 01 章）：把那個窗口用 latch 釘住，重現了，也修了。** 400 輪重跑等不到它，就不要等：讓它**一定**發生。`ProductCacheTest.singleFlightLateMiss` 用一個 `RedisGuard` 的子類別，讓「慢的那個請求」讀 Redis 沒命中之後停在 latch 上；等負責讀的那個請求**整個做完**（讀 MySQL、寫進 Redis、從 `loading` 移除、`get()` 回來），再放它走：
+> 📌 **把那個窗口用 latch 釘住，重現了，也修了。** 400 輪重跑等不到它，就不要等：讓它**一定**發生。`ProductCacheTest.singleFlightLateMiss` 用一個 `RedisGuard` 的子類別，讓「慢的那個請求」讀 Redis 沒命中之後停在 latch 上；等負責讀的那個請求**整個做完**（讀 MySQL、寫進 Redis、從 `loading` 移除、`get()` 回來），再放它走：
 >
 > ```java
 > RedisGuard pausing = new RedisGuard(java.time.Clock.systemUTC(), new io.micrometer.core.instrument.simple.SimpleMeterRegistry()) {
@@ -703,11 +676,11 @@ Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
 >         // ……（跟原本一樣）
 > ```
 >
-> 為什麼再看一次就夠：上一個讀的人是**先**寫快取、**才**從 `loading` 移除的；搶到讀取權（`putIfAbsent` 成功）的人，一定在那次移除之後 —— 它寫的值一定看得到。（它寫入失敗的話看不到，那就再讀一次 MySQL，跟以前一樣。）代價：真的沒命中的那一個請求多一次 Redis 的 GET；等別人結果的請求不受影響。修正後同一個測試是 `MySQL 一共被讀了 1 次`，`ProductCacheTest` 8 個全綠，整套 `mvn clean verify` 227 個測試全綠、四道覆蓋率門檻都過（4:16）。
+> 為什麼再看一次就夠：上一個讀的人是**先**寫快取、**才**從 `loading` 移除的；搶到讀取權（`putIfAbsent` 成功）的人，一定在那次移除之後 —— 它寫的值一定看得到。（它寫入失敗的話看不到，那就再讀一次 MySQL，跟以前一樣。）代價：真的沒命中的那一個請求多一次 Redis 的 GET；等別人結果的請求不受影響。修正後同一個測試是 `MySQL 一共被讀了 1 次`，`ProductCacheTest` 8 個全綠。
 >
-> **這證明了「這個交錯會讀 2 次」，沒有證明「13 站那一次就是它」** —— 那一次的日誌裡沒有分辨得出來的資訊。但讀程式碼只找得到這一條路，而修正之後它不存在了。
+> **這證明了「這個交錯會讀 2 次」，沒有證明「偶發的那一次就是它」** —— 那一次的日誌裡沒有分辨得出來的資訊。但讀程式碼只找得到這一條路，而修正之後它不存在了。參考實作的 `ch06` 分支上還是改之前的寫法。
 
-**`join()` 那一段的 `catch` 是後來加的。** 6.9.2 的降級演練裡出現了 1 個商品詳情的 500。那一次的日誌被我的過濾條件濾掉了，我沒辦法確認是哪一個例外，就去讀程式碼 —— 找到一條**一定會**產生 500 的路：負責讀 MySQL 的那個請求失敗了（例如連線池逾時，`CannotCreateTransactionException`），等它的人從 `join()` 拿到的不是那個例外，而是包了一層的 `CompletionException`。`GlobalExceptionHandler` 認得前者（503，4.8.2），不認得後者 —— 500。
+**`join()` 那一段為什麼要 `catch`？** 6.9.2 的降級演練裡出現了 1 個商品詳情的 500。那一次的日誌被我的過濾條件濾掉了，我沒辦法確認是哪一個例外，就去讀程式碼 —— 找到一條**一定會**產生 500 的路：負責讀 MySQL 的那個請求失敗了（例如連線池逾時，`CannotCreateTransactionException`），等它的人從 `join()` 拿到的不是那個例外，而是包了一層的 `CompletionException`。`GlobalExceptionHandler` 認得前者（503，4.8.2），不認得後者 —— 500。
 
 `ProductCacheTest.waitersSeeTheOriginalException` 先證明這條路存在（修正前是紅的）：
 
@@ -756,7 +729,7 @@ public int availableForDisplay(long productId, boolean isHot) {
 
 G10 啟動整個應用程式，用開放式負載（延遲從預定送出的時間算起，4.8.1）打同一個商品 10 秒，一般商品（3）與熱點商品（1，可售量讀 `stock:1`）交錯各 3 輪；另外記這段期間 MySQL 每秒收到幾句、Redis 失敗幾次。這個實驗前後跑了三次，中間改了兩次程式碼 —— 三次都列出來，因為它們各自說明了一件事。
 
-**第一次**（`RedisGuard` 是「失敗一次就跳開 5 秒」；那時印的「跳開」其實是失敗次數；前兩次標題的 `6.3.2` 是寫這一章途中的舊編號）：
+**第一次**（`RedisGuard` 是「失敗一次就跳開 5 秒」；那時印的「跳開」其實是失敗次數；前兩次標題的 `6.3.2` 是舊的節號）：
 
 ```
 ═══ 6.3.2 同一個商品，每秒 1,000 次 GET /api/products/{id}，10 秒（開放式）═══
@@ -801,7 +774,7 @@ private void tripped(String what, DataAccessException e) {
 
 這一次 Redis 一次都沒有失敗，所以它**看不出門檻的效果**。它量到的是「沒有出事」時的樣子：p99 34～488 ms，只有兩輪（一般商品的 38.2、34.2 ms）達到 50 ms 的 SLO。
 
-而且回頭看第一次：出事的那兩輪是**一整批**逾時（20、40 次），「1 秒內 3 次」照樣會跳開。**這個門檻沒有解決觀察到的那個情境** —— 問題不在「什麼時候跳開」，在「跳開之後做什麼」：`ProductCache.get()` 在 Redis 不能用時直接 `return loader.apply(id)`，連 single-flight 都跳過了，每秒 1,000 個請求就是 1,000 次 MySQL。我當時的註解寫的是「不要排隊，大家各自讀 MySQL」—— 那個判斷是錯的。修法在 6.9.2：降級時 single-flight 照常，結果在本機記憶體放 1 秒。
+而且回頭看第一次：出事的那兩輪是**一整批**逾時（20、40 次），「1 秒內 3 次」照樣會跳開。**這個門檻沒有解決觀察到的那個情境** —— 問題不在「什麼時候跳開」，在「跳開之後做什麼」：`ProductCache.get()` 在 Redis 不能用時直接 `return loader.apply(id)`，連 single-flight 都跳過了，每秒 1,000 個請求就是 1,000 次 MySQL。「不要排隊，大家各自讀 MySQL」這個判斷是錯的。修法在 6.9.2：降級時 single-flight 照常，結果在本機記憶體放 1 秒。
 
 **第三次**（門檻 + 本機降級快取，也就是最終的程式碼）：
 
@@ -1015,7 +988,7 @@ static final RedisScript<Long> RETURN = RedisScript.of("""
 > q = 1 時 M 只能是 0，R − 1 ≥ 0 = M，確實是修正了一次偏高。但 q > 1 時不一定：Redis 3、MySQL 可售 2、一張買 3 件的訂單 —— 閘門放行（3 ≥ 3）、MySQL 擋下（2 < 3）、不加回去，Redis 變成 0，MySQL 還有 2 件。**Redis 偏低，少賣 2 件**，要等對帳連續兩輪看到它（至少 1 分鐘）才修回來。
 > 這是 6.5.3 自己那條原則的反例。這一章的測試與實驗沒有抓到它：`HotStockFlowTest`、G4、G6（E7）、G7、G8、驗收 Q8 的每一張熱點訂單都只買 1 件。程式碼這一章沒有改，列為已知問題；修法是練習九。
 
-> 📌 **專題寫完之後的追記：問題跟著第 07 章搬了家，修在落帳那裡。**
+> 📌 **問題跟著第 07 章搬了家，修在落帳那裡。**
 > 第 07 章（7.6）把熱點商品的 MySQL 落帳移出了下單交易：下單時熱點品項只寫一筆還沒計入的預留列，上面這個 `catch` 對熱點品項再也不會觸發 —— 「MySQL 說不夠」變成落帳的 `settleHot()` 發現的事。
 > 但它照樣把那一列設成 `RELEASED`、不加回 Redis，取消時的 `release()` 只找 `HELD`／`CONFIRMED` 的列，看不到它 —— **這個 ⚠️ 在第 09 章結束時的程式碼上仍然成立**，只是換了地方。
 >
@@ -1317,7 +1290,7 @@ FilterRegistrationBean<OncePerRequestFilter> perIpRateLimit(RateLimiter limiter,
 0.6.5：同一個 IP 70 次 /api/ping → {200=50, 429=20}；70 次 health → {200=70}
 ```
 
-這個測試的第一版是**依序**送 70 個請求，結果是 70 個全部 200：MockMvc 依序送 70 個要將近 1 秒，跨過了兩個固定窗（每個窗 50 次，兩個窗加起來最多 100 次）。改成 70 個同時送出、從一秒的開頭開始，才量到 50 / 20。這正是 10-redis/10 的 10.2.3 量過的「固定窗的邊界放進 2 倍流量」—— 在每秒 50 次這種短窗上，它可以接受。
+如果**依序**送 70 個請求，結果是 70 個全部 200：MockMvc 依序送 70 個要將近 1 秒，跨過了兩個固定窗（每個窗 50 次，兩個窗加起來最多 100 次）。70 個要同時送出、從一秒的開頭開始，才量得到 50 / 20。這正是 10-redis/10 的 10.2.3 量過的「固定窗的邊界放進 2 倍流量」—— 在每秒 50 次這種短窗上，它可以接受。
 
 **測試環境的例外。** 所有測試的請求都從 127.0.0.1 來：驗收 Q2 的 100 個買家同時下單、E7 的 2,000 個買家 —— 每 IP 每秒 50 次會讓它們自己打到限流。所以 `src/test/resources/config/application.yml`（全文在 6.11.1）把這個上限拉高。放在 `config/` 底下是刻意的：Spring Boot 預設也會讀 `classpath:/config/application.yml`，而且它的優先順序比 `classpath:/application.yml` 高，所以這個檔案只**覆蓋**它寫到的那一個鍵，主設定照常載入；如果寫成 `src/test/resources/application.yml`，它在 classpath 上跟主程式的 `application.yml` 同名而且排在前面，整份主設定會被它蓋掉。`RateLimitTest` 再用 `@SpringBootTest(properties = "shop.rate-limit.requests-per-ip-per-second=50")` 改回需求的值來測它。這是 5.6.4「`X-Forwarded-For` 可不可信」的同一個問題的另一面：**「IP」這個概念，在測試環境、負載平衡器後面、正式環境裡各是什麼，要分開想。**
 
@@ -1406,19 +1379,19 @@ ALTER TABLE orders ADD INDEX idx_orders_created (created_at), ALGORITHM=INPLACE,
     -> Covering index range scan on o using idx_orders_created over ('2026-09-30 11:06:59.266' <= created_at)  (cost=0.606 rows=1) (actual time=0.0217..0.0243 rows=1 loops=1)
 ```
 
-有索引，同一句跑 5 次：0.356、0.085、0.065、0.042、0.047 ms —— 只讀近 24 小時的那 1 列。（種子資料的「近 24 小時」只有 1 張訂單，因為種子是寫第 02 章那幾天產生的。正式環境每天 5,000 張，range scan 讀的就是那 5,000 列；沒有索引的那句，讀的永遠是**全部**。）
+有索引，同一句跑 5 次：0.356、0.085、0.065、0.042、0.047 ms —— 只讀近 24 小時的那 1 列。（種子資料的「近 24 小時」只有 1 張訂單，因為種子是第 02 章產生的。正式環境每天 5,000 張，range scan 讀的就是那 5,000 列；沒有索引的那句，讀的永遠是**全部**。）
 
-> ⚠️ **這個 migration 讓我自己掉進了第 02 章的坑。** 寫完這一章統一章節編號時，我改了 V12 裡的**一行註解**（`6.7.1` → `6.8.1`）。本機的 `shop` 已經套用過 V12，檔案內容一變，checksum 對不上，Flyway 的 validate 讓**每一個**應用程式都起不來 —— 背景正在重跑的 7 個實驗全部失敗：
+> ⚠️ **改了 V12 的一行註解，每一個應用程式都起不來（第 02 章的坑）。** 本機的 `shop` 套用過 V12 之後，只要改了 V12 裡的**一行註解**（例如 `6.7.1` → `6.8.1`），檔案內容一變，checksum 對不上，Flyway 的 validate 讓**每一個**應用程式都起不來：
 > ```
 > Caused by: org.flywaydb.core.api.exception.FlywayValidateException: Validate failed: Migrations have failed validation
 > ```
-> 已套用的 migration 不能改，連註解都不行（2.2.2 的坑一）。這一次 V12 還沒有提交給任何人，所以正確的做法是在本機把它撤掉（`DROP INDEX`、從 `flyway_schema_history` 刪掉那一列），讓 Flyway 用新的內容重新套用。**一旦 V12 被合併、被別人的資料庫套用過，就只能新增 V13。**
+> 已套用的 migration 不能改，連註解都不行（2.2.2 的坑一）。V12 如果還沒有提交給任何人，正確的做法是在本機把它撤掉（`DROP INDEX`、從 `flyway_schema_history` 刪掉那一列），讓 Flyway 用新的內容重新套用。**一旦 V12 被合併、被別人的資料庫套用過，就只能新增 V13。**
 
 `TrendingTest`（全文在 6.11.1）：三張訂單各買 50 個 A、60 個 B（B 已下架）→ 排行第一是 A、150 個，B 不出現；把資料改掉再讀一次，讀到的還是同一份（1 分鐘內）。
 
 ### 6.8.2 為什麼不是每一張訂單 `ZINCRBY`
 
-0.4.7 這一條最初寫的是「Redis ZSET」，想的是每一張訂單成立時 `ZINCRBY trending <數量> <商品>`。寫這一章時我把它改成了現在的「Redis 快取」，理由有三個：
+直覺的做法是 Redis ZSET：每一張訂單成立時 `ZINCRBY trending <數量> <商品>`。0.4.7 這一條用的是「Redis 快取」，理由有三個：
 
 1. **兩個寫入。** 「訂單成立」在 MySQL，「排行 +1」在 Redis —— 下單 commit 之後、`ZINCRBY` 之前行程死掉，那一筆就永遠不會被算進排行。要做對，需要第 07 章的 Outbox。
 2. **24 小時是滑動窗。** ZSET 只會一直加，要「近 24 小時」得按小時分桶、每次查詢 `ZUNIONSTORE` 最近 24 個桶 —— 比一句 SQL 複雜得多。
@@ -1501,7 +1474,7 @@ mvn test -Pexperiments -Dtest=G7BulkheadTest
 
 > 📌 **「降級」要問：降級之後，壓力去了哪裡？** 商品詳情降級成「讀 MySQL」，是因為讀一個商品很便宜，而且 6.9.2 會用本機副本把量壓到 1.2 倍。熱點下單降級成「走 MySQL」，等於把每秒 600 個交易倒進一個只有 20 條連線的池子。**一個會把壓力轉嫁給所有人的降級，不是降級，是擴散。**
 
-> ⚠️ **這個實驗的第一版自己先爆了。** 第一版每一個請求開一條執行緒（每秒 600 個 × 10 秒 = 6,000 條），量到的是 4,550 個 `Connection is not available, request timed out after 3005ms`，最後 `unable to create native thread`。那量的不是伺服器：Tomcat 最多 200 條執行緒，第 201 個請求在 accept queue 裡等，不會搶連線池。改成「200 條共用的執行緒，照時間表把請求放進佇列、延遲從預定時間算起」之後，才是伺服器實際的樣子 —— **壓測的模型錯了，量到的就是另一個系統**（4.8.1 的開放式／封閉式是同一件事）。
+> ⚠️ **這個實驗如果每一個請求開一條執行緒，會自己先爆。** 每秒 600 個 × 10 秒 = 6,000 條執行緒，量到的是 4,550 個 `Connection is not available, request timed out after 3005ms`，最後 `unable to create native thread`。那量的不是伺服器：Tomcat 最多 200 條執行緒，第 201 個請求在 accept queue 裡等，不會搶連線池。用「200 條共用的執行緒，照時間表把請求放進佇列、延遲從預定時間算起」，量到的才是伺服器實際的樣子 —— **壓測的模型錯了，量到的就是另一個系統**（4.8.1 的開放式／封閉式是同一件事）。
 
 ### 6.9.2 降級演練：100 秒、混合流量、Redis 掛 60 秒
 
@@ -1559,7 +1532,7 @@ mvn test -Pexperiments -Dtest=G8RedisOutageDrillTest -Dg8.modes=pause -Dg8.log=W
    95-100 正常    │      578      │     46.4   {200=1820}             │ {200=93}         │ {201=99}                 │ {201=21}
 ```
 
-（標題的 `6.8` 是寫這一章途中的舊編號。）
+（標題的 `6.8` 是舊的節號。）
 
 **每一格的狀態碼都對**：詳情 200、排行 200、熱點 503、一般 201 —— 照 Q8 的標準，這是綠燈。
 
@@ -1930,68 +1903,7 @@ shop/
 
 **只有一個 migration（V12），沒有新的模組依賴。** `reporting` 本來就可以讀 `orders`、`order_items`、`products`（0.3.4）；`catalog` → `inventory`（可售量）、`ordering` → `catalog`、`inventory`（下單）都是既有的依賴，這一章只是在上面多了幾個方法。`ModuleBoundaryTest` 的 6 條規則沒有改。
 
-```bash
-mvn clean test
-```
-
-```
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.843 s -- in com.example.shop.reporting.internal.TrendingTest
-[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.715 s -- in com.example.shop.catalog.internal.ProductCacheTest
-RedisGuard：2000 輪 × 64 條執行緒同時逾時 → 丟出去的例外 {}
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.130 s -- in com.example.shop.shared.redis.RedisGuardTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.002 s -- in com.example.shop.shared.audit.internal.JdbcAuditLogTest
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.037 s -- in com.example.shop.shared.error.ShopExceptionTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.973 s -- in com.example.shop.schema.SchemaConstraintTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.013 s -- in com.example.shop.schema.EntitySchemaDriftTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.700 s -- in com.example.shop.schema.InvariantReconciliationTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.069 s -- in com.example.shop.architecture.TableOwnershipTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.006 s -- in com.example.shop.architecture.MigrationOwnershipTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.001 s -- in com.example.shop.architecture.MapperXmlSafetyTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.031 s -- in com.example.shop.architecture.ConfigKeyGuardTest
-Q3：先後送兩次 → 201 20261001-748990、200 20261001-748990；同鍵不同內容 → 422 /problems/idempotency-key-reused
-Q3：同一個鍵同時送 10 次 → {201=1, 409（Retry-After: 1）=9}；出現過的訂單編號 [20261001-254497]；資料庫裡這位買家的訂單 2 張
-Q1：HTTP 409 /problems/insufficient-stock，productId=9900102；殘留：{orders=0, items=0, reservations=0, reserved_a=0, ledger_a=1/0, idem_keys=0, cart=2}（庫存帳下單前 1/0）
-Q1：補貨後用同一個鍵重送 → HTTP 201 20261001-153994；購物車剩 0 項
-Q5：B 讀自己的 → 200；A 讀 B 的 → 404；A 讀不存在的 → 404；兩個 404 的 body 相同 = true；稽核 {actor_id=21182, actor_role=BUYER, target_type=ORDER, target_id=20261001-452764, ip=127.0.0.1}
-Q6：從空資料庫套用 12 個 migration → 20 張表（含 flyway_schema_history）、CHECK 25 / 25、具名索引 32 / 32；validate 通過
-Q8：Redis 正常       → [商品詳情 200, 熱點商品詳情 200, 熱點下單 201, 一般下單 201, readiness 200（UP）, 熱門排行 200（[…] X-Degraded: —）, 登入 200]
-Q8：停掉後第  5 秒   → [商品詳情 200, 熱點商品詳情 200, 熱點下單 503（/problems/temporarily-unavailable，Retry-After 5）, 一般下單 201, readiness 200（UP）, 熱門排行 200（[] X-Degraded: trending）, 登入 200]
-  ……（第 15～55 秒同上，6.9.3）……
-Q8：Redis 恢復之後   → [商品詳情 200, 熱點商品詳情 200, 熱點下單 201, 一般下單 201, readiness 200（UP）, 熱門排行 200（[…] X-Degraded: —）, 登入 200]
-Q4：size=5   → HTTP 200，5 張訂單、15 個明細，SQL 3 句
-Q4：size=20  → HTTP 200，20 張訂單、60 個明細，SQL 3 句
-Q4：size=45  → HTTP 200，45 張訂單、135 個明細，SQL 3 句
-Q2：{201 =1, 409 /problems/insufficient-stock=99}；available = 0
-[WARNING] Tests run: 11, Failures: 0, Errors: 0, Skipped: 4, Time elapsed: 116.6 s -- in com.example.shop.acceptance.CapstoneAcceptanceTest
-[INFO] Tests run: 61, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.045 s -- in com.example.shop.ordering.internal.OrderStateMachineTest
-AUD：簽章錯誤 → 401；PAYMENT_SIGNATURE_INVALID 1 筆
-AUD：賣家取消 PAID → 成功；ORDER_CANCELLED_BY_SELLER 1 筆
-AUD：賣家取消 SHIPPED → 409；ORDER_CANCELLED_BY_SELLER 0 筆（訂單狀態 SHIPPED）
-AUD：別人的訂單（查詢 + 取消）→ 404；ACCESS_DENIED 2 筆；不存在的訂單 → 404；ACCESS_DENIED 0 筆
-AUD：金額不符 → 400；PAYMENT_AMOUNT_MISMATCH 1 筆
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.664 s -- in com.example.shop.ordering.internal.AuditPlacementTest
-ORD-3 AC-3：取消 60 張、歷史 60 筆、RELEASE 60 筆；INV-2 {reserved=0, held=0}
-ORD-3 AC-5：{CANCELLED/RELEASED/SUCCEEDED/1=50}；例外 0；INV-2 {reserved=0, held=0}
-[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 3.207 s -- in com.example.shop.ordering.internal.OrderRaceRegressionTest
-[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.431 s -- in com.example.shop.ordering.internal.HotStockFlowTest
-[INFO] Tests run: 14, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.300 s -- in com.example.shop.ordering.internal.OrderFlowTest
-[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.469 s -- in com.example.shop.api.OrderApiTest
-[INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 5.902 s -- in com.example.shop.api.RateLimitTest
-[INFO] Tests run: 8, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 4.685 s -- in com.example.shop.api.CatalogCartApiTest
-[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.805 s -- in com.example.shop.api.IdorMatrixTest
-[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.202 s -- in com.example.shop.api.JwtGuardTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.583 s -- in com.example.shop.api.SecurityRouteCoverageTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.888 s -- in com.example.shop.api.OpenApiContractTest
-ACC-2 AC-2：密碼錯誤 p50 96.4 ms、帳號不存在 p50 97.6 ms、差 1.1 ms
-[INFO] Tests run: 12, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 10.27 s -- in com.example.shop.api.AuthApiTest
-[INFO] Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.925 s -- in com.example.shop.architecture.EntityTableOwnershipTest
-[INFO] Tests run: 6, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.499 s -- in com.example.shop.architecture.ModuleBoundaryTest
-[WARNING] Tests run: 160, Failures: 0, Errors: 0, Skipped: 4
-[INFO] BUILD SUCCESS
-[INFO] Total time:  02:51 min
-```
-
-> 📌 **專題寫完之後重跑：`mvn clean verify`。** 上面是寫這一章時跑的 `mvn clean test`。專題寫完之後（2026-10-12），在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）重跑 `mvn clean verify`。（上面那段輸出，在參考實作的分支整理之後沒有在同一個版本上重跑過：測試數是照程式碼推算的。這一次是實跑。）第一次在空的資料庫上跑，驗收 Q8 紅了（「登入」那一格 401：Q8 用 2.8.3 種子資料的帳號 `buyer00001@example.com` 登入 —— 第 08 章 8.2.1 的事故一）；先跑 `mvn test -Pseed -Dtest=SeedData`（2.8.3）再跑，全綠。下面是第二次（load average 7.43 → 6.98）：
+在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）跑 `mvn clean verify`。空的資料庫要先跑一次 `mvn test -Pseed -Dtest=SeedData`（2.8.3）：驗收 Q8 的「登入」那一格用 2.8.3 種子資料的帳號 `buyer00001@example.com` 登入，沒有種子資料會 401（第 08 章 8.2.1 的事故一）。
 
 ```bash
 mvn clean verify
@@ -2035,15 +1947,13 @@ mvn clean verify
 [INFO] Total time:  03:14 min
 ```
 
-160 個測試、跳過 4 個 —— 跟上面一樣。`verify` 比 `test` 多做的是打包 jar（`spring-boot:repackage`）；覆蓋率門檻要到第 08 章才有。
-
-（Q8 那幾行的排行內容與中間五次檢查，完整的版本在 6.9.3。）
+`verify` 比 `test` 多做的是打包 jar（`spring-boot:repackage`）；覆蓋率門檻要到第 08 章才有。
 
 **160 個測試、`Skipped: 4`**（第 05 章是 143 個、5 個 skipped）。新增的 17 個：`ProductCacheTest` 7、`HotStockFlowTest` 5、`RateLimitTest` 3、`TrendingTest` 1、`RedisGuardTest` 1。Q8 本來就算在那 143 個裡，變成通過只讓 `Skipped` 少 1。
 
-驗收測試 116.6 秒（第 05 章是 68 秒）：Q8 真的把 Redis 停 60 秒，再等它恢復。Q6 的輸出多了一個 migration（12 個）與一個具名索引（32 個，V12 的 `idx_orders_created`）。
+驗收測試 148.3 秒（第 05 章是 68 秒）：Q8 真的把 Redis 停 60 秒，再等它恢復。Q6 多了一個 migration（12 個）與一個具名索引（32 個，V12 的 `idx_orders_created`）。
 
-> ⚠️ **這份輸出的前一次，`mvn clean test` 是紅的 —— 而且紅在一個第 02 章就寫好的測試。**
+> ⚠️ **`mvn clean test` 可能會紅 —— 而且紅在一個第 02 章就寫好的測試。**
 > ```
 > [ERROR] com.example.shop.acceptance.CapstoneAcceptanceTest.q4_noNPlusOne -- Time elapsed: 14.27 s <<< ERROR!
 > org.springframework.dao.DataIntegrityViolationException: PreparedStatementCallback; SQL [DELETE FROM orders WHERE buyer_id = ?]; Cannot delete or update a parent row: a foreign key constraint fails (`shop`.`order_status_history`, CONSTRAINT `fk_history_order` FOREIGN KEY (`order_id`) REFERENCES `orders` (`id`))
@@ -2058,7 +1968,7 @@ mvn clean verify
 
 前面各節為了說清楚一件事，只列出每個檔案的重點片段。這一節補齊：**新增的檔案給全文，修改的檔案給對第 05 章的 diff**（`git diff` 的格式，`+` 是新增的行、`-` 是刪掉的行）。正文已經完整列出的不再重複：V12（6.8.1）、`PlaceOrderService`（6.5.2）、E7 的 diff（6.5.4）。
 
-程式碼註解裡有三處節號是寫程式當時的編號，這裡已依定稿的課文更正：`G4HotGateLeakTest`、`G7BulkheadTest` 的「閘門（6.4）」→ 6.5，`ProductCache` 的「（6.9.2）」→ 6.4.3。參考實作的 `ch06` 分支裡仍是舊的寫法。
+程式碼註解裡有三處節號跟課文不一樣，這裡已依課文更正：`G4HotGateLeakTest`、`G7BulkheadTest` 的「閘門（6.4）」→ 6.5，`ProductCache` 的「（6.9.2）」→ 6.4.3。參考實作的 `ch06` 分支裡仍是舊的寫法。
 
 #### 主程式：catalog
 
@@ -5690,7 +5600,7 @@ class G10DetailSloTest {
 
 **練習九（30 分鐘）：MySQL 說沒貨時，要不要加回去**
 
-6.5.3 的 ⚠️：`PlaceOrderService` 接到 `InsufficientStockException` 時不把那個品項加回 Redis，在數量 > 1 時會讓 Redis 偏低。先寫一個測試把它重現出來（`stock:{id}` 設成 3、MySQL 可售 2、一張買 3 件的熱點訂單；結束時斷言 Redis ≥ MySQL 的可售量），再修它：一律加回去（偏高，交給 MySQL 的條件式 UPDATE 與對帳），還是只加回「多減的那一部分」？後者需要知道什麼數字、要不要多讀一次 MySQL？修完之後，6.5.3 那張表的第二列要怎麼寫？（做完再對照 6.5.3 的追記：專題寫完之後的修法 —— 那時候它已經搬到第 07 章的落帳裡了。）
+6.5.3 的 ⚠️：`PlaceOrderService` 接到 `InsufficientStockException` 時不把那個品項加回 Redis，在數量 > 1 時會讓 Redis 偏低。先寫一個測試把它重現出來（`stock:{id}` 設成 3、MySQL 可售 2、一張買 3 件的熱點訂單；結束時斷言 Redis ≥ MySQL 的可售量），再修它：一律加回去（偏高，交給 MySQL 的條件式 UPDATE 與對帳），還是只加回「多減的那一部分」？後者需要知道什麼數字、要不要多讀一次 MySQL？修完之後，6.5.3 那張表的第二列要怎麼寫？（做完再對照 6.5.3 的 📌「問題跟著第 07 章搬了家，修在落帳那裡」。）
 
 ---
 

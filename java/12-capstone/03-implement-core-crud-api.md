@@ -11,30 +11,6 @@
 > - **驗收 Q4 變綠**：訂單列表一頁 5、20、45 筆，SQL 都是 **3 句**（3.6.3）。
 > - 一份**由程式碼產生、而且被快照守著**的 OpenAPI 文件：任何一支 API 的形狀變了，`mvn test` 就紅，並指出哪一個 operation 變了（3.8）。
 > - 8 個 MockMvc 測試，把 0.12.2 追溯表裡 PRD 與 CART 的那幾列填上（3.9）。
->
-> 「把資料庫的東西變成 JSON」聽起來是整個專題最簡單的一章。這一章有**四個實測事故**，每一個都在說明：**API 層的 bug 不會讓程式當掉，它只會把不該給的東西給出去 —— 或把該給的東西給錯。**
->
-> - **Controller 直接回傳 Entity。** 3.2.1：雙向關聯 → 伺服器 `Infinite recursion`，但客戶端收到的是 **HTTP 200** 和 **23 萬 bytes 的殘缺 JSON**（回應在出錯前就送出去了）。
->   加上 `@JsonIgnore`、關掉 open-in-view → 500；打開 open-in-view → 能動了，**一頁 20 筆 22 句 SQL、100 筆 102 句**。
->   「標準解法」`JOIN FETCH` → SQL 剩 2 句，但**為了回傳 20 筆，載入了 11,969 個 Entity**。
-> - **「好心」的錯誤訊息。** 3.2.2：把 `e.getMessage()` 放進錯誤回應 —— 使用者的瀏覽器收到了**完整的 SQL、資料庫名、表名、外鍵名與 Java 類別名**，而且原本該是 400 的「JSON 格式錯誤」變成了 500。
-> - **搜尋框輸入一個 `%`。** 3.2.3：三種常見的 JPA 查詢寫法，**只有一種會跳脫萬用字元**。另外兩種對 `%`、`_` 回傳**全部 9,486 個商品**。
-> - **「9 月的每日訂單數」少算了、多算了。** 3.2.4：`DATE(created_at)` 用 UTC 切日 —— **28 天裡有 25 天的數字是錯的**，台北凌晨 0～8 點成立的 **329 張訂單（9.8%）全部被算到前一天**。
->
-> ⚠️ **還有一個最嚴重的，是寫這一章的途中才發現的**（3.3.4）：暫時的身分解析器用 `@Profile("local")` 讓它「只在本機存在」—— 結果在**任何其他 profile**，
-> Spring 會用 query 參數組出 `CurrentUser`：`?id=2&roles=SELLER` 就能以賣家 2 的身分建立商品。**「只在本機存在」是 fail-open 的。**
->
-> 另外還有五個比較小、但一樣是實測到的坑：CHECK 違反在 Spring 眼中**不是** `DataIntegrityViolationException`（3.6.1）、Bean Validation 跑在權限檢查**之前**（3.4.4）、
-> MyBatis 在同一個交易裡**讀不到 JPA 剛寫的值**（3.7.2）、OpenAPI 文件把 `Pageable` 寫成一個**必填的物件參數**（3.8.1）、以及 `299` 和 `299.00` 是兩個不相等的價格（3.5.2）。
->
-> **這一章沒有達成、或只達成一部分的目標**：
->
-> - **身分是暫時的**：`CurrentUser` 由除錯用的 header 產生，任何人都能冒充任何人（3.3.4），第 05 章換成 JWT。
-> - **US-ORD-5 只做了一半**：AC-3 只有 404，`audit_logs` 的 `ACCESS_DENIED` 在第 05 章（3.6.2）；AC-4 的枚舉告警本章沒有做。
-> - **有實作、沒有測試**：PRD-5（補貨）、PRD-4 AC-1（下架後從搜尋消失）、CART-1 AC-3（50 種上限）與 AC-4（不佔庫存）、CART-2 AC-3（依賣家分組）—— 3.9.1 的 8 個測試沒有涵蓋它們（3.10 的追溯表）。
-> - **賣家日報表沒有任何自動化測試**：RPT-1 AC-1～3 只有實作（3.7.1），AC-2 的台北切日只有實驗 D4（3.2.4），AC-4 只有「一次一個請求」的實驗 D6（3.9.2）。實驗不在 `mvn test` 裡。
-> - **0.6.2 的 SLO 只量了單一請求**，不是 SLO 定義的負載（3.9.2）；而且 D6「隨機的一般買家」那一列其實是同一位買家（3.9.2 的 ⚠️）。
-> - **0.8 草案裡、本章範圍內沒有實作的 API**：`GET /api/products/trending`、`GET /api/seller/reports/top-products`（RPT-2）、`/api/admin/**`（3.3.1 的表只列了本章做的 16 支）。`top-products` 與管理員的全站報表（RPT-3）一直到第 09 章都沒有做，專題寫完之後才補上（3.7.1 的追記）。
 
 ---
 
@@ -1011,6 +987,9 @@ curl -s -X POST -H "Content-Type: application/json" \
      "localhost:18081/api/seller/products?id=2&roles=SELLER"
 curl -s -H 'X-Debug-User-Id: 1001' "localhost:18081/api/orders?size=1"
 ```
+
+用第一版的解析器，它在這個 profile 下不存在，Spring 會用 `@ModelAttribute` 的預設行為、從 query 參數組出 `CurrentUser`：第三個請求（`?id=2&roles=SELLER`）就能以賣家 2 的身分建立商品。**「只在本機存在」是 fail-open 的。** 照下面三個設計決定修好之後（本章結束時的程式碼），同樣的四個請求：
+
 ```
 {"type":"/problems/unauthenticated","title":"需要登入","status":401,"detail":"需要登入","instance":"/api/orders"}
 {"type":"/problems/unauthenticated","title":"需要登入","status":401,"detail":"需要登入","instance":"/api/orders"}
@@ -1020,7 +999,7 @@ curl -s -H 'X-Debug-User-Id: 1001' "localhost:18081/api/orders?size=1"
 
 四個請求依序：不帶身分、用 query 參數假冒、用 query 參數假冒賣家、帶除錯 header —— **一律 401**。header 在非 `local` 的 profile 也不算數，因為 `debug-headers` 預設是 `false`。
 
-（這一段的指令與輸出是專題寫完之後，在第 03 章的程式碼上重跑的（2026-10-07）。重跑時有一個環境上的坑：compose 裡的 `shop` 庫如果已經被後面章節的程式碼 migrate 過，第 03 章的 Flyway 會因為看不到歷史表而拒絕啟動（`Found non-empty schema(s) \`shop\` but no schema history table`）。照著本章做的你，`shop` 庫就停在 V10，不會遇到；如果遇到了，把 URL 的資料庫名稱換成一個空的資料庫即可。）
+（這一段的指令與輸出是在本章結束時的程式碼上跑的。有一個環境上的坑：compose 裡的 `shop` 庫如果已經被後面章節的程式碼 migrate 過，第 03 章的 Flyway 會因為看不到歷史表而拒絕啟動（`Found non-empty schema(s) \`shop\` but no schema history table`）。照著本章做的你，`shop` 庫就停在 V10，不會遇到；如果遇到了，把 URL 的資料庫名稱換成一個空的資料庫即可。）
 
 **第二道保險**：有人在正式環境打開它的話，應用程式直接起不來：
 
@@ -1037,7 +1016,7 @@ Caused by: org.springframework.beans.BeanInstantiationException: Failed to insta
 Caused by: java.lang.IllegalStateException: shop.security.debug-headers 不可以在 prod 打開
 ```
 
-（同樣在 2026-10-07 重跑過，輸出一字不差；`application-prod.yml` 的 URL 是 `${SHOP_DB_NAME:shop}`，重跑時另外給了 `SHOP_DB_NAME` 指向第 03 章狀態的資料庫，理由同上。）
+（`application-prod.yml` 的 URL 是 `${SHOP_DB_NAME:shop}`；遇到上面那個 Flyway 的坑，就另外給 `SHOP_DB_NAME`，指向第 03 章狀態的資料庫。）
 
 （`application-prod.yml` 的每一個 `${SHOP_...}` 都要有值，否則第 01 章的 `UnresolvedPlaceholderCheck`（1.7.4）會先擋下；`SHOP_REDIS_PASSWORD=` 給空字串即可，本機的 Redis 沒有密碼。）
 
@@ -1047,7 +1026,7 @@ Caused by: java.lang.IllegalStateException: shop.security.debug-headers 不可�
 2. **危險的功能用「開關」而不是「存在與否」控制**，而且開關的預設值是安全的那一邊。解析器永遠存在，所以 Spring 的 `@ModelAttribute` 預設行為永遠不會接手 `CurrentUser`。
 3. **角色檢查放在 interceptor，依路徑前綴**（`/api/seller/**` 要 SELLER）—— 這是 0.8「以角色分前綴，讓權限規則可以用路徑表達」的落實，理由在 3.4.4。
 
-> 📌 **這個洞是實測才發現的**，而且是在寫這一章的途中：`CurrentUserResolver` 的第一版通過了本機所有的測試（本機的 profile 就是 `local`）。
+> 📌 **這個洞要實測才看得到**：`CurrentUserResolver` 的第一版通過了本機所有的測試（本機的 profile 就是 `local`）。
 > 它只有在「**不是本機**」的環境才會出現 —— 也就是正式環境。第 05 章的 Spring Security 會把「預設拒絕」寫成 `anyRequest().denyAll()`，這是同一個原則的框架版。
 
 用法（本機）：先 `docker compose up -d --wait`，再 `mvn spring-boot:run`（沒有指定 profile 時就是 `local`，`application.yml` 的 `spring.profiles.default`），應用程式在 8080：
@@ -1289,7 +1268,7 @@ class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 **每一個 handler 都想遵守同一條規則**：`detail` 與 `errors[].message` 是**我們寫的字串**，不是例外的 `getMessage()`。刻意的例外是 `ShopException` —— 它的訊息**本來就是我們寫給使用者看的**（`"商品 42 的可售庫存不足"`）。
 
 **但這條規則有一個沒守住的地方**：`handleMethodArgumentNotValid` 回傳的是 `f.getDefaultMessage()`。Bean Validation 的錯誤，那是 DTO 上我們寫的 `message`；但**綁定失敗**（型別轉換錯誤，`f.isBindingFailure()` 為 true）時，那是 Spring 自己產生的訊息，帶著 Java 的型別名。
-3.3.4 第一個請求的回應就是反例：`"message":"Failed to convert value of type 'null' to required type 'long'; ..."`。本專題目前只有 `@ModelAttribute` 綁定會走到這條路（3.3.4 修好之後，就沒有任何 Controller 參數會這樣綁定了），所以程式碼沒改；
+3.3.4 第一版的解析器在非 `local` 的 profile 下，第一個請求的回應就是反例：`"message":"Failed to convert value of type 'null' to required type 'long'; ..."`。本專題目前只有 `@ModelAttribute` 綁定會走到這條路（3.3.4 修好之後，就沒有任何 Controller 參數會這樣綁定了），所以程式碼沒改；
 要徹底守住，就在這個 handler 裡對 `isBindingFailure()` 的欄位改用固定字串（例如「格式不正確」）。
 
 | 例外 | 回應 | 備註 |
@@ -2086,9 +2065,8 @@ public final class ConstraintViolations {
 
 > 📌 **50 種商品的上限（AC-3）不在資料庫裡**，是 `add` 開頭的一句 `COUNT(*)`。它是「先查再寫」，所以在極端的併發下（同一個買家同時送出兩個加入不同商品的請求）可能變成 51 種。
 > 這是一個**刻意接受的**軟上限：它的目的是擋住濫用（腳本塞 10,000 個商品），不是精確到個位數。**寫下來它是軟的**，比假裝它是硬的好。
-> ⚠️ **這一章沒有替 AC-3 寫測試**（3.9.1 的追溯表只列了 AC-1、AC-2、AC-5），而 0.4.4 原本把 AC-3 寫成 409。
-> 專題寫完之後才補上 `CatalogCartApiTest.cartDistinctItemLimit`，實測第 51 種商品回 **400** `/problems/validation`，`detail` 是「購物車最多 50 種商品」。
-> 需求以實作為準改成 400（`ProblemType.VALIDATION` 本來就是 400），0.4.4 已經更正。
+> ⚠️ **這一章沒有替 AC-3 寫測試**（3.9.1 的追溯表只列了 AC-1、AC-2、AC-5）。
+> 補上的測試 `CatalogCartApiTest.cartDistinctItemLimit` 實測第 51 種商品回 **400** `/problems/validation`，`detail` 是「購物車最多 50 種商品」；參考實作的 `ch03`～`ch09` 分支上都沒有這個測試。
 
 **`view` 的三句 SQL**：購物車的列（1 句）、這些商品的快照（`CatalogApi.snapshots`，1 句）、可售庫存（`InventoryApi.available`，1 句）。
 **不管購物車有幾個品項，都是 3 句。** 跨模組的 N+1（每個品項各呼叫一次 `CatalogApi`）在這裡被介面的形狀擋掉了：`CatalogApi` 只提供「一次查多個」的方法。
@@ -2506,9 +2484,9 @@ curl -s -H "X-Debug-User-Id: 2" -H "X-Debug-Roles: BUYER,SELLER" \
 > 📌 **為什麼 `Instant` 參數直接傳給 MyBatis 沒問題？** MyBatis 3.5 內建 `InstantTypeHandler`，它用 `Timestamp.from(instant)` 綁定 ——
 > 而 JDBC URL 的 `connectionTimeZone=UTC`（2.4.3）保證驅動用 UTC 解讀那個 `Timestamp`：`Timestamp` 本身是一個**時間點**，驅動（預設 `preserveInstants=true`）依 `connectionTimeZone` 把它寫成 UTC 的字面值 —— 就算你的 JVM 時區是台北，也不會差 8 小時。**三層（Java 的 `Instant`、驅動、資料庫）都是 UTC，中間沒有任何一層在轉換。**
 
-#### 專題寫完之後的追記：US-RPT-2 AC-1 與 US-RPT-3
+#### US-RPT-2 AC-1 與 US-RPT-3
 
-0.8 的 ⚠️ 說過：銷售排行（US-RPT-2 AC-1）與管理員的全站報表（US-RPT-3）**這一章沒有做，之後的章節也沒有** —— 專題寫完之後才補上。補在第 09 章結束時的程式碼上，三支 API：
+0.8 的 ⚠️ 說過：銷售排行（US-RPT-2 AC-1）與管理員的全站報表（US-RPT-3）**這一章沒有做，之後的章節也沒有**。下面補在第 09 章結束時的程式碼上，參考實作的 `ch03`～`ch09` 分支上都沒有。三支 API：
 
 | 方法 | 路徑 | 角色 | 參數 | 回應 |
 |---|---|---|---|---|
@@ -2528,7 +2506,7 @@ curl -s -H "X-Debug-User-Id: 2" -H "X-Debug-Roles: BUYER,SELLER" \
 
 排行的 SQL 從 `orders` 出發（條件全在它身上：出貨時間、賣家），`order_items` 用 `uk_order_items_order_product` 的 `order_id` 接上，`LIMIT 20` 在子查詢裡，只有 20 列去 JOIN `products`。2.7.1 的索引規劃表寫的 `idx_order_items_product (product_id)` 是「從商品出發」的形狀，這裡用不上。
 
-**一個加了又拿掉的索引。** 第一版為「指定賣家」加了 `(seller_id, status, shipped_at)`（當時編號 V26）。10 萬張種子訂單上 `EXPLAIN ANALYZE`（2.8.3 的種子資料，最大的賣家 2，2026-07-01～09-28）：
+**一個加了又拿掉的索引。** 為「指定賣家」加 `(seller_id, status, shipped_at)`（量測時編號 V26）。10 萬張種子訂單上 `EXPLAIN ANALYZE`（2.8.3 的種子資料，最大的賣家 2，2026-07-01～09-28）：
 
 | 查詢 | V26 開 | V26 關（invisible） |
 |---|---|---|
@@ -3161,7 +3139,7 @@ class D6LatencyTest {
 **US-RPT-1 AC-4 在單一請求下通過**，而且有 40 倍的餘裕 —— 那個餘裕是 3.7.1 的「範圍條件用得到索引」換來的。
 「最慢」那一欄的 98.9 ms、112.6 ms 是單一的離群值（JIT、GC、Docker Desktop 的 I/O），**它們正是 p99 以外的那 1%**。負載下它們會變成什麼樣子，是壓測要回答的。
 
-> ⚠️ **上面「隨機的一般買家」那一列，其實不是隨機的**（第 08 章 8.6.4 抓到，專題寫完之後才修）。
+> ⚠️ **上面「隨機的一般買家」那一列，其實不是隨機的**。
 > `String.valueOf(1004 + r.nextInt(19_000))` 是 `measure(...)` 的**參數**，在呼叫 `measure` 的那一刻就算好了 —— 300 次請求（加上 30 次暖機）用的是同一位買家。
 > lambda 裡的 `path` 每次都重算，旁邊的 `headers` 卻只算一次：兩個東西寫在同一行，看起來一樣「隨機」。
 >
@@ -3174,6 +3152,7 @@ class D6LatencyTest {
 > }
 > ```
 >
+> 參考實作的 `ch03`～`ch09` 分支上還是改之前的寫法。
 > 修好之後，在第 09 章結束時的程式碼上（身分改用 JWT），舊版與新版交錯各跑 3 輪。舊版那一位固定的買家是 12571。
 > 本章上面那次（第 03 章的程式碼、`X-Debug-User-Id`）是不是也是 12571 —— **推測是**，因為 `Random(3)` 在那之前抽的次數相同，但沒有驗證。
 >
@@ -3264,7 +3243,7 @@ Q4：size=45  → HTTP 200，45 張訂單、135 個明細，SQL 3 句
 [INFO] Total time:  32.580 s
 ```
 
-> 📌 **專題寫完之後重跑：`mvn clean verify`。** 上面是寫這一章時跑的 `mvn clean test`。專題寫完之後（2026-10-12），在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）重跑了一次 `mvn clean verify`（load average 6.15 → 6.09）：
+在本章結束時的程式碼上、用一套全新的 compose（空的資料庫，Flyway 從第一個 migration 開始）跑 `mvn clean verify`：
 
 ```bash
 mvn clean verify
