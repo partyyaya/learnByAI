@@ -121,7 +121,7 @@ process.on('SIGINT', stop);
 | 1 | 設定 `draining = true` | 已存在連線上後來到達的請求也要被拒絕 |
 | 2 | 開始整體期限 timer | 等待 HTTP 與清理資源共用同一份時間預算 |
 | 3 | 呼叫 `server.close()` | 停止接受新連線，等待既有 HTTP 工作 |
-| 4 | 同時等待已登記的 handler Promise | 回應後仍可能正在執行檔案 finally |
+| 4 | HTTP 關閉後，反覆等待目前登記的 handler Promise，直到集合為空 | 已接受請求可能稍後才讀完 body；離線或回應後仍可能有資料操作及 finally |
 | 5 | 呼叫 `closeResources(signal)` | 等請求不用共用資源後才關閉它們 |
 | 6 | 清除期限 timer，回報完成 | 讓程序自然退出 |
 
@@ -129,14 +129,18 @@ process.on('SIGINT', stop);
 
 ```ts
 draining = true;
-await Promise.all([
-  httpClosed,
-  Promise.allSettled([...tasks]),
-]);
+await httpClosed;
+while (tasks.size > 0) {
+  signal.throwIfAborted();
+  await Promise.allSettled([...tasks]);
+}
+signal.throwIfAborted();
 await closeResources?.(signal);
 ```
 
 這裡的 `allSettled` 用來等待各工作走到完成或失敗。請求失敗已由自己的 HTTP 錯誤處理回應；不應因一個請求驗證失敗，就直接跳過其他工作清理。
+
+不能只在 shutdown 開始時複製一次 tasks。已接受的請求可能仍在收 body，之後才登記資料操作；若客戶端隨即離線，HTTP 關閉也不代表資料操作完成。先等 HTTP 關閉，再檢查仍登記中的工作，才能涵蓋這條路徑。等待 HTTP 時，各 Promise 仍會繼續執行，並不是把工作暫停到下一階段。
 
 `closeResources` 是未來資料庫連線池等資源的接點，**本章主程式沒有假裝連接資料庫**。測試會注入可控制的清理函式，驗證順序與失敗結果。
 
@@ -179,13 +183,13 @@ HTTP 連線關閉與 FileHandle 的非同步清理，不一定在同一刻完成
 void lifecycle.track(route(req, res)).catch(handleRequestError);
 ```
 
-這是呼叫輪廓；範例的錯誤處理直接寫在 catch 裡。`track()` 保留原本 Promise，成功或失敗都會從集合移除。`shutdown()` 再等待開始關閉當下已登記的工作。
+這是呼叫輪廓；範例的錯誤處理直接寫在 catch 裡。`track()` 保留原本 Promise，成功或失敗都會從集合移除。`shutdown()` 等 HTTP 關閉後，再等待集合中的工作；這也包含停止前已接受、停止後才登記的工作。
 
 這個做法有明確前提：
 
 1. 新請求在 draining 後不再啟動業務工作。
 2. 一個 handler 建立的非同步工作，應由它 `await` 或 `return` 到結束。
-3. 不可以 `void sendSomething()` 後立刻宣稱 handler 完成，卻期待協調器自動知道它的背景工作。
+3. 額外工作必須在所屬 handler／已追蹤工作結束前登記。不能讓一個未追蹤的 timer 在所有工作都完成後才啟動任務，期待協調器預知它。
 
 這也是為什麼本章仍使用一個小型 HTTP 服務。背景佇列與 worker 需要自己的登記、停止與等待設計，不能只靠這個集合。
 
@@ -242,7 +246,7 @@ docker compose run --rm tools npm run test:runtime
 
 上傳測試使用 `Expect: 100-continue` 確認服務已接到請求，再送信號；不靠隨便等待幾毫秒猜測啟動時機。測試也有外部 watchdog，失敗時會回收自己建立的子程序。
 
-`npm run check` 另外執行 Jest 測試，涵蓋上一章的 HTTP／串流行為，以及「回應結束後仍在清理」「共用資源清理失敗」「清理也會超時」等案例。要區分兩層證據：Jest 驗證協調順序，子程序檢查驗證實際入口與退出結果。
+`npm run check` 另外執行 39 項 Jest 測試，涵蓋上一章的 HTTP／串流行為，以及「回應結束後仍在清理」「共用資源清理失敗」「清理也會超時」「停止後才讀完 body 並登記工作，客戶端隨即離線」等案例。要區分兩層證據：Jest 驗證協調順序，子程序檢查驗證實際入口與退出結果。
 
 ## 07.11 常見問題、練習與驗收
 

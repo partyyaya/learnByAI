@@ -9443,9 +9443,9 @@ public class ReadOnlyFieldInterceptor implements HandlerInterceptor {
 >
 > 這一章有六個地方呼叫 `ValueMasker.mask(...)`、一個地方呼叫「拼字建議」。
 > **而它們都已經在 03 章定義過了** ——
-> 這一節原本重新寫了一份，那是一個真實的錯誤，值得留下紀錄：
+> 在這一章重新寫一份是一個容易犯的錯，它會造成兩個衝突：
 >
-> | 這一章原本寫的 | 03 章已經有的 | 衝突 |
+> | 在這一章重新寫的 | 03 章已經有的 | 衝突 |
 > |---|---|---|
 > | `ValueMasker.mask(Object)`（一個參數） | `ValueMasker.mask(String field, Object value)` | 🔴 **同一個 FQN、兩種不相容的簽名** —— 全書 9 個呼叫點有 6 個用一參數、3 個用兩參數，**不可能同時編譯** |
 > | `Suggestions.closest(String, Collection)` | `DidYouMean.closest(String, List)` | 🔴 **兩份 Levenshtein 實作**，門檻規則還不一樣（比例 vs 固定距離 3） |
@@ -9609,7 +9609,7 @@ public final class InstanceFactory {
 
 > **★ 而「不要重複定義」是一條需要明說的規則**：
 > properties 的同一個 key 只有**最後一次**定義生效，而 Spring **不會警告**。
-> 這一節的第一版真的重寫了那四個 key（文案還不一樣）——
+> 如果這一節再定義一次那四個 key（文案還不一樣）——
 > 於是「哪一份生效」取決於它們在檔案裡的先後，而那是一個
 > **看不出來、也測不到**的問題（07 章 7.8.2 的契約測試只檢查
 > 「有沒有訊息」與「格式對不對」，不檢查「定義了幾次」）。

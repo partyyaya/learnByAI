@@ -592,7 +592,7 @@ import java.util.UUID;
 public interface Item3Repo extends JpaRepository<Item3, UUID> {}
 ```
 
-⚠️ **一個踩過的坑**：不要為了省事把這幾個介面寫成一個介面裡的巢狀介面
+⚠️ **一個容易踩到的坑**：不要為了省事把這幾個介面寫成一個介面裡的巢狀介面
 （`interface Repos3 { interface Cust3Repo extends … }`）。
 Spring Data 的 repository 掃描**找不到**它們，啟動時會是
 `No qualifying bean of type 'Repos3$Cust3Repo' available`。**一個 repository 一個檔案。**
@@ -870,9 +870,9 @@ public abstract class Base03 {
 }
 ```
 
-> ⚠️ **最後那個註解是一個真的踩到的坑，而且它值得單獨講一次。**
+> ⚠️ **最後那個註解是一個很容易踩到的坑，值得單獨講一次。**
 >
-> 這個 helper 的第一版是這樣寫的：
+> 這個 helper 如果寫成這樣：
 >
 > ```java
 > protected List<String> spy(Runnable body) {
@@ -884,7 +884,7 @@ public abstract class Base03 {
 > 看起來很整潔。而 `finally` 裡的 `return` 會**吞掉正在往外拋的例外**——
 > 這是 Java 語言規範定義的行為，不是 bug。
 >
-> 結果：3.9.5 有一個實測，第一次跑出來的是「**494 句 SQL**」，
+> 結果：3.9.5 有一個實測，用這個版本跑出來的是「**494 句 SQL**」，
 > 而真相是「**`StackOverflowError`，而且那 494 句根本沒有 commit**」。
 > **一個測試工具的瑕疵，讓一個實測結論完全反了。**
 >
@@ -2418,7 +2418,7 @@ Hibernate 用「id 是不是 null」判斷它是不是 transient——
 **② `remove` 之後 `persist` 可以「復活」。** JPA 規格明文允許。
 但這個技巧幾乎沒有正當用途，看到它通常代表流程亂了。
 
-⚠️ **另一個實測時撞到的事**：第一次跑這個測試時，`DELETE` 失敗了：
+⚠️ **另一件事**：如果刪的是有訂單的客戶，`DELETE` 會失敗：
 
 ```
 Cannot delete or update a parent row: a foreign key constraint fails
@@ -4415,13 +4415,13 @@ class A9CbDanger extends Base03 {
    → 三個月後有人問「為什麼稽核表少了一半的紀錄」
 ```
 
-> ⚠️ **這一節的量測本身有一段值得記的故事。**
+> ⚠️ **這一節的量測本身有一個值得記的陷阱。**
 >
-> ①④ 這兩格，**第一次跑出來的結果是「494 句 SQL、資料沒改到」**——
+> ①④ 這兩格，**如果用 3.2.5 那個有問題的 `spy()` 量，結果是「494 句 SQL、資料沒改到」**——
 > 看起來像「遞迴 flush 把同一句 UPDATE 送了 493 次」。
 >
-> 真相是 `StackOverflowError`，而它被**我自己的測試工具吃掉了**：
-> `spy()` 的第一版在 `finally` 裡 `return`（3.2.5 那個註解），
+> 真相是 `StackOverflowError`，而它被**測試工具自己吃掉了**：
+> 那個 `spy()` 在 `finally` 裡 `return`（3.2.5 那個註解），
 > 而 `finally` 裡的 `return` 會吞掉正在往外拋的 `Throwable`。
 >
 > 加上 `StackOverflowError` 是 `Error` **不是 `Exception`**，

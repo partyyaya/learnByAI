@@ -1,6 +1,7 @@
 import { expect, test } from '@jest/globals';
 import { createServer, request, type Server } from 'node:http';
 import { once } from 'node:events';
+import { setImmediate as immediate } from 'node:timers/promises';
 import { createShutdown, ShutdownTimeoutError } from '../src/shutdown.js';
 
 function deferred() {
@@ -71,4 +72,31 @@ test('已失敗且由呼叫端處理的工作不會阻止關閉', async () => {
   await listen(server);
   await expect(lifecycle.track(Promise.reject(new Error('request failed')))).rejects.toThrow('request failed');
   await lifecycle.shutdown();
+});
+
+test('停止前已接受的請求，在 draining 後才登記工作且離線，仍須等工作完成', async () => {
+  const accepted = deferred(); const started = deferred(); const finished = deferred();
+  let resourcesClosed = false;
+  const server = createServer((req, res) => {
+    req.resume();
+    req.once('end', () => {
+      // 模擬慢速 body 讀完後才進入 Service；此時停止流程已開始。
+      void lifecycle.track(finished.promise);
+      started.resolve(); res.destroy();
+    });
+    accepted.resolve();
+  });
+  const lifecycle = createShutdown(server, { closeResources: async () => { resourcesClosed = true; } });
+  const port = await listen(server);
+  const req = request({ port, host: '127.0.0.1', method: 'POST', agent: false, headers: { 'Content-Length': '1' } });
+  req.on('error', () => {}); req.flushHeaders();
+  try {
+    await accepted.promise;
+    const httpClosed = once(server, 'close');
+    const stopped = lifecycle.shutdown();
+    req.end('x'); await started.promise; await httpClosed; await immediate();
+    expect(resourcesClosed).toBe(false);
+    finished.resolve(); await stopped;
+    expect(resourcesClosed).toBe(true);
+  } finally { req.destroy(); finished.resolve(); server.closeAllConnections(); await lifecycle.shutdown(); }
 });

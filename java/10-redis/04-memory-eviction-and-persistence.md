@@ -188,7 +188,7 @@ errors: 23000, replies: 30000          ← 三萬筆有兩萬三千筆失敗
 
 上面的實驗有一個刻意的步驟：**第 2 步要等 3 秒**。
 
-我第一次跑這個實驗時沒有等，結果是：
+如果不等，結果是：
 
 ```
   allkeys-lru      熱門 1000 個活了 560 個 (56%)     ← 跟 random 一樣
@@ -378,7 +378,7 @@ Redis 可以在執行期間自己整理碎片：
 docker exec redis-lab redis-cli CONFIG SET activedefrag yes
 ```
 
-**我第一次打開它，等了 40 秒，什麼都沒發生**：
+**打開之後等了 40 秒，什麼都沒發生**：
 
 ```
   打開前           used=79.63M  rss=216.56M  alloc_frag=2.03
@@ -835,7 +835,7 @@ void whatOomLooksLikeInJava() {
 **⑤ 「打開 `activedefrag` 就會整理碎片」**
 
 還有一個 `active-defrag-ignore-bytes`（預設 100 MB）的門檻。
-我第一次打開時 `active_defrag_hits` 一直是 0（4.4.3）。
+碎片量沒到門檻時，`active_defrag_hits` 會一直是 0（4.4.3）。
 
 **⑥ 「我有開 RDB，資料不會掉」**
 

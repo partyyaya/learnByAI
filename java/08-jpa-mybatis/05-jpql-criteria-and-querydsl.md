@@ -2287,7 +2287,7 @@ class F4cPlanCache extends Base05 {
 **症狀是「某個報表頁一跑，全站的 API 都變慢一點」，而且非常難查。**
 
 ⚠️ **量測方法的注意事項**：
-第一版的量測寫成「跑 5 輪、每輪 500 個 `200+i`」——**第二輪開始全部命中快取**，
+如果量測寫成「跑 5 輪、每輪 500 個 `200+i`」——**第二輪開始全部命中快取**，
 量到的是 1.9 µs vs 2.27 µs，看起來「沒有差別」。
 **要量快取沒中的成本，被量的東西每一次都必須是新的**（上面那個 `AtomicInteger`）。
 
@@ -6336,7 +6336,7 @@ class G1Shop extends G1ShopBase {
 **這是一個刻意的取捨**：搜尋結果要顯示明細，所以它需要實體。
 📌 **如果搜尋結果只要顯示摘要，就該跟 `list()` 一樣改成投影。**
 
-**而第一版的 `search` 打了 8 句**，因為它用了 `orders.findAll(spec, pageable)`——
+**而如果 `search` 直接用 `orders.findAll(spec, pageable)`，會打 8 句**——
 **沒有 fetch 客戶，於是 `OrderView.of()` 裡的 `getCustomer().getDisplayName()`
 打出 5 句額外的 SQL（04 章的 N+1 回來了）。**
 

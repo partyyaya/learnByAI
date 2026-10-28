@@ -14,6 +14,8 @@
 
 **本章交付的是專題規格與可執行的規則練習。** 下文的 HTTP 範例是後續實作目標，目前還沒有可呼叫的 API、登入機制或資料庫。第一個 HTTP 服務會在 05 章建立。
 
+閱讀後續成果時，請以 [13 章遷移基準](examples/13/BASELINE.md) 確認已完成範圍：目前作者固定為 u_demo，尚無登入授權；非法狀態代碼為 INVALID_STATE，而本章最終規格預定為 INVALID_ARTICLE_STATE。框架遷移先保留現有契約，名稱與認證要求的變更須另行記錄。
+
 ## 00.1 從一個容易漏掉的問題開始
 
 假設你已經做出文章編輯頁面，只有作者能看見「儲存」按鈕。Bob 看不到 Alice 的按鈕，是否代表他不能修改 Alice 的文章？
@@ -63,19 +65,15 @@ Express 也能建立正式服務；本課先用它呈現請求流程，再用 Ne
 - **Node API**：我們接下來要寫的後端程式。API 是提供給其他程式呼叫的介面；這裡透過 HTTP 接收請求，判斷可以提供哪些資料。
 - **PostgreSQL**：保存文章的資料庫，依照後端的查詢找出資料。
 
-下圖由上往下讀，三個欄位代表這三個參與者。箭頭表示誰把請求或結果交給誰；回到自己的箭頭表示在自己內部處理。
+依序閱讀以下文字流程；每一步都標出負責的參與者：
 
-```mermaid
-sequenceDiagram
-    participant B as 瀏覽器（前端）
-    participant A as Node API（後端）
-    participant D as PostgreSQL（資料庫）
-    B->>A: 1. 請給我這篇文章
-    A->>A: 2. 檢查請求中的文章 ID
-    A->>D: 3. 查詢這個 ID 的已發佈文章
-    D-->>A: 4. 回傳找到的文章資料
-    A-->>B: 5. 回傳成功狀態與文章資料
-    B->>B: 6. 把標題與內容顯示在畫面上
+```text
+1. 瀏覽器 → API：請給我這篇文章
+2. API：檢查請求中的文章 ID
+3. API → PostgreSQL：查詢這個 ID 的已發佈文章
+4. PostgreSQL → API：回傳找到的文章資料
+5. API → 瀏覽器：回傳成功狀態與 JSON 文章資料
+6. 瀏覽器：把標題與內容顯示在畫面上
 ```
 
 對照實際程式，這六步會是：
@@ -107,17 +105,17 @@ Express 與 NestJS 都在圖中的 API 位置。把路由改成 Controller，不
 
 本章只有一個可執行檔：[runtime-and-contract.mjs](examples/00/runtime-and-contract.mjs)。它使用 Node 內建的斷言工具，沒有第三方依賴，也不需要 `npm install`。`.mjs` 表示使用 ECMAScript Module；02 章再深入模組規則。
 
-這裡選用 `node:24-bookworm-slim` 作為練習環境。Node 24 是受支援的 LTS 系列；版本生命週期請參考 [Node.js 版本狀態](https://nodejs.org/en/about/previous-releases)。這個 tag 的修補版本會更新，01 章會再說明專案版本固定與 lockfile。
+這裡使用與 01 章相同的固定映像，提供 Node **24.22.1** 與 npm **11.19.1**。`node:24-bookworm-slim` 後面加上 digest，避免可移動的 tag 日後指向不同修補版本。01 章會再解釋版本檔與 lockfile；現在可直接複製指令。
 
 以下指令適用於 Bash／zsh。請先開啟 Docker Desktop 或啟動 Docker Engine，再在**倉庫根目錄 `learnbyai`** 執行：
 
 ```bash
 docker version
 docker compose version
-docker pull node:24-bookworm-slim
+docker pull node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 ```
 
-`docker version` 應顯示 Client 與 Server；只有 Client 不代表容器引擎已可使用。Compose 要到 11 章才用於資料庫，本章先確認工具存在。
+`docker version` 應顯示 Client 與 Server；只有 Client 不代表容器引擎已可使用。01 章開始用 Compose 執行工具容器，11 章再加入資料庫，本章先確認工具存在。
 
 接著執行：
 
@@ -125,7 +123,7 @@ docker pull node:24-bookworm-slim
 docker run --rm --network none \
   --mount "type=bind,source=${PWD}/nodejs-course/examples/00,target=/work,readonly" \
   --workdir /work \
-  node:24-bookworm-slim \
+  node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 \
   node runtime-and-contract.mjs
 ```
 
@@ -137,7 +135,7 @@ docker run --rm --network none \
 | `--workdir /work` | 在容器的 `/work` 目錄執行指令 |
 | `node runtime-and-contract.mjs` | 使用容器內的 Node 執行程式 |
 
-成功輸出如下；第一行的 Node 修補版本可能不同：
+使用上面的固定映像，成功輸出如下：
 
 ```text
 執行環境： {"node":"v24.22.1","window":"undefined","document":"undefined","fetch":"function","process":"object"}
@@ -167,15 +165,15 @@ PASS：4 項環境檢查、7 項權限案例、6 項狀態轉換案例
 - **Bind mount**：把主機上的指定目錄掛入容器；本章用它讀取程式碼。
 - **Volume**：由 Docker 管理的資料儲存空間；之後用來保存資料庫資料。資料可跨容器生命週期保留，但仍需要另外備份。[Docker volumes 文件](https://docs.docker.com/engine/storage/volumes/)
 
-後續開發環境預計先讓 API 在主機執行、PostgreSQL 在 Docker 執行。若將主機的 `15432` 映射到資料庫容器的 `5432`，連線位置會是：
+11 章主要以 Compose 同時執行 API 與 PostgreSQL，也提供主機 Node 路線。該章把主機的 `15411` 映射到資料庫容器的 `5432`，連線位置會是：
 
 | 誰在連資料庫 | 連線位置範例 |
 |--------------|--------------|
-| 主機上的 Node API | `127.0.0.1:15432` |
+| 主機上的 Node API | `127.0.0.1:15411` |
 | 同一 Compose 網路中的 API 容器 | `postgres:5432`，假設資料庫服務名為 `postgres` |
 | 瀏覽器 | 不直接連資料庫；呼叫 API |
 
-這是 11、26 章的環境示意，**本章尚未建立這些服務或連接埠映射**。容器內的 `localhost` 指向該容器自己的網路環境，不是自動指向你的主機或另一個容器。[Docker 網路文件](https://docs.docker.com/engine/network/)
+這是 11 章的環境預覽，**本章尚未建立這些服務或連接埠映射**。各章使用自己的主機端口，請依該章範例操作。容器內的 `localhost` 指向該容器自己的網路環境，不是自動指向你的主機或另一個容器。[Docker 網路文件](https://docs.docker.com/engine/network/)
 
 ## 00.5 用使用者故事固定專題範圍
 
@@ -207,12 +205,11 @@ PASS：4 項環境檢查、7 項權限案例、6 項狀態轉換案例
 
 ### 文章狀態
 
-```mermaid
-stateDiagram-v2
-    [*] --> draft: 建立文章
-    draft --> published: publish
-    draft --> archived: archive
-    published --> archived: archive
+```text
+建立文章 → draft（草稿）
+draft → publish → published（已發佈）
+draft 或 published → archive → archived（已封存）
+archived → 不可編輯、重新發佈或再次封存
 ```
 
 本課明確採用以下規則：
@@ -287,7 +284,7 @@ Cookie: session=<有效的 Session 憑證>
 }
 ```
 
-`title` 與 `content` 必須是字串，去除首尾空白後不能為空。`authorId`、`role`、`status`、`version` 等非允許欄位一律拒絕，回傳 `400`；不要把整份 body 直接交給資料庫更新。長度與 body 大小上限會在 09 章具體訂出。
+`title` 與 `content` 必須是字串，去除首尾空白後不能為空。`authorId`、`role`、`status`、`version` 等非允許欄位一律拒絕，回傳 `400`；不要把整份 body 直接交給資料庫更新。05 章起使用 title 120、content 4000 個 Unicode code point 與 body 16 KiB 上限；09 章再以 Zod 表達欄位規則。
 
 成功回應：
 
@@ -327,7 +324,7 @@ Location: /api/me/articles/a_1001
 
 假設 Alice 開了兩個分頁，都讀到版本 1。第一個儲存成功後變成版本 2，第二個仍傳 1，就應收到 `409 VERSION_CONFLICT`。前端應提示重新載入或合併，而不是默默覆蓋第一個分頁的內容。
 
-真正避免併發覆蓋需要在資料庫寫入時原子比對版本；「先 SELECT，再不帶條件地 UPDATE」仍可能出錯。20 章會完成這個保證與併發測試。
+真正避免併發覆蓋需要在資料庫寫入時原子比對版本；「先 SELECT，再不帶條件地 UPDATE」仍可能出錯。11–13 章已用帶 id、version、status 條件的 UPDATE 與不同 pool 併發測試，驗證單篇文章的更新保證；20 章再擴充文章與稽核等跨資料交易。
 
 ### 列表回應
 
@@ -356,9 +353,9 @@ Location: /api/me/articles/a_1001
 {
   "error": {
     "code": "VALIDATION_ERROR",
-    "message": "請求欄位不符合規格",
+    "message": "輸入驗證失敗",
     "details": [
-      { "field": "authorId", "reason": "不允許指定作者" }
+      { "field": "body", "code": "UNKNOWN_FIELDS", "message": "包含不允許的欄位" }
     ]
   },
   "requestId": "req_example"
@@ -366,6 +363,8 @@ Location: /api/me/articles/a_1001
 ```
 
 前端以穩定的 `code` 分支處理，不應依賴會調整措辭的 `message`。`details` 沒有可公開的欄位資訊時使用空陣列；`requestId` 用來對照日誌，不是身分憑證。
+
+此處 details 與 09–13 章一致，使用 field／code／message；未知欄位指向所屬物件，不回傳用戶原始欄位名稱或值。錯誤 body 的 requestId 與回應標頭 X-Request-ID 相同。
 
 | 狀態碼 | 本課的使用情境 | 錯誤代碼範例 |
 |--------|----------------|--------------|
@@ -385,7 +384,7 @@ Location: /api/me/articles/a_1001
 
 | 給定條件與操作 | 應觀察到的結果 | 主要實作階段 |
 |----------------|----------------|--------------|
-| 公開列表中只有草稿與封存文章 | `200`，`data` 為空、`total` 為 0 | 08–10、21 |
+| 資料中只有草稿與封存文章，查詢公開列表 | `200`，`data` 為空、`total` 為 0 | 08–10、21 |
 | 從公開詳情端點查草稿 | `404`，作者也須改用自己的管理端點 | 08–10、18 |
 | 新增文章時 `title` 是數字 | `400 VALIDATION_ERROR`，沒有新增資料 | 09–10 |
 | 新增文章時夾帶 `authorId` | `400 VALIDATION_ERROR`，不能指定他人為作者 | 09–10、18 |
@@ -393,7 +392,7 @@ Location: /api/me/articles/a_1001
 | Bob 修改 Alice 的既有文章 | `403 FORBIDDEN`，文章不變 | 18 |
 | Alice 以正確版本發佈自己的草稿 | `200`，狀態變為 `published`，版本加一 | 08–13、20 |
 | 管理員以正確版本修改封存文章 | `409 INVALID_ARTICLE_STATE`，文章不變 | 18–20 |
-| 同一篇文章同時收到兩個相同版本的更新 | 一個成功，另一個 `409 VERSION_CONFLICT` | 20、22 |
+| 同一篇文章同時收到兩個相同版本的更新 | 一個成功，另一個 `409 VERSION_CONFLICT` | 11–13；20、22 深化 |
 | 狀態變更時，稽核紀錄寫入失敗 | 狀態與版本回滾，不留下半套結果 | 20、22 |
 | Bob 刪除 Alice 的留言 | `403 FORBIDDEN`，留言仍存在 | 18、28 |
 | 留言作者刪除自己的留言後再次刪除 | 第一次 `204` 且無 body，第二次 `404` | 28 |
@@ -414,7 +413,7 @@ Location: /api/me/articles/a_1001
 | 17–23 | Nest 驗證、Session、權限、交易、併發、文件與整合測試 | 明確加入新的成功與失敗條件，逐項落實最終契約 |
 | 24–29 | 觀測、效能、部署、前端與完整專題驗收 | 整合留言等功能並演練失敗情境 |
 
-例如 Express 階段可先用記憶體檢查 `expectedVersion`，但資料庫併發保證必須等 20 章實作與驗證，不能把單一請求測試通過當作已解決競爭問題。
+例如 08–10 章先在單一程序的 Map 檢查 `expectedVersion`，11–13 章再以 PostgreSQL 條件更新與併發測試驗證跨 pool 行為。20 章擴大交易情境；不能把單一請求或測試替身通過，當作已驗證資料庫競爭問題。
 
 遷移 Nest 時保留的是「13 章已完成的行為」，不是宣稱從第一個 Express 路由起就具備最終所有功能。18 章新增認證後，原本能直接呼叫的寫入測試會改成先登入，並補上未登入與越權測試。
 

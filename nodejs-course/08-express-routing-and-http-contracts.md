@@ -189,6 +189,8 @@ router.route('/').post(body, (req, res) => {
 
 此處 `body` 是 `jsonBody(...)` 建立的 middleware。它保留 05 章的限制：JSON／UTF-8、16 KiB 上限、不接受壓縮、讀取逾時與非法 UTF-8 拒絕。用戶中斷或 parser 結束時會清掉自己的 timer。
 
+有一項錯誤分類與 05 章不同：`express.json()` 預設 `strict: true`，只讓物件與陣列通過解析。因此整份 body 為 `null`、數字、布林值或 JSON 字串時，本章回 `400 INVALID_JSON`；陣列能通過 parser，但後續欄位驗證仍回 `400 VALIDATION_ERROR`。05 章直接使用 JSON.parse，這些合法 JSON 值會到欄位驗證才被拒絕。這裡的 INVALID_JSON 包含 parser 不接受的頂層形狀，不只是語法錯誤。[Express JSON parser 的 strict 選項](https://expressjs.com/en/5x/api/express/#expressjsonoptions)
+
 `req.body as unknown` 不是驗證，它只是讓型別不要掩蓋驗證責任。真正的檢查在 `validateDraft()` 與文章操作函式裡：
 
 - 必須是物件；`null`、陣列與其他形狀拒絕。
@@ -313,7 +315,7 @@ curl -i "http://127.0.0.1:3008/api/me/articles/$ARTICLE_ID"
 
 - 開兩個 API 實例，會有兩份互不相通的資料。
 - 重啟程序，新建文章就消失，固定種子重新出現。
-- 改成資料庫後，不能把「讀取、檢查、無條件更新」當成原子操作；20 章會練習帶版本條件的寫入與交易。
+- 改成資料庫後，不能把「讀取、檢查、無條件更新」當成原子操作；11 章開始實作帶版本與狀態條件的寫入及真實資料庫併發測試，20 章再擴大到稽核與跨資料交易。
 
 `createdAt`／`updatedAt` 由伺服器產生，以 UTC ISO 字串回傳；排序按建立時間降冪，再按 ID 降冪。同一毫秒內兩次修改的 updatedAt 可能相同，因此衝突判定使用 version，不使用時間字串猜測。
 
@@ -416,7 +418,7 @@ curl -i http://127.0.0.1:3008/api/not-a-route
 - [ ] 知道固定作者不是認證，Map 不是持久化資料庫。
 - [ ] 已通過 `npm run check`，且保留原有匯出與停止服務行為。
 
-下一章預定為 `09-middleware-order-and-input-validation.md`，會把本章已用到的 middleware 順序、next 與輸入 schema 拆開練習。
+下一章：[Middleware 順序、next 與輸入驗證](09-middleware-order-and-input-validation.md)，會把本章已用到的 middleware 順序、next 與輸入 schema 拆開練習。
 
 ---
 

@@ -260,7 +260,7 @@ class A5b_Shared2Test extends AbstractRedisIT { … }
 ### 14.2.5 ⚠️ 「Could not find a valid Docker environment」
 
 這是 Testcontainers 最常見的求助訊息，而且它的原因每次都不一樣。
-**本站寫這一章的時候就撞到一個**，值得完整記下來：
+**下面是其中一種**，值得完整記下來：
 
 ```
 ERROR org.testcontainers.dockerclient.DockerClientProviderStrategy
@@ -811,8 +811,8 @@ static void props(DynamicPropertyRegistry r) { r.add("spring.data.redis.database
 | **測試要平行跑** | ✅ 用 ③ 分 database；⚠️ 並且接受「Cluster 的測試不能平行跑」 |
 | **無論哪一種** | ⚠️ **不要依賴測試的執行順序**。`@Order` 只該用在「示範順序問題」這種地方，不該用在正式的測試裡 |
 
-⚠️ **14.6.1 的 Cluster 測試裡有一個真實的例子**：第一版的
-`你的每一段_Lua_都要在這裡跑一次()` 依賴了前一個測試寫進去的 `{order:1}:stock`，
+⚠️ **14.6.1 的 Cluster 測試就是一個例子**：如果
+`你的每一段_Lua_都要在這裡跑一次()` 依賴前一個測試寫進去的 `{order:1}:stock`，
 **JUnit 換一個執行順序它就紅了**。修法是每個測試自己準備資料：
 
 ```java
@@ -1338,7 +1338,7 @@ public class HotKeyDetector {
 ```
 
 ⚠️ **`template()` 那個函式是這段程式最容易寫錯的地方。**
-第一版用 `\d+` 全域取代，結果 `lab14:v1:product::42` 變成 `lab*:v*:product::*`——
+如果用 `\d+` 全域取代，`lab14:v1:product::42` 會變成 `lab*:v*:product::*`——
 **連命名空間都被吃掉了。** 要逐段判斷：整段都是數字才換。
 
 ⚠️ **絕對不要把完整的 key 當成 Micrometer 的標籤。**
@@ -1593,7 +1593,7 @@ user default off
 
 **④ 「Testcontainers 說找不到 Docker，一定是 Docker 沒開」**
 
-14.2.5：本站撞到的是 **Docker Engine 29 的 `MinAPIVersion=1.44`**，
+14.2.5：原因可能是 **Docker Engine 29 的 `MinAPIVersion=1.44`**，
 `docker ps` 完全正常。**診斷要從 `curl --unix-socket … /version` 開始。**
 
 **⑤ 「`@DataRedisTest` 比 `@SpringBootTest` 好，因為快」**

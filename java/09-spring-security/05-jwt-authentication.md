@@ -1320,7 +1320,7 @@ Spring Security 內建一條處理 Bearer token 的路：`oauth2ResourceServer`�
    → 401  Bearer error="invalid_token", error_description="An error occurred while attempting to decode the Jwt: Signed JWT rejected: Invalid signature", error_uri="https://tools.ietf.org/html/rfc6750#section-3.1"
 ```
 
-🔴 **這一節踩到一個坑，值得單獨講**：
+🔴 **這條 chain 有一個坑，值得單獨講**：
 
 ```java
 // 我一開始在這條 chain 上也寫了 .authenticationManager(am)（跟 j1 一樣），

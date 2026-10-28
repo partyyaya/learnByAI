@@ -782,7 +782,7 @@ public class AuditListener {
 ```
 
 > 🔴 **`writeAs` 那個「明確指定 actor」的設計不是多餘的。**
-> 第一版寫成「從 `SecurityContextHolder` 讀 actor」，實測結果是：
+> 如果寫成「從 `SecurityContextHolder` 讀 actor」，實測結果是：
 > **登入失敗與登出的那兩筆，`actor` 欄位都是 `null`** ——
 > 因為那兩個時間點 `SecurityContextHolder` 本來就是空的（01 章 1.9.3 量過它的生命週期）。
 > **「誰」必須從事件物件裡拿。**

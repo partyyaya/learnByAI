@@ -534,7 +534,7 @@ MySQL：Duplicate entry 'name-1' for key 'probe.uq_probe_name'
 
 **⑭ 🔴🔴 這一根本來判定「兩邊一樣」，而它只對了一半。**
 
-第一次跑探針 ⑭ 的時候用的是**乾淨的 JDBC URL**（沒有 `rewriteBatchedStatements`），
+用**乾淨的 JDBC URL**（沒有 `rewriteBatchedStatements`）跑探針 ⑭，
 結果 H2 與 MySQL 都是「跳過壞的那一筆、繼續跑完」，於是它被歸進「兩邊一樣」。
 
 **而 05 章 5.8.9 建議的那個參數會改變這個答案。同一組資料、同一句 SQL，只多一個 URL 參數**：

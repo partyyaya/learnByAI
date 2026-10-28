@@ -2294,7 +2294,7 @@ public record OrderListRow(
 //                                                                    ↑ 原始型別 long
 ```
 
-**第一版的 XML 寫的是 `javaType="long"`，結果是**：
+**如果 XML 寫的是 `javaType="long"`，結果是**：
 
 ```
 org.apache.ibatis.reflection.ReflectionException:

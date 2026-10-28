@@ -99,7 +99,7 @@ public class StockService {
 ```
 
 > ⚠️ **`StockDao` 是獨立的 bean，不是 `StockService` 的一個 private 方法。**
-> 寫這個實驗的時候第一版就踩到了：三段動作寫在同一個 class 裡互相呼叫，
+> 這是一個很容易踩到的坑：如果三段動作寫在同一個 class 裡互相呼叫，
 > `@Transactional` **完全沒有生效**（自呼叫不經過 proxy，07 章 7.2.3 的老朋友），
 > 結果是實體處於 detached 狀態、`setStock()` 什麼也沒做，
 > **庫存永遠停在 100，實驗「看起來很成功」。**

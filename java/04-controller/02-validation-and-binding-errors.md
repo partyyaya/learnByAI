@@ -1318,7 +1318,7 @@ public @interface TaiwanId {
 
 > ### ⚠️⚠️ `RECORD_COMPONENT` 的真正理由（一個常被講錯的地方）★★
 >
-> 網路上（以及本課程的早期版本）常說「`@Target` 沒有 `RECORD_COMPONENT`
+> 網路上常說「`@Target` 沒有 `RECORD_COMPONENT`
 > 就不能標在 record 元件上，會編譯錯誤」。**那是錯的。**
 >
 > **證據一：JLS 8.10.1** 明確規定，標在 record 元件上的註解會**自動傳播**到

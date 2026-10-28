@@ -970,7 +970,7 @@ public class CachedBodyFilter extends OncePerRequestFilter {
 
 > ### ⚠️⚠️ `shouldNotFilterAsyncDispatch()` 回 `false` 的**完整**後果 ★★
 >
-> 很多資料（包含本課程的早期版本）說：「就算回 `false`，`OncePerRequestFilter`
+> 很多資料說：「就算回 `false`，`OncePerRequestFilter`
 > 的『已執行過』attribute 還在，所以實際上不會重跑。」
 > **那是錯的。** 回頭看 4.4.1 貼的原始碼：
 >

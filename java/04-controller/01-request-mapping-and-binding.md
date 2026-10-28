@@ -2074,7 +2074,7 @@ Instant createdFrom                                  // ★ 不需要 @DateTimeF
 
 > ### ⚠️⚠️ `@DateTimeFormat` 對 `Instant` 是**沒有作用**的 ★★
 >
-> 這是一個很多人（包含本課程早期的版本）寫錯的地方。
+> 這是一個很多人寫錯的地方。
 >
 > `@DateTimeFormat` 由 `Jsr310DateTimeFormatAnnotationFormatterFactory` 處理，
 > 而它的 `getFieldTypes()` 明確列出支援的型別：

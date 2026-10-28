@@ -47,8 +47,14 @@ export function createShutdown(server: Server, options: ShutdownOptions = {}) {
           else resolve();
         });
       });
-      // draining 後入口必須拒絕新工作；已接受的工作也不能再啟動未登記的背景工作。
-      await Promise.all([httpClosed, Promise.allSettled([...tasks])]);
+      // 先等 HTTP 關閉：停止前接受的請求可能稍後才讀完 body、登記工作。
+      // 客戶端離線也不代表那些工作已完成，不能只等 shutdown 當下的快照。
+      await httpClosed;
+      while (tasks.size > 0) {
+        controller.signal.throwIfAborted();
+        await Promise.allSettled([...tasks]);
+      }
+      // draining 後入口須拒絕新請求；背景工作須在所屬工作結束前登記。
       controller.signal.throwIfAborted();
       options.onEvent?.('http-drained');
       await options.closeResources?.(controller.signal);

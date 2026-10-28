@@ -552,7 +552,7 @@ UUIDv7:  01A079FD 4D9F 7A80 ...   ← 開頭是【毫秒時間戳】，所以是
 
 ### 1.6.3 MySQL 沒有 `SEQUENCE`，那 ③ 是怎麼跑的
 
-⚠️ **第一次跑的時候它是直接爆的**：
+⚠️ **直接跑的話，它會爆**：
 
 ```
 java.sql.SQLSyntaxErrorException: Table 'ch01.pk_seq_seq' doesn't exist

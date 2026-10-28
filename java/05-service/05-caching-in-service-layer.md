@@ -685,7 +685,7 @@ class CacheTransactionExperimentTest {
 
 ### 5.3.2 ⚠️ 一個必須先說的陷阱：計數器不能是實例欄位
 
-**寫這個實驗的第一版用了實例欄位**：
+**如果計數器用實例欄位**：
 
 ```java
 static class Reader {
@@ -2168,7 +2168,7 @@ public ProductView findByIdWithLock(String id) {
 
 #### 🔴 `sync = true` 的兩個限制在「第一次呼叫」才炸 ★★
 
-**寫這一段時的假設是「它在啟動時失敗」** ——
+**直覺的假設是「它在啟動時失敗」** ——
 因為那是 Spring 對這類組態錯誤的常見做法（02 章 2.5.1 的
 `proxy-target-class=false` 就是啟動失敗）。
 

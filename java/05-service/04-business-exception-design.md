@@ -1501,7 +1501,7 @@ log.error("退款被拒 returnId={} gatewayReason={} amount={}",
               ...
 ```
 
-> 📌 **這個自我修正值得留在課程裡**，因為它是一個很常見的推理錯誤：
+> 📌 **這個「等一下」值得記住**，因為它是一個很常見的推理錯誤：
 > **「不要放進 `extensions`」與「不要回給客戶端」是兩件事。**
 > `Problem` 的 `detail`、`userMessage`、`errors[]`、`extensions`
 > **四個欄位全部都會回給客戶端**（4xx 時）。
@@ -3105,16 +3105,16 @@ public class OptimisticLockConflictException extends BusinessException {
 ⚠️ **上面有 42 列而我說 38 個。** 那個差額是刻意的：
 **兩個 code（`ORDER_ADDRESS_NOT_EDITABLE`、`ADDRESS_CHANGE_LIMIT_EXCEEDED`）的例外不存在**（4.6.4），
 **一個（`NEGATIVE_STOCK_NOT_ALLOWED`）用的不是業務例外**（4.6.3），
-**一個（`COUPON_ALREADY_USED`）我把它與 `COUPON_ALREADY_APPLIED` 弄混了** —— 見下。
+**一個（`COUPON_ALREADY_USED`）在 4.5.7 跟 `COUPON_ALREADY_APPLIED` 混為一談** —— 見下。
 
-**🔴 那個「弄混了」是真的**，而它值得留在課程裡：
+**🔴 這兩個 code 很容易混為一談**，要分清楚：
 
 | code | 意思 | 拋出點 |
 |---|---|---|
 | `COUPON_ALREADY_APPLIED` (409) | **這張訂單**已經套過券 | `Order.applyCoupon()` |
 | `COUPON_ALREADY_USED` (409) | **這個客戶**用過這張券 | `Coupon.consume()`（`maxPerCustomer`，00 章 0.12 ⑨） |
 
-**兩者都存在，而我上面只寫了一個** —— 於是 `COUPON_ALREADY_USED` 沒有例外，
+**兩者都存在，而 4.5.7 只寫了一個** —— 於是 `COUPON_ALREADY_USED` 沒有例外，
 於是它會 fallthrough 成 500。
 
 ```java
@@ -3901,7 +3901,7 @@ public static Set<OrderStatus> editableStates() {
 }
 ```
 
-> 📌 **這一段刻意留著完整的推翻過程，因為它是一類很常見的錯誤**：
+> 📌 **這個推翻過程值得記住，因為它是一類很常見的錯誤**：
 >
 > **「一個正確的技術事實」+「一個沒有驗證的因果連結」= 一個聽起來很專業的錯誤理由。**
 >
@@ -4622,7 +4622,7 @@ new Object[]{shortfall.toPlainString()}      // ← 🔴 已經是 String 了
 ```
 
 **這是 4.8.3（`Duration`）與 4.8.4（enum）之後的第三個同型 bug**，
-而它讓我去掃了一次整個專案：
+所以值得把整個專案掃一次：
 
 ```bash
 grep -rn "new Object\[\]{.*toPlainString" src/main/java
@@ -4634,7 +4634,7 @@ payment/domain/exception/RefundExceedsPaymentException.java:28
 payment/domain/exception/RefundRejectedException.java:27
 ```
 
-🔴 **四個例外犯了同一個錯**，而它們是我在 4.5.7 一個一個寫出來的
+🔴 **四個例外犯了同一個錯**，而它們都是在 4.5.7 一個一個寫出來的
 —— **在寫下 4.8.3 那條規則之前**。
 
 > 📌 **這是「規則寫在使用之後」的典型後果**：

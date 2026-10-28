@@ -2,7 +2,9 @@
 
 > 先理解 Node.js 如何執行程式與處理 I/O，再用 Express 看清 HTTP 請求流程，最後用 NestJS 練習模組、依賴注入與專案整合。整門課使用同一個「文章與留言管理 API」，讓每一層抽象都有前一階段的實作可以對照。
 
-**目前進度：第 00–08 章已完成，09–33 章待撰寫。** 規劃共 **30 章主線（00–29）＋4 章選修（30–33）**；已完成章節提供連結，其餘檔名為預定名稱。
+**目前進度：第 00–13 章已完成，14–34 章待撰寫。** 規劃共 **30 章主線（00–29）＋5 章選修（30–34）**；已完成章節提供連結，其餘檔名為預定名稱。
+
+[2026-10-28 全章檢查紀錄](REVIEW-2026-10-28.md)：記錄 00–13 的修正、逐章驗證結果，以及後續遷移需承接的測試範圍。
 
 從 [00 — 課程地圖、執行環境與專題契約](00-course-map-and-project-contract.md) 開始。第 00 章提供 [Docker 可執行範例](examples/00/runtime-and-contract.mjs)，先觀察 Node 環境並檢查文章權限與狀態規則；HTTP 服務與資料庫會在後續章節逐步建立。
 
@@ -15,6 +17,14 @@
 [05 — 原生 HTTP](05-native-http-request-response.md) 提供[可呼叫的服務](examples/05/README.md)，實作查詢、草稿預覽與輸入限制；[06 — 檔案、Buffer、串流與背壓](06-files-buffers-streams-backpressure.md) 提供[串流匯出範例](examples/06/README.md)，處理慢速接收、下載中斷與關檔。
 
 [07 — 程序生命週期、信號與有界關閉](07-process-signals-and-graceful-shutdown.md) 提供[關閉流程範例](examples/07/README.md)，驗證進行中請求、資源清理與停止期限；[08 — Express 路由與 HTTP 契約](08-express-routing-and-http-contracts.md) 提供[記憶體文章 API](examples/08/README.md)，實作建立、修改、發佈與封存。
+
+[09 — Middleware 順序、next 與輸入驗證](09-middleware-order-and-input-validation.md) 提供[schema 與請求流程範例](examples/09/README.md)，以 Zod 驗證輸入、拒絕額外欄位，並透過 request ID 與執行紀錄追蹤成功及失敗路徑。
+
+[10 — 錯誤處理與 HTTP 契約測試](10-error-handling-and-api-tests.md) 提供[Supertest 與錯誤範例](examples/10/README.md)；[11 — PostgreSQL、Prisma 與 migration](11-postgres-prisma-and-migrations.md) 提供[資料庫範例](examples/11/README.md)，驗證 migration、持久化、條件更新與測試隔離。
+
+[12 — Controller、Service、Repository 與手動依賴注入](12-service-repository-and-manual-di.md) 提供[分層與測試替身範例](examples/12/README.md)，保留 HTTP 契約、條件更新與交易，並以單元測試及真實資料庫測試分別驗證。
+
+[13 — Express 專題驗收與 NestJS 遷移基準](13-express-capstone-and-migration-baseline.md) 提供[完整驗收快照](examples/13/README.md)與[契約基準](examples/13/BASELINE.md)，以可重用 HTTP 測試、資料隔離與程序驗證完成 Express 階段。
 
 ## 課程目標
 
@@ -85,7 +95,7 @@ NestJS：保留 CRUD 契約遷移 → 加入認證／權限 → 交易與完整�
     ↓
 交付：最小前端 → 日誌與效能檢查 → Docker／CI → 故障驗收
     ↓
-選修：Redis、背景工作、即時通知與 HTTP 平台替換
+選修：Redis → BullMQ 背景工作；即時通知、HTTP 平台替換、TypeORM 對照
 ```
 
 Express 階段的未授權寫入介面只供本機學習。遷移時先維持相同 CRUD 行為，通過原有測試後，再明確新增認證需求與相應測試，避免把架構遷移與業務變更混在一起。
@@ -97,12 +107,13 @@ Express 階段的未授權寫入介面只供本機學習。遷移時先維持相
 | 語言與執行環境 | 01 章固定 Node.js 24.22.1、npm 11.19.1、TypeScript 5.9.3 | 同時練習型別與執行期行為；以版本檔、映像 digest 與 lockfile 重建 |
 | 模組與建置 | 01 章先用 NodeNext＋CommonJS 建置，02 章比較 ESM／CommonJS | 說清楚原始碼、轉譯結果與 Node 執行的差異；進入 Nest 時再加入裝飾器及 metadata 設定 |
 | HTTP 框架 | Express 5 精華 → NestJS，主線使用 Express adapter | 保留底層平台，讓遷移先專注於架構變化 |
-| 資料庫與 ORM | PostgreSQL＋Prisma | 兩個框架沿用同一資料模型與 migration，不因遷移框架而更換資料庫 |
+| 資料庫與 ORM | 主線 PostgreSQL＋Prisma；34 章選修 TypeORM | 框架遷移先保留資料存取，再以獨立範例比較 Entity、Repository、QueryBuilder 與 migration |
+| 快取與背景工作 | 30 章 Redis；31 章 BullMQ＋@nestjs/bullmq | 先掌握 Redis 連線、快取與失效，再練習持久化工作、重試、冪等與 Outbox |
 | 驗證 | Express 使用 schema 驗證；NestJS 示範 DTO／Pipe | 保持對外驗證規則一致，區分 TypeScript 型別與實際輸入檢查 |
 | 測試 | Jest＋Supertest；NestJS 加入 TestingModule | 沿用同一測試工具，分開驗證業務邏輯、HTTP 契約與資料庫行為 |
 | 執行與部署 | npm scripts、lockfile、Docker Compose、Nginx | 明確區分開發啟動、正式建置、資料持久化與代理設定 |
 
-01 章已固定執行環境、TypeScript 與 Jest，附上 lockfile 與環境驗證步驟。08 章已固定 Express 5.3.0 與 @types/express 5.0.6；ORM 與 HTTP 測試工具會在開始使用的章節確認相容版本，更新對應範例的 lockfile。
+01 章已固定執行環境、TypeScript 與 Jest，附上 lockfile 與環境驗證步驟。08 章已固定 Express 5.3.0 與 @types/express 5.0.6，09 章新增 Zod 4.6.7；10 章加入 Supertest 7.3.1，11 章加入 Prisma 7.10.1 與固定映像的 PostgreSQL 17，依賴均記錄於各章 lockfile。
 
 ## 第一階段：Node.js 基礎（00–07）
 
@@ -128,11 +139,11 @@ Express 階段的未授權寫入介面只供本機學習。遷移時先維持相
 | 章節 | 預定檔案 | 主題與重點 | 章末實作／驗收 |
 |------|----------|------------|----------------|
 | 08 | [08-express-routing-and-http-contracts.md](08-express-routing-and-http-contracts.md) | app／Router、params／query／body、回應與 REST 契約 | 實作記憶體文章建立、查詢、修改與封存；區分成功、輸入錯誤及版本衝突 |
-| 09 | `09-middleware-order-and-input-validation.md` | middleware 順序、next、JSON parser、schema 驗證、請求識別 | 畫出請求經過的函式；拒絕錯誤輸入與不允許修改的欄位 |
-| 10 | `10-error-handling-and-api-tests.md` | 同步／非同步錯誤、錯誤 middleware、headers sent、HTTP 測試 | 建立成功與失敗契約測試，確保一次請求只完成一次回應 |
-| 11 | `11-postgres-prisma-and-migrations.md` | 最小 Compose 資料庫環境、schema、migration、Prisma、查詢參數化 | 換成 PostgreSQL；重啟後資料仍存在，空資料庫可由 migration 重建 |
-| 12 | `12-service-repository-and-manual-di.md` | 拆分 HTTP、業務、資料存取；手動依賴注入與測試替身 | 從肥大路由重構，保留 HTTP 測試；Service 不依賴 req／res |
-| 13 | `13-express-capstone-and-migration-baseline.md` | 完成 CRUD 垂直切片、測試資料隔離、遷移前基準與 Express 的使用界線 | 固定 API 契約與測試，列出下一階段要解決的依賴及模組問題 |
+| 09 | [09-middleware-order-and-input-validation.md](09-middleware-order-and-input-validation.md) | middleware 順序、next、JSON parser、schema 驗證、請求識別 | 畫出請求經過的函式；拒絕錯誤輸入與不允許修改的欄位 |
+| 10 | [10-error-handling-and-api-tests.md](10-error-handling-and-api-tests.md) | 同步／非同步錯誤、錯誤 middleware、headers sent、HTTP 測試 | 建立成功與失敗契約測試，確保一次請求只完成一次回應 |
+| 11 | [11-postgres-prisma-and-migrations.md](11-postgres-prisma-and-migrations.md) | 最小 Compose 資料庫環境、schema、migration、Prisma、查詢參數化 | 換成 PostgreSQL；重啟後資料仍存在，空資料庫可由 migration 重建 |
+| 12 | [12-service-repository-and-manual-di.md](12-service-repository-and-manual-di.md) | 拆分 HTTP、業務、資料存取；手動依賴注入與測試替身 | 從肥大路由重構，保留 HTTP 測試；Service 不依賴 req／res |
+| 13 | [13-express-capstone-and-migration-baseline.md](13-express-capstone-and-migration-baseline.md) | 完成 CRUD 垂直切片、測試資料隔離、遷移前基準與 Express 的使用界線 | 固定 API 契約與測試，列出下一階段要解決的依賴及模組問題 |
 
 錯誤處理章會明確區分 Express 版本差異與非同步來源；Express 5 對回傳 Promise 的 handler 可自動轉交 rejection，但這不代表所有背景回呼錯誤都會自動進入請求錯誤處理。[Express 官方文件](https://expressjs.com/en/guide/error-handling/)
 
@@ -156,6 +167,8 @@ Express 階段的未授權寫入介面只供本機學習。遷移時先維持相
 | 23 | `23-external-http-timeouts-and-retries.md` | 外部 HTTP、取消、有限重試、冪等條件與錯誤轉換 | 串接測試用外部服務，模擬慢回應與失敗，確認重試不造成重複副作用 |
 
 Nest 的 middleware、Guard、Interceptor、Pipe 與 Filter 有各自的生命週期與作用範圍；課程會以追蹤日誌及測試比較，避免把所有 Express middleware 都機械式搬成同一類元件。[NestJS 請求生命週期](https://docs.nestjs.com/faq/request-lifecycle)
+
+16 章的完整遷移驗收須包含 13 章 HTTP 基準、資料庫與程序檢查，並把 10 章的非法 UTF-8、慢速 body、下載中斷等底層傳輸案例接到 Nest 測試組裝。只通過一般 JSON 請求不足以證明輸入限制與資源清理也保持一致。
 
 測試會從 01、10 章開始持續累積，22 章再深化框架測試與資料庫整合。Nest 提供 TestingModule 與依賴替換能力，適合對照前面手動注入的做法。[NestJS 測試文件](https://docs.nestjs.com/fundamentals/testing)
 
@@ -185,16 +198,49 @@ Nest 的 middleware、Guard、Interceptor、Pipe 與 Filter 有各自的生命�
 7. 測試能在乾淨資料庫執行；環境、migration 與種子資料有可重現步驟。
 8. 程序停止、重新部署與備份恢復都有實際操作紀錄。
 
-## 第五階段：依需求選修（30–33）
+## 第五階段：依需求選修（30–34）
 
 以下均以已完成主線專題為前提，另標示直接依賴。先確認問題，再選擇是否加入額外基礎設施。
 
 | 章節 | 預定檔案 | 主題與重點 | 延伸驗收 |
 |------|----------|------------|----------|
-| 30 | `30-redis-caching-and-invalidation.md` | Redis、公開文章快取、失效、TTL、降級與權限資料隔離 | 更新後不長期讀到舊資料；快取故障時有預期行為 |
-| 31 | `31-background-jobs-outbox-and-idempotency.md` | 背景工作、重試、冪等、Outbox 與通知；工具以 Redis 工作佇列為例，需先有 30 的 Redis 操作基礎 | 提交後程序中斷仍可補送通知；重複工作不產生重複業務結果 |
+| 30 | `30-redis-caching-and-invalidation.md` | Redis Docker、Node client／Nest Provider、cache-aside、key／TTL、失效、降級與權限資料隔離 | 公開文章快取可觀察命中與失效；更新／封存不持續回舊資料，Redis 中斷可降級 |
+| 31 | `31-background-jobs-outbox-and-idempotency.md` | BullMQ／@nestjs/bullmq、Queue／Worker、重試與 backoff、併發、冪等、Outbox、關閉與失敗工作；先完成 30 | 發佈文章後可靠排入通知工作；worker 重啟可恢復，重複投遞不重複建立業務通知 |
 | 32 | `32-sse-websocket-and-connection-lifecycle.md` | SSE／WebSocket、連線驗證、重連、補抓與資源清理 | 文章通知可恢復，斷線後不殘留無限成長的 listener／timer |
 | 33 | `33-fastify-adapter-and-platform-boundaries.md` | 換用 Fastify adapter，檢查平台耦合、插件相容與基準測試 | 以同一 API 契約測試確認行為；用量測比較而非只看框架名稱 |
+| 34 | `34-typeorm-entities-repositories-and-migrations.md` | TypeORM／@nestjs/typeorm、Entity 關聯、DataSource、Repository／QueryBuilder、migration、交易與版本條件更新；對照 Prisma | 獨立 TypeORM 範例通過相同 HTTP 契約、migration 重建、條件更新併發與交易回滾測試 |
+
+### Redis、BullMQ、TypeORM 的實作安排（待撰寫）
+
+以下是章節規劃，尚未有這三章教材或 examples 快照。主線繼續使用 Prisma；選修各自提供完整獨立範例、固定套件版本與 lockfile、Docker 操作、練習及測試。實際撰寫時確認相容版本，不直接將既有範例升級 latest。
+
+**30 — Redis 快取與失效**
+
+- 前置：20 的資料交易、21 的查詢契約、22 的測試與 24 的觀測；先完成主線專題。
+- 從 Docker Redis、CLI 與 Node client 開始，練習字串／JSON 序列化、key 命名、TTL、連線失敗與關閉，再包成 Nest Provider。
+- 對公開文章實作 cache-aside；設計單篇與列表的快取 key、寫入後失效、封存後可見性，以及讀取／寫入競態的取捨。私有管理資料不與公開快取混用。
+- 以 PostgreSQL 為真實資料來源；演練 Redis 中斷、過期、舊資料回填、快取穿透／大量同時失效，記錄命中率與回源次數。
+- 驗收：真實 Redis 整合測試、TTL 與失效測試、Redis 停止時的降級測試；測試只清理自己的 key 前綴，不對共用環境 FLUSHALL。
+
+**31 — BullMQ 背景工作、Outbox 與冪等**
+
+- 前置：30 的 Redis 操作，加上 20 的交易與 07／24 的程序生命週期、觀測。
+- 先用 BullMQ Queue／Worker 理解 producer 與 consumer，再接 @nestjs/bullmq；Docker 分開執行 API、worker、PostgreSQL 與 Redis。Nest 提供 BullMQ 整合套件，BullMQ 的工作資料由 Redis 保存。[NestJS Queue 文件](https://docs.nestjs.com/techniques/queues)
+- 以「文章發佈後建立通知」為例，練習工作狀態、attempts／backoff、延遲工作、併發、失敗保留與人工重試；測試用本機通知紀錄，不要求外部寄信帳號。
+- 把文章變更與 Outbox 寫入同一 PostgreSQL 交易，再由投遞程序加入佇列；用資料庫唯一約束與冪等鍵處理重複投遞，不把 jobId 去重當成任意外部副作用的 exactly-once 保證。
+- 演練 Redis 不可用、worker 執行中停止、重試與重複處理；設計 worker 有界關閉、獨立測試 queue 前綴，以及工作資料的保留、持久化與記憶體政策，與可被淘汰的快取資料分開規劃。
+- 驗收：交易失敗不產生通知工作、提交後暫停投遞仍可補送、重複工作只建立一次業務通知、worker 重啟恢復與資源清理。重試策略以固定版本的 BullMQ API 為準。[BullMQ 重試文件](https://docs.bullmq.io/guide/retrying-failing-jobs)
+
+**34 — TypeORM 與 Prisma 對照**
+
+- 前置：12 的 Repository 邊界、15–16 的 Nest DI／Module、20 的交易與 22 的資料庫測試；不依賴 Redis 或 BullMQ。
+- 用相同文章契約建立獨立 TypeORM 快照：Entity／欄位／關聯與索引、DataSource 與連線池、Repository、QueryBuilder、分頁與 N+1 查詢觀察，再接 @nestjs/typeorm。
+- 比較 Prisma schema／Client 與 TypeORM Entity／Repository；應用層介面保持明確，DTO 與資料庫 Entity 分開。
+- 練習產生、檢查、套用及回復 migration，使用 synchronize: false；TypeORM 範例使用獨立 schema 與 migration 歷史，不讓兩套工具同時管理主線的表格。[TypeORM migration 說明](https://typeorm.io/docs/migrations/why/)
+- 在 transaction manager／QueryRunner 的正確範圍內實作回滾與條件更新；實際 UPDATE 帶 id＋version＋status 並檢查受影響筆數，以兩個 pool 併發測試驗證，不只依賴版本欄位裝飾器。
+- 驗收：空資料庫由 migration 重建、既有 HTTP 契約通過、失敗交易不留資料、相同版本僅一個更新成功、測試 schema 與連線完整清理。
+
+建議閱讀順序：主線完成 → 30 Redis → 31 BullMQ；34 TypeORM 可作為獨立 ORM 對照選修，不要求先完成 30–33。
 
 ## Express 與 NestJS 的對照方式
 
