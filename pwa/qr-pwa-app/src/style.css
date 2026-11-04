@@ -30,7 +30,9 @@ body {
 .app-shell {
   width: min(720px, 100%);
   margin: 0 auto;
-  padding: 18px 14px 28px;
+  /* iOS 主畫面模式的狀態列是半透明（black-translucent），要讓出瀏海與底部手勢列的高度 */
+  padding: calc(18px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right))
+    calc(28px + env(safe-area-inset-bottom)) calc(14px + env(safe-area-inset-left));
 }
 
 .app-header {
@@ -197,7 +199,7 @@ body {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 18px;
+  bottom: calc(18px + env(safe-area-inset-bottom));
   transform: translateX(-50%);
   border-radius: 999px;
   padding: 10px 16px;

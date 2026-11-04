@@ -31,7 +31,10 @@ async function bootstrap() {
   ReactDOM.createRoot(document.getElementById('root')).render(
     <React.StrictMode>
       <QueryClientProvider client={queryClient}>
-        <BrowserRouter>
+        {/* future：提前採用 React Router v7 的行為，開發時 console 就不會出現 Future Flag 警告（第 08 章） */}
+        <BrowserRouter
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
           <App />
         </BrowserRouter>
         <ReactQueryDevtools initialIsOpen={false} />

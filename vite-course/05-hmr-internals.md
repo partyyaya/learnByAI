@@ -118,13 +118,15 @@ export function setupCounter(el) { /* ... */ }
 if (import.meta.hot) {
   import.meta.hot.accept((newModule) => {
     // 當 counter.js 變動時,這個 callback 會被呼叫,
-    // newModule 是「更新後的新版 counter.js」。
+    // newModule 是「更新後的新版 counter.js」(新版有語法錯誤時會是 undefined)。
     // 你在這裡決定「拿到新版後要做什麼」——通常是用新邏輯重新初始化,
     // 而不必刷新整頁。
-    newModule.setupCounter(document.querySelector('#counter'))
+    if (newModule) newModule.setupCounter(document.querySelector('#counter'))
   })
 }
 ```
+
+> 這個極簡版有兩個代價,先記著,5.6 會處理:舊版綁在按鈕上的事件監聽還在(要用 `dispose` 清掉),而且重新初始化會讓計數歸零(要靠 `hot.data` 或框架的 HMR runtime 才能保留狀態)。
 
 逐行解釋:
 
@@ -141,7 +143,7 @@ if (import.meta.hot) {
         ↓
 ② Dev server 的 file watcher 偵測到 counter.js 變了
         ↓
-③ Vite 重新轉譯 counter.js(只轉這一個!按需,第 02 章)
+③ Vite 把 module graph 裡 counter.js 的轉譯快取作廢(先不急著轉,等瀏覽器來要)
         ↓
 ④ Vite 查 module graph,從 counter.js 往上游(importers)找 HMR 邊界:
    - counter.js 自己有呼叫 import.meta.hot.accept 嗎?
@@ -152,6 +154,7 @@ if (import.meta.hot) {
         ↓
 ⑥ @vite/client 收到,用新網址重新 import 新版 counter.js
    (注意網址帶了 ?t=時間戳,確保瀏覽器抓新版而非快取,回扣第 03 章的快取破壞概念)
+   Vite 收到這個請求,才重新轉譯 counter.js(只轉這一個!按需,第 02 章)
         ↓
 ⑦ @vite/client 呼叫 counter.js 當初註冊的 accept callback,
    把新版模組交給它 → 你的 callback 用新邏輯更新畫面
@@ -178,6 +181,14 @@ counter.js 變了,但它沒 accept
 >
 > 而你平常寫 Vue/React 元件,改了就無痛更新——那是因為框架的 plugin **自動幫你的元件注入了 accept**(下一節講)。
 
+另外有幾種變動**根本不走邊界判斷**:
+
+| 你改了什麼 | Vite 怎麼做 |
+|-----------|------------|
+| `index.html` | 整頁重載(它不是 JS 模組,沒有人能 accept 它) |
+| `vite.config.ts`、`.env` 檔 | 直接**重啟 dev server**(設定與環境變數都要重新讀) |
+| 沒被任何頁面 import 的檔案 | 不在 module graph 裡,什麼都不做 |
+
 > **心智模型**:HMR 邊界就像「水往上漫,直到遇到一個能接住它的盤子」。盤子(accept)接住了,更新就停在那層;一路沒有盤子,水漫到頂(入口)溢出來,就只好整頁重載。
 
 ---
@@ -188,24 +199,31 @@ counter.js 變了,但它沒 accept
 
 ### 以 Vue 為例
 
-當你用 `@vitejs/plugin-vue` 處理一個 `.vue` 檔時,plugin 在把 SFC 編譯成 JS 的同時,**自動在尾巴加上一段 `import.meta.hot.accept` 程式碼**,而且這段邏輯特別聰明:
+當你用 `@vitejs/plugin-vue` 處理一個 `.vue` 檔時,plugin 在把 SFC 編譯成 JS 的同時,**自動在尾巴加上一段 `import.meta.hot.accept` 程式碼**,而且這段邏輯會看「你改了哪裡」決定怎麼更新:
 
 ```js
 // plugin 自動為你的 .vue 元件注入的(簡化示意):
 if (import.meta.hot) {
   import.meta.hot.accept((newModule) => {
-    // 不是粗暴地重新初始化,而是呼叫 Vue 的 HMR runtime API:
-    // 用「新元件的 render 函式 / 邏輯」去「重新渲染這個元件的實例」,
-    // 但「保留元件當前的響應式狀態(data / ref 的值)」
-    __VUE_HMR_RUNTIME__.reload(componentId, newModule.default)
+    if (!newModule) return
+    const { default: updated, _rerender_only } = newModule
+    if (_rerender_only) {
+      // 只改了 <template>:換上新的 render 函式重畫,元件實例不動,
+      // 所以 ref / reactive 的值、輸入框內容都保留
+      __VUE_HMR_RUNTIME__.rerender(updated.__hmrId, updated.render)
+    } else {
+      // 改到 <script>:元件邏輯變了,舊實例不能再用,
+      // 用新定義重新建立這個元件的實例——它自己的狀態會重置,但頁面其他部分不受影響
+      __VUE_HMR_RUNTIME__.reload(updated.__hmrId, updated)
+    }
   })
 }
 ```
 
-**關鍵在於「框架知道怎麼保留狀態」**:
+**關鍵在於「框架知道怎麼盡量保留狀態」**:
 
 - Vite 的 HMR 機制提供「換掉模組 + 給你 callback」的**底層能力**。
-- 但「換掉之後,怎麼在不丟失元件狀態的前提下重新渲染」,是**框架的責任**。Vue 有 `__VUE_HMR_RUNTIME__`、React 有 React Refresh(`@vitejs/plugin-react` 整合的 Fast Refresh),它們知道如何「用新的 render 邏輯重繪,但保留 state」。
+- 但「換掉之後,怎麼在盡量不丟失狀態的前提下重新渲染」,是**框架的責任**。Vue 有 `__VUE_HMR_RUNTIME__`、React 有 React Refresh(`@vitejs/plugin-react` 整合的 Fast Refresh),它們知道哪些情況能「用新的 render 邏輯重繪、保留 state」,哪些情況只能重建元件。
 
 所以分工是:
 
@@ -213,13 +231,13 @@ if (import.meta.hot) {
 |----|---------|
 | **Vite HMR 機制**(本章主角) | 偵測變動、算邊界、透過 WebSocket 推新模組、呼叫 accept callback |
 | **框架 plugin**(plugin-vue / plugin-react) | 自動注入 accept、在 callback 裡呼叫框架的 HMR runtime |
-| **框架 HMR runtime**(Vue/React 內建) | 用新邏輯重繪元件,同時**保留元件狀態** |
+| **框架 HMR runtime**(Vue/React 內建) | 用新邏輯重繪元件,能保留時就**保留元件狀態** |
 
-> **這就是為什麼**:你改一個 Vue 元件的 template,畫面更新了,但元件裡 `ref` 的值、輸入框的內容都還在——因為 plugin-vue 注入的 accept + Vue 的 HMR runtime 聯手保留了狀態。你什麼都不用寫,全自動。
+> **這就是為什麼**:你改一個 Vue 元件的 template,畫面更新了,但元件裡 `ref` 的值、輸入框的內容都還在——因為 plugin-vue 注入的 accept + Vue 的 HMR runtime 聯手保留了狀態。改到 `<script>` 時,則只有這個元件重建、狀態重置,頁面其他地方照樣保留。你什麼都不用寫,全自動。
 
 ### React 的 Fast Refresh
 
-React 同理,`@vitejs/plugin-react` 整合了 **React Refresh**,自動為你的元件注入 HMR 邏輯,改元件時保留 `useState` 的狀態。(它有些限制,例如元件要是具名匯出、檔案不能混太多非元件的匯出,否則會退回整頁重載——背後原因就是 5.4 的「找不到乾淨的邊界」。)
+React 同理,`@vitejs/plugin-react` 整合了 **React Refresh**,自動為你的元件注入 HMR 邏輯,改元件時保留 `useState` 的狀態(v6 起改用 Oxc 做這段轉換,不再依賴 Babel)。它有些限制:元件函式要有名字(例如 `export default function App()`,而不是匿名的 `export default () => ...`),而且檔案最好**只匯出元件**——同時匯出常數或工具函式的檔案,plugin 判斷無法安全地局部更新,會呼叫 `invalidate()` 把更新往上傳,常常一路傳到整頁重載。背後原因就是 5.4 的「找不到乾淨的邊界」。
 
 ---
 
@@ -240,16 +258,23 @@ if (import.meta.hot) {
 
   // 3. dispose():模組「被替換掉之前」執行清理
   //    用來清掉舊模組留下的副作用(計時器、事件監聽、連線),避免外洩
-  import.meta.hot.dispose(() => {
+  //    callback 會拿到 data(就是下面的 hot.data),可以順手把狀態存進去
+  import.meta.hot.dispose((data) => {
     clearInterval(timer)        // 例如清掉舊的計時器
+    data.count = currentCount   // 舊模組要被換掉了,把「最新的」計數存起來
   })
 
   // 4. data:跨「更新前後」傳遞資料的暫存區
-  //    舊模組把要保留的東西塞進 hot.data,新模組啟動時讀回來
-  import.meta.hot.data.count = currentCount
+  //    新模組啟動時讀回舊模組存的值(第一次載入時沒有,所以給預設值)
+  let currentCount = import.meta.hot.data.count ?? 0
 
   // 5. invalidate():我接了更新,但發現處理不了,主動放棄 → 往上冒泡找邊界
   import.meta.hot.invalidate()
+
+  // 6. on():監聽自訂 HMR 事件(server 端由 plugin 發送,第 07 章)
+  import.meta.hot.on('my-plugin:data-changed', (payload) => {
+    refetch(payload)
+  })
 }
 ```
 
@@ -257,16 +282,24 @@ if (import.meta.hot) {
 
 - **`accept`**:核心。宣告「我能處理更新」,讓自己成為 HMR 邊界。
 - **`dispose`**:**最容易被忽略、卻最重要的清理鉤子**。模組熱替換時,舊模組可能開了計時器、加了事件監聽。如果不在 `dispose` 裡清掉,每次熱更新就累積一個,最後一堆殭屍計時器在跑(經典的 HMR 記憶體外洩 / 重複觸發 bug)。
-- **`data`**:在「舊模組」和「新模組」之間傳遞資料的橋。例如想在熱更新後保留某個計數值,就舊模組存進 `hot.data`、新模組讀回來。
+- **`data`**:在「舊模組」和「新模組」之間傳遞資料的橋。例如想在熱更新後保留某個計數值,就在 `dispose` 裡把最新值存進 `data`、新模組啟動時讀回來。注意只能改它的屬性,不能整個重新指定 `import.meta.hot.data = {...}`。
 - **`invalidate`**:「我本來說我能接,結果發現這次更新我搞不定」,主動把更新往上游冒泡,讓更上層去處理(或最終整頁重載)。React Refresh 在偵測到「這個變動沒辦法安全地局部更新」時就會用它。
+- **`on`**:接收 plugin 從 server 端推過來的自訂事件,做資料層級的熱更新(例如 mock 資料改了就重抓,不必重載)。反方向用 `import.meta.hot.send(event, data)` 從瀏覽器通知 server。
 
-> **動手理解 `dispose` 的價值**:寫一個模組,在頂層 `setInterval(() => console.log('tick'), 1000)`,但**不寫** `dispose`。
-> 然後改幾次這個檔案,看 console——你會看到 `tick` 越印越快(每次熱更新都多一個沒被清掉的計時器在跑)。
+> **動手理解 `dispose` 的價值**:寫一個模組,宣告自己是邊界、但**不寫** `dispose`:
+>
+> ```js
+> // ticker.js(記得在 main.js 裡 import 它)
+> const timer = setInterval(() => console.log('tick'), 1000)
+> if (import.meta.hot) import.meta.hot.accept()   // 一定要 accept,否則改檔會整頁重載,計時器跟著清掉
+> ```
+>
+> 然後改幾次這個檔案(例如改 log 的文字),看 console——你會看到每秒印出的 `tick` 越來越多(每次熱更新都多一個沒被清掉的計時器在跑)。
 > 加上 `import.meta.hot.dispose(() => clearInterval(timer))` 後再試,就正常了。這個實驗會讓你永遠記得 `dispose`。
 
 ---
 
-## 5.7 CSS 的 HMR:為什麼改樣式「永遠」是無痛的
+## 5.7 CSS 的 HMR:為什麼改樣式「幾乎永遠」是無痛的
 
 第 04 章說「dev 時 CSS 被包成 JS 注入」,現在可以解釋它跟 HMR 的關係了。
 
@@ -275,8 +308,11 @@ CSS 的 HMR 是體驗最絲滑的——改 CSS **幾乎永遠**不會整頁重�
 - 第 04 章講過,CSS 被 Vite 包成一個「會建立 `<style>` 標籤注入樣式」的 JS 模組。
 - 這個 JS 模組裡,Vite 自動加好了 `accept` 邏輯:當 CSS 變動,它就**把舊的 `<style>` 內容換成新的**,如此而已。
 - 換 `<style>` 內容不影響任何 JS 狀態、不動 DOM 結構,所以**狀態 100% 保留**,連 React/Vue 元件都不用重繪。
+- 直接寫在 `index.html` 的 `<link rel="stylesheet">` 也一樣:Vite 會換掉那個 `<link>` 的網址讓瀏覽器重抓,同樣不重載。
 
 > 這就是為什麼調樣式時,你可以一邊看著彈窗開著、表單填著,一邊瘋狂改 CSS,畫面即時變、狀態全不丟。CSS 是 HMR 的最佳示範。
+
+**例外是 CSS Modules(`.module.css`)**:它會匯出 class 名稱對照表給 JS 用(第 04 章),改了樣式,對照表也可能跟著變,所以它**不會自己 accept**,更新會往上傳給 import 它的元件模組處理。在 Vue/React 專案裡通常是該元件重新渲染;沒有框架接住時,就會整頁重載。
 
 ---
 
@@ -288,12 +324,12 @@ CSS 的 HMR 是體驗最絲滑的——改 CSS **幾乎永遠**不會整頁重�
 - **兩個角色**:`@vite/client`(瀏覽器端,WebSocket 長連線收訊息)+ dev server(Node 端,監看檔案、算影響、推訊息)。
 - **module graph**:記錄雙向依賴(尤其「誰 import 我」),是 HMR 精準定位的地圖。
 - **HMR 邊界**:從變動點沿 importers 往上找「呼叫了 `accept` 的模組」;找到就更新到那層,一路找不到就整頁重載——這解釋了「為何有時無痛、有時整頁刷新」。
-- **框架整合**:plugin-vue / plugin-react 自動注入 accept,並用框架的 HMR runtime 做到「重繪但保留狀態」。
-- **`import.meta.hot` API**:`accept` / `dispose`(清理副作用,別忘!)/ `data`(跨更新傳值)/ `invalidate`(放棄並上冒)。
-- **CSS HMR**:因為被包成可替換 `<style>` 的 JS 模組,所以改樣式永遠絲滑。
+- **框架整合**:plugin-vue / plugin-react 自動注入 accept,並用框架的 HMR runtime 盡量做到「重繪但保留狀態」(Vue 改 template 保留、改 script 則重建該元件)。
+- **`import.meta.hot` API**:`accept` / `dispose`(清理副作用,別忘!)/ `data`(跨更新傳值)/ `invalidate`(放棄並上冒)/ `on`(自訂事件)。
+- **CSS HMR**:因為被包成可替換 `<style>` 的 JS 模組,所以改樣式幾乎永遠絲滑;CSS Modules 是例外。
 
 **到這裡,前六章(原理篇 + 日常篇核心)完成了。** 你現在應該能完整回答:Vite dev 為什麼快(02 不打包)、依賴怎麼處理(03 預打包)、各種資源怎麼變成模組(04 轉換管線)、改 code 為什麼能無痛更新(05 HMR)。這四章合起來,正好就是「手寫一個 mini-vite」需要的全部核心機制——dev server + 即時轉譯 + 預打包 + HMR。
 
-**接下來的章節(規劃中)**:第 06、07 章進入 **Plugin 系統**(你會發現本課程提過的「框架支援」「CSS 處理」其實都是 plugin),第 08 章講**生產建構與 Rollup**(tree shaking、code splitting、那些 hash 檔名的全貌),第 09 章進階場景,第 10 章 Rolldown,第 11 章親手把這六章的原理實作成 mini-vite。
+**接下來的章節**:第 06、07 章進入 **Plugin 系統**(你會發現本課程提過的「框架支援」「CSS 處理」其實都是 plugin),第 08 章講**生產建構**(tree shaking、code splitting、那些 hash 檔名的全貌),第 09 章進階場景,第 10 章引擎內幕與 Rolldown,第 11 章親手把這幾章的原理實作成 mini-vite。
 
 > 💡 **動手作業**:做 5.6 那個 `dispose` 的計時器實驗,親眼看到「不清理副作用」會怎樣;再體會 5.7,開著一個有狀態的畫面狂改 CSS,感受 HMR 的絲滑。這兩個體感會讓這章的原理真正內化。

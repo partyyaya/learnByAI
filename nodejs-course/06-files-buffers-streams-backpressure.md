@@ -48,7 +48,7 @@ docker compose run --rm tools npm run seed
 docker compose up api
 ```
 
-`seed` 預設串流產生 20000 筆公開文章樣本，保存到本章 `.data/articles.ndjson`；`.data` 已由 Git 排除。這是獨立的教學匯出資料集，並不是上一章固定兩篇文章列表的持久化結果。截至 13 章仍保留這項區別；若日後新增真正的資料庫匯出，需要另外設計查詢、可見範圍與一致性，不能直接把這份檔案當成資料庫內容或備份。
+`seed` 預設串流產生 20000 筆公開文章樣本，保存到本章 `.data/articles.ndjson`；`.data` 已由 Git 排除。這是獨立的教學匯出資料集，並不是上一章固定兩篇文章列表的持久化結果。後續直到第 23 章的快照仍保留這項區別；若日後新增真正的資料庫匯出，需要另外設計查詢、可見範圍與一致性，不能直接把這份檔案當成資料庫內容或備份。
 
 在主機另一個終端機、同樣位於本章範例目錄時：
 
@@ -110,7 +110,7 @@ try {
 }
 ```
 
-FileHandle 讓我們對同一個開啟中的檔案取得資訊與建立串流。先判斷路徑存在、之後再 open，兩個動作之間仍可能有變動；本章直接 open 並處理錯誤，再從 handle 取得資訊。[Node.js 檔案系統文件](https://nodejs.org/api/fs.html)
+FileHandle 讓我們對同一個開啟中的檔案取得資訊與建立串流。先判斷路徑存在、之後再 open，兩個動作之間仍可能有變動；本章直接 open 並處理錯誤，再從 handle 取得資訊。[Node.js 檔案系統文件](https://nodejs.org/docs/latest-v24.x/api/fs.html)
 
 ## 06.4 path 處理位置，不決定誰有權讀檔
 
@@ -131,7 +131,7 @@ const defaultExportFile = resolve(__dirname, '..', '.data', 'articles.ndjson');
 
 `join` 或 `normalize` 不會自動授權檔案存取。若把用戶傳入的 `../../...` 當成可讀路徑，即使正規化成功，也可能指向不該提供的檔案。
 
-因此，本章只有固定的 `GET /api/articles/export`，不接受 query 指定檔名；`?file=../../package.json` 直接回 400。未來若支援多個匯出，應先以業務 ID 查詢允許的資源與權限，再取得伺服器管理的路徑。[Node.js path 文件](https://nodejs.org/api/path.html)
+因此，本章只有固定的 `GET /api/articles/export`，不接受 query 指定檔名；`?file=../../package.json` 直接回 400。未來若支援多個匯出，應先以業務 ID 查詢允許的資源與權限，再取得伺服器管理的路徑。[Node.js path 文件](https://nodejs.org/docs/latest-v24.x/api/path.html)
 
 ## 06.5 Buffer 儲存 bytes，文字需要編碼
 
@@ -161,7 +161,7 @@ docker compose run --rm tools npm run encoding
 | `buffer.subarray(start, end)` | 取得共享底層記憶體的檢視，不是獨立拷貝 |
 | `Buffer.from(existingBuffer)` | 複製 bytes，取得獨立資料 |
 
-若用 subarray 取得片段後修改內容，原 Buffer 的對應位置也會受影響。不要把它當成免費又完全獨立的複製。[Node.js Buffer 文件](https://nodejs.org/api/buffer.html)
+若用 subarray 取得片段後修改內容，原 Buffer 的對應位置也會受影響。不要把它當成免費又完全獨立的複製。[Node.js Buffer 文件](https://nodejs.org/docs/latest-v24.x/api/buffer.html)
 
 ### chunk 可以切在一個中文字的中間
 
@@ -174,7 +174,7 @@ const decoder = new StringDecoder('utf8');
 const result = decoder.write(first) + decoder.write(second) + decoder.end();
 ```
 
-輸出應恢復成 `中🙂`。最後的 `end()` 用來處理剩餘狀態。[StringDecoder 文件](https://nodejs.org/api/string_decoder.html)
+輸出應恢復成 `中🙂`。最後的 `end()` 用來處理剩餘狀態。[StringDecoder 文件](https://nodejs.org/docs/latest-v24.x/api/string_decoder.html)
 
 StringDecoder 處理字元邊界，不等於嚴格驗證所有 bytes 合法；遇到無效序列仍可能產生替代字元。上一章對有界 JSON body 使用 `TextDecoder` 的 `fatal: true`，目的是拒絕非法 UTF-8，兩者用途不同。
 
@@ -214,7 +214,7 @@ import { pipeline } from 'node:stream/promises';
 await pipeline(source, destination, { signal });
 ```
 
-`pipeline` 協調背壓、完成與串流失敗；錯誤時會處理鏈上串流的銷毀，並讓 Promise 拒絕。單純 `.pipe()` 雖然也有背壓機制，卻不提供相同的一個 Promise 完成／錯誤出口。[Node.js Stream 文件](https://nodejs.org/api/stream.html)
+`pipeline` 協調背壓、完成與串流失敗；錯誤時會處理鏈上串流的銷毀，並讓 Promise 拒絕。單純 `.pipe()` 雖然也有背壓機制，卻不提供相同的一個 Promise 完成／錯誤出口。[Node.js Stream 文件](https://nodejs.org/docs/latest-v24.x/api/stream.html)
 
 ### highWaterMark 不是程序記憶體上限
 

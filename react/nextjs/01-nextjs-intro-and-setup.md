@@ -49,18 +49,18 @@ Next.js 目前有兩套路由系統：
 
 ### 3.1 Node.js 版本
 
-Next.js 15 需要 **Node.js 18.18 以上（建議 20 LTS）**。確認版本：
+Next.js 15 最低需要 **Node.js 18.18**，但 Node 18、20 都已停止維護（EOL），本課建議用 **Node.js 22 LTS**（或更新的 LTS 版本）。確認版本：
 
 ```bash
-node -v   # 要 >= 18.18，建議 v20
+node -v   # 建議 v22 以上
 npm -v
 ```
 
 若版本太舊，用 nvm 切換：
 
 ```bash
-nvm install 20
-nvm use 20
+nvm install 22
+nvm use 22
 ```
 
 ### 3.2 推薦工具
@@ -74,19 +74,25 @@ nvm use 20
 ## 4. 用 create-next-app 建立專案
 
 ```bash
-npx create-next-app@latest my-next-course
+npx create-next-app@15 my-next-course
 ```
+
+> **為什麼寫 `@15` 而不是 `@latest`**：現在 `@latest` 會裝到 Next.js 16，而本課與 blog-demo 都以 Next.js 15 寫成。16 的主要差異有：`middleware.js` 改名為 `proxy.js`（函式也改名 `proxy`）、移除 `next lint` 指令（`next build` 也不再自動跑 lint）、`revalidateTag` 需要第二個參數、Turbopack 成為預設打包工具、需要 Node.js 20.9 以上。先用 15 跟著課程走，之後章節碰到這些地方會再提醒。
 
 它會問幾個問題，本課建議這樣選：
 
 ```text
-✔ Would you like to use TypeScript?        › No   （本課用 JavaScript，和 React 課一致）
-✔ Would you like to use ESLint?            › Yes
-✔ Would you like to use Tailwind CSS?      › No   （第 11 章再教，先用一般 CSS）
-✔ Would you like to use `src/` directory?  › No
-✔ Would you like to use App Router?        › Yes  （重要！）
-✔ Would you like to customize the import alias? › No
+✔ Would you like to use TypeScript? › No   （本課用 JavaScript，和 React 課一致）
+✔ Which linter would you like to use? › ESLint
+✔ Would you like to use Tailwind CSS? › No   （第 11 章再教，先用一般 CSS）
+✔ Would you like your code inside a `src/` directory? › No
+✔ Would you like to use App Router? (recommended) › Yes  （重要！）
+✔ Would you like to use Turbopack? (recommended) › No
+✔ Would you like to customize the import alias (`@/*` by default)? › No
 ```
+
+- **Turbopack** 是 Next.js 較新的打包工具。選 No 時 `dev`／`build` 用預設的 webpack，和 blog-demo 一致；選 Yes 則會在這兩個指令後面加上 `--turbopack`。
+- **import alias** 選 No 會保留預設的 `@/*`，讓你能用 `@/lib/...` 從專案根目錄 import（第 9 章會用到）。
 
 建立完成後啟動：
 
@@ -114,6 +120,8 @@ my-next-course/
 └─ package.json
 ```
 
+實際專案還會看到 `favicon.ico`、`page.module.css`（預設首頁的樣式）、`jsconfig.json`、`eslint.config.mjs` 等檔案，現在先不用管。
+
 三個關鍵約定，先記住：
 
 > - `app/page.js` = 網址 `/` 的畫面
@@ -130,7 +138,7 @@ my-next-course/
 4. 看終端機與瀏覽器 console 是否有錯誤
 5. 每個小步驟一個 commit
 
-> 和 Vite 不同的地方：Next.js 的錯誤（尤其是 Server Component 的錯）會出現在**跑 `npm run dev` 的終端機**，不只在瀏覽器，養成兩邊都看的習慣。
+> 和 Vite 不同的地方：Next.js 的錯誤（尤其是 Server Component 的錯）會出現在**跑 `npm run dev` 的終端機**，不只在瀏覽器，養成兩邊都看的習慣。Server Component 裡的 `console.log` 是在伺服器執行的，所以要看終端機（開發模式下瀏覽器 console 也會轉印一份）。
 
 ---
 
@@ -147,7 +155,7 @@ my-next-course/
 
 ## 最後範例：Next.js 開發環境健康檢查頁
 
-> 這是一個最小可跑的 App Router 專案。三個檔案原樣貼上即可運作。
+> 這是一個最小可跑的 App Router 專案。三個檔案原樣貼上（取代 create-next-app 產生的同名檔案）即可運作。
 
 ### `app/layout.js`
 

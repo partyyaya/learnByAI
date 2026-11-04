@@ -1,0 +1,140 @@
+const assert = require('node:assert/strict');
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
+const { mkdtemp, rm, mkdir, writeFile } = require('node:fs/promises');
+const { tmpdir } = require('node:os');
+const { join } = require('node:path');
+const { createOrmApplication } = require('../.test-dist/src/orm/application.js');
+const { createOrmDataSource } = require('../.test-dist/src/orm/data-source.js');
+const { CommentEntity,SessionEntity } = require('../.test-dist/src/orm/entities.js');
+
+const { ormFixture } = require('../.test-dist/test/orm-fixture.js');
+const { createCorsLab } = require('../.test-dist/src/cors-lab.js');
+async function connect(url) {
+  const socket = new WebSocket(url); await once(socket, 'open'); let seq = 0; const pending = new Map(); const listeners = new Map();
+  socket.addEventListener('message', event => { const value = JSON.parse(event.data); if (value.method) { for (const listener of listeners.get(value.method) ?? []) listener(value.params); return; } const task = pending.get(value.id); if (!task) return; pending.delete(value.id); clearTimeout(task.timer); value.error ? task.reject(new Error('CDP command failed')) : task.resolve(value.result); });
+  return { on(method, listener) { const group = listeners.get(method) ?? new Set(); group.add(listener); listeners.set(method, group); return () => group.delete(listener); }, send(method, params = {}) { return new Promise((resolve, reject) => { const id = ++seq; const timer = setTimeout(() => { pending.delete(id); reject(new Error('CDP deadline')); }, 20000); pending.set(id, { resolve, reject, timer }); socket.send(JSON.stringify({ id, method, params })); }); }, close() { for (const task of pending.values()) { clearTimeout(task.timer); task.reject(new Error('CDP closed')); } pending.clear(); socket.close(); } };
+}
+async function until(work) { const deadline = performance.now() + 20000; while (performance.now() < deadline) { try { if (await work()) return; } catch {} await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('browser condition deadline'); }
+let stage = 'setup';
+(async () => {
+  const storage = await ormFixture(); let app, browser, protocol, page, directory; const cors = createCorsLab('http://127.0.0.1:3034');
+  try {
+    await storage.reset(); const database = createOrmDataSource(storage.url); await database.initialize();
+    app = await createOrmApplication({ source:database, auth: { origin: 'http://127.0.0.1:3034' } }); app.listen(3034, '0.0.0.0'); await once(app, 'listening');
+    cors.server.listen(4034, '0.0.0.0'); await once(cors.server, 'listening');
+    directory = await mkdtemp(join(tmpdir(), 'course-browser-'));
+    browser = spawn('chromium', ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${directory}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let output = ''; browser.stderr.on('data', chunk => { output = (output + chunk).slice(-32768); });
+    await until(async () => /DevTools listening on (ws:\/\/[^\s]+)/.test(output));
+    const address = output.match(/DevTools listening on (ws:\/\/[^\s]+)/)[1]; protocol = await connect(address);
+    const target = await protocol.send('Target.createTarget', { url: 'about:blank' });
+    const port = new URL(address).port; const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    page = await connect(targets.find(item => item.id === target.targetId).webSocketDebuggerUrl);
+    const evaluate = async expression => { const response = await page.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true, userGesture: true }); if (response.exceptionDetails) throw new Error('browser expression failed'); return response.result.value; };
+    const wait = expression => until(() => evaluate(expression));
+    const fill = (id, value) => evaluate(`document.getElementById(${JSON.stringify(id)}).value=${JSON.stringify(value)};document.getElementById(${JSON.stringify(id)}).dispatchEvent(new Event('input',{bubbles:true}))`);
+    const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).click()`);
+    let heldResponse; let unlisten;
+    const holdResponse = async (method, path) => {
+      heldResponse = undefined;
+      unlisten = page.on('Fetch.requestPaused', event => {
+        if (event.request.method === method) heldResponse = event;
+        else void page.send('Fetch.continueResponse', { requestId: event.requestId }).catch(() => {});
+      });
+      await page.send('Fetch.enable', { patterns: [{ urlPattern: 'http://127.0.0.1:3034' + path, requestStage: 'Response' }] });
+    };
+    const waitHeld = () => until(() => !!heldResponse);
+    const releaseResponse = async () => { await page.send('Fetch.continueResponse', { requestId: heldResponse.requestId }); unlisten(); await page.send('Fetch.disable'); };
+    await page.send('Page.navigate', { url: 'http://127.0.0.1:3034/' });
+    await wait(`document.getElementById('identity')?.textContent==='尚未登入' && document.querySelectorAll('#public-list li').length===2`);
+    assert.equal(await evaluate(`localStorage.length + sessionStorage.length`), 0);
+    assert.equal(await evaluate(`document.cookie.includes('course_session')`), false);
+    stage = 'member-login';
+    await fill('email', 'alice@example.test'); await fill('password', 'Alice-course-18!'); await click('login');
+    await wait(`document.getElementById('identity').textContent.includes('已登入') && document.querySelectorAll('#own-list li').length===3`);
+    assert.equal(await evaluate(`document.getElementById('password').value`), '');
+    stage = 'article-edit';
+    const title = '<img src=x onerror=window.pwned=1>';
+    await fill('title', title); await fill('content', 'Browser contract'); await click('save');
+    await wait(`document.getElementById('message').textContent==='已建立草稿。'`);
+    const id = await evaluate(`Array.from(document.querySelectorAll('#own-list li')).find(row=>row.querySelector('strong').textContent===${JSON.stringify(title)}).dataset.id`);
+    assert.equal(await evaluate(`document.querySelector('img')===null && window.pwned===undefined`), true);
+    await evaluate(`document.querySelector('#own-list li[data-id="${id}"] [data-action="edit"]').click()`);
+    await evaluate(`(async()=>{const csrf=await(await fetch('/api/auth/csrf')).json();const response=await fetch('/api/articles/${id}',{method:'PATCH',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf.data.csrfToken},body:JSON.stringify({title:'Changed elsewhere',expectedVersion:1})});if(response.status!==200)throw Error('update');})()`);
+    await fill('title', 'Unsaved local edit'); await click('save');
+    await wait(`document.getElementById('message').textContent.includes('資料已更新')`);
+    assert.equal(await evaluate(`document.getElementById('title').value`), 'Unsaved local edit');
+    await click('refresh-own'); await wait(`document.querySelector('#own-list li[data-id="${id}"] p:last-of-type').textContent.includes('version 2')`);
+    stage = 'save-preserves-next-draft';
+    await evaluate(`document.querySelector('#own-list li[data-id="${id}"] [data-action="edit"]').click()`);
+    await fill('title', 'Saved article'); await holdResponse('PATCH', '/api/articles/' + id); await click('save'); await waitHeld();
+    await click('new'); await fill('title', 'Next unsaved draft'); await fill('content', 'Keep this input');
+    await releaseResponse(); await wait(`document.getElementById('message').textContent.includes('目前的輸入尚未送出，已保留')`);
+    assert.equal(await evaluate(`document.getElementById('title').value`), 'Next unsaved draft');
+    await evaluate(`document.querySelector('#own-list li[data-id="${id}"] [data-action="publish"]').click()`);
+    await wait(`document.getElementById('message').textContent==='已發佈。'`);
+    assert.equal(await evaluate(`document.getElementById('title').value`), 'Next unsaved draft');
+    await evaluate(`document.querySelector('#public-list li[data-id="${id}"] [data-action="comments"]').click()`);
+    await wait(`!document.getElementById('comments-panel').hidden`);
+    stage = 'comments';
+    await fill('comment-content', '<img src=x onerror=window.pwned=1>'); await click('comment-save');
+    await wait(`document.getElementById('message').textContent==='已新增留言。'`);
+    assert.equal(await evaluate(`document.querySelector('#comments-list img')===null && document.querySelectorAll('#comments-list li').length===1`), true);
+    stage = 'delete-does-not-switch-article';
+    const commentId = await evaluate(`document.querySelector('[data-comment-delete]').dataset.commentDelete`);
+    await holdResponse('DELETE', '/api/comments/' + commentId);
+    await evaluate(`document.querySelector('[data-comment-delete]').click()`); await waitHeld();
+    const nextTitle = await evaluate(`document.querySelector('#public-list li[data-id="a_1"] strong').textContent`);
+    await evaluate(`document.querySelector('#public-list li[data-id="a_1"] [data-action="comments"]').click()`);
+    await wait(`document.getElementById('comments-title').textContent===${JSON.stringify(nextTitle+' 的留言')}`);
+    await releaseResponse(); await wait(`document.getElementById('message').textContent==='已刪除留言。'`);
+    assert.equal(await evaluate(`document.getElementById('comments-title').textContent`), nextTitle+' 的留言');
+    stage = 'comment-write-preserves-next-input';
+    await fill('comment-content', 'Submitted comment'); await holdResponse('POST', '/api/articles/a_1/comments'); await click('comment-save'); await waitHeld();
+    await fill('comment-content', 'Next unsent comment'); await releaseResponse();
+    await wait(`document.getElementById('message').textContent==='已新增留言。'`);
+    assert.equal(await evaluate(`document.getElementById('comment-content').value`), 'Next unsent comment');
+    stage = 'committed-delete-refresh-failure';
+    const archivedComment = await evaluate(`document.querySelector('[data-comment-delete]').dataset.commentDelete`);
+    await holdResponse('DELETE', '/api/comments/'+archivedComment);
+    await evaluate(`document.querySelector('[data-comment-delete]').click()`); await waitHeld();
+    await evaluate(`(async()=>{const csrf=await(await fetch('/api/auth/csrf')).json();const response=await fetch('/api/articles/a_1/archive',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf.data.csrfToken},body:JSON.stringify({expectedVersion:1})});if(response.status!==200)throw Error('archive');})()`);
+    await releaseResponse(); await wait(`document.getElementById('message').textContent==='已刪除留言。 留言列表無法更新，請重新載入。'`);
+    assert.equal(await evaluate(`document.getElementById('comments-panel').hidden`), true);
+    assert.equal(await database.getRepository(CommentEntity).findOneBy({id:archivedComment}), null);
+
+    stage = 'reload';
+    await page.send('Page.reload'); await wait(`performance.getEntriesByType('navigation')[0]?.type==='reload' && document.getElementById('identity')?.textContent.includes('已登入') && document.querySelector('#public-list li[data-id="${id}"]')`);
+    stage = 'expire-session';
+    await database.getRepository(SessionEntity).createQueryBuilder().update().set({expiresAt:new Date(Date.now()-1000)}).where('"userId" = :id AND "revokedAt" IS NULL',{id:'u_demo'}).execute();
+    stage = 'expired-401';
+    await click('refresh-own'); await wait(`document.getElementById('identity').textContent==='尚未登入' && !document.getElementById('refresh-own').disabled`);
+    stage = 'expired-relogin';
+    await fill('email', 'alice@example.test'); await fill('password', 'Alice-course-18!'); await click('login');
+    await wait(`document.getElementById('identity').textContent.includes('已登入') && !document.getElementById('login').disabled`);
+    await click('logout'); await wait(`document.getElementById('message').textContent==='已登出。'`);
+    assert.equal(await evaluate(`(async()=>{const response=await fetch('/api/me/articles');return response.status})()`), 401);
+    stage = 'admin-login';
+    await fill('email', 'admin@example.test'); await fill('password', 'Admin-course-18!'); await click('login');
+    await wait(`!document.getElementById('admin-panel').hidden`);
+    stage = 'admin-audit';
+    await fill('audit-article', id); await click('audit-load');
+    await wait(`document.getElementById('audit-result').textContent.includes('publish')`);
+    await click('logout'); await wait(`document.getElementById('message').textContent==='已登出。'`);
+    stage = 'admin-logout';
+    assert.equal(await evaluate(`document.getElementById('audit-result').textContent==='' && document.getElementById('admin-panel').hidden`), true);
+    stage = 'cors-allow';
+    await page.send('Page.navigate', { url: 'http://127.0.0.1:3034/cors.html' }); await wait(`document.readyState==='complete' && !!document.getElementById('cors-run')`); await click('cors-run');
+    await wait(`document.getElementById('cors-result').textContent==='跨來源讀取成功'`);
+    assert.ok(cors.stats.preflights >= 1); assert.ok(cors.stats.accepted >= 1);
+    stage = 'cors-deny';
+    await page.send('Page.navigate', { url: 'http://localhost:3034/cors.html' }); await wait(`document.readyState==='complete' && !!document.getElementById('cors-run')`); await click('cors-run');
+    await wait(`document.getElementById('cors-result').textContent.includes('瀏覽器拒絕')`); assert.ok(cors.stats.denied >= 1);
+    await mkdir('.data', { recursive: true }); await writeFile('.data/browser-proof.json', JSON.stringify({ realBrowser: 'Chromium', persistence:'TypeORM', login: true, reloadSession: true, xssTextOnly: true, conflictPreservesInput: true, logoutRevoked: true, expiredSessionReauthentication: true, pendingSavePreservesNextDraft: true, commentCreateDelete: true, pendingDeletePreservesArticleSelection: true, pendingCommentPreservesInput: true, committedDeleteSurvivesRefreshFailure: true, adminAuditClearedOnLogout: true, cors: cors.stats, browserSecretsStored: false }, null, 2)+'\n');
+    console.log('PASS real Chromium: login, reload, article create/publish/version conflict, XSS text, expired Session re-login, logout, admin audit/clear, CORS preflight/denial and no browser token storage');
+  } finally {
+    page?.close(); protocol?.close(); if (browser) { const exited = once(browser, 'exit'); browser.kill('SIGTERM'); await exited; }
+    try { await app?.lifecycle.shutdown(); } finally { await new Promise(resolve => cors.server.close(() => resolve())); await storage.close(); if (directory) await rm(directory, { recursive: true, force: true }); }
+  }
+})().catch(() => { console.error('BROWSER_CHECK_FAILED: ' + stage); process.exitCode = 1; });

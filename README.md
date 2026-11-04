@@ -6,7 +6,7 @@
 
 ## 這個倉庫有什麼？
 
-- 多條主題課程（演算法、TypeScript、Vue、Nuxt、Browser AI、PWA、Electron、Docker、Nginx）
+- 多條主題課程（演算法、TypeScript、Node.js／Express／NestJS、Vue、Nuxt、Browser AI、PWA、Electron、Docker、Nginx）
 - 每個主題都有獨立 `README` 與章節路線，適合循序學習
 - 內容偏重「實作 + 心智模型」，不是只背指令或 API
 - 可依需求走「完整路線」或「針對弱項補課」
@@ -18,11 +18,12 @@
 | 演算法 | [algorithm/README.md](./algorithm/README.md) | 資料結構、回溯、Heap、貪心、圖論與 DP，由基礎到題型應用 | 15 + 2 選修 |
 | 通用基礎 | [common/README.md](./common/README.md) | 命令列、CSS、非同步、瀏覽器 API、HTTP、認證與部署 | 12 篇 + 1 示範 |
 | TypeScript | [typescript/README.md](./typescript/README.md) | 型別系統、泛型、進階型別、框架整合 | 16 |
+| Node.js／Express／NestJS | [nodejs-course/README.md](./nodejs-course/README.md) | Node 執行模型、HTTP、文章 API、PostgreSQL／Prisma、Session、交易與測試 | 已完成 00–23；全課規劃 35 章 |
 | 前端 gRPC | [grpc-frontend-course/README.md](./grpc-frontend-course/README.md) | gRPC-Web、Proto、前後端對接、Streaming 與上線實戰 | 8 |
 | Vite 原理與內核 | [vite-course/README.md](./vite-course/README.md) | 建構工具演進、No-bundle Dev Server、依賴預打包、轉換管線、HMR、Plugin、生產建構、Rolldown、手寫 mini-vite | 12 |
 | Vue（基礎 / 源碼 / Nuxt） | [vue/README.md](./vue/README.md) | Vue 3 精華橋接、自訂指令、Vue 源碼解析（Reactivity/Renderer/Compiler）、Nuxt 4 全端 | 8 + 12 + 16 |
 | Browser AI | [browserAI/README.md](./browserAI/README.md) | WebGPU、ONNX Runtime Web、Transformers.js、Browser LLM | 12 + 1 Deep Dive |
-| PWA | [pwa/README.md](./pwa/README.md) | Service Worker、快取策略、推播、部署維運 | 10 |
+| PWA | [pwa/README.md](./pwa/README.md) | Service Worker、快取策略、推播、部署維運 | 11 |
 | Electron | [Electron/README.md](./Electron/README.md) | 桌面應用架構、IPC、安全、打包與自動更新 | 11 |
 | Flutter | [flutter-course/README.md](./flutter-course/README.md) | 跨平台 App、Widget 原理、Riverpod、go_router、Dio+Retrofit、Drift、打包上架 | 16 |
 | Docker | [docker/README.md](./docker/README.md) | 容器化、Compose、Kubernetes、Swarm、CI/CD | 13 |
@@ -81,7 +82,7 @@
 
 ### 後端工程師（以 Java／Spring Boot 為主線）
 
-後端的共同能力包含 API、資料建模、交易、權限、測試與維運。本倉庫有完整的 [Java 學習地圖](./java/README.md)；若選其他語言，可沿用這些能力目標，再補對應框架的實作。
+後端的共同能力包含 API、資料建模、交易、權限、測試與維運。本倉庫有完整的 [Java 學習地圖](./java/README.md)；使用 TypeScript 的讀者也可選擇 [Node.js → Express → NestJS](./nodejs-course/README.md)，目前已完成 00–23 章，部署與專題整合等後續章節仍待撰寫。
 
 | 順序 | 核心課程 | 建議讀法與驗收 |
 |------|----------|----------------|
@@ -103,13 +104,13 @@
 | 順序 | 核心課程 | 建議讀法與驗收 |
 |------|----------|----------------|
 | 1 | 前端路線的 Web／JavaScript 基礎 → [TypeScript](./typescript/README.md) → [React](./react/README.md) 或 [Vue 基礎](./vue/basics/README.md) | 先能完成頁面與非同步資料串接，熟悉模組、型別與錯誤處理 |
-| 2 | Node.js 基礎（需另補，見下方） | 理解事件迴圈、非同步 I/O、模組、環境變數與程序生命週期，能啟動並排查 HTTP 服務 |
+| 2 | [Node.js 後端與全端服務開發](./nodejs-course/README.md) | 先完成 00–07 的執行模型與 HTTP；需要獨立 API 時接 08–13 的 Express／PostgreSQL，再進 14–23 的 NestJS、認證、交易與測試 |
 | 3 | [Next.js](./react/nextjs/README.md) 或 [Nuxt](./vue/nuxt/README.md) | 按所選框架順序學；Next.js 著重 03、05、07–10，Nuxt 著重 05–11，完成伺服器端資料讀寫、認證與渲染邊界 |
 | 4 | [資料庫設計與實戰](./database-course/README.md)、[REST API 設計](./java/03-rest-api/README.md) | 資料庫先讀 00–03 與 09，搭配框架 CRUD 進度學；REST API 課取資源、狀態碼、錯誤與冪等觀念，Java 範例可選讀 |
 | 5 | [前端測試](./frontend-testing-course/README.md)＋所選全端框架的測試章節 | 同時驗證畫面與伺服器端輸入、授權、資料異動；再補真實資料庫整合測試，不能只測 Mock 成功回應 |
 | 6 | [Docker](./docker/README.md)、[Nginx](./nginx/README.md)、[CI/CD](./git/ci-cd.md) | 完成應用與資料庫部署，處理伺服器環境變數、migration、日誌與健康檢查，再完成全端專題 |
 
-**Node.js 尚需補齊的基礎**：目前倉庫沒有獨立完整的 Node.js、Express／Fastify／NestJS 課程。建議補事件迴圈與阻塞風險、ESM／CommonJS、套件與 lockfile、檔案與 Stream／Buffer、環境變數、錯誤處理、程序關閉及 API／資料庫整合測試。可先用 [Promise／async-await](./common/promise-async-await-then.md) 補非同步觀念，再於實作伺服器時逐項練習；若要開發獨立 API 服務，再選一個後端框架深入。
+**Node.js 課程進度**：[獨立課程](./nodejs-course/README.md)已提供 00–23 章教材與可執行快照，涵蓋執行模型、模組、設定、串流、關閉流程、Express、NestJS、Prisma、Session、交易與測試。24–29 的觀測、效能、部署、前端串接與專題整合，以及 30–34 的 Redis、BullMQ、即時連線、Fastify、TypeORM 選修仍待撰寫；可先配合上表既有課程完成全端練習。
 
 **建議專題**：從 [Next.js 全端部落格](./react/nextjs/blog-demo/README.md) 或 [Nuxt 全端部落格](./vue/nuxt/blog-demo/README.md) 擇一開始，擴充文章、留言、分頁與角色權限，補上資料驗證、migration、API 整合與 E2E 測試，最後部署。前端路由守衛只處理導覽與體驗，每次讀寫資料仍需由伺服器驗證權限。
 

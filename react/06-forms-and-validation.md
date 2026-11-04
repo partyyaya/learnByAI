@@ -24,6 +24,11 @@ const [name, setName] = useState("");
 <input value={name} onChange={(e) => setName(e.target.value)} />;
 ```
 
+`value` 讓欄位永遠顯示 state 的值，`onChange` 把使用者的輸入寫回 state，兩者缺一不可：只給 `value` 不給 `onChange`，欄位會打不進字，console 也會出現警告。
+state 的初始值要用 `""` 而不是 `undefined`；`value` 從 `undefined` 變成字串時，React 會警告元件從 uncontrolled 變成 controlled。
+
+> **React 19 讀者：**React 19 另外提供 `<form action={...}>` 與 `useActionState` 這類以「表單動作」為主的寫法，本章的受控元件寫法在 React 19 照樣適用；表單動作會在 [Next.js 篇第 8 章](./nextjs/08-server-actions-and-forms.md) 搭配 Server Actions 介紹。
+
 ---
 
 ## 2. 表單資料建議用物件管理
@@ -63,6 +68,9 @@ setForm((prev) => ({ ...prev, title: e.target.value }));
 }
 ```
 
+沒有錯誤時回傳空物件 `{}`，提交時用 `Object.keys(errors).length` 判斷是否通過。
+驗證函式只負責「輸入表單資料、輸出錯誤」，不直接改 state，所以提交與 `onBlur` 都能共用同一份規則。
+
 ---
 
 ## 4. 顯示錯誤訊息的時機
@@ -72,6 +80,17 @@ setForm((prev) => ({ ...prev, title: e.target.value }));
 1. `onSubmit` 時全欄位驗證（必要）
 2. `onBlur` 時單欄位驗證（提升體驗）
 3. `onChange` 即時清除已修正欄位的錯誤
+
+最後範例示範第 1 與第 3 種。要加上第 2 種，可以重用同一個驗證函式，只取出離開的那個欄位的錯誤：
+
+```jsx
+function handleBlur(field) {
+  const fieldError = validateForm(form)[field];
+  setErrors((prev) => ({ ...prev, [field]: fieldError }));
+}
+
+// 在欄位加上：onBlur={() => handleBlur("title")}
+```
 
 ---
 
@@ -314,10 +333,11 @@ button {
 
 ### 範例解釋
 
-1. 每個表單欄位都綁定到 `form` state，這就是受控元件模式。
+1. 每個表單欄位都綁定到 `form` state，這就是受控元件模式。`type="number"` 的 `e.target.value` 仍是字串，所以 state 先存字串，建立課程時才用 `Number()` 轉型。
 2. `validateForm` 回傳錯誤物件，`handleSubmit` 依錯誤數量決定是否提交。
-3. `updateField` 同步更新欄位並清除該欄位舊錯誤，讓修正體驗更即時。
-4. 通過驗證後，才把資料加入 `courses` 清單，並重設表單狀態。
+3. `updateField` 同步更新欄位並清除該欄位舊錯誤，讓修正體驗更即時。`[field]: value` 是 JavaScript 的計算屬性名稱：用變數的值當物件的 key，所以一個函式就能更新任何欄位。
+4. `<form noValidate>` 關掉瀏覽器內建的驗證提示泡泡，讓所有錯誤都由 `validateForm` 產生、用同一種樣式顯示。
+5. 通過驗證後，才把資料加入 `courses` 清單，並重設表單狀態。
 
 ---
 

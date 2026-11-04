@@ -205,7 +205,7 @@ execFileSync(LSREGISTER, ["-f", "-R", appBundle]);
 
 ## 快速開始
 
-> 需要 **Node.js 20 LTS 以上**。本機預設的 `node` 可能是舊版（v12），請先 `nvm use 20.19.5` 再操作。
+> 需要 **Node.js 22.12 以上**。本機預設的 `node` 可能是舊版（v12），請先 `nvm use 22` 再操作。
 
 ```bash
 # 進入專案
@@ -659,7 +659,7 @@ npm run dist    # 做安裝檔     → dist/記事本-1.0.0-universal.dmg + .zip
 - **App 名稱不用再動手改**：打包版的 `CFBundleName` 直接來自 `productName`，所以 [scripts/rename-dev-app.js](./scripts/rename-dev-app.js) 那套只在開發時需要。
 - **圖示自動轉檔**：`build/icon.png`（1024×1024）會被轉成 `.icns` / `.ico`，不用自己準備多尺寸。
 - **`build/` 不在 `files` 裡**，所以 [main.js](./src/main/main.js) 的 `app.dock.setIcon()` 要用 `app.isPackaged` 擋掉——打包後的 dock 圖示本來就由 bundle 的 icns 負責，再去讀那個 PNG 只會找不到檔案。
-- **`identity: null` 是「不簽章」**：自己在本機跑沒問題，但**發給別人會被 Gatekeeper 擋**（顯示「已損毀，應丟到垃圾桶」）。要真的散佈得申請 Apple Developer ID 憑證再加上 notarize，這部分看第八章。
+- **`identity: null` 是「不簽章」**：自己在本機跑沒問題，但**發給別人會被 Gatekeeper 擋**（顯示「已損毀，應丟到垃圾桶」）。要真的散佈得申請 Apple Developer ID 憑證再加上 notarize，這部分看第九章 9.9。
 - **`ELECTRON_RUN_AS_NODE`**：在 VS Code 內建終端機裡直接執行打包好的 App 會秒退（exit 0、沒有任何訊息），因為它被當成純 Node 跑。從 Finder 點開不受影響，要在終端機測就用 `env -u ELECTRON_RUN_AS_NODE`。
 
 ---
@@ -687,7 +687,7 @@ npm run dist    # 做安裝檔     → dist/記事本-1.0.0-universal.dmg + .zip
 3. **自動存草稿**：把撰寫中（含編輯中）的內容定時寫進 `draft.json`，App 意外關閉也不會丟。
 4. **匯出 Markdown**：目前的備份是給程式讀的 JSON，可以再加一個「匯出成 Markdown」，把單篇記事連同圖片輸出成人看的格式。
 5. **改用 SQLite**：記事量大時把 `notes.json` 換成 `better-sqlite3`，`listNotes()` 以外的介面都不用動。
-6. **簽章與 notarize**：目前打包出來的是未簽章版本，發給別人會被 Gatekeeper 擋；照第八章補上 Developer ID 憑證與 `afterSign` 的 notarize 流程。
+6. **簽章與 notarize**：目前打包出來的是未簽章版本，發給別人會被 Gatekeeper 擋；照第九章 9.9 補上 Developer ID 憑證，並開啟 `build.mac.notarize`。
 7. **跟隨系統外觀**：外觀樣式多一個「自動」選項，用 `nativeTheme.shouldUseDarkColors` 與 `updated` 事件跟著系統換。
 8. **自動更新**：照第九章加上 `electron-updater`，配合已經產生的 `.blockmap` 做差分更新。
 9. **多一種語言**：在 `i18n.js` 加一組字典、`settings.store.js` 的 `LANGUAGES` 加一個值、`detectLanguage()` 加一條對應即可；缺翻譯的 key 會自動退回中文。

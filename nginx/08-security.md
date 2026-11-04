@@ -30,12 +30,13 @@
 ```nginx
 http {
     # 隱藏 Nginx 版本號（回應標頭只顯示 Server: nginx，不顯示 nginx/1.24.0）
+    # 第七章若已在 http 區塊寫過這行，不要重複寫（會報 "server_tokens" directive is duplicate）
     server_tokens off;
 
-    # 隱藏後端伺服器資訊（拿掉後端回應中的 X-Powered-By，例如 PHP/8.2、Express）
+    # 隱藏後端技術資訊：拿掉 proxy_pass 後端回應中的 X-Powered-By（例如 Express）
     proxy_hide_header X-Powered-By;
-    # 拿掉後端回應中的 Server 標頭（避免洩漏後端是 Apache/Tomcat 等）
-    proxy_hide_header Server;
+    # PHP-FPM 走 fastcgi_pass，要用 fastcgi_hide_header 才拿得掉（例如 PHP/8.3.6）
+    fastcgi_hide_header X-Powered-By;
 
     # 自訂 Server 標頭（需要 headers-more 模組）
     # more_set_headers "Server: MyServer";
@@ -49,11 +50,11 @@ http {
   - 設為 `off` 後只顯示 `Server: nginx`，錯誤頁面（404、500）底部也不再帶版本號。
   - 為什麼要關？攻擊者常先掃描版本號，再針對該版本的已知漏洞（CVE）發動攻擊。隱藏版本號能增加攻擊成本。
   - 不設會怎樣？版本資訊直接暴露，等於告訴攻擊者「我可能有哪些漏洞」。
-- `proxy_hide_header X-Powered-By;`
-  - `proxy_hide_header` 的作用：Nginx 轉發後端回應給客戶端時，把指定的回應標頭移除。
-  - `X-Powered-By` 常見值如 `PHP/8.2.7`、`Express`，會洩漏後端技術棧與版本。
-- `proxy_hide_header Server;`
-  - 移除後端自己帶的 `Server` 標頭（例如 `Apache/2.4.57`），客戶端只會看到 Nginx 自己的 `Server` 標頭。
+- `proxy_hide_header X-Powered-By;` / `fastcgi_hide_header X-Powered-By;`
+  - 作用：Nginx 轉發後端回應給客戶端時，把指定的回應標頭移除。`proxy_hide_header` 只管 `proxy_pass` 的後端，`fastcgi_hide_header` 只管 `fastcgi_pass`（PHP-FPM），各寫各的。
+  - `X-Powered-By` 常見值如 `PHP/8.3.6`、`Express`，會洩漏後端技術棧與版本。
+  - 後端自己帶的 `Server` 標頭（例如 `Apache/2.4.57`）Nginx 預設就不會轉發，客戶端只會看到 Nginx 自己的 `Server`，不必另外寫 `proxy_hide_header Server`。
+  - 繼承規則和 `add_header` 一樣：某個 `location` 只要自己寫了任何一條 `proxy_hide_header`，`http` 層的 `proxy_hide_header` 在那裡就全部失效，要在該 location 補寫。
 - `more_set_headers "Server: MyServer";`
   - 開源版 Nginx 的 `server_tokens off` 只能隱藏版本號，**無法完全移除或改寫 `Server: nginx`**。
   - 若想把 `Server` 改成自訂值或完全移除，需要第三方模組 `headers-more-nginx-module`（所以這行預設是註解狀態）。
@@ -71,28 +72,36 @@ http {
 
 ## 8.3 安全標頭設定
 
+安全標頭統一放在第三章建立的片段檔 `/etc/nginx/snippets/security-headers.conf`（第六章已在裡面加了 HSTS）。這裡把它補成完整版：
+
+```nginx
+# /etc/nginx/snippets/security-headers.conf
+# 防止點擊劫持（Clickjacking）：只允許同網域頁面用 iframe 嵌入本站
+add_header X-Frame-Options "SAMEORIGIN" always;
+
+# 防止 MIME 類型嗅探：要求瀏覽器嚴格依照 Content-Type 處理回應
+add_header X-Content-Type-Options "nosniff" always;
+
+# 控制 Referer 資訊：跨站請求只送出來源網域，不送完整網址
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+
+# 強制 HTTPS（HSTS）：要求瀏覽器在 max-age 期間內一律改用 HTTPS 連線
+add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+# 權限政策：禁用相機、麥克風、定位等瀏覽器 API
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+```
+
+CSP 的內容每個站台都不同，不放進共用片段，寫在各自的 `server` 裡：
+
 ```nginx
 server {
-    # 防止點擊劫持（Clickjacking）：只允許同網域頁面用 iframe 嵌入本站
-    add_header X-Frame-Options "SAMEORIGIN" always;
-
-    # 防止 MIME 類型嗅探：要求瀏覽器嚴格依照 Content-Type 處理回應
-    add_header X-Content-Type-Options "nosniff" always;
-
-    # XSS 防護（舊版瀏覽器用；現代瀏覽器已改用 CSP，見下方說明）
-    add_header X-XSS-Protection "1; mode=block" always;
-
-    # 強制 HTTPS（HSTS）：要求瀏覽器在 max-age 期間內一律改用 HTTPS 連線
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-
-    # 控制 Referer 資訊：跨站請求只送出來源網域，不送完整網址
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-
-    # 權限政策：禁用相機、麥克風、定位等瀏覽器 API
-    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    # ...
+    include snippets/security-headers.conf;
 
     # 內容安全策略（CSP）：白名單機制，限制頁面只能載入指定來源的資源
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.example.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com;" always;
+    # 先用 Report-Only 只回報、不阻擋；確認沒有誤擋後，把標頭名稱改成 Content-Security-Policy
+    add_header Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.example.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com;" always;
 }
 ```
 
@@ -112,9 +121,8 @@ server {
 - `X-Content-Type-Options "nosniff"`
   - `nosniff` 是唯一合法值，要求瀏覽器不要「猜」檔案類型。
   - 防什麼？瀏覽器的 MIME 嗅探可能把使用者上傳的圖片猜成 HTML/JS 執行，造成 XSS。
-- `X-XSS-Protection "1; mode=block"`
-  - `1` = 啟用瀏覽器內建 XSS 過濾器；`mode=block` = 偵測到攻擊時直接擋下整頁，而不是嘗試清洗。
-  - **注意**：這是給舊版瀏覽器（IE、舊版 Chrome）的標頭，Chrome、Edge、Firefox 現代版本已移除此功能，改以 CSP 為主。保留它不會有害，但別把它當成主要防線。
+- 為什麼沒有 `X-XSS-Protection`？
+  - 這個標頭已棄用，現代瀏覽器不支援；舊瀏覽器的 XSS 過濾器本身還可能造成漏洞，所以不要設（若要明確關閉，可設 `"0"`）。防 XSS 請靠下面的 CSP。
 - `Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"`（HSTS）
   - `max-age=63072000`：單位是**秒**，63072000 秒 = 730 天 = 2 年。瀏覽器記住「這個網站只能走 HTTPS」的有效期間。建議值至少 1 年（31536000）。
   - `includeSubDomains`：所有子網域也一併強制 HTTPS。**設定前請確認所有子網域都已支援 HTTPS**，否則子網域會直接無法存取。
@@ -134,30 +142,24 @@ server {
     - `img-src 'self' data: https:`：圖片允許同網域、`data:` URI（Base64 內嵌圖）與任何 HTTPS 來源。
     - `font-src 'self' https://fonts.gstatic.com`：字型允許同網域與 Google Fonts。
   - 不設會怎樣？頁面一旦被注入惡意 `<script>`，瀏覽器會照常執行；有 CSP 時，非白名單來源的腳本會被擋下。
-  - 實務建議：CSP 規則錯誤會直接弄壞網站（JS/CSS 載不進來）。上線前可先用 `Content-Security-Policy-Report-Only` 標頭觀察違規回報，確認無誤再切換成正式 CSP。
+  - 實務建議：CSP 規則錯誤會直接弄壞網站（JS/CSS 載不進來），所以範例先用 `Content-Security-Policy-Report-Only`：瀏覽器只在主控台回報違規、不阻擋（要集中收集回報，需另加 `report-to` / `report-uri` 指令）。確認無誤後再把標頭名稱改成 `Content-Security-Policy`。
 
 > 常見錯誤：`add_header` 的繼承陷阱
 >
 > - 規則：某個 `location` 區塊裡**只要出現任何一個** `add_header`，就**不再繼承** server/http 層的所有 `add_header`。
-> - 症狀：你在 `server` 層設好了 7 個安全標頭，結果某個 `location` 加了一行 `add_header Cache-Control ...;`，該路徑的安全標頭就全部消失了。
-> - 解法：把安全標頭做成片段檔（見下方），在每個有自訂 `add_header` 的區塊重新 `include` 一次。
+> - 症狀：你在 `server` 層引入了安全標頭片段，結果某個 `location` 加了一行 `add_header Cache-Control ...;`，該路徑的安全標頭就全部消失了。
+> - 解法：在每個有自訂 `add_header` 的 location 裡重新 `include` 片段檔（見下方）。Nginx 1.29.3 起也可以在該 location 寫 `add_header_inherit merge;`，讓上層的 `add_header` 疊加進來；Ubuntu 24.04 套件的 1.24 沒有這個指令。
 
-### 建立安全標頭片段
+### 套用安全標頭片段
 
 ```nginx
-# /etc/nginx/snippets/security-headers.conf
-# 把共用的安全標頭集中成一個片段檔，避免每個 server 重複貼一次
-add_header X-Frame-Options "SAMEORIGIN" always;
-add_header X-Content-Type-Options "nosniff" always;
-add_header X-XSS-Protection "1; mode=block" always;
-add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
-
-# 使用方式
 server {
-    include snippets/security-headers.conf;  # 引入片段檔，等同把上面內容貼進來
-    # ...
+    include snippets/security-headers.conf;  # 引入片段檔，等同把片段內容貼進來
+
+    location /downloads/ {
+        add_header Cache-Control "no-store";     # 這個 location 有自己的 add_header……
+        include snippets/security-headers.conf;  # ……所以安全標頭要再引入一次
+    }
 }
 ```
 
@@ -231,7 +233,7 @@ http {
 - `limit_req_zone $binary_remote_addr zone=general:10m rate=10r/s;`
   - 這行只「定義規則」，放在 `http` 區塊；實際「套用」靠 `location` 裡的 `limit_req`。
   - `$binary_remote_addr`：客戶端 IP 的二進位形式。為什麼不用 `$remote_addr`？因為二進位 IPv4 固定 4 bytes，文字形式最長 15 bytes（如 `203.113.250.140`），用二進位能在同樣記憶體裡記錄更多 IP。
-  - `zone=general:10m`：`general` 是區域名稱（後面 `limit_req zone=general` 引用它）；`10m` 是共享記憶體大小，單位 MB。官方估算 1MB 約可存 16,000 個 IPv4 狀態，10MB 約 160,000 個 IP，一般網站綽綽有餘。
+  - `zone=general:10m`：`general` 是區域名稱（後面 `limit_req zone=general` 引用它）；`10m` 是共享記憶體大小，單位 MB。在 64 位元平台上每個狀態佔 128 bytes，官方估算 1MB 約可存 8,000 個狀態，10MB 約 80,000 個 IP，一般網站綽綽有餘。
   - 記憶體用完會怎樣？Nginx 會回收最舊的紀錄；若仍不足，新請求會直接被拒絕，所以高流量站台可酌量加大。
   - `rate=10r/s`：平均速率上限。Nginx 內部以毫秒精度執行，`10r/s` 實際上是「每 100ms 最多放行 1 個請求」，超出的部分交給 `burst` 決定去留。
 - `rate=5r/m`（登入區域）
@@ -248,8 +250,9 @@ http {
   - `nodelay`：佇列中的請求**立即處理**而不是排隊慢慢放行；只有連 burst 都塞滿時才拒絕（回 429）。
   - 三種組合的行為差異：
     - 只有 `limit_req zone=general;`（無 burst）：超過 rate 的請求一律立即拒絕，對正常使用者太嚴苛（網頁一次載入幾十個資源很常見）。
-    - `burst=20`（無 nodelay）：超出的請求排隊，依 rate 一個一個放行——請求不會被拒絕，但會被「拖慢」（每個延遲 100ms 起跳）。
+    - `burst=20`（無 nodelay）：burst 範圍內的請求排隊，依 rate 一個一個放行，會被「拖慢」（每個延遲 100ms 起跳）；超過 burst 的請求仍然立即被拒絕。
     - `burst=20 nodelay`：超出的請求立刻處理，佇列額度再依 rate 慢慢回補——對使用者體驗最好，是最常用的組合。
+    - 介於兩者之間還有 `burst=20 delay=8`（1.15.7 起）：前 8 個超出的請求立即處理，第 9～20 個排隊延遲，再多就拒絕。
 
 ### 參數說明
 
@@ -272,6 +275,7 @@ nodelay         burst 中的請求立即處理，不排隊（超過 burst 才拒
 >
 > - rate 設多少？先觀察正常流量（access log 統計單一 IP 的請求頻率），取「正常尖峰的 2~3 倍」當起點，再逐步收緊。
 > - 注意：若使用者在公司 NAT 或行動網路後面，多人會共用同一個出口 IP，rate 設太低會誤傷整群人。
+> - 若 Nginx 前面還有負載平衡器或 CDN，`$binary_remote_addr` 會是那台代理的 IP，所有人會被算成同一個 IP 一起限流。要先用 realip 模組還原真實 IP（見 8.5 的「常見錯誤」）。
 > - 被限流的請求會記錄在 error log（等級 error），可用 `grep "limiting requests" /var/log/nginx/error.log` 觀察。
 
 ### 依據不同條件限制
@@ -289,7 +293,8 @@ map $limit $limit_key {
     1 $binary_remote_addr;
 }
 
-limit_req_zone $limit_key zone=api:10m rate=10r/s;
+# zone 名稱不能和前面已定義的 api 重複，否則 nginx -t 會報 limit_req_zone "api" is already bound to key
+limit_req_zone $limit_key zone=api_wl:10m rate=10r/s;
 ```
 
 ### 這段指令在做什麼？（逐條）
@@ -301,8 +306,9 @@ limit_req_zone $limit_key zone=api:10m rate=10r/s;
 - `map $limit $limit_key { ... }`
   - `map` 把 `$limit` 轉換成 `$limit_key`：`0` → 空字串、`1` → `$binary_remote_addr`。
   - 關鍵原理：**`limit_req_zone` 的 key 是空字串時，該請求不會被計數**。所以白名單 IP 的 key 為空 → 完全跳過限流；其他 IP 用自己的位址當 key → 正常限流。
-- `limit_req_zone $limit_key zone=api:10m rate=10r/s;`
-  - 與前面範例相同，只是 key 從固定的 `$binary_remote_addr` 換成會「視 IP 而定」的 `$limit_key`，達成白名單效果。
+  - 注意：如果前面的負載平衡器本身就在 `10.0.0.0/8` 內、又沒有用 realip 還原真實 IP，所有請求都會被當成白名單，等於完全不限流。
+- `limit_req_zone $limit_key zone=api_wl:10m rate=10r/s;`
+  - 與前面範例相同，只是 key 從固定的 `$binary_remote_addr` 換成會「視 IP 而定」的 `$limit_key`，達成白名單效果。使用時寫 `limit_req zone=api_wl ...;`。
 
 ---
 
@@ -310,7 +316,8 @@ limit_req_zone $limit_key zone=api:10m rate=10r/s;
 
 ```nginx
 # 允許 / 拒絕特定 IP
-location /admin/ {
+# ^~：命中這個前綴後不再比對正規表示式 location（原因見下方說明）
+location ^~ /admin/ {
     allow 10.0.0.0/8;       # 允許內網（10.0.0.0 ~ 10.255.255.255）
     allow 203.0.113.50;     # 允許特定 IP（單一位址可不寫 /32）
     deny all;               # 拒絕其他所有來源（回 403）
@@ -318,24 +325,29 @@ location /admin/ {
 }
 
 # 封鎖惡意 IP
-# /etc/nginx/conf.d/blocked-ips.conf
+# /etc/nginx/snippets/blocked-ips.conf
+# （不要放在 conf.d/：預設的 nginx.conf 會在 http 層自動 include conf.d/*.conf）
 deny 1.2.3.4;        # 封鎖單一 IP
 deny 5.6.7.0/24;     # 封鎖整個網段（5.6.7.0 ~ 5.6.7.255，共 256 個位址）
 
 # 在 http 或 server 區塊中引入
-include /etc/nginx/conf.d/blocked-ips.conf;
+include /etc/nginx/snippets/blocked-ips.conf;
 ```
 
 ### 這段指令在做什麼？（逐條）
 
+- 為什麼是 `location ^~ /admin/` 而不是 `location /admin/`？
+  - Nginx 選 location 時，正規表示式 location 的優先序高於一般前綴。若同一個 server 還有 `location ~* \.(css|js)$`（第七章的靜態資源）或 `location ~ \.php$`，`/admin/config.js`、`/admin/index.php` 會被那些 location 搶走，完全不經過這裡的 `allow`/`deny`。
+  - 加上 `^~` 後，命中 `/admin/` 就不再比對正規表示式。PHP 站台要把 `location ~ \.php$` 巢狀寫進 `/admin/` 裡；否則 `/admin/` 底下的 `.php` 不會交給 PHP-FPM，而是被當成一般檔案直接下載，連原始碼都外流。
 - `allow` / `deny` 的判斷規則：**由上往下逐條比對，第一條匹配的規則生效**，後面的不再看。
   - 所以「白名單模式」的寫法是：先寫一條條 `allow`，最後以 `deny all;` 收尾。
   - 順序寫反會怎樣？若把 `deny all;` 放第一行，所有請求都先匹配到它，後面的 `allow` 永遠不會生效，等於全部封鎖。
 - `10.0.0.0/8` 的 `/8` 是 CIDR 表示法：前 8 個位元固定、其餘可變，涵蓋 `10.0.0.0 ~ 10.255.255.255` 約 1,677 萬個位址；`/24` 則涵蓋 256 個位址。
 - 被 `deny` 擋下的請求預設回 `403 Forbidden`，並在 error log 留下 `access forbidden by rule` 紀錄。
 - 把封鎖清單獨立成 `blocked-ips.conf` 的好處：日後新增封鎖只要改這個檔案再 reload，不必動主設定；也方便用腳本或 fail2ban 自動維護。
+- 繼承陷阱：`allow`/`deny` 和 `add_header` 一樣，某個 location 只要自己寫了任何一條 `allow` 或 `deny`，上層的規則（包括引入的封鎖清單）在那裡就全部失效。上面的 `/admin/` 就是這種 location，黑名單 IP 若剛好落在 `allow` 的網段內一樣能進去；需要時在該 location 內也 `include` 封鎖清單，並放在 `allow` 之前。
 
-> 常見錯誤：Nginx 前面有反向代理或 CDN（如 Cloudflare）時，`$remote_addr` 看到的是代理的 IP，不是真實客戶端 IP，`allow`/`deny` 會判斷錯誤。需搭配 `real_ip` 模組（`set_real_ip_from` + `real_ip_header X-Forwarded-For;`）還原真實 IP 後再做存取控制。
+> 常見錯誤：Nginx 前面有反向代理或 CDN（如 Cloudflare）時，`$remote_addr` 看到的是代理的 IP，不是真實客戶端 IP，`allow`/`deny` 與 8.4 的限流都會判斷錯誤。需搭配 realip 模組還原真實 IP：`set_real_ip_from` 只列出你信任的代理位址（列太寬，任何人都能偽造 `X-Forwarded-For` 繞過封鎖與限流）、`real_ip_header X-Forwarded-For;`，經過多層代理時再加 `real_ip_recursive on;`。Cloudflare 的完整設定見第十一章。
 
 ### GeoIP 限制（依國家/地區）
 
@@ -389,18 +401,22 @@ server {
 # 關閉目錄列表（預設即為 off，明確寫出避免被其他設定覆蓋）
 autoindex off;
 
+# Let's Encrypt 的 HTTP 驗證檔（第六章 webroot 方式）必須放行
+# ^~ 讓這個前綴命中後不再進入下面的正規表示式 location
+location ^~ /.well-known/acme-challenge/ {
+    try_files $uri =404;
+}
+
 # 防止存取隱藏檔案（路徑中含 /. 的請求，例如 /.env、/.git/config）
 location ~ /\. {
-    deny all;            # 一律拒絕（回 403）
+    return 403;          # 一律拒絕；用 return 而非 deny all，error log 不會每次都留一筆紀錄
     access_log off;      # 不寫存取日誌（這類掃描量大，避免塞爆日誌）
-    log_not_found off;   # 檔案不存在時也不寫 error log
 }
 
 # 防止存取敏感檔案（依副檔名封鎖）
 location ~* \.(env|git|svn|htpasswd|htaccess|bak|swp|old|orig|log|sql)$ {
-    deny all;
+    return 403;
     access_log off;
-    log_not_found off;
 }
 ```
 
@@ -409,12 +425,16 @@ location ~* \.(env|git|svn|htpasswd|htaccess|bak|swp|old|orig|log|sql)$ {
 - `autoindex off;`
   - `autoindex on` 時，請求的目錄底下若沒有 `index` 檔案，Nginx 會自動列出目錄內容——等於把檔案結構攤給所有人看。
   - 預設值本來就是 `off`，但明確寫出來可以避免別處（或別人）開啟後忘記關。
-- `location ~ /\. { deny all; }`
+- `location ^~ /.well-known/acme-challenge/ { ... }`
+  - `/.well-known/` 也是「斜線後接一個點」，會被下面的隱藏檔規則擋成 403，第六章用 webroot 方式申請或續約憑證時，Let's Encrypt 就讀不到驗證檔。
+  - `^~` 前綴命中後不再比對正規表示式，所以這個目錄照常提供檔案；`try_files $uri =404;` 表示檔案存在就回傳，不存在回 404。
+- `location ~ /\. { return 403; }`
   - `~` 是區分大小寫的正規表示式匹配；`/\.` 匹配「斜線後接一個點」，即路徑任何一層的隱藏檔案或隱藏目錄。
   - `\.` 的反斜線是跳脫字元，讓 `.` 代表「字面上的點」而非正規表示式的「任意字元」。
   - 防什麼？`.env`（資料庫密碼）、`.git/`（可還原整份原始碼）、`.htpasswd`（密碼雜湊）等檔案一旦被下載，等於整站淪陷。
-- `access_log off;` / `log_not_found off;`
+- `return 403;` + `access_log off;`
   - 全網際網路的掃描器無時無刻在掃 `/.env`、`/.git/config`，這兩行讓這類雜訊不進日誌，保持日誌乾淨好分析。
+  - 為什麼不用 `deny all`？`deny` 每擋一次都會在 error log 寫一筆 `access forbidden by rule`（error 等級），掃描量大時 error log 一樣會被塞滿；`return` 直接回應，不會留下這類紀錄。
 - `location ~* \.(env|git|svn|...)$`
   - `~*` 是**不區分大小寫**的正規表示式（`.SQL`、`.Bak` 也會被擋）；`$` 表示「以此結尾」。
   - 涵蓋的檔案類型：編輯器暫存檔（`.swp`）、備份檔（`.bak`、`.old`、`.orig`）、資料庫匯出（`.sql`）、日誌（`.log`）——這些常被工程師不小心留在網站根目錄。
@@ -426,12 +446,15 @@ location ~* \.(env|git|svn|htpasswd|htaccess|bak|swp|old|orig|log|sql)$ {
 > curl -I http://myapp.com/.env
 > curl -I http://myapp.com/.git/config
 > curl -I http://myapp.com/backup.sql
+>
+> # ACME 驗證目錄不能被擋：不存在的檔案應回 404，而不是 403
+> curl -I http://myapp.com/.well-known/acme-challenge/test
 > ```
 
-### 防止 HTTP Request Smuggling
+### 標頭解析與大小限制
 
 ```nginx
-# 嚴格解析 HTTP 請求：丟棄名稱含非法字元的標頭（預設即為 on，明確寫出以防被改掉）
+# 丟棄名稱含非法字元的標頭（預設即為 on，明確寫出以防被改掉）
 ignore_invalid_headers on;
 
 # 限制標頭大小
@@ -442,9 +465,9 @@ client_header_buffer_size 1k;        # 一般標頭緩衝區：1KB（大多數�
 ### 這段指令在做什麼？（逐條）
 
 - `ignore_invalid_headers on;`
-  - HTTP Request Smuggling（請求走私）利用前端代理與後端伺服器對「畸形請求」解析不一致，把惡意請求「夾帶」過去。
-  - 設為 `on`（也是預設值）時，Nginx 會直接丟棄名稱不合法的標頭，降低前後端解析歧義。
+  - 設為 `on`（也是預設值）時，Nginx 會直接丟棄名稱含非法字元的標頭，不轉給後端，減少前後端對同一個請求解讀不一致的機會。
   - 千萬不要為了相容奇怪的客戶端改成 `off`，那會放行畸形標頭。
+  - 至於 HTTP Request Smuggling（請求走私：利用前端代理與後端對請求長度解讀不一致，把惡意請求「夾帶」過去），常見手法如同時帶 `Content-Length` 與 `Transfer-Encoding`、或重複的 `Content-Length`，Nginx 本身就會直接回 400，不需要額外設定；保持 Nginx 更新才是主要防線。
 - `client_header_buffer_size 1k;`
   - 讀取請求行與標頭的「第一個」緩衝區大小，預設就是 1k。正常請求（一般 Cookie、UA）都裝得下。
 - `large_client_header_buffers 4 8k;`
@@ -530,8 +553,8 @@ sudo htpasswd /etc/nginx/.htpasswd user2
 ```
 
 ```nginx
-# 保護特定路徑
-location /admin/ {
+# 保護特定路徑（^~ 的原因見 8.5：避免 /admin/ 底下的 .js、.php 被正規表示式 location 搶走而繞過驗證）
+location ^~ /admin/ {
     # 搭配 IP 限制：satisfy any = IP 或密碼其一通過即可放行
     # （預設是 satisfy all = IP 與密碼兩者都要通過）
     satisfy any;
@@ -541,10 +564,9 @@ location /admin/ {
     auth_basic_user_file /etc/nginx/.htpasswd;  # 指定帳號密碼檔路徑
 }
 
-# 排除特定路徑（如健康檢查）
-location /admin/health {
-    auth_basic off;     # 關閉此路徑的密碼驗證（覆蓋上層繼承的設定）
-    return 200 'OK';    # 直接回 200，供監控系統探測
+# 排除特定路徑（如健康檢查）：= 精確匹配，優先於上面的 /admin/
+location = /admin/health {
+    return 200 'OK';    # 直接回 200，供監控系統探測（不需要帳密，原因見下方說明）
 }
 ```
 
@@ -553,7 +575,7 @@ location /admin/health {
 - `sudo htpasswd -c /etc/nginx/.htpasswd admin`
   - `-c`（create）建立新檔案。**再次強調：對既有檔案使用 `-c` 會把原本所有使用者清掉**，第二個使用者開始請拿掉 `-c`。
   - 建議加上 `-B` 改用 bcrypt 雜湊（`sudo htpasswd -cB ...`），比預設的 MD5 雜湊更耐暴力破解。
-  - 密碼檔放在 `/etc/nginx/` 底下而不是網站根目錄，避免被當靜態檔下載（前一節的 `location ~ /\.` 規則也擋了 `.htpasswd`，雙保險）。
+  - 密碼檔放在 `/etc/nginx/` 底下而不是網站根目錄，避免被當靜態檔下載（8.6 的 `location ~ /\.` 規則也擋了 `.htpasswd`，雙保險）。
 - `auth_basic "Restricted Area";`
   - 啟用 HTTP Basic Authentication；`"Restricted Area"` 是 realm（領域）字串，會出現在瀏覽器的帳密彈窗上，內容可自訂。
   - 未通過驗證回 `401 Unauthorized`。
@@ -563,8 +585,10 @@ location /admin/health {
   - `satisfy` 決定「多重驗證條件」的邏輯：`all`（預設）= IP 與密碼**都要**通過；`any` = **任一**通過即可。
   - 此例效果：內網（`10.0.0.0/8`）免密碼直接進；外網則輸入正確帳密也能進。
   - 若想要「只有內網能連，且還要輸密碼」，把 `satisfy any;` 拿掉（用預設的 `all`）即可。
-- `auth_basic off;`
-  - `auth_basic` 會被下層 location 繼承；健康檢查端點若不排除，監控系統會一直收到 401。`off` 明確關閉該路徑的驗證。
+- `location = /admin/health { return 200 'OK'; }`
+  - 這是和 `/admin/` 並列的另一個 location（不是寫在它裡面），本來就不會繼承 `/admin/` 的 `auth_basic`、`allow`/`deny`。
+  - 而且 `return` 在 rewrite 階段就結束請求，早於 `auth_basic`、`allow`/`deny` 所在的 access 階段，這些檢查根本不會執行，所以不必寫 `auth_basic off`。
+  - 反過來說：在受保護的 location 裡寫 `return`，等於讓那個回應不受保護，要特別小心。
 
 > 常見錯誤：同一個區塊內重複寫兩次 `auth_basic` 或 `auth_basic_user_file`，`nginx -t` 會直接報錯 `"auth_basic" directive is duplicate`，每個區塊各寫一次即可。
 >
@@ -590,10 +614,9 @@ location /admin/health {
 ```nginx
 # 防止其他網站直接引用你的圖片
 location ~* \.(jpg|jpeg|png|gif|webp|svg)$ {
-    # 定義「合法的 Referer 來源」清單
+    # 定義「合法的 Referer 來源」清單（本站 server_name 為 mysite.com）
     valid_referers none blocked server_names
-        *.mysite.com
-        mysite.com;
+        *.mysite.com;
 
     # Referer 不在合法清單時，$invalid_referer 為 "1"
     if ($invalid_referer) {
@@ -610,12 +633,13 @@ location ~* \.(jpg|jpeg|png|gif|webp|svg)$ {
 
 - `location ~* \.(jpg|jpeg|png|gif|webp|svg)$`
   - 不區分大小寫地匹配常見圖片副檔名（`.JPG`、`.Png` 也會命中），只對圖片請求做防盜連檢查。
-- `valid_referers none blocked server_names *.mysite.com mysite.com;`
+- `valid_referers none blocked server_names *.mysite.com;`
   - 定義哪些 `Referer` 標頭算「合法」，並據此設定內建變數 `$invalid_referer`。逐個值說明：
     - `none`：請求**沒有** Referer 標頭。使用者直接在網址列輸入圖片網址、或從書籤開啟時就是這種情況——不允許會誤傷正常使用。
     - `blocked`：有 Referer 但內容被防火牆/代理改寫過（不以 `http://` 或 `https://` 開頭）。
-    - `server_names`：Referer 來自本設定檔 `server_name` 列出的網域。
-    - `*.mysite.com` / `mysite.com`：額外允許的網域，支援 `*` 萬用字元（涵蓋 `www.mysite.com`、`blog.mysite.com` 等子網域）。
+    - `server_names`：Referer 來自這個 `server` 區塊 `server_name` 列出的網域（這裡就是 `mysite.com`）。
+    - `*.mysite.com`：額外允許的網域，支援 `*` 萬用字元（涵蓋 `www.mysite.com`、`blog.mysite.com` 等子網域）。
+    - 已經由 `server_names` 涵蓋的網域不要再列一次：例如 `server_name` 有 `mysite.com`，清單又寫 `mysite.com`，`nginx -t` 會報 `conflicting parameter "mysite.com"`。
 - `if ($invalid_referer) { return 403; }`
   - `$invalid_referer`：Referer 合法時為空字串 `""`（條件不成立）、不合法時為 `"1"`（條件成立）。
   - 實際範例：Referer 是 `https://blog.mysite.com/post/1` → 合法、放行；Referer 是 `https://others-site.com/steal` → `$invalid_referer = "1"` → 回 403。
@@ -658,7 +682,7 @@ location ~* \.(jpg|jpeg|png|gif|webp|svg)$ {
 ```nginx
 # 1. 緊急限流
 http {
-    # 緊急限流區：每 IP 每秒只放行 2 個請求；20m 可記錄約 32 萬個 IP（攻擊時 IP 量大，加大空間）
+    # 緊急限流區：每 IP 每秒只放行 2 個請求；20m 可記錄約 16 萬個 IP（64 位元平台；攻擊時 IP 量大，加大空間）
     limit_req_zone $binary_remote_addr zone=emergency:20m rate=2r/s;
     # 緊急連線數計數區
     limit_conn_zone $binary_remote_addr zone=emergency_conn:20m;
@@ -672,8 +696,8 @@ http {
             return 403;
         }
 
-        # 封鎖最頻繁的攻擊 IP（引入 deny 清單檔）
-        include /etc/nginx/conf.d/blocked-ips.conf;
+        # 封鎖最頻繁的攻擊 IP（引入 8.5 的 deny 清單檔）
+        include /etc/nginx/snippets/blocked-ips.conf;
     }
 }
 ```
@@ -681,6 +705,8 @@ http {
 > 這段緊急設定的取捨（逐條）：
 >
 > - `rate=2r/s` + `burst=5`：比平時嚴格非常多，會犧牲部分正常使用者體驗（重度使用者可能被限流），屬於「先讓網站活下來」的戰時設定，攻擊結束後記得調回正常值。
+> - **只寫在 server 層不夠**：`limit_req`、`limit_conn` 只有在下層完全沒寫同名指令時才會繼承。8.4 的 `/api/`、`/login` 這類已有自己 `limit_req` 的 location，不會套用 server 層的緊急限流，要在那些 location 裡也加上 `limit_req zone=emergency burst=5 nodelay;`（同一個 location 可以同時寫多條 `limit_req`，全部都會生效）。
+> - 同理，有自己 `allow`/`deny` 的 location 不會套用這裡引入的封鎖清單（見 8.5 的繼承陷阱）。
 > - `$http_user_agent`：內建變數，值為請求的 `User-Agent` 標頭，例如 `Mozilla/5.0 (Windows NT 10.0; ...) Chrome/120.0`。
 > - **注意誤傷**：`(bot|crawler|spider)` 也會擋掉 Googlebot、Bingbot 等正規搜尋引擎爬蟲，長期開著會影響 SEO；這條只適合攻擊期間臨時使用。
 > - 防爬蟲補充：惡意爬蟲可以偽裝 UA 成正常瀏覽器，UA 過濾只是第一層；更完整的方案要靠速率限制、行為分析或 CDN 的 Bot 管理功能。
@@ -695,8 +721,8 @@ awk '{print $1}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head -2
 
 # 3. 封鎖惡意 IP
 # 把 deny 規則附加到封鎖清單（>> = 附加不覆蓋；/etc/nginx 需 root 權限，
-# 若目前不是 root，請改用：echo "deny 1.2.3.4;" | sudo tee -a /etc/nginx/conf.d/blocked-ips.conf）
-echo "deny 1.2.3.4;" >> /etc/nginx/conf.d/blocked-ips.conf
+# 若目前不是 root，請改用：echo "deny 1.2.3.4;" | sudo tee -a /etc/nginx/snippets/blocked-ips.conf）
+echo "deny 1.2.3.4;" >> /etc/nginx/snippets/blocked-ips.conf
 # 先測語法再重載，確保清單格式正確才套用
 sudo nginx -t && sudo nginx -s reload
 
@@ -710,11 +736,12 @@ sudo nginx -t && sudo nginx -s reload
 
 ```nginx
 # 嚴格限制登入頁面：3r/m = 平均每 20 秒才放行 1 個請求
-limit_req_zone $binary_remote_addr zone=login:10m rate=3r/m;
+# （寫在 http 區塊；zone 名稱不能和 8.4 已定義的 login 重複）
+limit_req_zone $binary_remote_addr zone=login_strict:10m rate=3r/m;
 
 location /login {
     # burst=5：允許短時間內多 5 次嘗試（涵蓋正常使用者打錯密碼重試），之後回 429
-    limit_req zone=login burst=5 nodelay;
+    limit_req zone=login_strict burst=5 nodelay;
 
     # 失敗回應延遲（讓暴力破解更慢）
     # 這需要搭配後端實作
@@ -726,6 +753,7 @@ location /login {
 >
 > - 正常使用者一分鐘內頂多登入幾次；暴力破解則是每秒嘗試數十、數百組密碼。
 > - `rate=3r/m` + `burst=5` 的效果：正常使用者打錯幾次密碼沒感覺，攻擊者一分鐘最多只能試 8 次左右，破解一組密碼的時間從數小時拉長到數年。
+> - 這條限流連 `GET /login`（打開登入頁）也算進去。若只想限制送出帳密的 POST，可用 `map $request_method $login_key { POST $binary_remote_addr; default ""; }` 產生 key，再以 `limit_req_zone $login_key ...` 定義區域（key 為空字串的請求不計數）。
 > - 限流以 IP 為單位，攻擊者若用殭屍網路換 IP 仍可繞過，所以還要搭配後端的帳號鎖定機制與 fail2ban。
 
 ```bash
@@ -733,17 +761,30 @@ location /login {
 # grep "POST /login"：篩出登入請求
 # 後續管線同情境一：統計每個 IP 的登入嘗試次數，列出前 10 名
 grep "POST /login" /var/log/nginx/access.log | awk '{print $1}' | sort | uniq -c | sort -rn | head -10
+```
 
-# 使用 fail2ban 自動封鎖
-# fail2ban 會持續掃描日誌，發現同一 IP 短時間內多次違規就自動寫入防火牆封鎖規則
+**使用 fail2ban 自動封鎖**：fail2ban 會持續掃描日誌，發現同一 IP 短時間內多次違規，就自動寫入防火牆封鎖規則。它內建的 `nginx-limit-req` 過濾器會比對 error log 裡 `limit_req` 留下的 `limiting requests` 紀錄，正好接上前面的限流設定：
+
+```ini
 # /etc/fail2ban/jail.local
-# [nginx-login]
-# enabled = true                            # 啟用這個 jail（監控規則）
-# filter = nginx-login                      # 使用的過濾器（定義在 filter.d/，用正規表示式匹配日誌）
-# logpath = /var/log/nginx/access.log       # 要監控的日誌檔
-# maxretry = 5                              # 違規次數門檻：5 次
-# findtime = 300                            # 統計時間窗：300 秒（5 分鐘內違規 5 次就觸發）
-# bantime = 3600                            # 封鎖時長：3600 秒（1 小時），到期自動解封
+# 注意：fail2ban 設定檔不支援行尾的 # 註解，註解一律寫在獨立一行
+
+[nginx-limit-req]
+# 啟用這個 jail；過濾器預設與 jail 同名，即內建的 filter.d/nginx-limit-req.conf
+enabled = true
+# 要監控的日誌：被限流的請求記錄在 error log
+logpath = /var/log/nginx/error.log
+# 統計時間窗 300 秒內，被限流 5 次就觸發封鎖
+findtime = 300
+maxretry = 5
+# 封鎖 3600 秒（1 小時），到期自動解封
+bantime = 3600
+```
+
+```bash
+# 套用並確認 jail 已啟動
+sudo systemctl restart fail2ban
+sudo fail2ban-client status nginx-limit-req
 ```
 
 ### 情境三：敏感資料外洩
@@ -753,36 +794,32 @@ grep "POST /login" /var/log/nginx/access.log | awk '{print $1}' | sort | uniq -c
 ```nginx
 # 封鎖所有敏感檔案（.env、.git、.svn、macOS 的 .DS_Store）
 location ~ /\.(env|git|svn|DS_Store) {
-    deny all;
     return 404;     # 回 404 而非 403：不讓對方知道「檔案其實存在」
 }
 
 # 封鎖資料庫匯出與各類備份/暫存檔（依副檔名結尾匹配）
 location ~ \.(sql|bak|old|orig|swp|swo|tmp)$ {
-    deny all;
     return 404;
 }
 
 # 封鎖版本控制目錄（注意結尾的 /：匹配 .git/ 目錄底下的所有檔案）
 location ~ /\.(git|svn|hg)/ {
-    deny all;
     return 404;
 }
 
 # 封鎖設定檔（這些檔案會洩漏依賴版本與建置細節）
 location ~ /(composer\.json|package\.json|Makefile|Dockerfile) {
-    deny all;
     return 404;
 }
 ```
 
 > 這組規則的兩個設計重點：
 >
-> - **為什麼用 `return 404` 而不是只用 `deny all`（403）？**
+> - **為什麼用 `return 404` 而不是 `deny all`（403）？**
 >   - `403 Forbidden` 等於告訴攻擊者「這個檔案存在，只是你不能看」，反而確認了目標。
 >   - `404 Not Found` 讓攻擊者無法分辨「檔案不存在」與「被擋下」，不洩漏任何資訊。
->   - 兩行並存時，`return` 在較早的處理階段（rewrite phase）就生效，客戶端實際收到的是 404；保留 `deny all;` 則是縱深防禦的保險。
-> - **與 8.6 規則的差異**：8.6 的版本回 403 並關閉日誌（重點在減少雜訊）；本情境回 404（重點在不洩漏資訊）。實務上可擇一風格，團隊統一即可。
+>   - `return` 在 rewrite 階段就結束請求，早於 `deny` 所在的 access 階段，所以同一個 location 再寫 `deny all;` 也永遠不會執行，只寫 `return 404;` 即可。
+> - **與 8.6 規則的差異**：8.6 的版本回 403 並關閉存取日誌（重點在減少雜訊）；本情境回 404（重點在不洩漏資訊）。實務上可擇一風格，團隊統一即可。
 >
 > 驗證方式：
 >

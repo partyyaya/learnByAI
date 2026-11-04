@@ -36,6 +36,10 @@ queryKey: ["lessons", filters]
 
 當 `filters` 改變時，Query 會自動抓對應資料並快取。
 
+這裡的「改變」比的是內容，不是物件引用。TanStack Query 會把 `queryKey` 序列化成字串再比對（物件的屬性順序也不影響），
+所以元件每次 render 都重新組一個 `{ search, level, sort }`，只要值沒變就是同一個 key，不會重抓；
+反過來，每一組不同的條件都是一份獨立的快取：切回剛才用過的條件會立刻顯示快取，還在 `staleTime` 內的話連請求都不會發。
+
 ---
 
 ## 3. 本章小練習
@@ -148,7 +152,6 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 ### `src/App.jsx`
 
 ```jsx
-import { useMemo } from "react";
 import { useLessonFilterStore } from "./store/useLessonFilterStore";
 import { useFilteredLessonsQuery } from "./hooks/useFilteredLessonsQuery";
 import "./App.css";
@@ -167,10 +170,9 @@ function App() {
   const filters = { search, level, sort };
   const lessonsQuery = useFilteredLessonsQuery(filters);
 
-  const selectedLesson = useMemo(() => {
-    const list = lessonsQuery.data ?? [];
-    return list.find((item) => item.id === selectedLessonId) ?? null;
-  }, [lessonsQuery.data, selectedLessonId]);
+  // 選取的課程從 Query 的資料裡找，store 只存 id，不另存一份課程資料
+  const selectedLesson =
+    (lessonsQuery.data ?? []).find((item) => item.id === selectedLessonId) ?? null;
 
   return (
     <main className="page">
@@ -328,6 +330,22 @@ li.selected {
 2. `useFilteredLessonsQuery(filters)` 用 `filters` 作為 `queryKey` 一部分，條件改變就自動抓新資料。
 3. Query 只處理遠端資料與快取；Zustand 只處理互動狀態，責任邊界清楚。
 4. `selectedLessonId` 放在 store，左側列表與右側詳情天然同步，不需 props 傳遞鏈。
+5. `filters` 是拿三個單欄位 selector 的結果，在 selector 外面組成的。若改成 `useLessonFilterStore((state) => ({ search: state.search, level: state.level, sort: state.sort }))` 一次取出，就會踩到第 11 章第 4 節「selector 回傳新物件」的無限重渲染問題。
+
+> **打字時清單一直閃「載入中...」？** 每打一個字就是一組新的 `queryKey`，這個 key 還沒有快取，所以 `isLoading` 是 `true`、`data` 是 `undefined`。
+> 想在新結果回來前先保留上一組結果，可以加上 `placeholderData: keepPreviousData`（v4 的寫法是 `keepPreviousData: true`）：
+>
+> ```jsx
+> import { keepPreviousData, useQuery } from "@tanstack/react-query";
+>
+> useQuery({
+>   queryKey: ["lessons", filters],
+>   queryFn: () => fetchLessons(filters),
+>   placeholderData: keepPreviousData,
+> });
+> ```
+>
+> admin-demo 的 `src/hooks/useCoursesQuery.js` 就是這樣做。另外，每打一個字也會發一次請求；接真後端時常再搭配 debounce，等使用者停手一小段時間才更新 `search`。
 
 ---
 

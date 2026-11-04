@@ -30,6 +30,9 @@ npm install @tanstack/react-query
 ```
 
 建立 `QueryClient` 並用 `QueryClientProvider` 包住 App。
+`queryClient` 就是整個 App 共用的快取，要建立在元件外面（如下方 `main.jsx`）；若寫在元件裡，每次 render 都會換成一份新的空快取。
+
+想直接看到快取內容與資料是否過期，可以另外安裝 `@tanstack/react-query-devtools`，把 `<ReactQueryDevtools />` 放進 `QueryClientProvider` 裡（admin-demo 的 `main.jsx` 就有加）。
 
 ---
 
@@ -44,17 +47,29 @@ const lessonsQuery = useQuery({
 ```
 
 - `queryKey`：快取識別（同 key 共用快取）
-- `queryFn`：實際取資料函式
-- `staleTime`：資料多久內視為新鮮
+- `queryFn`：實際取資料函式，回傳 Promise；丟出錯誤就會進入錯誤狀態
+- `staleTime`：資料多久內視為新鮮（單位是毫秒；`60_000` 就是 60000，底線只是方便閱讀）
+
+`queryKey` 也取代了第 7 章的依賴陣列：查詢用到的參數要放進 key，例如 `["todos", userId]`。
+`userId` 一變，key 就不同，Query 會改讀（或抓取）另一份快取；晚回來的舊請求只會寫回它自己的 key，不會蓋掉畫面上的新資料，所以不必再手寫 `AbortController` 防競態。
+
+`staleTime` 預設是 `0`，資料一拿到就算「過期（stale）」。過期的資料仍會先從快取顯示，只是在元件重新掛載、視窗重新取得焦點或網路重新連線時，會在背景重抓一次；設成 60 秒，就是告訴 Query 這段時間內不必重抓。
+另一個容易混淆的是 `gcTime`（v4 叫 `cacheTime`）：沒有任何元件在使用的快取，預設 5 分鐘後才會被清掉。
+
+> **版本提醒：**v5 的 `useQuery` 只接受一個物件參數。網路上 v4 以前的文章常見 `useQuery(["lessons"], fetchLessons)` 這種寫法，以及 `useQuery` 的 `onSuccess`／`onError` 選項，在 v5 都已移除。
 
 ---
 
 ## 4. 常用狀態
 
-- `isLoading`: 首次載入中
-- `isError`: 請求失敗
-- `data`: 成功資料
-- `refetch`: 手動重抓
+- `isPending`：還沒有任何資料可顯示
+- `isLoading`：第一次請求正在進行中（等於 `isPending && isFetching`）
+- `isFetching`：任何一次請求正在進行中，包含已有資料後的背景重抓
+- `isError`：請求失敗
+- `data`：成功資料
+- `refetch`：手動重抓（不看 `staleTime`，一定會發出請求）
+
+> **v4 → v5 的命名差異：**v4 的 `isLoading` 在 v5 改名為 `isPending`，v5 的 `isLoading` 則是「沒有資料而且正在抓」。本章的查詢一掛載就會發請求，用 `isLoading` 判斷首次載入即可；若查詢可能被暫停或停用（例如離線、`enabled: false`），要判斷「還沒有資料」請改用 `isPending`。
 
 ---
 
@@ -115,6 +130,8 @@ export async function fetchLessons() {
 }
 ```
 
+這裡借用 JSONPlaceholder 的 `posts` 假資料轉成課程格式；標題是拉丁文假字，測試篩選時請輸入英文（例如 `qui`）。
+
 ### `src/hooks/useLessonsQuery.js`
 
 ```jsx
@@ -133,7 +150,7 @@ export function useLessonsQuery() {
 ### `src/App.jsx`
 
 ```jsx
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useLessonsQuery } from "./hooks/useLessonsQuery";
 import "./App.css";
 
@@ -141,12 +158,11 @@ function App() {
   const [keyword, setKeyword] = useState("");
   const lessonsQuery = useLessonsQuery();
 
-  const filteredLessons = useMemo(() => {
-    const lessons = lessonsQuery.data ?? [];
-    const text = keyword.trim().toLowerCase();
-    if (!text) return lessons;
-    return lessons.filter((lesson) => lesson.title.toLowerCase().includes(text));
-  }, [lessonsQuery.data, keyword]);
+  const lessons = lessonsQuery.data ?? [];
+  const text = keyword.trim().toLowerCase();
+  const filteredLessons = text
+    ? lessons.filter((lesson) => lesson.title.toLowerCase().includes(text))
+    : lessons;
 
   return (
     <main className="page">
@@ -159,7 +175,12 @@ function App() {
             onChange={(e) => setKeyword(e.target.value)}
             placeholder="輸入關鍵字篩選課程標題"
           />
-          <button onClick={() => lessonsQuery.refetch()}>手動重新抓取</button>
+          <button
+            onClick={() => lessonsQuery.refetch()}
+            disabled={lessonsQuery.isFetching}
+          >
+            {lessonsQuery.isFetching ? "抓取中..." : "手動重新抓取"}
+          </button>
         </div>
 
         {lessonsQuery.isLoading && <p>資料載入中...</p>}
@@ -169,7 +190,9 @@ function App() {
 
         {!lessonsQuery.isLoading && !lessonsQuery.isError && (
           <>
-            <p>共 {filteredLessons.length} 筆資料（快取 key：`["lessons"]`）</p>
+            <p>
+              共 {filteredLessons.length} 筆資料（快取 key：<code>{'["lessons"]'}</code>）
+            </p>
             <ul>
               {filteredLessons.map((lesson) => (
                 <li key={lesson.id}>
@@ -255,7 +278,9 @@ li p {
 1. `QueryClientProvider` 把查詢快取能力提供給整個 React 樹。
 2. `useLessonsQuery` 把資料邏輯封裝成 hook，讓頁面元件更乾淨。
 3. `queryKey: ["lessons"]` 是快取索引，頁面重訪時可直接命中快取。
-4. `staleTime` 設為 60 秒，避免切頁或 re-render 造成不必要重抓。
+4. `staleTime` 設為 60 秒，元件在 60 秒內重新掛載（例如切頁回來）時直接用快取、不重抓；元件單純 re-render 本來就不會觸發請求。
+5. `main.jsx` 的 `defaultOptions` 是所有查詢的預設值：`retry: 1` 讓失敗只重試一次（預設重試 3 次，錯誤訊息要等比較久才出現），`refetchOnWindowFocus: false` 關掉切回分頁時的自動重抓。個別 `useQuery` 傳入的選項會覆蓋預設值，這裡兩邊都寫 60 秒只是為了示範。
+6. 按下按鈕時資料已在畫面上，所以 `isLoading` 不會變成 `true`；要顯示「抓取中」得看 `isFetching`。
 
 ---
 

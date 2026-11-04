@@ -49,7 +49,7 @@
 
 ```text
 基礎篇（必修）
-  01 介紹與安裝 → 02 第一個應用 → 03 三進程架構
+  01 介紹與安裝 → 02 第一個應用 → 03 Main / Renderer / Preload 架構
 
 核心篇（重點）
   04 IPC 通訊安全 → 05 視窗與互動介面 → 06 資料儲存
@@ -66,7 +66,7 @@
 
 ## 環境需求
 
-- Node.js：20 LTS 或以上
+- Node.js：22 LTS（22.12 以上）或 24 LTS
 - npm：10+（或 pnpm / yarn 皆可）
 - 作業系統：macOS / Windows / Linux
 - 建議工具：VS Code、Git、Postman（若有本機 API 整合）
@@ -75,7 +75,7 @@
 
 ## 延伸方向：整合前端框架（React / Vue + Vite）
 
-本課程刻意用原生 HTML / CSS / JS 撰寫 renderer，目的是把焦點放在 **Electron 本身**（三進程架構、IPC、打包、發佈），不被前端框架的設定細節分散注意力。
+本課程刻意用原生 HTML / CSS / JS 撰寫 renderer，目的是把焦點放在 **Electron 本身**（Main / Renderer / Preload 架構、IPC、打包、發佈），不被前端框架的設定細節分散注意力。
 
 當你要做真實產品、需要 React / Vue 的元件化、TypeScript 與 HMR 熱更新時，會再加一層前端建置工具。核心概念只有一個——**開發時載入 dev server，打包後載入建置好的靜態檔**：
 

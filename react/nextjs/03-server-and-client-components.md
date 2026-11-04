@@ -31,11 +31,13 @@ App Router 裡的元件預設是 **Server Component**：
 
 > 一句話：**要互動就 Client，其他盡量 Server。** 預設 Server 能讓送到瀏覽器的 JS 更少、首屏更快、密鑰更安全。
 
+> **Client Component 不是「只在瀏覽器跑」**：第一次載入頁面時，它也會先在伺服器跑一次產出 HTML，再到瀏覽器接上互動（這一步叫 hydration）。所以在 Client Component 的渲染過程直接讀 `window`、`localStorage`，會在伺服器那一次報 `window is not defined`；這類程式要放進 `useEffect` 或事件處理函式裡，它們只在瀏覽器執行。
+
 ---
 
 ## 2. 怎麼變成 Client Component：`"use client"`
 
-在檔案**最上面**加一行 `"use client";`，這個檔案（及它 import 的模組）就成為 Client Component：
+在檔案**最上面**（所有 import 之前，上面只能有註解）加一行 `"use client";`，這個檔案（及它 import 的模組）就成為 Client Component：
 
 ```jsx
 "use client";
@@ -48,7 +50,12 @@ export default function Counter() {
 }
 ```
 
-沒有 `"use client"` 卻用了 `useState` / `onClick`，會直接報錯。這是新手最常見的錯。
+沒有 `"use client"` 卻用了 `useState` / `onClick`，會直接報錯。這是新手最常見的錯，錯誤訊息長這樣：
+
+- 用了 `useState` 等 hook：``You're importing a component that needs `useState`. This React Hook only works in a Client Component.``
+- 在 Server Component 的元素上寫 `onClick`：`Event handlers cannot be passed to Client Component props.`
+
+看到這兩句，就是該加 `"use client"`（或把互動部分抽成 Client 子元件）的訊號。
 
 ---
 
@@ -61,6 +68,8 @@ export default function Counter() {
 反例（不好）：在根 Layout 標 `"use client"`，會讓整棵樹都變 Client，失去 Server Component 的好處。
 
 正解：頁面維持 Server，只把「按鈕」「表單」這種互動小元件抽出來標 `"use client"`。
+
+也因為會傳染，**Client 元件檔裡不能 import Server Component 來用**：一 import 進來它就變成 Client，裡面的 `async` 抓資料、讀資料庫都會失效或報錯。想讓 Server 內容出現在 Client 元件裡，要用下一節的 `children` 做法，從 Server 那一側傳進去。
 
 ---
 
@@ -96,6 +105,8 @@ export default function LikeButton({ initialLikes }) {
   return <button onClick={() => setLikes(likes + 1)}>👍 {likes}</button>;
 }
 ```
+
+> **Server 傳給 Client 的 props 必須能序列化**：這些值要先轉成資料送到瀏覽器，所以只能傳字串、數字、布林、陣列、純物件、`Date` 這類值，以及 JSX（例如下面的 `children`）。一般函式不能傳，例如在 Server 寫 `<LikeButton onLike={() => {}} />` 會報第 2 節看過的 `Event handlers cannot be passed to Client Component props.`（prop 名稱不是 `on` 開頭時，訊息換成 `Functions cannot be passed directly to Client Components...`）；互動邏輯要寫在 Client 元件裡面（第 8 章的 Server Action 是例外，它可以當 props 傳）。
 
 ### 進階：用 children 把 Server 內容「塞進」Client 元件
 
@@ -138,8 +149,9 @@ export default function Page() {
 ## 5. 常見錯誤對照
 
 - ❌ 在 Server Component 用 `onClick` → 加 `"use client"` 或抽成 Client 子元件。
-- ❌ 在 Client Component 用 `async function Component()` 直接 `await fetch` → Client 元件不能是 async；改用第 5 章的資料抓取方式或由 Server 傳入。
-- ❌ 在 Client Component import 帶密鑰的模組 → 密鑰會被打包外洩，改在 Server 端使用。
+- ❌ 在 Client Component 用 `async function Component()` 直接 `await fetch` → Client 元件不能是 async；改成在 Server Component 抓好再當 props 傳入（第 5 章），或在 Client 端用 `useEffect`／TanStack Query 抓。
+- ❌ 在 Client Component import 帶密鑰的模組 → 寫在程式裡的密鑰會跟著被打包外洩，改在 Server 端使用（環境變數哪些會進瀏覽器，見第 14 章）。
+- ❌ 從 Server 傳函式當 props 給 Client 元件（例如 `onClick={...}`）→ props 必須可序列化，事件處理寫在 Client 元件裡。
 - ❌ 整站標 `"use client"` → 失去 Server Component 優勢，只在葉子標。
 
 ---

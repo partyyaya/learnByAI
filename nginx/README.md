@@ -55,8 +55,9 @@
 
 ## 環境需求
 
-- 作業系統：Linux（推薦 Ubuntu 22.04+）/ macOS / Windows（WSL2）
-- Nginx 版本：1.24+（建議使用穩定版）
+- 作業系統：Linux（推薦 Ubuntu 24.04 LTS）/ macOS / Windows（WSL2）
+- Nginx 版本：1.24+（Ubuntu 24.04 用 `apt install nginx` 裝到的就是 1.24.0，課程的設定與指令都以它為準；新版行為不同的地方會在課文中註明）
+  - 想用更新的版本，可改用 nginx.org 官方套件庫（目前 stable 為 1.30）；但它的目錄配置和 Ubuntu 套件不同：沒有 `sites-available/`、`sites-enabled/`，站台設定放 `conf.d/`，worker 使用者是 `nginx`（詳見第一章 1.5）
 - 建議搭配工具：curl、openssl、htop、ab（Apache Bench）
 
 ---

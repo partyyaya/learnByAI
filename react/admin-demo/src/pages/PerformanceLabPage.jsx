@@ -2,9 +2,11 @@ import { memo, useCallback, useMemo, useState } from 'react'
 import PageHeader from '@/components/ui/PageHeader'
 import Card from '@/components/ui/Card'
 import Badge from '@/components/ui/Badge'
+import Button from '@/components/ui/Button'
 
 // 效能實驗室（第 13 章）：memo / useMemo / useCallback 的實際效果。
 // 用一份 2000 筆的大清單 + 昂貴計算，示範如何避免無關狀態變更造成的重算與重渲染。
+// 頁尾另有 Error Boundary 實驗：故意讓元件在渲染時出錯。
 
 const ALL_ROWS = Array.from({ length: 2000 }, (_, i) => ({
   id: i + 1,
@@ -45,6 +47,22 @@ const RowList = memo(function RowList({ rows, onPick, pickedId }) {
     </ul>
   )
 })
+
+// 按下按鈕只是改 state；真正丟出錯誤的是接下來的「渲染」，所以會被 AdminLayout 的
+// ErrorBoundary 攔住。若直接在 onClick 裡 throw，Error Boundary 是攔不到的。
+function CrashButton() {
+  const [crashed, setCrashed] = useState(false)
+
+  if (crashed) {
+    throw new Error('效能實驗室：故意在渲染時丟出的錯誤')
+  }
+
+  return (
+    <Button variant="danger" onClick={() => setCrashed(true)}>
+      觸發渲染錯誤
+    </Button>
+  )
+}
 
 function PerformanceLabPage() {
   const [keyword, setKeyword] = useState('')
@@ -104,6 +122,14 @@ function PerformanceLabPage() {
         </p>
 
         <RowList rows={filtered} onPick={handlePick} pickedId={pickedId} />
+      </Card>
+
+      <Card title="Error Boundary 實驗">
+        <p className="muted">
+          按下按鈕後，內容區會換成錯誤畫面，側欄與頁首不受影響。按「再試一次」或切到其他頁面即可恢復。
+          開發模式下主控台仍會印出紅色錯誤，那是 React 刻意保留的提示。
+        </p>
+        <CrashButton />
       </Card>
     </div>
   )

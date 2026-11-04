@@ -1,12 +1,15 @@
+import { cache } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 
-async function getPost(id) {
+// generateMetadata 和頁面都會呼叫 getPost。Prisma 查詢不是 fetch，不會自動去重，
+// 所以用 React 的 cache() 包起來：同一次請求、同一個 id 只查一次資料庫（第 13 章）。
+const getPost = cache(async (id) => {
   const numId = Number(id);
   if (!Number.isInteger(numId)) return null;
   return prisma.post.findUnique({ where: { id: numId } });
-}
+});
 
 // 依文章資料動態產生 metadata（第 13 章）
 export async function generateMetadata({ params }) {

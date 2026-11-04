@@ -15,7 +15,7 @@
 
 ## 1. Middleware：在頁面前面的守門員
 
-`middleware.js` 放在**專案根目錄**（和 `app/` 同層），會在每個符合條件的請求**進入頁面之前**先執行。最常見用途：檢查登入、轉址、加 header。
+`middleware.js` 放在**專案根目錄**（和 `app/` 同層；建專案時若選了 `src/`，就放在 `src/` 裡），會在每個符合條件的請求**進入頁面之前**先執行。最常見用途：檢查登入、轉址、加 header。
 
 ```js
 // middleware.js
@@ -39,7 +39,9 @@ export const config = {
 
 重點：
 
-> Middleware 跑在 **Edge 環境**，很輕量。**不要**在裡面查資料庫或做重運算，它只適合「快速判斷 + 轉址」。真正的權限細節留給頁面本身。
+> Next.js 15 的 middleware 預設跑在 **Edge runtime**：一個精簡的執行環境，只有 `fetch`、`Request`、`URL` 這類 Web 標準 API，沒有 `fs` 等 Node.js 專屬功能，第 9 章的 Prisma 也不能在這裡用。所以**不要**在裡面查資料庫或做重運算，它只適合「快速判斷 + 轉址」。真正的權限細節留給頁面本身。（15.5 起可以在 `config` 加 `runtime: "nodejs"` 改跑 Node.js，但它會在每個符合 matcher 的請求前執行，一樣要保持輕量。）
+
+> **版本提醒**：Next.js 16 把 `middleware.js` 改名為 `proxy.js`、匯出的函式改叫 `proxy`，並固定跑在 Node.js runtime；觀念和 `matcher` 寫法都一樣。本課以 Next.js 15 為準，照用 `middleware.js` 即可。
 
 ---
 
@@ -56,7 +58,7 @@ export const config = {
 };
 ```
 
-沒寫 matcher 的話會套用到所有請求（含靜態資源），通常不是你要的，記得限定範圍。
+沒寫 matcher 的話會套用到所有請求（含靜態資源），通常不是你要的，記得限定範圍。以上面的 middleware 為例，沒限定範圍時連 `/login` 本身也會被攔下、再轉去 `/login`，變成無限轉址（瀏覽器顯示「重新導向次數過多」）。
 
 ---
 
@@ -70,8 +72,8 @@ import { cookies } from "next/headers";
 const cookieStore = await cookies(); // Next.js 15：要 await
 cookieStore.set("token", "使用者的 session token", {
   httpOnly: true,   // 前端 JS 讀不到，防 XSS 竊取
-  secure: true,     // 只在 https 傳（正式環境）
-  sameSite: "lax",
+  secure: process.env.NODE_ENV === "production", // 正式環境只走 https；本機 http 開發時不加
+  sameSite: "lax",  // 從別的網站發出的 POST、fetch 不會帶上它，擋掉大部分 CSRF
   path: "/",
   maxAge: 60 * 60 * 24, // 一天
 });
@@ -79,7 +81,9 @@ cookieStore.set("token", "使用者的 session token", {
 
 登出就刪掉它：`cookieStore.delete("token")`。
 
-> 本章為了教學，token 用簡單字串示範。正式環境請用**簽章過的 session**（如 JWT 或 Auth.js 的加密 session），不要把可被偽造的明文當憑證。
+`set()`、`delete()` 只能在 Server Action 或 Route Handler 裡呼叫；Server Component 渲染時只能讀 cookie，在那裡寫入會報錯。
+
+> 本章為了教學，token 用簡單字串示範，middleware 和頁面也只檢查「cookie 在不在、內容是什麼」——任何人在瀏覽器 DevTools 自己加一個 `token=user:admin` 的 cookie 就能冒充 admin。正式環境請用**簽章過的 session**（如 JWT 或 Auth.js 的加密 session），讓伺服器驗得出 cookie 是不是自己發的、有沒有被改過。
 
 ---
 
@@ -104,6 +108,7 @@ export async function login(prevState, formData) {
   const cookieStore = await cookies();
   cookieStore.set("token", `user:${username}`, {
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60 * 24,
@@ -119,6 +124,8 @@ export async function logout() {
 }
 ```
 
+`login` 是 `(prevState, formData)` 的簽名，因為登入頁要用 `useActionState` 顯示錯誤（第 8 章）。`redirect()` 和第 6 章的 `notFound()` 一樣，是靠丟出 Next.js 專用的例外來中斷執行並轉址，所以它後面的程式不會跑；也**不要把它放進 `try/catch`**，否則會被 `catch` 吃掉、轉址就失效。需要 try/catch 時，把 `redirect()` 放在 try/catch 區塊之後。
+
 ---
 
 ## 5. 在 Server Component 讀登入者
@@ -127,6 +134,7 @@ Middleware 擋掉未登入者，頁面裡再讀 cookie 拿到目前使用者，�
 
 ```jsx
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 
 async function getCurrentUser() {
   const cookieStore = await cookies();
@@ -137,11 +145,12 @@ async function getCurrentUser() {
 
 export default async function DashboardPage() {
   const user = await getCurrentUser();
-  return <h1>歡迎，{user?.username}</h1>;
+  if (!user) redirect("/login"); // 第二道防護：不只靠 middleware
+  return <h1>歡迎，{user.username}</h1>;
 }
 ```
 
-> **雙層防護**：Middleware 做第一道快速攔截（沒 cookie 直接轉走），頁面/Server Action 再做第二道確認。不要只靠 middleware，也不要只靠頁面。
+> **雙層防護**：Middleware 做第一道快速攔截（沒 cookie 直接轉走），頁面/Server Action 再做第二道確認。不要只靠 middleware，也不要只靠頁面。Server Action 尤其要注意：它等同公開的 POST 端點（第 8 章），請求不一定會經過你在 matcher 裡守的那條路徑，所以每個需要登入的 action 開頭都要自己檢查一次（blog-demo 用 `lib/auth.js` 的 `requireUser()` 做這件事）。
 
 ---
 
@@ -159,7 +168,7 @@ export default async function DashboardPage() {
 npm install next-auth
 ```
 
-設定 provider 後，用 `auth()` 在 Server Component 拿 session、用 middleware 保護路由。細節依當時 Auth.js 版本文件為準；本課用自刻版把原理講清楚，你之後換 Auth.js 會很快。
+設定 provider 後，用 `auth()` 在 Server Component 拿 session、用 middleware 保護路由。注意 `auth()` 是 Auth.js v5 的 API（套件名稱仍是 `next-auth`），v4 的寫法不同，安裝時要確認裝到的是哪一版。細節依當時 Auth.js 版本文件為準；本課用自刻版把原理講清楚，你之後換 Auth.js 會很快。
 
 ---
 
@@ -215,6 +224,7 @@ export async function login(prevState, formData) {
   const cookieStore = await cookies();
   cookieStore.set("token", `user:${username}`, {
     httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60 * 24,
@@ -258,11 +268,13 @@ export default function LoginPage() {
 
 ```jsx
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { logout } from "../login/actions";
 
 export default async function DashboardPage() {
   const cookieStore = await cookies();
-  const token = cookieStore.get("token")?.value ?? "";
+  const token = cookieStore.get("token")?.value;
+  if (!token) redirect("/login"); // 第二道防護：不只靠 middleware
   const username = token.replace("user:", "");
 
   return (

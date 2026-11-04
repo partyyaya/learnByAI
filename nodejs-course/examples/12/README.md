@@ -79,4 +79,4 @@ docker compose stop api postgres test-db
 
 開發資料保留在 postgres_data volume；不要用 down -v 代替正常停止。修改程式後重新 build，修改 Prisma model 後另需 generate／migration；本章未修改資料庫結構。
 
-npm audit 仍有 Jest → deepmerge 開發依賴鏈的低嚴重度提示；未使用會降級 Jest 的強制修復。沿用固定版本與 lockfile，未依 npm 的新版提示升級工具。
+2026-11-02 複查 npm ci 的 audit 回報 19 個受影響套件節點（3 low、16 moderate，無 high／critical），涉及 Jest／glob／minimatch／deepmerge 開發依賴鏈。套件及 lockfile 未改，未執行 audit fix --force；這不是 19 個彼此獨立的漏洞，也不是完整安全稽核。

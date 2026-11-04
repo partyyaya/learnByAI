@@ -37,9 +37,11 @@
 ### 2.1 權限與安全
 
 - 盡量使用最小權限原則（Least Privilege），只給需要的權限。
+  - 個人帳號的 repo 無法細分權限：被邀請的 collaborator 一律有讀寫權限。需要給唯讀、或依角色分權限，要改用 Organization（見第 4 節步驟 8）。
 - 建議開啟 GitHub 兩步驟驗證（2FA）。
 - 使用 SSH Key 或 Fine-grained PAT，不要把密鑰寫進程式碼或 commit。
 - `.env`、金鑰、憑證必須放進 `.gitignore`。
+- 密鑰一旦被 commit 並推上去，之後刪掉也還留在歷史裡，要立刻撤銷並換一組新的。GitHub 的 Push protection 可以在 push 時擋下常見格式的密鑰，public repo 可以免費使用。
 
 ### 2.2 分支策略
 
@@ -70,9 +72,22 @@
 
 - 建議設定 PR 必須通過 CI（測試、lint、build）才能合併。
 - 重要分支開啟 Branch Protection（必須 review、禁止強推、必須通過檢查）。
-- 優先使用 Squash Merge 或 Rebase Merge，保持歷史可讀性。
+- 團隊統一一種合併方式（見 2.6）。
 
-### 2.6 法務與文件
+### 2.6 GitHub 的三種合併方式
+
+PR 頁面的合併按鈕有三種選擇，結果不同：
+
+| 按鈕 | main 上的結果 | 適合 |
+|------|--------------|------|
+| Create a merge commit | 保留 PR 裡的每個 commit，再加一個 merge commit（即使可以 fast-forward 也一定會產生） | 想保留完整開發過程 |
+| Squash and merge | PR 的所有 commit 壓成一個新 commit | PR 裡有很多零碎 commit；main 上一個 PR 對應一個 commit，最好讀 |
+| Rebase and merge | PR 的每個 commit 重新接到 main 最新點，不產生 merge commit | 每個 commit 都整理過，想保留線性歷史 |
+
+- 三種預設都開啟。維護者可以在 `Settings -> General -> Pull Requests` 只保留團隊要用的方式，常見做法是只開 Squash and merge。
+- Squash 和 Rebase 合併後，main 上的 commit 是新產生的，hash 和你本地分支上的不同，所以本地的 `git branch -d` 會拒絕刪除（處理方式見第 3 節步驟 10）。
+
+### 2.7 法務與文件
 
 - 開源專案務必有 `LICENSE`（如 MIT、Apache-2.0）。
 - 建議補齊：
@@ -149,6 +164,14 @@ git rebase main
 
 > 若團隊偏好 merge 而非 rebase，可改用 `git merge main`。
 
+PR 開了之後要再同步原專案，流程一樣。但這時分支已經推上 fork，rebase 後 commit hash 改變，一般的 `git push` 會被拒絕，要改用：
+
+```bash
+git push --force-with-lease
+```
+
+`--force-with-lease` 只在遠端分支沒有你不知道的新 commit 時才覆蓋。這支分支只有你在用，所以可以 rebase；`main` 這種多人共用的分支則不行（原因見 [Git 指南的黃金法則](./git.md#黃金法則)）。
+
 ### 步驟 7：推送分支到你的 fork
 
 ```bash
@@ -181,6 +204,13 @@ git remote -v
 1. 到你的 fork 頁面點擊 `Compare & pull request`。
 2. Base 選原專案分支（通常是 `main`）。
 3. 描述清楚：背景、改動、測試方式、影響範圍。
+4. 如果是處理某個 Issue，在描述寫 `Closes #123`，PR 合併後 GitHub 會自動關閉該 Issue。
+
+裝了 [GitHub CLI](https://cli.github.com/) 也可以在終端機建立：
+
+```bash
+gh pr create --base main --title "feat: add xxx behavior" --body "Closes #123"
+```
 
 ### 步驟 9：回應 Code Review
 
@@ -197,14 +227,18 @@ git push
 ### 步驟 10：合併後清理分支
 
 ```bash
-# 本地刪除已合併分支
+# 更新本地 main
 git checkout main
 git pull upstream main
+
+# 本地刪除已合併分支
 git branch -d feature/<short-description>
 
 # 刪除 fork 上遠端分支
 git push origin --delete feature/<short-description>
 ```
+
+如果 PR 是用 Squash and merge 或 Rebase and merge 合併的，`git branch -d` 會回報 `not fully merged` 並拒絕刪除（原因見 2.6）。先到 GitHub 確認 PR 已經是 Merged 狀態，再改用 `git branch -D` 強制刪除。
 
 ---
 
@@ -217,6 +251,8 @@ git push origin --delete feature/<short-description>
 1. 前往 [GitHub New Repository](https://github.com/new)。
 2. 決定專案名稱、公開或私有（Public / Private）。
 3. 建議勾選初始化 `README` 與 `.gitignore`（新專案通常較方便）。
+
+> 這裡是先建立遠端 repo 再 clone 下來，所以可以勾選。如果本地已經有專案要推上去，就不要勾選，流程見 [Git 指南的「本地倉庫首次推上 GitHub」](./git.md#情境本地倉庫首次推上-github)。
 
 ### 步驟 2：初始化本地專案並首次推送
 
@@ -250,15 +286,23 @@ git push origin main
 - 修正分支：`fix/*`
 - 發版分支（可選）：`release/*`
 
+合併方式也在這時決定：到 `Settings -> General -> Pull Requests` 只保留團隊要用的合併按鈕（見 2.6），並勾選 `Automatically delete head branches`，PR 合併後自動刪除同一個 repo 裡的分支。
+
 ### 步驟 5：設定 Branch Protection
 
-在 `Settings -> Branches` 設定保護規則，建議包含：
+在 `Settings -> Branches` 設定保護規則（較新的 `Settings -> Rules -> Rulesets` 功能相近，還能一次套用到多個分支），建議包含：
 
-- 禁止直接 push 到 `main`
-- 必須至少 1 位 reviewer 才能 merge
-- 必須通過 CI checks
-- 禁止 force push
-- 必須解決所有對話（Resolve conversations）
+- `Require a pull request before merging`：禁止直接 push 到 `main`，必須透過 PR
+- `Require approvals`：至少 1 位 reviewer 核准才能 merge
+- `Require status checks to pass before merging`：必須通過 CI checks
+- `Require conversation resolution before merging`：必須解決所有對話
+- 禁止 force push（規則預設就不允許，不要另外打開）
+
+設定前要知道的限制：
+
+- **方案限制**：GitHub Free 只能在 public repo 使用 branch protection 與 rulesets；private repo 需要 GitHub Pro、Team 或更高方案。
+- **不能核准自己的 PR**：只有一個人維護時，開啟 Require approvals 會讓自己的 PR 無法合併（除非管理員略過規則）。一人專案先只要求 PR 與 CI 通過即可。
+- **Status checks 要先跑過**：CI job 至少在 PR 上執行過一次，才能在清單裡選到它，所以要先完成步驟 7。
 
 ### 步驟 6：建立 Issue 與 PR 模板
 
@@ -280,10 +324,10 @@ git push origin main
 
 最基本建議：
 
-- PR 觸發 `lint + test + build`
+- PR 觸發 `lint + test + build`（workflow 的 `on:` 要包含 `pull_request`）
 - `main` 合併後可觸發部署（視專案需求）
 
-這樣可以避免「本機可以、合併後壞掉」的情況。
+這樣可以避免「本機可以、合併後壞掉」的情況。Workflow 寫法見 [CI/CD 教學 4.2](./ci-cd.md#42-前端專案pr-檢查與自動部署)。CI 在 PR 上跑過一次之後，回到步驟 5 把它加進 `Require status checks`。
 
 ### 步驟 8：邀請協作者加入
 
@@ -292,6 +336,8 @@ git push origin main
 1. `Settings -> Collaborators`
 2. 輸入 GitHub 帳號並發出邀請
 3. 對方接受後即可參與
+
+個人倉庫的 collaborator 一律有讀寫權限（可以 push、建分支、合併 PR），不能設成唯讀。需要細分權限時，改用組織倉庫。
 
 #### 組織（Organization）倉庫
 
@@ -355,7 +401,3 @@ git push origin main
 - [ ] PR 必須通過 CI 與 review
 - [ ] 有 Issue / PR 模板
 - [ ] 新人可依文件在短時間內完成第一次貢獻
-
----
-
-如果你想，我可以再幫你補一版「團隊實戰範本」：包含標準 `CONTRIBUTING.md`、`PULL_REQUEST_TEMPLATE.md`、以及分支命名與 commit message 規範範本。

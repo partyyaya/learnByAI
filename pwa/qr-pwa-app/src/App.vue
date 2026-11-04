@@ -46,6 +46,8 @@ function isStandaloneMode() {
   )
 }
 
+// iOS 主畫面 App 和 Safari 的 localStorage 不共用：App 裡寫入的旗標，Safari 讀不到，
+// 所以 Safari 端的提示只能靠使用者按「知道了」關閉。
 function isInstalled() {
   return isStandaloneMode() || window.localStorage.getItem(installedStorageKey) === '1'
 }

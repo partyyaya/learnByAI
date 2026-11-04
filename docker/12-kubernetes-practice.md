@@ -71,7 +71,9 @@ kubectl -n ingress-nginx get pods
 kubectl -n kube-system get pods | grep metrics-server
 ```
 
-> 如果你的環境不是 minikube，通常會用 Helm 安裝 ingress-nginx 與 metrics-server，可參考 12.9.1 的命令。
+> 如果你的環境不是 minikube，通常會用 Helm 安裝 Ingress Controller 與 metrics-server，可參考 12.9.1 的命令。
+
+> **關於 ingress-nginx**：minikube 的 `ingress` addon 使用的是社群的 ingress-nginx。Kubernetes 官方已宣布 ingress-nginx 在 2026 年 3 月停止維護（之後不再有版本與安全修補，既有安裝仍可運作）。本章用它學習 Ingress 的概念沒有問題：Ingress 這個 API 本身沒有被淘汰，換成其他 Ingress Controller（例如 Traefik、HAProxy、各雲端供應商的 Controller）時，本章的 Ingress YAML 幾乎不用改。新的正式環境建議評估 Ingress 的後繼標準 **Gateway API**。
 
 ---
 
@@ -120,7 +122,7 @@ spec:
     spec:
       containers:
         - name: web
-          image: registry.k8s.io/hpa-example  # K8s 官方提供、會吃 CPU 的示範映像（方便測 HPA）
+          image: registry.k8s.io/hpa-example  # K8s 官方提供、會吃 CPU 的示範映像（方便測 HPA；只有 latest 標籤）
           ports:
             - containerPort: 80
               name: http     # 幫這個埠取名 http，後面 Service/Probe 可用名稱引用（埠號改了也不用改多處）
@@ -180,6 +182,8 @@ spec:
       targetPort: http       # 轉發到 Pod 容器名為 http 的埠（即 Deployment 裡的 containerPort 80）
 ```
 
+> `hpa-example` 是一個 PHP + Apache 的映像，每次請求 `/` 都會做大量運算來消耗 CPU。它只有 amd64 版本，在 Apple Silicon（arm64）上會透過模擬執行，第一次拉取與每次請求都比較慢，屬於正常現象。
+
 ### 12.4.4 套用與驗證
 
 ```bash
@@ -238,13 +242,29 @@ kubectl apply -f 04-ingress.yaml
 
 # 查看 Ingress 狀態（ADDRESS 可能要等幾秒）
 kubectl -n k8s-practice get ingress web
+```
 
+連到 Ingress 的方式依作業系統而不同：
+
+**Linux（minikube 的 docker driver）**：minikube 的 IP 從主機可以直接連到。
+
+```bash
 # 取得 minikube IP（把流量打到該 IP）
 MINIKUBE_IP=$(minikube ip)
 echo "${MINIKUBE_IP}"
 
 # 用 Host Header 模擬 DNS，驗證 Ingress 路由是否命中
 curl -i -H "Host: web.k8s.local" "http://${MINIKUBE_IP}/"
+```
+
+**macOS / Windows（Docker Desktop + docker driver）**：minikube 的節點在 Docker Desktop 的 VM 裡，`minikube ip` 回傳的位址從主機**連不到**，curl 會一直逾時。要另開一個終端機執行 `minikube tunnel`，把 Ingress 對應到本機的 127.0.0.1：
+
+```bash
+# 終端機 A：建立通道（會要求輸入密碼以綁定 80/443 埠；這個終端機要保持開著）
+minikube tunnel
+
+# 終端機 B：改打 127.0.0.1
+curl -i -H "Host: web.k8s.local" http://127.0.0.1/
 ```
 
 > 如果你是雲端環境，通常會建立正式 DNS（例如 `web.example.com`）指向 Ingress/LB。
@@ -324,7 +344,9 @@ kubectl -n k8s-practice delete pod loadgen
 kubectl -n k8s-practice get hpa
 ```
 
-> HPA 不是即時毫秒級反應，會依 metrics 收集週期與穩定窗口延遲調整，這是正常現象。
+> HPA 不是即時毫秒級反應，會依 metrics 收集週期與穩定窗口延遲調整，這是正常現象。擴容通常 1～2 分鐘內就會看到（實測在 1 分鐘內從 2 份擴到上限 10 份）；縮容預設有 5 分鐘的穩定窗口，避免流量忽高忽低時副本數來回震盪。
+
+> HPA 接手之後，副本數由 HPA 決定。若之後又 `kubectl apply -f 02-deployment.yaml`，檔案裡的 `replicas: 2` 會把副本數瞬間改回 2，HPA 再慢慢調回去，造成不必要的縮放。實務上交給 HPA 管理的 Deployment，YAML 裡通常不寫 `replicas`（`helm create` 產生的模板在 `autoscaling.enabled: true` 時也會自動省略這個欄位）。
 
 ---
 
@@ -416,10 +438,11 @@ helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
   --namespace ingress-nginx \
   --create-namespace
 
-# 安裝或更新 metrics-server（建立 kube-system namespace）
+# 安裝或更新 metrics-server（kube-system namespace 叢集本來就有）
+# 本機叢集（kind 等）的 kubelet 使用自簽憑證，要加 --kubelet-insecure-tls，否則 metrics-server 抓不到指標
 helm upgrade --install metrics-server metrics-server/metrics-server \
   --namespace kube-system \
-  --create-namespace
+  --set 'args={--kubelet-insecure-tls}'
 ```
 
 ### 12.9.2 建立應用 Chart
@@ -446,8 +469,10 @@ replicaCount: 2              # 對應 Deployment 的 replicas
 
 image:
   repository: registry.k8s.io/hpa-example  # 映像名稱（不含 tag）
-  pullPolicy: IfNotPresent   # 拉取策略：本機已有就不重抓（latest 常設 Always）
-  tag: ""                    # 空字串時，chart 通常會 fallback 用 Chart.appVersion 當 tag
+  pullPolicy: IfNotPresent   # 拉取策略：本機已有就不重抓
+  # 一定要明確寫出 tag：留空時模板會改用 Chart.yaml 的 appVersion（helm create 預設是 "1.16.0"），
+  # 變成 hpa-example:1.16.0 這個不存在的映像，Pod 會卡在 ImagePullBackOff
+  tag: "latest"
 
 service:
   type: ClusterIP            # Service 型態
@@ -503,21 +528,20 @@ autoscaling:
   targetCPUUtilizationPercentage: 50  # 目標平均 CPU 使用率（同 HPA 的 averageUtilization）
 ```
 
-### 12.9.4 補上 startupProbe 模板（若你的 chart 預設沒有）
+### 12.9.4 補上 startupProbe 模板
 
-在 `web/templates/deployment.yaml` 容器設定區塊加入：
+`helm create` 產生的 `web/templates/deployment.yaml` 已經有 `livenessProbe` 與 `readinessProbe` 的區塊，但沒有 `startupProbe`。打開檔案找到這兩行：
+
+```yaml
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+```
+
+在它們**正上方**加入（只加 startupProbe 這一段；若把 liveness / readiness 也再貼一次，產生的 YAML 會有重複的欄位）：
 
 ```yaml
           {{- with .Values.startupProbe }}
           startupProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.livenessProbe }}
-          livenessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.readinessProbe }}
-          readinessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
 ```
@@ -533,7 +557,23 @@ autoscaling:
 
 ### 12.9.5 安裝、升級、回滾
 
+Helm 只管理「自己安裝的資源」。12.4～12.6 用 `kubectl apply` 建立的 `web` Deployment、Service、Ingress、HPA 還在 `k8s-practice` 裡，名稱又和這個 release 會產生的資源相同，直接安裝會出現：
+
+```
+Error: ... Deployment "web" in namespace "k8s-practice" exists and cannot be imported into the current release: invalid ownership metadata
+```
+
+所以先刪掉這些資源，再交給 Helm 管理：
+
 ```bash
+cd ~/k8s-practice
+kubectl delete -f 05-hpa.yaml -f 04-ingress.yaml -f 03-service.yaml -f 02-deployment.yaml
+```
+
+```bash
+# 只看渲染結果（不連線叢集、不套用），確認 startupProbe、image tag 都正確
+helm template web ./web | grep -E 'image:|startupProbe' 
+
 # 先做 dry-run，確認渲染結果正確（不會真的套用）
 helm upgrade --install web ./web \
   --namespace k8s-practice \
@@ -655,4 +695,4 @@ kubectl delete namespace k8s-practice
 3. GitOps（Argo CD / Flux）
 4. Progressive Delivery（Canary / Blue-Green）
 
-> 延伸閱讀：[第十三章：Docker Swarm 實戰（Stack + Overlay + Secrets + Rolling Update）](./13-docker-swarm-practice.md)
+> 上一章：[Kubernetes 入門（從 Docker 到 K8s）](./11-kubernetes-basics.md) | 延伸閱讀：[第十三章：Docker Swarm 實戰（Stack + Overlay + Secrets + Rolling Update）](./13-docker-swarm-practice.md)

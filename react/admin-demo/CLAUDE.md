@@ -14,7 +14,7 @@
 ## 通用規範
 
 - 只用 JavaScript / JSX，**不使用 TypeScript**，不要加型別註記。
-- 一律用函式元件 + Hooks，不使用 class 元件。
+- 一律用函式元件 + Hooks，不使用 class 元件。唯一例外是 `components/ui/ErrorBoundary.jsx`（React 沒有對應的 Hook）。
 - 匯入路徑使用 `@/` 別名（指向 `src/`），避免 `../../..`。
 - 顯示文字用繁體中文；程式碼識別字用英文。
 - 表單控制項一定要有可及名稱：有可見標籤的用 `Field` 包起來；
@@ -27,9 +27,9 @@
 ```
 src/
 ├── main.jsx            # 進入點：掛 BrowserRouter + QueryClientProvider，並在 mock 模式時啟動 mock
-├── App.jsx             # 路由樹（Routes/Route）與受保護路由
+├── App.jsx             # 路由樹（Routes/Route）與受保護路由；後台頁面一律用 React.lazy 匯入
 ├── router/             # 路由設定、選單設定、ProtectedRoute
-├── layouts/            # 後台外殼（Sidebar + Header + Outlet）
+├── layouts/            # 後台外殼（Sidebar + Header + Outlet，內容區包 Suspense + ErrorBoundary）
 ├── pages/              # 路由層級頁面（每個檔名以 Page 結尾）
 ├── components/ui/      # 跨頁共用的基礎 UI 元件（Button、Card、DataTable...）
 ├── stores/            # Zustand 全域狀態（本地 / UI 狀態），檔名 xxx.store.js
@@ -69,7 +69,8 @@ src/
 
 ## Mock
 
-- 是否啟用由 `VITE_USE_MOCK` 決定（見 `.env.development`），預設 `true`。
+- 是否啟用由 `VITE_USE_MOCK` 決定（見 `.env.development` 與 `.env.production`），兩者預設都是 `true`：
+  本專案沒有真後端，部署後也走 mock。
 - Mock 只在 `src/mock` 內攔截；`services` 與 `pages` 感覺不到差異——這樣未來換真後端幾乎零改動。
 - 假資料放 `src/mock/db.js`，各 domain 攔截放對應 `xxx.mock.js`。
 
@@ -98,7 +99,9 @@ src/
 | Zustand + persist `stores/ui.store.js` | 11 Zustand |
 | Zustand 篩選 + Query queryKey `pages/courses` | 12 Zustand + Query 整合 |
 | `memo` / `useMemo` / `useCallback` `pages/PerformanceLabPage.jsx` | 13 效能優化 |
+| `React.lazy` 拆包 `App.jsx`；`Suspense` + Error Boundary `layouts/AdminLayout.jsx`、`components/ui/ErrorBoundary.jsx` | 13 效能優化 |
 | 測試設定與 Provider 包裝 `src/test/`、各 `*.test.jsx` | 14 測試與部署 |
+| 部署設定 `vercel.json`、`public/_redirects`、`.env.production` | 14 測試與部署 |
 
 ## 不要做
 

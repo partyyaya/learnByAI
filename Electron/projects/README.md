@@ -9,7 +9,7 @@
 
 兩個專案的分工：**notepad-app 是「原生 App 該有的樣子」**（零 runtime 依賴、純 JS、資料存本機檔案）；**admin-dashboard 是「前端框架怎麼放進 Electron」**（React + Vite 建置、模擬 HTTP API、登入與權限）。
 
-共同的執行方式（需要 Node.js 20 LTS 以上；admin-dashboard 需要 20.19+）：
+共同的執行方式（需要 Node.js 22.12 以上）：
 
 ```bash
 cd notepad-app        # 或 admin-dashboard

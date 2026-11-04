@@ -4,6 +4,7 @@
 
 `manifest.webmanifest` 是 PWA 的「App 身分證」，用來描述：
 
+- App 的身分（`id`）
 - App 名稱與短名稱
 - 啟動網址與 scope
 - 顯示模式（是否隱藏瀏覽器 UI）
@@ -17,9 +18,11 @@
 
 ```json
 {
+  "id": "/",
   "name": "PWA Demo Shop",
   "short_name": "DemoShop",
   "description": "一個可離線瀏覽與安裝的示範商店",
+  "lang": "zh-Hant",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -67,12 +70,13 @@
 
 ### `scope`
 
-- **用途**：限制「哪些路徑算 App 內頁」。超出 `scope` 的連結會回到一般瀏覽器頁籤開啟。
+- **用途**：限制「哪些路徑算 App 內頁」。導覽到 `scope` 以外的網址時，瀏覽器會在 App 視窗上方顯示網址列（Android 多半改用 Custom Tab 開啟），提醒使用者已經離開 App。
 - **規則重點**：
-  - `start_url` 需落在 `scope` 內，否則安裝後導覽行為會不一致。
+  - 沒寫 `scope` 時，預設是 `start_url` 所在的目錄。
+  - `start_url` 必須落在 `scope` 內，否則瀏覽器會忽略你寫的 `scope`，改用預設值。
   - 部署在子路徑時要一致，例如網站在 `/shop/`，就設定 `scope: "/shop/"`。
-  - 建議保留尾端斜線，減少路徑比對誤判。
-- **常見錯誤**：`scope` 設太小（例如 `/shop/app/`），導致使用者點一般功能頁時突然跳回瀏覽器。
+  - 保留尾端斜線：`scope` 是用字串前綴比對，寫成 `/shop` 連 `/shopping` 也會算進去。
+- **常見錯誤**：`scope` 設太小（例如 `/shop/app/`），使用者點一般功能頁時突然冒出網址列，看起來像跳回瀏覽器。
 
 ### `start_url`
 
@@ -80,37 +84,76 @@
 - **設定建議**：
   - 根路徑部署：`start_url: "/"`。
   - 子路徑部署：`start_url: "/shop/"`（必須與實際部署路徑一致）。
-  - 可加追蹤參數（例如 `/?source=pwa`），但要確保此 URL 能被正常渲染且可離線處理。
+  - 可加追蹤參數（例如 `/?source=pwa`），但 SW 快取的 key 是 `/`：導覽請求比對快取時要加 `ignoreSearch: true`，或把這個網址也預快取，否則離線時開不起來。
 - **常見錯誤**：部署在子路徑但仍寫 `/`，結果安裝後直接打到錯誤入口或 404。
+
+### `id`
+
+- **用途**：App 的唯一身分，瀏覽器用它判斷「這是不是同一個已安裝的 App」。
+- **沒寫的後果**：瀏覽器拿 `start_url` 當身分，之後只要改了 `start_url`（例如加上追蹤參數），就會被當成另一個 App，已安裝的使用者收不到 manifest 更新。
+- **設定建議**：第一次上線就設好，之後不要再改，例如 `"id": "/"`（以 `start_url` 的網域為基準解析）。
 
 ### `icons`
 
 - **用途**：決定 App 圖示、啟動畫面、系統任務切換縮圖等視覺資產。
 - **最低建議**：
-  - `192x192`（安裝需求常用尺寸）
-  - `512x512`（高解析度與商店/系統場景）
-  - `purpose: "maskable"`（避免 Android 桌面圖示被裁切變形）
-- **格式建議**：使用 PNG、背景不透明、主體置中並預留安全邊距（約 10% 以上）。
+  - `192x192` 與 `512x512`：Chrome 的安裝條件要求兩種都要有
+  - `purpose: "maskable"`：Android 會把圖示裁成圓形、圓角方形等形狀；沒有 maskable 圖示時，系統會把一般圖示縮小放進白色底板
+- **格式建議**：
+  - 使用 PNG，`sizes` 要和實際尺寸一致
+  - maskable 圖示另外做一張，不要直接沿用一般圖示：背景不透明，重要內容放在中央直徑 80% 的圓內（等於四周至少留 10%，方形 Logo 要留得更多）
+  - 可用 [maskable.app](https://maskable.app/) 預覽各種裁切形狀
 - **常見錯誤**：尺寸標錯（`sizes` 與實際檔案不一致）或路徑 404，會直接影響可安裝性判定。
+
+### 其他常用欄位
+
+| 欄位 | 用途 |
+|------|------|
+| `lang` | 名稱與描述的語言，例如 `"zh-Hant"` |
+| `screenshots` | 安裝對話框裡的截圖；有截圖和 `description` 時，Android 與桌面版 Chrome 會改用較完整的安裝畫面 |
+| `shortcuts` | 長按 App 圖示（桌面版為右鍵）出現的快捷選單 |
+| `display_override` | 依序嘗試的顯示模式，都不支援時才用 `display`，例如 `["window-controls-overlay", "standalone"]` |
+| `orientation` | 鎖定方向，例如 `"portrait"` |
+
+```json
+{
+  "screenshots": [
+    { "src": "/screenshots/home-wide.png", "sizes": "1280x720", "type": "image/png", "form_factor": "wide" },
+    { "src": "/screenshots/home-narrow.png", "sizes": "720x1280", "type": "image/png", "form_factor": "narrow" }
+  ],
+  "shortcuts": [
+    { "name": "我的訂單", "url": "/orders", "icons": [{ "src": "/icons/orders-96.png", "sizes": "96x96" }] }
+  ]
+}
+```
+
+`form_factor: "wide"` 的截圖給桌面版，`"narrow"` 給手機。
 
 ## 2.4 實際運行情境與解決方法
 
 ### 情境一：安裝選項一直出不來
 
-**原因**：Manifest 缺必要欄位或圖示尺寸不符合條件。  
+**原因**：Manifest 缺必要欄位、圖示不符合條件，或使用者互動還不夠。  
+**解法**：對照 Chrome 的安裝條件逐項檢查：
+
+- 有 `name` 或 `short_name`，以及 `start_url`
+- `display` 是 `standalone`、`fullscreen`、`minimal-ui` 或 `window-controls-overlay`
+- `icons` 同時有 `192x192` 與 `512x512`
+- 沒有把 `prefer_related_applications` 設成 `true`
+- 使用者在頁面上至少點過一次、累計停留超過 30 秒（影響 `beforeinstallprompt`，見第七章）
+- 到 `Application -> Manifest` 的 Installability 區塊確認沒有錯誤訊息
+
+### 情境二：安裝後圖示被切掉，或縮成白底上的小圖
+
+**原因**：
+
+- 沒有 `maskable` 圖示：Android 把一般圖示縮小放進白色底板
+- `maskable` 圖示內容太靠邊：系統依形狀裁切時切到重要內容
+
 **解法**：
 
-- 至少提供 `name`/`short_name`、`start_url`、`display`
-- 加入 `192x192` 與 `512x512` icon
-- 確認 `Application -> Manifest` 沒有錯誤訊息
-
-### 情境二：安裝後圖示被裁切變醜
-
-**原因**：沒有 `maskable` icon，系統套用自動裁切。  
-**解法**：
-
-- 提供 `purpose: "maskable"` 圖示
-- 重要內容置中，周圍保留安全邊距（建議 10% 以上）
+- 另外提供一張 `purpose: "maskable"` 圖示，背景不透明
+- 重要內容放在中央直徑 80% 的圓內，用 maskable.app 檢查各種形狀
 
 ### 情境三：安裝後打開是錯頁或 404
 
@@ -131,23 +174,25 @@
 **原因拆解**：
 
 - **HTTP 快取**：`manifest.webmanifest` 被瀏覽器/CDN 長時間快取，裝置拿不到最新版
-- **安裝快照延遲**：系統對已安裝 App 的圖示與名稱更新不是即時套用，通常有同步延遲
-- **路徑未變更**：manifest URL 固定不變，快取命中率高，導致新內容不容易被重新抓取
+- **更新有節流**：已安裝的 App 不會每次開啟都重抓 manifest。Chrome 在 App 啟動時檢查，距離上次檢查超過 24 小時（或瀏覽器重開過）才會重新比對
+- **套用有時機**：桌面版等所有 App 視窗關閉後才套用；Android 要等 App 關閉、裝置充電且連上 Wi-Fi 才更新，通常一兩天內生效
+- **身分對不上**：沒設 `id` 又改了 `start_url`，瀏覽器會當成另一個 App，舊的那個不會再更新
 
 **排查步驟**：
 
 1. 在 DevTools `Application -> Manifest` 確認目前實際讀到的欄位值是不是新版本
 2. 用 `Network` 面板查看 `manifest.webmanifest` 回應標頭（`Cache-Control`、`ETag`）
 3. 檢查 CDN 是否有額外快取規則（例如 edge cache 1 天）
-4. 若是已安裝 App，移除安裝再重裝，確認是否可拿到新資訊
+4. 桌面版 Chrome 開 `chrome://web-app-internals`，查看已安裝 App 記錄的 manifest 內容
+5. 想立刻觸發檢查，可用 `--disable-manifest-update-throttle` 參數啟動 Chrome
 
 **解法**：
 
 - 對 `manifest.webmanifest` 使用短快取，例如 `max-age=300`，避免長時間卡舊版本
-- 發版時可加版本參數，強制讓瀏覽器抓新檔案：
-  - `<link rel="manifest" href="/manifest.webmanifest?v=20260223" />`
+- 不要改 manifest 的檔名或網址（包括加上 `?v=` 版本參數），否則瀏覽器可能無法更新已安裝的 App
+- 第一次上線就設好 `id`
 - 若有 CDN，發版後同步 purge manifest 路徑
-- 驗證流程建議：更新 manifest -> 重新載入頁面 -> 重新安裝 -> 檢查名稱/圖示是否生效
+- 驗證流程建議：更新 manifest -> 重新載入頁面 -> 關閉所有 App 視窗再開啟 -> 檢查名稱/圖示是否生效
 
 **伺服器設定示例（Nginx）**：
 
@@ -182,16 +227,20 @@ location = /manifest.webmanifest {
 **解法**：
 
 - 先建立「單一色彩來源」，確保設計系統有統一主題色
-- 同步設定 manifest 與 HTML meta：
-  - `manifest.theme_color = "#0f172a"`
-  - `<meta name="theme-color" content="#0f172a">`
-- 若有深色模式，路由切換或主題切換時動態更新 meta：
+- manifest 的 `theme_color` 只能有一個值；頁面的 meta 則可以依深淺色模式各寫一個，瀏覽器會自動挑選，系統切換深色模式時也會跟著換：
+
+```html
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#0f172a" media="(prefers-color-scheme: dark)" />
+```
+
+- 若 App 有自己的主題切換（不跟系統走），在切換時用 JS 改寫：
 
 ```ts
-const metaTheme = document.querySelector('meta[name="theme-color"]');
-if (metaTheme) {
-  const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  metaTheme.setAttribute("content", isDark ? "#0f172a" : "#ffffff");
+function setThemeColor(color: string) {
+  document.querySelectorAll('meta[name="theme-color"]').forEach((meta) => {
+    meta.setAttribute("content", color);
+  });
 }
 ```
 
@@ -203,7 +252,7 @@ if (metaTheme) {
 ## 2.5 本章小結
 
 - Manifest 決定 PWA 是否「像一個 App」
-- `start_url`、`scope`、`icons` 是最常踩雷的三個欄位
+- `start_url`、`scope`、`icons` 是最常踩雷的三個欄位，`id` 要在第一次上線就設好
 - 實機測試必做：Android、Desktop、iOS Safari 行為不同
 
 ---

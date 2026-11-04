@@ -87,7 +87,7 @@ npm run dev
 
 ## 開發環境
 
-- Node.js: 18+（建議 LTS）
+- Node.js: 22 LTS 或更新的 LTS 版本（較新的 Vite 已不支援 Node 18）
 - 套件管理: `npm` / `pnpm` / `yarn` 擇一
 - 編輯器: Cursor / VS Code
 - 瀏覽器: Chrome（建議安裝 React Developer Tools）
@@ -105,6 +105,8 @@ npm install
 # 3) 啟動開發伺服器
 npm run dev
 ```
+
+> **版本說明**：Vite 模板會安裝最新版 React（目前是 19）。本課範例以 React 18 寫成，在 19 上照樣能跑，有差異的地方課文會提醒；[admin-demo/](./admin-demo/) 則固定使用 React 18。
 
 ---
 

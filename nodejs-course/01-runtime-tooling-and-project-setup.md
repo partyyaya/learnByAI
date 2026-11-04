@@ -12,7 +12,7 @@
 - 用固定指令完成型別檢查、建置、執行與 Jest 測試。
 - 讓型別錯誤與業務錯誤分別被檢查出來，並在原始碼設定斷點。
 
-前置：讀完 [00 章](00-course-map-and-project-contract.md)，理解基本物件、函式、`import` 與 TypeScript 型別。本章提供 Docker 路線，不要求先在主機安裝 Node。範例仍是一次執行就結束的程式；05 章才建立 HTTP 服務。
+前置：讀完 [00 章](00-course-map-and-project-contract.md)，理解基本物件、函式、`import` 與 TypeScript 型別。本章用 nvm 安裝與切換 Node，套件安裝、測試、建置及執行仍使用 Docker。範例是一次執行就結束的程式；05 章才建立 HTTP 服務。
 
 ## 01.1 為什麼只交一份 `.ts` 檔還不夠？
 
@@ -51,7 +51,7 @@
 
 `node_modules` 是下載的依賴，`dist` 是自己的程式建置結果，`.test-dist` 則是包含測試的建置結果。三個目錄可以從原始碼、設定與 lockfile 重建，不提交到 Git。
 
-新版 Node 能執行部分 TypeScript 語法，但直接執行不等於完成型別檢查。本課刻意使用明確的編譯流程，方便接續正式建置與 NestJS 的編譯需求。[Node.js TypeScript 說明](https://nodejs.org/api/typescript.html)
+新版 Node 能執行部分 TypeScript 語法，但直接執行不等於完成型別檢查。本課刻意使用明確的編譯流程，方便接續正式建置與 NestJS 的編譯需求。[Node.js TypeScript 說明](https://nodejs.org/docs/latest-v24.x/api/typescript.html)
 
 ## 01.3 本章的版本與檔案
 
@@ -67,11 +67,11 @@
 
 這是一組本章驗證使用的版本，不表示每個套件都是最新版本。`@types/node` 提供型別，不會安裝或替換 Node；它的修補版本不必與 Node 執行檔完全相同。
 
-Docker 的 [compose.yaml](examples/01/compose.yaml) 使用 image digest 固定映像內容，提供表中的 Node 與 npm。日後升級時，應一起檢查映像、`.nvmrc`、`engines` 與 lockfile，再重新驗證。本章只安裝用得到的工具；Express、NestJS、Prisma 與 Supertest 會在開始使用的章節固定版本並更新對應範例的 lockfile。
+Node 用 nvm 依 [.nvmrc](examples/01/.nvmrc) 管理；Docker 的 [compose.yaml](examples/01/compose.yaml) 則用 image digest 固定容器內容，兩邊都採表中的版本。日後升級時，應一起檢查映像、`.nvmrc`、`engines` 與 lockfile，再重新驗證。本章只安裝用得到的工具；Express、NestJS、Prisma 與 Supertest 會在開始使用的章節固定版本並更新對應範例的 lockfile。
 
 ```text
 examples/01/
-├── .nvmrc                    # 本機 Node 版本
+├── .nvmrc                    # nvm 使用的 Node 版本
 ├── .npmrc                    # npm 安裝規則
 ├── .gitignore                # 排除依賴與產物
 ├── .vscode/launch.json       # 本機與 Docker 除錯入口
@@ -90,14 +90,46 @@ examples/01/
 
 初次閱讀先照下一節跑通，再逐一看設定檔。不要在倉庫根目錄執行 `npm install`；本章的專案根目錄是 `nodejs-course/examples/01`。
 
-## 01.4 先跑通一次：Docker 與本機擇一
+## 01.4 先用 nvm 安裝指定版本，再用 Docker 執行
 
-### 路線 A：使用 Docker
+### 第一步：安裝與確認 nvm
 
-從倉庫根目錄開始，以下使用 Bash／zsh：
+尚未安裝 nvm 時，先完成[第 00 章的 nvm 安裝步驟](00-course-map-and-project-contract.md#004-用-nvm-安裝-node-並執行第一個練習)。安裝完成並重新開啟終端機後，確認：
+
+```bash
+command -v nvm
+nvm --version
+```
+
+如果已安裝卻找不到 nvm，且使用預設的 ~/.nvm 目錄，可以先載入：
+
+```bash
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+command -v nvm
+```
+
+nvm 是 shell 函式，所以用 command -v nvm 確認；若安裝於其他位置，請使用安裝器寫入 shell 設定檔的載入路徑。以上載入指令只對目前終端機生效。[nvm 載入與用法](https://github.com/nvm-sh/nvm#usage)
+
+接著從倉庫根目錄進入本章：
 
 ```bash
 cd nodejs-course/examples/01
+nvm install
+nvm use
+node --version
+npm --version
+```
+
+沒有指定版本參數時，nvm install／nvm use 會讀取目前專案的 .nvmrc，本章為 24.22.1。若第 00 章已安裝此版本，這裡會重用；預期輸出 v24.22.1 與 11.19.1。若 npm 不是 11.19.1，在已選好的 nvm Node 下執行 npm install --global npm@11.19.1，再確認 npm --version；不要使用 sudo。
+
+nvm use 只切換目前 shell；新終端機載入 nvm 後，要在專案目錄再次執行 nvm use。macOS／Linux 可依 [nvm 官方文件](https://github.com/nvm-sh/nvm#nvmrc)操作；nvm-sh 不是原生 Windows 工具，Windows 可用 WSL 執行這套流程。
+
+### 第二步：維持 Docker 的專案操作
+
+保持在剛才的 examples/01 目錄，啟動 Docker 引擎後執行：
+
+```bash
 docker compose run --rm tools node --version
 docker compose run --rm tools npm --version
 docker compose run --rm tools npm ci
@@ -107,7 +139,7 @@ docker compose run --rm tools npm start
 
 第一次需要下載映像與依賴。`tools` 是 Compose 的服務名稱，這裡代表裝有 Node 的工具環境；`run --rm` 建立一次性容器，指令結束後移除容器。[Docker Compose run 文件](https://docs.docker.com/reference/cli/docker/compose/run/)
 
-本章和 00 章的掛載有兩個不同之處：
+本章 Compose 的掛載安排如下：
 
 - 範例目錄掛到 `/work`，允許寫入，讓建置結果與 lockfile 能留在專案目錄。
 - `/work/node_modules` 使用本章專用的 Docker volume，讓不同次執行共用依賴，也避免直接混用主機與 Linux 容器的套件檔案。
@@ -125,27 +157,7 @@ Node v24.22.1
 
 後文只列 `npm ...` 時，Docker 路線就在前面加上 `docker compose run --rm tools`；除錯用的連接埠指令則會另外完整列出。
 
-### 路線 B：在本機執行
-
-如果已安裝 Node 版本管理工具，可以在同一目錄使用 `.nvmrc`。以已安裝的 nvm 為例：
-
-```bash
-cd nodejs-course/examples/01
-nvm install
-nvm use
-node --version
-npm --version
-```
-
-前面的 `cd` 同樣是從倉庫根目錄開始；若已在範例目錄，不要再重複執行。nvm 的安裝方式與支援環境見 [nvm 官方文件](https://github.com/nvm-sh/nvm)。Windows 可以使用 Docker 路線，或使用自己熟悉的版本管理工具選擇相同 Node 版本。
-
-若切換後 npm 不是 `11.19.1`，在已選好的 Node 環境執行 `npm install --global npm@11.19.1`，再用 `npm --version` 確認。接著：
-
-```bash
-npm ci
-npm run check
-npm start
-```
+nvm 管理的 Node 與容器內的 Node 分開管理，nvm use 不會改變容器版本。本課後續的套件、測試、API、PostgreSQL 與其他服務都使用各章 Docker 指令。
 
 `.nvmrc` 不會自己切換版本，`package.json` 的 `engines` 也不會下載 Node。本章透過 `.npmrc` 的 `engine-strict=true`，讓不符合宣告的 Node／npm 版本在安裝時失敗；`packageManager` 欄位記錄使用的工具版本，不代表會自動安裝它。
 
@@ -172,6 +184,8 @@ npm start
 | `npm ci` | 取得已有 lockfile 的專案、CI 或乾淨重建 | 依 lockfile 安裝，不更新它；不一致時失敗 |
 
 本章已附上 lockfile，讀者使用 `npm ci` 即可。它會重建目前專案的 `node_modules`，所以不要在另一個安裝程序還在進行時同時執行。[npm ci 官方文件](https://docs.npmjs.com/cli/v11/commands/npm-ci/)
+
+安裝時的 audit 摘要會依當時的 advisory 資料改變，即使 lockfile 沒有變動也可能出現不同數量。先區分安裝是否成功、受影響的依賴用途與可行升級，再安排修復，不因提示直接執行會改動固定版本的 audit fix --force。
 
 `.npmrc` 的 `save-exact=true` 讓新增套件預設記錄確切版本，省去 `^` 或 `~` 範圍。即使頂層套件已固定版本，它們依賴的其他套件仍可能使用範圍，因此還是需要 lockfile。
 

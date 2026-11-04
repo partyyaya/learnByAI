@@ -14,7 +14,7 @@ Electron 是一個讓你用 **Web 技術（HTML / CSS / JavaScript）** 開發�
 
 ## 1.2 先備知識與環境需求
 
-- Node.js 20 LTS+
+- Node.js 22 LTS（22.12 以上）或 24 LTS
 - npm 10+
 - 熟悉 JavaScript（建議至少 ES6）
 - 了解基本命令列操作
@@ -74,6 +74,20 @@ npm install --save-dev electron
 > ```bash
 > # 透過環境變數指定 Electron 二進位檔的下載鏡像
 > ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/" npm install --save-dev electron
+> ```
+
+> 用 pnpm 的話要多一步：pnpm 10 起預設不執行套件的 `postinstall` 腳本，而 Electron 正是靠 `postinstall` 下載執行檔。少了這一步，安裝看似成功，啟動時卻出現：
+>
+> ```text
+> Error: Electron failed to install correctly, please delete node_modules/electron and try installing again
+> ```
+>
+> ```bash
+> # 在清單中勾選 electron，允許它執行安裝腳本
+> pnpm approve-builds
+>
+> # 重新執行 electron 的安裝腳本，把執行檔下載回來
+> pnpm rebuild electron
 > ```
 
 ---

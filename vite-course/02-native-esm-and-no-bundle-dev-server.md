@@ -79,10 +79,10 @@ import { createApp } from '/node_modules/.vite/deps/vue.js?v=a1b2c3d4'
 
 這是「不打包」的天生代價。如果你的應用有 1000 個模組,瀏覽器就要發近 1000 個 HTTP 請求(因為一個 import 一個請求)。
 
-- 對**你自己的原始碼**(`src/` 裡幾百個檔):在現代 HTTP/2(可多路複用)+ 本機 dev server 下,還算可以接受,Vite 也有快取機制(第 04、05 章)。
-- 對**第三方依賴**:這就出大事了。像 `lodash-es` 這種套件,內部被拆成**幾百個小模組**互相 import。光一個 lodash 就可能引爆數百個請求,瀏覽器會卡到不行。
+- 對**你自己的原始碼**(`src/` 裡幾百個檔):本機 dev server 幾乎沒有網路延遲,幾百個請求還算可以接受,Vite 也有快取機制(2.5 會提到)。
+- 對**第三方依賴**:這就出大事了。像 `lodash-es` 這種套件,內部被拆成**600 多個小模組**,入口檔一口氣 re-export 300 多個函式,每個函式又牽動其他內部模組。光一個 lodash 就可能引爆數百個請求,瀏覽器會卡到不行。
 
-**Vite 的解法**:把第三方依賴用 esbuild **預先打包**成少少幾個檔案(這樣 1 個套件可能只剩 1 個請求)。這正是第 03 章「依賴預打包」要解決的另一半問題。
+**Vite 的解法**:把第三方依賴**預先打包**成少少幾個檔案(這樣 1 個套件可能只剩 1 個請求)。這正是第 03 章「依賴預打包」要解決的另一半問題。
 
 > **把三個障礙與三章對應起來(這是本章最重要的地圖)**:
 >
@@ -102,18 +102,20 @@ import { createApp } from '/node_modules/.vite/deps/vue.js?v=a1b2c3d4'
 
 ```
 ① 瀏覽器請求 http://localhost:5173/
-   → Vite 回傳 index.html
+   → Vite 回傳 index.html(順手注入一行 <script type="module" src="/@vite/client">,第 05 章)
 
 ② 瀏覽器解析 HTML,看到 <script type="module" src="/src/main.ts">
    → 發請求要 /src/main.ts
 
 ③ Vite 收到對 /src/main.ts 的請求:
    a. 從硬碟讀出 main.ts 原始內容
-   b. 用 esbuild 把 TS 語法剝掉,轉成標準 JS(障礙 1)
-   c. 掃描這段 JS 裡的所有 import,把裸匯入改寫成真實路徑(障礙 2)
-      例如 import 'vue' → import '/node_modules/.vite/deps/vue.js?v=xxx'
-      例如 import './counter.ts' → 維持相對路徑(瀏覽器抓得到)
-   d. 把轉好的 JS 回傳給瀏覽器
+   b. 用 Oxc 把 TS 語法剝掉,轉成標準 JS(障礙 1)
+   c. 掃描這段 JS 裡的所有 import,改寫成瀏覽器抓得到的網址(障礙 2)
+      例如 import 'vue'          → import '/node_modules/.vite/deps/vue.js?v=xxx'
+      例如 import './counter.ts' → import '/src/counter.ts'(統一改成從根目錄算的路徑)
+      例如 import logo from './logo.png' → import logo from '/src/logo.png?import'
+                                   (加 ?import 標記「這是被 JS import 的資源」,第 04 章)
+   d. 在開頭補上 import.meta.env 的內容(第 04 章),把轉好的 JS 回傳給瀏覽器
 
 ④ 瀏覽器執行 main.ts(的 JS 版),又遇到裡面的 import
    → 對每個 import 再發一次請求,回到步驟 ③
@@ -139,7 +141,7 @@ import { createApp } from '/node_modules/.vite/deps/vue.js?v=a1b2c3d4'
 
 1. 把第 01 章建好的專案跑起來:`npm run dev`。
 2. 打開瀏覽器,進 `http://localhost:5173`。
-3. 按 F12 開 DevTools,切到 **Network** 面板,勾選只看 **JS**,然後**重新整理頁面**。
+3. 按 F12 開 DevTools,切到 **Network** 面板,篩選選 **All**,然後**重新整理頁面**。
 
 你會看到類似這樣的請求清單(而不是一個打包好的大檔):
 
@@ -147,17 +149,19 @@ import { createApp } from '/node_modules/.vite/deps/vue.js?v=a1b2c3d4'
 Name                          Type        Status
 ─────────────────────────────────────────────────
 localhost  (index.html)       document    200
+client                        script      200      ← /@vite/client,Vite 注入的!負責 HMR,第 05 章講
 main.ts                       script      200      ← 你的入口,注意副檔名是 .ts!
+env.mjs                       script      200      ← @vite/client 自己 import 的
+style.css                     script      200      ← 注意:CSS 也是 script!
 counter.ts                    script      200      ← main.ts import 進來的
-style.css                     stylesheet  200
-vite.svg                      ...
-@vite/client                  script      200      ← Vite 注入的!負責 HMR,第 05 章講
+hero.png                      png         200
 ```
 
 **逐項解讀,每一行都印證了前面的理論**:
 
 - 看到 **`main.ts`** 直接出現在請求清單裡——這證明了「**沒有打包**」。如果是 Webpack,你只會看到一個 `bundle.js`,看不到個別的 `main.ts`。Vite 是一個一個檔案各自被請求。
-- 點開 `main.ts` 看 **Response**(回應內容):你會發現它**已經是純 JS 了**,型別語法被剝掉了。這證明了「**Vite 即時把 TS 轉成 JS**」(障礙 1 的解法)。
+- 點開 `main.ts` 看 **Response**(回應內容):你會發現它**已經是純 JS 了**,型別語法被剝掉了,`import './counter.ts'` 也被改寫成 `import "/src/counter.ts"`。這證明了「**Vite 即時把 TS 轉成 JS、並改寫 import**」(障礙 1、2 的解法)。
+- **`style.css` 的 Type 是 script,不是 stylesheet**:`import './style.css'` 拿回來的其實是一段 JS。為什麼要這樣繞?第 04 章揭曉。
 - 如果你的程式 import 了某個 npm 套件,Network 裡會看到一個 `/node_modules/.vite/deps/xxx.js?v=...` 的請求——這證明了「**裸匯入被改寫 + 依賴被預打包**」(障礙 2、3 的解法)。
 - 那個 **`@vite/client`** 是 Vite 自動注入的一小段程式,負責跟 dev server 建立連線、接收熱更新訊息。第 05 章 HMR 會詳細拆它。
 
@@ -214,8 +218,8 @@ main.ts → A.ts → B.ts → C.ts → D.ts
 
 瀏覽器必須:抓 main.ts → 解析發現要 A → 抓 A → 解析發現要 B → 抓 B …… 一層一層**接力**。這叫「請求瀑布」,層數越深、累積延遲越明顯。
 
-- 對**自己的原始碼**:層數通常還好,加上瀏覽器與 Vite 都有快取(第 04 章),體感 OK。
-- 對**第三方依賴**:災難。前面說過,`lodash-es` 內部可能有幾百個互相 import 的小模組,變成幾百層的請求瀑布,dev 會卡到無法用。
+- 對**自己的原始碼**:層數通常還好,加上瀏覽器與 Vite 都有快取(Vite 記住轉譯結果;回應帶 `ETag`,檔案沒改過瀏覽器就拿到 `304`),體感 OK。
+- 對**第三方依賴**:災難。前面說過,`lodash-es` 的入口一次 re-export 300 多個函式,瀏覽器會同時發出幾百個請求;這些模組再互相 import,層層接力,總數超過 600 個,dev 會卡到無法用。
 
 ### 解法預告:對「依賴」打包,對「原始碼」不打包
 
@@ -224,13 +228,15 @@ Vite 的策略很聰明,它把模組分成兩類、區別對待:
 | 模組類型 | 例子 | dev 階段策略 | 為什麼 |
 |----------|------|-------------|--------|
 | **你的原始碼(source)** | `src/` 下的檔案 | **不打包**,按需即時轉譯 | 你常改它,要 HMR、要快;檔案數可控 |
-| **第三方依賴(dependencies)** | `node_modules` 下的套件 | **預先打包**(用 esbuild) | 你不會改它;數量巨大、內部模組超多,不打包會請求爆炸 |
+| **第三方依賴(dependencies)** | `node_modules` 下的套件 | **預先打包**(Vite 8 用 Rolldown) | 你不會改它;數量巨大、內部模組超多,不打包會請求爆炸 |
 
-**白話翻譯**:你天天改的程式碼(src),Vite 不打包,保持「改一個轉一個」的靈活與速度;你幾乎不會動的第三方套件(node_modules),Vite 在啟動時先用超快的 esbuild 打包成幾個檔,避免請求爆炸。
+**白話翻譯**:你天天改的程式碼(src),Vite 不打包,保持「改一個轉一個」的靈活與速度;你幾乎不會動的第三方套件(node_modules),Vite 在啟動時先用原生寫的快速 bundler 打包成幾個檔,避免請求爆炸。
 
 這個「**對依賴打包、對原始碼不打包**」的混合策略,就是 Vite dev 又快又能用的祕密。而「對依賴打包」這件事,有一個專門的名字,也是下一章的主題——
 
 > **依賴預打包(Dependency Pre-bundling)**。
+
+> **原始碼多到上千個模組怎麼辦?** 專案非常大時,就算本機也會被「原始碼的請求數」拖慢。Vite 8 為此推出了實驗性的 **Full Bundle Mode**:dev 階段也像 build 一樣打包,官方初步數據是啟動快約 3 倍、請求數少約 10 倍。它目前還是實驗功能,預設仍是本章講的不打包模式。
 
 ---
 
@@ -244,6 +250,6 @@ Vite 的策略很聰明,它把模組分成兩類、區別對待:
 - **親眼驗證**:Network 面板裡看到一個個 `.ts` 被分別請求、內容已轉成 JS,且沒用到的模組根本不會被請求。
 - **誠實的代價**:不打包會有請求瀑布問題,對第三方依賴尤其嚴重 → 所以要「依賴預打包」。
 
-**下一章(03)**,我們就深入「依賴預打包」:為什麼是 esbuild 做這件事?CommonJS 套件為什麼非預打包不可(這裡會兌現第 00 章 CJS/ESM 的伏筆)?`.vite/deps` 快取怎麼運作?什麼時候你會看到「重新預打包」而頁面閃一下?這些每天都會遇到的現象,下一章全部解釋清楚。
+**下一章(03)**,我們就深入「依賴預打包」:為什麼要交給 Rolldown 這種原生 bundler?CommonJS 套件為什麼非預打包不可(這裡會兌現第 00 章 CJS/ESM 的伏筆)?`.vite/deps` 快取怎麼運作?什麼時候你會看到「重新預打包」而頁面閃一下?這些每天都會遇到的現象,下一章全部解釋清楚。
 
-> 💡 **動手作業**:在你的專案裝一個 npm 套件(例如 `npm i lodash-es`),在 `main.ts` 裡 `import { debounce } from 'lodash-es'` 用一下。重啟 dev,觀察:① 終端機有沒有出現 `optimizing dependencies` 之類的訊息;② Network 面板裡 lodash 是長怎樣的請求路徑。帶著這個觀察進第 03 章。
+> 💡 **動手作業**:在你的專案裝一個 npm 套件(例如 `npm i lodash-es`),在 `main.ts` 裡 `import { debounce } from 'lodash-es'` 用一下。重啟 dev,觀察:① `node_modules/.vite/deps/` 裡有沒有多出 `lodash-es.js`;② Network 面板裡 lodash 是長怎樣的請求路徑。帶著這個觀察進第 03 章。

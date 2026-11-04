@@ -26,12 +26,13 @@ server {
 
 # 第二個 server：真正提供服務的 HTTPS 站台
 server {
-    listen 443 ssl http2;                   # 監聽 443 port，啟用 SSL 與 HTTP/2（1.25+ 也可改寫成獨立的 http2 on;）
+    listen 443 ssl http2;                   # 監聽 443 port，啟用 SSL 與 HTTP/2（1.25.1 起改寫成 listen 443 ssl; + http2 on;，舊寫法會出 deprecated 警告）
     server_name myapp.com;
 
     ssl_certificate /etc/letsencrypt/live/myapp.com/fullchain.pem;    # 憑證鏈（站台憑證 + 中繼憑證）
     ssl_certificate_key /etc/letsencrypt/live/myapp.com/privkey.pem;  # 憑證私鑰（檔案權限建議 600）
-    include snippets/ssl-params.conf;       # 引入共用 SSL 安全參數（TLS 版本、加密套件、HSTS 等），避免每個站台重複貼一份
+    include snippets/ssl-params.conf;       # 引入共用 SSL 參數（TLS 版本、加密套件等），避免每個站台重複貼一份
+    include snippets/security-headers.conf; # 引入共用安全標頭（HSTS、X-Frame-Options 等）
 
     root /var/www/myapp/dist;               # 前端打包輸出目錄（npm run build 的產物）
     index index.html;                       # 預設首頁檔名
@@ -44,6 +45,7 @@ server {
         location ~* \.html$ {
             expires -1;                     # 等同 Expires 設為過去時間 + Cache-Control: no-cache，瀏覽器每次都要回源確認
             add_header Cache-Control "no-store, no-cache, must-revalidate";  # 三重保險：不儲存、不用快取、過期必須驗證
+            include snippets/security-headers.conf;   # 這個 location 有自己的 add_header，安全標頭要重新引入
         }
     }
 
@@ -51,13 +53,14 @@ server {
     location /assets/ {
         expires 1y;                          # 快取一年（打包工具會在檔名加 hash，內容變了檔名就變，不怕快取舊版）
         add_header Cache-Control "public, immutable";  # public：CDN/代理也可快取；immutable：瀏覽器連條件式請求都不發
+        include snippets/security-headers.conf;        # 同上，有自己的 add_header 就要重新引入
         access_log off;                      # 靜態資源請求量大、價值低，關閉日誌減少磁碟 I/O
     }
 
     # API 反向代理
     location /api/ {
         proxy_pass http://localhost:3000/;   # 尾斜線會把 /api/ 前綴去掉：/api/users → 後端收到 /users
-        proxy_http_version 1.1;              # 預設是 1.0；1.1 才支援 Keep-Alive 與 chunked 傳輸
+        proxy_http_version 1.1;              # 1.29.7 之前預設是 1.0，1.1 才支援 Keep-Alive 與 chunked 傳輸；1.29.7 起預設即 1.1，寫了也無害
         proxy_set_header Host $host;                                  # 把原始 Host 標頭傳給後端（否則後端看到 localhost:3000）
         proxy_set_header X-Real-IP $remote_addr;                      # 客戶端真實 IP（例如 203.0.113.10）
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # 累加式 IP 鏈：原有 XFF 後面附加 $remote_addr
@@ -97,6 +100,7 @@ server {
 > - 巢狀的 `location ~* \.html$` 讓 `index.html` 永遠不被快取：
 >   - SPA 的 JS/CSS 檔名帶 hash 可以快取一年，但 `index.html` 是「指向最新版檔名」的入口，一旦被快取，使用者就拿不到新版。
 >   - `try_files` 內部重導向到 `/index.html` 後，Nginx 會重新匹配 location，最終落入這個巢狀區塊，因此 SPA 入口頁也吃得到不快取的標頭。
+> - `add_header` 的繼承陷阱：location 裡只要寫了任何一條 `add_header`，server 層 include 進來的安全標頭就不再繼承。所有 SPA 頁面最後都由 `\.html$` 這個 location 回應，少了重新 `include` 就等於整個前端沒有 HSTS。1.29.3 起也可以在該 location 改寫 `add_header_inherit merge;`。
 >
 > **`/api/` 反向代理區塊 — `proxy_pass` 尾斜線是最容易踩的坑**
 >
@@ -138,7 +142,7 @@ curl -i https://myapp.com/api/health
 ### 常見問題
 
 - **重新整理出現 404**：確認有 `try_files $uri $uri/ /index.html`
-- **API CORS 錯誤**：確認 `proxy_pass` 的尾斜線設定
+- **API 整批 404**：確認 `proxy_pass` 的尾斜線設定（前端與 `/api/` 同網域，不會有 CORS 問題；只有前端跨網域呼叫 API 時才需要處理 CORS）
 - **靜態資源 404**：確認 `root` 路徑正確、`dist` 目錄有內容
 
 ---
@@ -158,7 +162,8 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/blog.mysite.com/fullchain.pem;    # 憑證鏈
     ssl_certificate_key /etc/letsencrypt/live/blog.mysite.com/privkey.pem;  # 私鑰
-    include snippets/ssl-params.conf;       # 共用 SSL 安全參數
+    include snippets/ssl-params.conf;       # 共用 SSL 參數
+    include snippets/security-headers.conf; # 共用安全標頭
 
     root /var/www/wordpress;                # WordPress 安裝目錄
     index index.php index.html;             # 先找 index.php（WordPress 入口），再找 index.html
@@ -178,7 +183,7 @@ server {
     # PHP 處理
     location ~ \.php$ {
         include fastcgi_params;             # 引入標準 FastCGI 參數（REQUEST_METHOD、QUERY_STRING 等數十個變數）
-        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;   # 透過 Unix Socket 交給 PHP-FPM（同機通訊比 TCP 快）
+        fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;   # 透過 Unix Socket 交給 PHP-FPM（同機通訊比 TCP 快）；Ubuntu 24.04 內建 PHP 8.3，版本號以 ls /run/php/ 實際看到的為準，寫錯會 502
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;  # 告訴 PHP-FPM 要執行哪個實體檔案
         fastcgi_index index.php;            # URI 以 / 結尾時，補上的預設腳本名
 
@@ -193,6 +198,7 @@ server {
     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2)$ {
         expires 30d;                        # 瀏覽器快取 30 天
         add_header Cache-Control "public";  # 允許 CDN / 中間代理快取
+        include snippets/security-headers.conf;   # 有自己的 add_header，安全標頭要重新引入
         access_log off;                     # 靜態資源不寫日誌，降低 I/O
     }
 
@@ -205,15 +211,11 @@ server {
         deny all;                           # wp-config.php 含資料庫帳密，絕不可被直接存取
     }
 
-    location ~* /wp-content/uploads/.*\.php$ {
-        deny all;                           # 上傳目錄禁止執行 PHP，封死「上傳 webshell 再執行」的攻擊路徑
-    }
-
     # 限制 wp-login 登入嘗試
     location = /wp-login.php {
         limit_req zone=login burst=3 nodelay;   # 套用上面定義的 login zone：每秒 1 次、突發最多再容忍 3 次、超過直接回 503
         include fastcgi_params;                 # 精確匹配（=）優先於 regex，不會再進入上面的 \.php$ 區塊，FastCGI 設定要重寫一份
-        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php8.3-fpm.sock;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
     }
 
@@ -249,7 +251,9 @@ server {
 >
 > **實務建議**
 >
-> - 安全區塊（`deny all` 那幾段）建議放在 PHP 處理區塊「之前」閱讀順序上比較直覺，但實際匹配是看 location 優先級：`= /wp-config.php`（精確）與 `~* /wp-content/uploads/.*\.php$`（regex、定義在 `~ \.php$` 之後但⋯）——注意 **regex location 之間是「由上而下，先命中先贏」**，所以 uploads 封鎖必須寫在 `~ \.php$` 之後仍能生效的原因是：本範例中 `~ \.php$` 在前會先命中。若你的環境發現 uploads 下的 PHP 仍被執行，請把 uploads 封鎖規則移到 `~ \.php$` **前面**。
+> - `deny all` 這幾段生效與否看的是 location 優先級，不是閱讀順序：
+>   - `= /wp-config.php`、`= /wp-login.php`、`= /xmlrpc.php` 是精確匹配，永遠優先於任何 regex，寫在哪裡都會生效。
+>   - `~* /wp-content/uploads/.*\.php$` 和 `~ \.php$` 都是 regex，**regex 之間由上而下、先命中先贏**。所以 uploads 封鎖一定要寫在 `~ \.php$` 前面（如本範例）；寫在後面，uploads 下的 `.php` 會先被 `~ \.php$` 接走執行。
 > - 被 `limit_req` 擋下的請求預設回 503，可用 `limit_req_status 429;` 改成語意更精確的 429 Too Many Requests。
 
 ### 驗證方式
@@ -287,6 +291,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/myapp.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/myapp.com/privkey.pem;
     include snippets/ssl-params.conf;
+    include snippets/security-headers.conf;
 
     location / {
         proxy_pass http://production_backend;   # 轉發到正式環境 upstream（需另外以 upstream 區塊定義）
@@ -302,6 +307,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/staging.myapp.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/staging.myapp.com/privkey.pem;
     include snippets/ssl-params.conf;
+    include snippets/security-headers.conf;
 
     # 密碼保護
     auth_basic "Staging Environment";               # 啟用 HTTP Basic 認證；字串是瀏覽器彈窗顯示的領域名稱（realm）
@@ -324,6 +330,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/dev.myapp.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/dev.myapp.com/privkey.pem;
     include snippets/ssl-params.conf;
+    include snippets/security-headers.conf;
 
     # 只允許公司 IP
     allow 203.0.113.0/24;                   # 放行公司網段（CIDR：203.0.113.0 ~ 203.0.113.255）
@@ -418,7 +425,7 @@ upstream user_service {
     least_conn;                                        # 負載均衡演算法：把新請求派給「目前連線數最少」的伺服器（適合請求耗時不均的 API）
     server 10.0.1.10:3001 max_fails=3 fail_timeout=30s; # 30 秒內失敗 3 次 → 標記故障、暫停派發 30 秒
     server 10.0.1.11:3001 max_fails=3 fail_timeout=30s; # 第二台，同樣的故障判定條件
-    keepalive 16;                                      # 每個 worker 對此 upstream 保留最多 16 條閒置長連線，省去重複 TCP 握手
+    keepalive 16;                                      # 每個 worker 對此 upstream 保留最多 16 條閒置長連線，省去重複 TCP 握手（1.29.7 起不寫也預設啟用）
 }
 
 upstream order_service {
@@ -450,14 +457,15 @@ server {
     ssl_certificate /etc/letsencrypt/live/api.myapp.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/api.myapp.com/privkey.pem;
     include snippets/ssl-params.conf;
+    include snippets/security-headers.conf;
 
     # 全域設定（寫在 server 層，所有 location 都套用）
     limit_req zone=api_limit burst=50 nodelay;   # 每 IP 穩定 30r/s、突發再容忍 50 個，超過直接回 503
     client_max_body_size 10M;                    # 請求主體上限 10MB（預設 1M）；API 上傳需求大再個別調高
 
     # 共用的 proxy 設定（寫一次，底下所有 location 繼承）
-    proxy_http_version 1.1;                      # upstream keepalive 必須搭配 HTTP/1.1
-    proxy_set_header Connection "";              # 清空 Connection 標頭，連線才能真正保持（不清空預設會送 close）
+    proxy_http_version 1.1;                      # upstream keepalive 必須搭配 HTTP/1.1（1.29.7 起已是預設）
+    proxy_set_header Connection "";              # 清空 Connection 標頭，連線才能真正保持（1.29.7 之前預設會送 close）
     proxy_set_header Host $host;                                  # 原始域名（api.myapp.com）
     proxy_set_header X-Real-IP $remote_addr;                      # 客戶端 IP
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # IP 轉發鏈
@@ -486,11 +494,12 @@ server {
         proxy_cache_valid 200 5m;                      # 只快取 200 回應，存活 5 分鐘（商品資料容忍 5 分鐘延遲）
         proxy_cache_key "$request_uri";                # 以「路徑 + 查詢參數」當快取 key（不同分頁/排序各自一份）
         add_header X-Cache-Status $upstream_cache_status;  # 回給客戶端快取狀態：HIT / MISS / EXPIRED / BYPASS，方便驗證
+        include snippets/security-headers.conf;        # 有自己的 add_header，安全標頭要重新引入
     }
 
-    # API 版本控制 — 舊版本重導向
-    location /v0/ {
-        return 301 /v1$request_uri;                    # /v0/users?id=1 → /v1/v0/users?id=1？不對——見下方逐條說明的修正提醒
+    # API 版本控制 — 舊版本重導向：/v0/users?id=1 → /v1/users?id=1
+    location ~ ^/v0/(?<rest>.*)$ {
+        return 308 /v1/$rest$is_args$args;             # 具名擷取 /v0/ 後面的路徑；308 永久重導且保留方法與 body（POST 不會變 GET）
     }
 
     # API 文件
@@ -502,8 +511,8 @@ server {
     # 健康檢查
     location /health {
         access_log off;                                # 監控系統每幾秒打一次，不關日誌會被洗版
+        default_type application/json;                 # 指定這個回應的 Content-Type（不要用 add_header Content-Type，會變成兩個 Content-Type）
         return 200 '{"status":"ok"}';                  # 不經過後端，Nginx 直接回 200 與固定 JSON
-        add_header Content-Type application/json;      # 明確標示回應類型，否則會用 default_type
     }
 }
 ```
@@ -514,7 +523,7 @@ server {
 >
 > - `least_conn;`：預設演算法是輪詢（round-robin）；`least_conn` 在「各請求處理時間差異大」的 API 場景更平均，不會讓慢請求堆在同一台。
 > - `max_fails=3 fail_timeout=30s`：`fail_timeout` 一個值兩種意思——「30 秒內失敗達 3 次」就把該台標記故障，且「接下來 30 秒」不再派請求給它；時間到了會放少量請求試探是否復活。
-> - `keepalive 16;`：對後端維持的閒置連線池（每個 worker 各 16 條）。**必須搭配** `proxy_http_version 1.1;` 與 `proxy_set_header Connection "";`，少任何一個，連線都不會被重用，效能白調。
+> - `keepalive 16;`：對後端維持的閒置連線池（每個 worker 各 16 條）。在 1.24 **必須搭配** `proxy_http_version 1.1;` 與 `proxy_set_header Connection "";`，少任何一個，連線都不會被重用，效能白調。1.29.7 起這三項都成了預設（HTTP/1.1、不送 Connection、upstream 預設 `keepalive 32`），照寫也無害。
 >
 > **速率限制參數**
 >
@@ -526,29 +535,25 @@ server {
 >
 > - 列出的條件（`error timeout http_502 http_503`）發生時自動換下一台，搭配 upstream 的多台伺服器實現故障轉移。
 > - 故意**不含** `http_500`：500 通常是程式邏輯錯誤，每台都會錯，重試只是放大流量。
-> - 注意：對「非冪等」請求（如 POST 扣款）重試可能造成重複執行；必要時用 `proxy_next_upstream_tries 2;` 限制重試次數，或對寫入型 API 關閉重試。
+> - 非冪等請求（POST、PATCH、LOCK）一旦已送到後端，預設**不會**換下一台重試，避免扣款之類的操作重複執行；只有連線階段就失敗（請求還沒送出）才會重試。除非你確定後端可以安全重複處理，否則不要在條件裡加 `non_idempotent`。
 >
 > **`$request_id` 與 `$upstream_cache_status`**
 >
 > - `$request_id`：Nginx 為每個請求產生的 32 字元十六進位唯一值（例如 `444535f9378a3dfa1b8604bc9e05a303`）；轉發給後端並寫入各服務日誌，就能用一個 ID 串起整條呼叫鏈。
 > - `$upstream_cache_status`：本次回應的快取結果——`HIT`（快取命中）、`MISS`（未命中、回源）、`EXPIRED`（過期回源）、`BYPASS`（被設定略過）。
+> - 快取的前提：後端回應若帶 `Set-Cookie`，或 `Cache-Control: private` / `no-cache` / `no-store`，Nginx 就不會快取（回應標頭的優先權高於 `proxy_cache_valid`），驗證時會一直是 `MISS`。另外 key 只有 `$request_uri`，依登入身分回不同內容的 API 不能這樣快取，否則所有人會拿到同一份。
 >
-> **修正提醒：`/v0/` 重導向的陷阱**
+> **`/v0/` 重導向**
 >
-> - `$request_uri` 是「完整原始 URI」，請求 `/v0/users` 時其值是 `/v0/users`，所以 `return 301 /v1$request_uri;` 實際會導向 `/v1/v0/users` —— 多了一層 `/v0`。
-> - 想把 `/v0/xxx` 導向 `/v1/xxx`，應改用 rewrite 擷取路徑：
->
-> ```nginx
-> location /v0/ {
->     rewrite ^/v0/(.*)$ /v1/$1 permanent;   # 用正規擷取 /v0/ 後面的部分，301 導向 /v1/同路徑（查詢參數預設自動保留）
-> }
-> ```
+> - 不能寫 `return 301 /v1$request_uri;`：`$request_uri` 是完整原始 URI（`/v0/users?id=1`），結果會變成 `/v1/v0/users?id=1`。
+> - `(?<rest>.*)` 把 `/v0/` 後面的路徑存進 `$rest`；`$is_args$args` 在有查詢參數時補上 `?id=1`，沒有時為空。
+> - 用 `308` 而不是 `301`：遇到 301／302，許多客戶端會把 POST 改成 GET 並丟掉 body；308（永久）與 307（暫時）保證方法與 body 不變，API 的重導向應該用這兩個。
 >
 > **實務建議**
 >
 > - `location /docs { alias /var/www/api-docs; }` 建議改成「前後都帶斜線」的對稱寫法 `location /docs/ { alias /var/www/api-docs/; }`，可避免 `/docsxyz` 這類前綴誤命中與路徑拼接歧義。
-> - **`proxy_set_header` 的繼承是「全有或全無」**：只要某個 location 裡寫了任何一條 `proxy_set_header`，server 層的整組設定就全部失效，必須整組重寫。這是 API Gateway 設定最常見的隱形錯誤。
-> - 健康檢查回 JSON 也可改用 `default_type application/json;` 寫法，語意是「此回應的內容類型」，比 `add_header` 更正規。
+> - **`proxy_set_header` 的繼承是「全有或全無」**：只要某個 location 裡寫了任何一條 `proxy_set_header`，server 層的整組設定就全部失效，必須整組重寫。這是 API Gateway 設定最常見的隱形錯誤。`add_header` 也一樣，所以 `/v1/products` 要重新 `include` 安全標頭。
+> - 健康檢查要指定 JSON 類型，用 `default_type application/json;`；若改用 `add_header Content-Type ...`，回應會同時出現預設的和你加的兩個 `Content-Type`。
 
 ### 驗證方式
 
@@ -564,8 +569,8 @@ curl -s https://api.myapp.com/health
 curl -sI https://api.myapp.com/v1/products | grep -i x-cache-status   # 第一次：MISS
 curl -sI https://api.myapp.com/v1/products | grep -i x-cache-status   # 第二次：HIT
 
-# 驗證舊版 API 重導向位置是否正確
-curl -sI https://api.myapp.com/v0/users | grep -i location
+# 驗證舊版 API 重導向（預期 308，Location 為 https://api.myapp.com/v1/users?id=1）
+curl -sI "https://api.myapp.com/v0/users?id=1" | grep -iE "^HTTP|location"
 ```
 
 ---
@@ -580,6 +585,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/mysite.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/mysite.com/privkey.pem;
     include snippets/ssl-params.conf;
+    include snippets/security-headers.conf;
 
     root /var/www/mysite;                   # 靜態網站根目錄
     index index.html;
@@ -594,29 +600,33 @@ server {
         expires 1y;                                     # 快取一年（檔名帶 hash 的打包產物才能這樣設）
         add_header Cache-Control "public, immutable";   # immutable：瀏覽器在效期內連 304 驗證請求都不發
         add_header Vary "Accept-Encoding";              # 告訴 CDN：壓縮版與未壓縮版要分開快取，避免發錯版本
+        include snippets/security-headers.conf;         # 有自己的 add_header，安全標頭要重新引入（以下各 location 同理）
     }
 
     location ~* \.(jpg|jpeg|png|gif|webp|svg|ico)$ {
         expires 1y;                         # 圖片通常改名不改檔，可長快取
         add_header Cache-Control "public";  # 允許 CDN 與瀏覽器共同快取
+        include snippets/security-headers.conf;
     }
 
     location ~* \.(woff|woff2|ttf|eot)$ {
         expires 1y;
         add_header Cache-Control "public";
         add_header Access-Control-Allow-Origin "*";   # 字型受 CORS 限制：跨網域（如 CDN 網域）載入字型沒這行會被瀏覽器擋下
+        include snippets/security-headers.conf;
     }
 
     # HTML — 短時間快取（讓 CDN 能及時更新）
     location ~* \.html$ {
         expires 10m;                                        # HTML 是內容入口，只快取 10 分鐘，更新最多延遲 10 分鐘可見
         add_header Cache-Control "public, must-revalidate"; # 過期後必須回源驗證，不可拿過期版本充數
+        include snippets/security-headers.conf;
     }
 
     # 錯誤頁面
     error_page 404 /404.html;               # 404 時改用自訂錯誤頁
     location = /404.html {
-        internal;                           # 只允許內部跳轉使用；直接在網址列打 /404.html 會得到 404 而不是這頁
+        internal;                           # 只允許內部跳轉使用；直接打 /404.html 會先得到 404，再經 error_page 顯示這頁（狀態碼仍是 404）
     }
 
     # 如果在 CDN 後面，取得真實 IP
@@ -637,6 +647,13 @@ server {
     set_real_ip_from 190.93.240.0/20;
     set_real_ip_from 197.234.240.0/22;
     set_real_ip_from 198.41.128.0/17;
+    set_real_ip_from 2400:cb00::/32;        # IPv6 網段也要列：來源站有 AAAA 記錄時，Cloudflare 會用 IPv6 回源
+    set_real_ip_from 2606:4700::/32;
+    set_real_ip_from 2803:f800::/32;
+    set_real_ip_from 2405:b500::/32;
+    set_real_ip_from 2405:8100::/32;
+    set_real_ip_from 2a06:98c0::/29;
+    set_real_ip_from 2c0f:f248::/32;
     real_ip_header CF-Connecting-IP;        # 從 Cloudflare 專屬標頭讀真實 IP（一般 CDN 多用 X-Forwarded-For）
 }
 ```
@@ -660,11 +677,12 @@ server {
 > - 沒有這幾行時：日誌、速率限制、IP 白名單看到的全是 CDN 節點 IP——限流會誤殺整個 CDN 節點背後的所有使用者。
 > - `set_real_ip_from`：只信任這些網段送來的 IP 標頭。**不能省**，否則任何人都能偽造標頭冒充別人的 IP。
 > - `real_ip_header CF-Connecting-IP;`：Cloudflare 把客戶端真實 IP 放在這個自訂標頭；其他 CDN（CloudFront、Fastly 等）多用 `X-Forwarded-For`，要對應調整。
+> - 本例是 Cloudflare 直接連到 Nginx，`CF-Connecting-IP` 只有一個 IP，不需要 `real_ip_recursive`。若中間還有自家的 LB（多層代理），要把 LB 的位址也加進 `set_real_ip_from`；若改用 `X-Forwarded-For`，再加 `real_ip_recursive on;`，Nginx 才會從右往左跳過所有信任的代理，取到真正的客戶端 IP（不加的話只會拿到最右邊那一個，也就是上一層代理的 IP）。
 > - 此功能由 `ngx_http_realip_module` 提供，官方套件預設已內建；若是自行編譯，需加 `--with-http_realip_module`。
 >
 > **實務建議**
 >
-> - Cloudflare 的 IP 清單會變動，建議定期從 <https://www.cloudflare.com/ips/> 同步，或用排程腳本自動更新後 `nginx -s reload`。
+> - Cloudflare 的 IP 清單（IPv4、IPv6 各一份）會變動，建議定期從 <https://www.cloudflare.com/ips/> 同步，或用排程腳本自動更新後 `nginx -s reload`。
 > - 字型的 `Access-Control-Allow-Origin "*"` 若想收緊，可改成指定自家網域，例如 `add_header Access-Control-Allow-Origin "https://mysite.com";`。
 
 ### 驗證方式
@@ -678,8 +696,11 @@ curl -sI https://mysite.com/index.html | grep -iE "cache-control|expires"
 curl -sI -H "Accept-Encoding: gzip" https://mysite.com/assets/app.css | grep -i content-encoding
 # 預期：Content-Encoding: gzip
 
-# 確認 404 頁不能被直接存取（預期 404，而不是顯示頁面內容後回 200）
+# 確認直接存取 404 頁拿到的是 404 狀態碼（內容仍是自訂 404 頁），而不是 200
 curl -o /dev/null -s -w "%{http_code}\n" https://mysite.com/404.html
+
+# 確認有自訂 add_header 的 location 仍帶著安全標頭
+curl -sI https://mysite.com/assets/app.css | grep -iE "strict-transport-security|x-frame-options"
 
 # 確認日誌記到的是真實 IP（不是 CDN 節點 IP）
 sudo tail -5 /var/log/nginx/access.log
@@ -696,7 +717,7 @@ server {
     listen 443 ssl http2;
     server_name myapp.com;
 
-    # ... SSL 設定 ...
+    # ... SSL 設定與安全標頭（同 11.2）...
 
     # 維護模式開關（建立 /etc/nginx/maintenance.flag 啟用維護模式）
     set $maintenance 0;                     # 預設值：不在維護模式
@@ -749,6 +770,7 @@ sudo nginx -s reload
 > 1. 每個請求進來，先把 `$maintenance` 預設為 `0`。
 > 2. 旗標檔存在 → 設為 `1`；但若來源 IP 是開發團隊 → 又改回 `0`。**三個 `if` 的先後順序就是優先級**，調換順序邏輯就錯了。
 > 3. 最後 `$maintenance` 仍是 `1` 的請求直接 `return 503`，再由 `error_page 503` 轉去維護頁。
+> 4. server 層的 `return 503` 對所有路徑都生效，包括 LB 或 Keepalived（12.3）打的健康檢查端點。若不希望維護期間節點被判定為故障，在最後一個 `if` 之前再加一條 `if ($uri = /health/live) { set $maintenance 0; }`。
 >
 > **為什麼用「檔案旗標」而不是改設定檔？**
 >
@@ -757,7 +779,7 @@ sudo nginx -s reload
 > **為什麼回 503 而不是 200？**
 >
 > - 503 明確告訴搜尋引擎與監控系統「暫時無法服務」；若用 200 顯示維護頁，搜尋引擎可能把維護頁當成正式內容收錄。
-> - 可再加 `add_header Retry-After 1800 always;` 提示「約 1800 秒（30 分鐘）後再來」，對爬蟲與 API 客戶端更友善。
+> - 可在 `location @maintenance` 裡再加 `add_header Retry-After 1800 always;`（並同時 `include snippets/security-headers.conf;`），提示「約 1800 秒（30 分鐘）後再來」，對爬蟲與 API 客戶端更友善；寫在 server 層的話，正常回應也會帶上。
 >
 > **`@maintenance` 具名 location**
 >
@@ -847,6 +869,8 @@ server {
     listen 443 ssl http2;
     server_name myapp.com;
 
+    # ... SSL 設定與安全標頭（同 11.2）...
+
     location / {
         proxy_pass http://$backend;          # 用變數動態指定 upstream：每個請求依 map 結果送往 v1 或 v2
         include snippets/proxy-params.conf;
@@ -865,8 +889,8 @@ server {
 
 ```nginx
 # 使用 split_clients 做百分比分流
-# 第一個參數是「雜湊的輸入字串」：同一個 IP + 同一個 URI 永遠得到相同結果（分組穩定，不會這次新版下次舊版）
-split_clients "${remote_addr}${uri}" $variant {
+# 第一個參數是「雜湊的輸入字串」：同一個 IP 永遠得到相同結果（分組穩定，同一個人全站固定走同一個版本）
+split_clients "${remote_addr}" $variant {
     10%     "new";      # 10% 的流量到新版本
     *       "old";      # 90% 的流量到舊版本（* = 剩餘所有流量）
 }
@@ -883,6 +907,8 @@ server {
     listen 443 ssl http2;
     server_name myapp.com;
 
+    # ... SSL 設定與安全標頭（同 11.2）...
+
     location / {
         if ($variant = "new") {          # 雜湊結果落在 10% 區間 → 改送新版
             proxy_pass http://new_version;
@@ -892,18 +918,20 @@ server {
 
         # 加上標頭方便追蹤
         add_header X-Variant $variant;   # 回應帶上分組結果（new / old），驗證與除錯都靠它
+        include snippets/security-headers.conf;   # 有自己的 add_header，安全標頭要重新引入
     }
 }
 ```
 
 > 這段指令在做什麼？（逐條）
 >
-> - `split_clients` 的原理：對輸入字串（這裡是 `客戶端IP + 請求路徑`）做 MurmurHash2 雜湊，依雜湊值落點把流量切成設定的比例。
->   - 用 `${remote_addr}${uri}` 當 key：同一人重新整理同一頁，分組不變；換一頁可能換組。
->   - 若希望「同一個使用者全站固定同一組」，把 key 改成 `"${remote_addr}"` 或改用帶使用者 ID 的 Cookie（如 `"${cookie_user_id}"`）。
-> - 百分比可寫小數（如 `0.5%`），總和不必湊滿 100%，`*` 承接剩餘全部。
-> - 灰度節奏實務上常是：`1% → 5% → 10% → 50% → 100%`，每階段觀察錯誤率與延遲再放大；出問題改回 `0%`（或拿掉 if）即可秒回滾。
-> - **關於 `location` 內的 `if + proxy_pass`**：這是「if is evil」清單上少數可安全使用的組合之一（if 區塊內只有一條 `proxy_pass`）。若想完全避開 if，可改用 map 直接對應 upstream 名稱，寫法更乾淨：
+> - `split_clients` 的原理：對輸入字串（這裡是客戶端 IP）做 MurmurHash2 雜湊，依雜湊值落點把流量切成設定的比例。
+>   - 用 `${remote_addr}` 當 key：同一個 IP 不論打哪一頁都在同一組。也可以改用帶使用者 ID 的 Cookie（如 `"${cookie_user_id}"`），換網路也不會換組。
+>   - 不要把 `$uri` 放進 key：同一個人在不同頁面會被分到不同版本，新版 HTML 引用的帶 hash 的 JS／CSS 可能被送到舊版主機而 404，新版前端呼叫的 API 也可能落到舊版。
+>   - Nginx 前面若還有 CDN 或雲端 LB，`$remote_addr` 是它們的 IP，要先用 11.6 的 realip 還原真實 IP，否則分流是依 CDN／LB 節點而不是依使用者。
+> - 百分比可寫小數（如 `0.5%`，最多兩位小數），總和不必湊滿 100%，`*` 承接剩餘全部。
+> - 灰度節奏實務上常是：`1% → 5% → 10% → 50% → 100%`，每階段觀察錯誤率與延遲再放大；出問題就刪掉 `10% "new";` 那一行（只留 `*`）再 reload 回滾。`split_clients` 不接受 `0%`，寫 `0%` 會讓 `nginx -t` 失敗。
+> - **關於 `location` 內的 `if + proxy_pass`**：這個組合可以正常運作，但官方「If is Evil」列為 100% 安全的只有 `return` 與 `rewrite ... last`。更建議改用 map 直接對應 upstream 名稱，完全避開 if：
 >
 > ```nginx
 > map $variant $gray_backend {
@@ -916,13 +944,13 @@ server {
 ### 驗證方式
 
 ```bash
-# 手動帶 Cookie 測試 v2 分流是否生效
-curl -sI -H "Cookie: ab_version=v2" https://myapp.com/ | grep -i x-variant
+# Cookie 分流：帶上 ab_version=v2，再到 v2 主機的 access log 確認這筆請求有進去
+curl -s -o /dev/null -H "Cookie: ab_version=v2" https://myapp.com/
 
-# 多打幾次觀察 new / old 的比例是否接近 10%（不同來源 IP 才會分到不同組）
-for i in $(seq 1 20); do
-  curl -sI "https://myapp.com/page$i" | grep -i x-variant
-done
+# 百分比分流：看自己被分到哪一組
+curl -sI https://myapp.com/ | grep -i x-variant
+# key 是來源 IP，同一台機器怎麼打都是同一組；
+# 比例要看多個來源 IP 的統計，例如把 $variant 加進 log_format 後統計 access log
 ```
 
 ---
@@ -938,7 +966,7 @@ server {
     listen 443 ssl http2;
     server_name dl.mysite.com;
 
-    # ... SSL 設定 ...
+    # ... SSL 設定與安全標頭（同 11.2）...
 
     root /var/www/downloads;            # 下載檔案存放根目錄
 
@@ -953,14 +981,14 @@ server {
     # 大檔案下載優化
     location ~* \.(zip|tar|gz|iso|dmg)$ {
         # 使用 sendfile 直接從核心傳送
-        sendfile on;                    # 零拷貝：檔案內容在核心空間直接送往網卡，不經過使用者空間，省 CPU 與記憶體
+        sendfile on;                    # 零拷貝：檔案內容在核心空間直接送往網卡，不經過使用者空間，省 CPU 與記憶體（HTTPS 的限制見下方說明）
         tcp_nopush on;                  # 搭配 sendfile：攢滿一個封包再送，減少封包數量、提升大檔吞吐
 
         # 支援斷點續傳
         max_ranges 1;                   # 允許 Range 請求但每次最多 1 個範圍：續傳可用，又防多範圍請求（range 攻擊）放大伺服器負擔
 
         # 限制下載速度（防止頻寬被單一用戶佔滿）
-        limit_rate 5m;                  # 每「連線」限速 5MB/s（單位是 bytes/s，k = KB、m = MB）
+        limit_rate 5m;                  # 每「請求」限速 5MB/s（單位是 bytes/s，k = KB、m = MB）
         limit_rate_after 100m;          # 前 100MB 全速傳輸，之後才開始限速——小檔秒下，只有大檔吃到限速
 
         # 限制每個 IP 的同時下載數
@@ -976,15 +1004,19 @@ server {
 > - `autoindex on;` 是開關；後面三個指令只是調整顯示格式，預設值在大多數下載站都不理想，所以常一起出現。
 > - 安全提醒：開了 `autoindex` 等於把目錄結構公開，請確認該目錄下沒有不該被看到的檔案（備份檔、設定檔等）。
 >
+> **`sendfile` 在 HTTPS 下的限制**
+>
+> - 本例是 HTTPS：資料送出前必須先在使用者空間加密，所以預設用不到零拷貝，`tcp_nopush` 也跟著沒有作用。要在 HTTPS 下用 sendfile，需要 OpenSSL 3 與核心的 kTLS 支援，並在 server 加 `ssl_conf_command Options KTLS;`；純 HTTP 的下載站則可直接受益。
+>
 > **限速兩兄弟：`limit_rate` 與 `limit_rate_after`**
 >
-> - `limit_rate 5m;`：限的是「單一連線」的速度，不是單一 IP——這就是為什麼還需要 `limit_conn`，否則使用者開 3 條連線就有 15MB/s。
+> - `limit_rate 5m;`：限的是「單一請求」的速度，不是單一 IP——這就是為什麼還需要 `limit_conn`，否則使用者開 3 條連線同時下載就有 15MB/s（HTTP/2 下同一條連線上的多個並行請求也各自 5MB/s）。
 > - `limit_rate_after 100m;`：典型「先甜後限」策略。網頁、小工具檔案（< 100MB）完全無感；超大 ISO 檔則在 100MB 後降到 5MB/s，保護整體頻寬。
 > - 預設兩者皆為 `0`（不限速、立即生效），數值支援 `k` / `m` 單位。
 >
 > **`limit_conn conn_per_ip 3;` 的配套**
 >
-> - `limit_conn` 引用的 zone **必須**先以 `limit_conn_zone` 定義在 http 區塊，否則 `nginx -t` 報錯 `zone "conn_per_ip" is unknown`——這是本情境最常見的「抄了範例卻起不來」原因。
+> - `limit_conn` 引用的 zone **必須**先以 `limit_conn_zone` 定義在 http 區塊，否則 `nginx -t` 報錯 `zero size shared memory zone "conn_per_ip"`——這是本情境最常見的「抄了範例卻起不來」原因。
 > - 被擋下的連線預設回 503，可用 `limit_conn_status 429;` 改為 429。
 > - 注意：公司或學校共用一個出口 IP 時，3 條連線是「整個辦公室共享」的額度，請依使用者結構調整。
 >
@@ -1016,13 +1048,14 @@ curl -o /dev/null https://dl.mysite.com/big-file.iso
 map $http_accept_language $lang {
     default en;     # 比不到任何規則 → 預設英文（國際網站最安全的兜底）
     ~^zh    zh;     # ~ 開頭 = 正規匹配；^zh = 標頭以 zh 開頭（涵蓋 zh-TW、zh-CN、zh-HK）
-    ~^ja    ja;     # 日文（ja、ja-JP）
-    ~^ko    ko;     # 韓文（ko、ko-KR）
+    ~^ja    ja;     # 日文（ja、ja-JP）；map 裡每個語言都要有下方對應的 location，否則該語言的使用者會被導到 404
 }
 
 server {
     listen 443 ssl http2;
     server_name mysite.com;
+
+    # ... SSL 設定與安全標頭（同 11.2）...
 
     # 首頁根據語言重導向
     location = / {                      # 精確匹配「只有首頁」做語言跳轉，其餘路徑不受影響
@@ -1070,7 +1103,7 @@ server {
 > **常見錯誤**
 >
 > - `alias` 搭配前綴 location 時，**兩邊的尾斜線要一致**（`/zh/` 對 `/var/www/mysite/zh/`）；一邊有一邊沒有，會拼出 `/var/www/mysitezh/...` 這類錯誤路徑。
-> - 忘了 `location = /` 的 `=`：寫成 `location /` 會讓「所有」路徑都被導去 `/$lang/`，整個網站陷入重導向迴圈。
+> - 忘了 `location = /` 的 `=`：寫成 `location /` 後，沒被 `/zh/`、`/en/`、`/ja/` 接走的路徑（如 `/favicon.ico`、`/robots.txt`）全都會被導去 `/$lang/`（最長前綴優先，語系目錄本身不受影響）；若 map 裡有某個語言卻沒有對應的 location，該語言的使用者還會陷入無限重導向。
 
 ### 驗證方式
 

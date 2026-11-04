@@ -52,31 +52,60 @@ docker network ls
 # - 所有容器預設連到這個網路
 # - 容器之間可以用 IP 互通
 # - 但不支援 DNS 服務名稱解析（不推薦使用）
+
+# 跟著做：在預設 bridge 上，用名稱找不到別的容器
+docker run -d --name web nginx:1.30-alpine
+docker run --rm alpine:3.24 ping -c 1 web
+# ping: bad address 'web'
+docker rm -f web
 ```
 
 ### 自訂 Bridge 網路（推薦）
 
 ```bash
 # 建立自訂網路(bridge)
+# 若不指定 --subnet，Docker 會自動挑一段未使用的網段
 docker network create my-network
 
-# 指定子網路（CIDR）
-# 172.20.0.0/16 = 網段 172.20.0.0，遮罩 255.255.0.0（可用位址約 65k）
-# 常見用途：避免和公司 VPN/內網網段衝突、需要固定 IP 規劃、跨多專案維持可預測網段
-docker network create --subnet=172.20.0.0/16 my-network
-# 若不指定 --subnet，Docker 會自動挑一段未使用網段
-
 # 在自訂網路中啟動容器
-# 啟動 API 並加入 my-network
-docker run -d --name api --network my-network my-api
-# 啟動 PostgreSQL 並加入同一網路（讓 api 可用服務名連線）
-docker run -d --name db --network my-network postgres:16
+# 啟動 Web 服務並加入 my-network（當作「api」）
+docker run -d --name api --network my-network nginx:1.30-alpine
+# 啟動 PostgreSQL 並加入同一網路（postgres 映像一定要給密碼，否則會直接退出）
+docker run -d --name db --network my-network -e POSTGRES_PASSWORD=secret postgres:16-alpine
+
+# 從同一個網路裡的臨時容器，用「容器名稱」連線
+docker run --rm --network my-network alpine:3.24 wget -qO- http://api | head -4
+docker run --rm --network my-network alpine:3.24 nc -zv db 5432
+# db (172.18.0.3:5432) open
+
+# 容器之間也能直接用名稱互連（nginx:1.30-alpine 內建 busybox 的 ping）
+docker exec api ping -c 2 db
+# PING db (172.18.0.3): 56 data bytes
+# 64 bytes from 172.18.0.3: seq=0 ttl=64 time=0.123 ms
+
+# 在應用程式中使用服務名稱
+# DB_HOST=db（不是 IP 位址）
 
 # 自訂 bridge 網路的優勢：
 # ✅ 支援 DNS 自動解析（用容器名稱互連）
 # ✅ 更好的隔離性
 # ✅ 容器可以動態加入/離開網路
 ```
+
+### 指定網段
+
+```bash
+# 指定子網路（CIDR）
+# 10.123.0.0/16 = 網段 10.123.0.0，遮罩 255.255.0.0（可用位址約 65k）
+# 常見用途：避免和公司 VPN/內網網段衝突、需要固定 IP 規劃、跨多專案維持可預測網段
+docker network create --subnet=10.123.0.0/16 my-network-v2
+
+# 確認網段
+docker network inspect my-network-v2 --format '{{json .IPAM.Config}}'
+# [{"Subnet":"10.123.0.0/16"}]
+```
+
+> 出現 `Pool overlaps with other one on this address space`，代表這個網段已經被這台機器上的其他 Docker 網路用掉了（例如其他 Compose 專案）。用 `docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}'` 列出已使用的網段，換一段沒用到的即可。
 
 > 備註：網路建立後可以改嗎？
 >
@@ -85,23 +114,67 @@ docker run -d --name db --network my-network postgres:16
 > - 若要改網段，實務上做法是：新建網路 -> 容器切過去 -> 刪除舊網路。
 >
 > ```bash
-> docker network create --subnet=172.21.0.0/16 my-network-v2
+> # 把 api 和 db 從 my-network 切到剛建立的 my-network-v2
 > docker network connect my-network-v2 api
+> docker network connect my-network-v2 db
 > docker network disconnect my-network api
+> docker network disconnect my-network db
+> # 舊網路上已經沒有容器，才刪得掉（還有容器連著會出現 has active endpoints）
 > docker network rm my-network
+>
+> # 切換後名稱解析照常運作，IP 變成新網段的位址
+> docker exec api ping -c 1 db
+> # PING db (10.123.0.3): 56 data bytes
 > ```
 >
 > - 容器可同時連多個網路（雙掛）：先 `connect` 新網路，驗證服務正常，再 `disconnect` 舊網路，可降低切換時中斷風險。
 > - 在上面的範例中，`api` 在 `docker network connect my-network-v2 api` 後會暫時同時連到 `my-network` 與 `my-network-v2`，下一步 `disconnect` 才會完全切換。
 
 ```bash
-# 容器之間用名稱連線
-docker exec api ping db
-# PING db (172.20.0.3): 56 data bytes
-# 64 bytes from 172.20.0.3: seq=0 ttl=64 time=0.123 ms
+# 練習結束清理
+docker rm -f api db
+docker network rm my-network-v2
+```
 
-# 在應用程式中使用服務名稱
-# DB_HOST=db（不是 IP 位址）
+> 公司 VPN 或內網剛好使用 `172.17.0.0/16`～`172.31.0.0/16` 這類網段時，Docker 自動挑的網段可能和它重疊，造成連上 VPN 後容器或內網某些主機連不到。可以在 daemon 設定（Linux 的 `/etc/docker/daemon.json`；Docker Desktop 在 Settings → Docker Engine）指定 Docker 自動配發的網段範圍：
+>
+> ```json
+> {
+>   "default-address-pools": [
+>     { "base": "10.200.0.0/16", "size": 24 }
+>   ]
+> }
+> ```
+>
+> 改完要重啟 Docker，且只影響之後新建的網路。
+
+### 容器連到主機上的服務：`host.docker.internal`
+
+容器裡的 `localhost` 是容器自己。想從容器連到**主機**上跑的服務（例如主機上直接執行的開發伺服器、資料庫），要用特殊名稱 `host.docker.internal`：
+
+```bash
+# 在主機開一個簡單的 HTTP 服務（Python 3 內建），綁在所有介面
+python3 -m http.server 8000
+
+# 另開一個終端，從容器連回主機
+docker run --rm alpine:3.24 wget -qO- http://host.docker.internal:8000 | head -3
+```
+
+- macOS / Windows 的 Docker Desktop 內建這個名稱。主機上的服務若只綁 `127.0.0.1`，從容器可能連不到（會出現 `Connection refused`），要綁 `0.0.0.0`。
+- Linux 預設沒有這個名稱，要在啟動時加上對應：
+
+```bash
+# host-gateway 是特殊值，Docker 會換成主機在 bridge 網路上的 IP
+docker run --rm --add-host=host.docker.internal:host-gateway alpine:3.24 wget -qO- http://host.docker.internal:8000
+```
+
+Compose 寫法：
+
+```yaml
+services:
+  api:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 ```
 
 ### Host 網路
@@ -113,7 +186,8 @@ docker run -d --network host --name my-nginx nginx
 # 特點：
 # - 沒有 port 對映，容器直接綁定主機 port
 # - 效能最好（沒有 NAT 開銷）
-# - 只在 Linux 上完整支援
+# - 只在 Linux 上完整支援；Docker Desktop 的「主機」其實是背景那台 Linux VM（見第一章），
+#   要在 Settings → Resources → Network 啟用 host networking，且行為與 Linux 不完全相同
 # - 容器間沒有網路隔離
 ```
 
@@ -264,7 +338,7 @@ networks:
 | 類型 | 管理方式 | 效能 | 適用場景 |
 |------|----------|------|----------|
 | Named Volume | Docker 管理 | 好 | 資料庫、持久化資料 |
-| Bind Mount | 使用者管理 | 好 | 開發時掛載原始碼 |
+| Bind Mount | 使用者管理 | Linux 上好；Docker Desktop 上較慢（檔案要跨 VM 同步） | 開發時掛載原始碼 |
 | tmpfs Mount | 記憶體 | 最快 | 暫時性機密資料 |
 
 > 備註：三者具體差異（含主機與容器關聯）
@@ -290,8 +364,9 @@ docker volume create my-data
 # 使用 Volume 啟動容器
 docker run -d \
   -v my-data:/var/lib/postgresql/data \
+  -e POSTGRES_PASSWORD=secret \
   --name my-db \
-  postgres:16
+  postgres:16-alpine
 
 # 列出所有 Volume
 docker volume ls
@@ -312,49 +387,99 @@ docker volume inspect my-data
 #   }
 # ]
 
-# 刪除 Volume
+# 刪除 Volume（還有容器在使用時會失敗，先刪容器）
+docker rm -f my-db
 docker volume rm my-data
 
-# 清理未使用的 Volume
+# 清理未使用的「匿名」Volume（沒有名字、只有一串 ID 的那種）
 docker volume prune
+
+# 連未使用的「具名」Volume 也清掉 ⚠️ compose down 後還沒啟動的專案資料也會被刪
+docker volume prune -a
 ```
+
+### 跟著做：Volume 與 Bind Mount 掛載時的差異
+
+兩者掛到「映像裡原本就有檔案的目錄」時，行為完全不同。這個差異是很多「檔案不見了」問題的根源：
+
+```bash
+# 1. 空的 named volume 第一次掛上去：Docker 會先把映像裡該目錄的內容「複製」進 volume
+docker run --rm -v html-vol:/usr/share/nginx/html nginx:1.30-alpine ls /usr/share/nginx/html
+# 50x.html
+# index.html          ← nginx 映像原本的檔案被複製進 volume 了
+
+# 2. bind mount：主機目錄直接「蓋住」映像裡的目錄，原本的內容看不到
+mkdir -p ~/docker-practice/empty-dir
+docker run --rm -v ~/docker-practice/empty-dir:/usr/share/nginx/html nginx:1.30-alpine ls /usr/share/nginx/html
+# （沒有任何輸出）    ← index.html 不見了
+
+docker volume rm html-vol
+```
+
+| | Named Volume（空的） | Named Volume（已有資料） | Bind Mount |
+|--|--|--|--|
+| 映像裡該目錄的內容 | 第一次掛載時複製進 volume | **不會**再複製，以 volume 內容為準 | 被蓋住、看不到 |
+| 擁有者與權限 | 沿用映像中該目錄的設定 | 維持 volume 現有的 | 沿用主機目錄的 |
+
+這張表可以解釋幾個常見現象：
+
+- 第四、六章用匿名 volume 保護 `/app/node_modules`：靠的是第 1 欄，空 volume 會先複製映像裡裝好的套件。
+- 映像更新了套件，容器裡的 `node_modules` 卻還是舊的：因為第 2 欄，volume 已經有資料就不會再複製（解法見第六章 6.7 情境三）。
+- 把原始碼目錄 bind mount 到 `/var/www/html`，映像裡 `composer install` 裝的 `vendor/` 就不見了：因為第 3 欄。
+
+### `-v` 與 `--mount` 的差別：路徑不存在時
+
+```bash
+cd ~/docker-practice
+
+# -v：主機路徑不存在時，Docker 會「自動建立一個目錄」
+docker run --rm -v "$PWD/nginx.conf":/etc/nginx/conf.d/default.conf nginx:1.30-alpine
+# 錯誤：... not a directory: Are you trying to mount a directory onto a file (or vice-versa)?
+ls -ld nginx.conf
+# drwxr-xr-x ... nginx.conf      ← 本來想掛檔案，結果主機多了一個叫 nginx.conf 的空目錄
+rmdir nginx.conf
+
+# --mount：路徑不存在時直接報錯，不會偷偷建立
+docker run --rm --mount type=bind,source="$PWD/nginx.conf",target=/etc/nginx/conf.d/default.conf nginx:1.30-alpine
+# 錯誤：invalid mount config for type "bind": bind source path does not exist: ...
+```
+
+掛載單一設定檔時，最常見的錯誤就是「打錯路徑或在錯的目錄執行」，結果 `-v` 自動建出一個目錄。看到 `not a directory` 的錯誤，先檢查主機上那個路徑是不是被建成了目錄。Compose 的 `volumes:` 短語法和 `-v` 一樣會自動建立目錄。
 
 ### Bind Mount（綁定掛載）
 
 ```bash
-# 掛載當前目錄到容器的 /app
-docker run -d \
-  -v $(pwd):/app \
-  --name my-app \
-  node:20-alpine
+cd ~/docker-practice
+mkdir -p config && echo 'debug=true' > config/app.conf
 
-# 唯讀掛載
-docker run -d \
-  -v $(pwd)/config:/app/config:ro \
-  --name my-app \
-  node:20-alpine
+# 掛載當前目錄到容器的 /app，列出容器內看到的檔案
+# "$PWD" 加雙引號：路徑裡有空白時才不會被拆開
+docker run --rm -v "$PWD":/app alpine:3.24 ls /app
+
+# 唯讀掛載：容器內讀得到，但寫入會失敗
+docker run --rm -v "$PWD/config":/app/config:ro alpine:3.24 \
+  sh -c 'cat /app/config/app.conf; touch /app/config/new-file'
+# debug=true
+# touch: /app/config/new-file: Read-only file system
 
 # 使用 --mount 語法（更明確）
-docker run -d \
-  --mount type=bind,source=$(pwd),target=/app \
-  --name my-app \
-  node:20-alpine
+docker run --rm --mount type=bind,source="$PWD",target=/app alpine:3.24 ls /app
 ```
 
 ### tmpfs Mount
 
 ```bash
-# 掛載到記憶體（容器停止後資料消失）
-docker run -d \
+# 掛載到記憶體（容器停止後資料消失），df 可看到 /tmp 是 tmpfs、大小 100M
+docker run --rm \
   --tmpfs /tmp:rw,size=100m \
-  --name my-app \
-  node:20-alpine
+  alpine:3.24 df -h /tmp
 
 # 使用 --mount 語法
-docker run -d \
+docker run --rm \
   --mount type=tmpfs,destination=/tmp,tmpfs-size=100m \
-  --name my-app \
-  node:20-alpine
+  alpine:3.24 df -h /tmp
+# Filesystem      Size  Used Avail Use% Mounted on
+# tmpfs         100.0M     0 100.0M   0% /tmp
 ```
 
 > 備註：這兩個指令是等價寫法，都是把容器內 `/tmp` 掛到記憶體（tmpfs）。
@@ -382,11 +507,13 @@ services:
       # 具名 Volume
       - pgdata:/var/lib/postgresql/data
 
-      # Bind Mount：初始化 SQL
+      # Bind Mount：初始化 SQL（只在資料目錄是空的、第一次初始化時執行）
       - ./init:/docker-entrypoint-initdb.d
 
       # 唯讀的設定檔
       - ./config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    # 光掛上設定檔，PostgreSQL 不會去讀它；要用 command 指定設定檔路徑
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
 
   api:
     build: ./backend
@@ -478,64 +605,83 @@ volumes:
 
 ## 5.5 Volume 備份與還原
 
+這一節用一個練習用的 volume 示範，完整流程可以直接照做。
+
+### 準備練習資料
+
+```bash
+cd ~/docker-practice
+mkdir -p backups
+
+# 建立一個 volume，並寫入兩個檔案當作「要備份的資料」
+docker volume create demo-data
+docker run --rm -v demo-data:/data alpine:3.24 \
+  sh -c 'echo "hello" > /data/a.txt; mkdir -p /data/sub; echo "world" > /data/sub/b.txt'
+```
+
 ### 備份
 
 ```bash
 # 備份 Volume 到 tar 檔案
 docker run --rm \
-  -v pgdata:/source:ro \
-  -v $(pwd):/backup \
-  alpine \
-  tar czf /backup/pgdata-backup.tar.gz -C /source .
+  -v demo-data:/source:ro \
+  -v "$PWD/backups":/backup \
+  alpine:3.24 \
+  tar czf /backup/demo-data-backup.tar.gz -C /source .
 
 # 使用日期命名
 docker run --rm \
-  -v pgdata:/source:ro \
-  -v $(pwd):/backup \
-  alpine \
-  tar czf /backup/pgdata-$(date +%Y%m%d).tar.gz -C /source .
+  -v demo-data:/source:ro \
+  -v "$PWD/backups":/backup \
+  alpine:3.24 \
+  tar czf /backup/demo-data-$(date +%Y%m%d).tar.gz -C /source .
+
+ls backups
+# demo-data-20261030.tar.gz  demo-data-backup.tar.gz
 ```
 
 > 備註：備份指令拆解
 >
-> - `docker run --rm alpine ...`：啟動臨時 Alpine 容器來執行備份，完成後自動刪除容器（不留下執行殘骸）。
-> - `-v pgdata:/source:ro`：把 Docker Volume `pgdata` 掛到容器內 `/source`，且用唯讀（`ro`）避免備份時誤寫入原資料。
-> - `-v $(pwd):/backup`：把主機「當前目錄」掛到容器內 `/backup`，因此備份檔會直接出現在主機目前資料夾。
-> - `tar czf /backup/pgdata-backup.tar.gz -C /source .`：將 `/source` 內容打包成 gzip tar；`-C /source .` 表示切到 `/source` 再把目前目錄所有內容打包。
-> - 第二條指令的 `$(date +%Y%m%d)` 會展開成當天日期（例如 `20260305`），方便做每日備份檔命名與保留多版本。
->
-> 主機與容器路徑對應：
->
-> - 主機上的 `pgdata` volume -> 容器內 `/source`
-> - 主機上的 `$(pwd)` 目錄 -> 容器內 `/backup`
-> - 最終檔案會落在主機：`$(pwd)/pgdata-backup.tar.gz`（或帶日期檔名）
+> - `docker run --rm alpine:3.24 ...`：啟動臨時 Alpine 容器來執行備份，完成後自動刪除容器（不留下執行殘骸）。
+> - `-v demo-data:/source:ro`：把 Docker Volume `demo-data` 掛到容器內 `/source`，且用唯讀（`ro`）避免備份時誤寫入原資料。
+> - `-v "$PWD/backups":/backup`：把主機的 `backups` 目錄掛到容器內 `/backup`，因此備份檔會直接出現在主機上。
+> - `tar czf /backup/demo-data-backup.tar.gz -C /source .`：將 `/source` 內容打包成 gzip tar；`-C /source .` 表示切到 `/source` 再把目前目錄所有內容打包。
+> - 第二條指令的 `$(date +%Y%m%d)` 是在**主機**的 shell 展開成當天日期（例如 `20261030`），方便做每日備份檔命名與保留多版本。
 
 ### 還原
 
 ```bash
-# 還原 Volume
+# 模擬資料遺失：刪掉 volume
+docker volume rm demo-data
+
+# 還原到一個新的（空的）volume
+docker volume create demo-data
 docker run --rm \
-  -v pgdata:/target \
-  -v $(pwd):/backup:ro \
-  alpine \
-  sh -c "cd /target && tar xzf /backup/pgdata-backup.tar.gz"
+  -v demo-data:/target \
+  -v "$PWD/backups":/backup:ro \
+  alpine:3.24 \
+  sh -c "cd /target && tar xzf /backup/demo-data-backup.tar.gz"
+
+# 驗證
+docker run --rm -v demo-data:/data alpine:3.24 sh -c 'cat /data/a.txt /data/sub/b.txt'
+# hello
+# world
+
+# 清理
+docker volume rm demo-data
 ```
 
 > 備註：還原指令拆解
 >
-> - `docker run --rm alpine ...`：啟動臨時容器執行一次性還原，完成後自動刪除容器。
-> - `-v pgdata:/target`：把要還原的目標 Volume（`pgdata`）掛到容器內 `/target`。
-> - `-v $(pwd):/backup:ro`：把主機當前目錄掛到容器 `/backup`，且唯讀（`ro`）避免誤改備份檔。
-> - `sh -c "cd /target && tar xzf /backup/pgdata-backup.tar.gz"`：
->   - `cd /target`：先切到 Volume 掛載點
->   - `tar xzf ...`：解開 gzip tar 並把內容寫入目前目錄（也就是 `pgdata` volume）
+> - `-v demo-data:/target`：把要還原的目標 Volume 掛到容器內 `/target`。
+> - `-v "$PWD/backups":/backup:ro`：備份檔所在目錄，唯讀（`ro`）避免誤改備份檔。
+> - `cd /target && tar xzf ...`：解開 gzip tar 並把內容寫入 volume。
+> - 還原到**空的** volume：`tar` 只會新增與覆蓋檔案，不會刪除 volume 裡原本多出來的檔案，還原到舊 volume 會變成新舊資料混在一起。
+
+> ⚠️ **資料庫不要在運作中用 tar 備份資料目錄。** PostgreSQL、MySQL 寫入時會同時改動多個檔案，執行中打包的 tar 可能是「寫到一半」的狀態，還原後資料庫無法啟動或資料不一致。資料庫請用：
 >
-> 主機與容器路徑對應：
->
-> - 主機上的備份檔 `$(pwd)/pgdata-backup.tar.gz` -> 容器內 `/backup/pgdata-backup.tar.gz`
-> - 容器內 `/target` -> Docker Volume `pgdata`（還原後資料回到此 volume）
->
-> 小提醒：還原前建議先停止使用該資料的服務，避免程式執行中讀寫造成資料不一致。
+> - 資料庫自己的匯出工具：`pg_dump`、`mysqldump`（服務不用停，見第十章 10.7）。
+> - 或先 `docker compose stop db` 停掉資料庫，再用上面的 tar 方式備份資料目錄，備份完再啟動。
 
 ### 在容器之間共享資料
 
@@ -594,12 +740,24 @@ DB_HOST=172.18.0.3
 # ✅ 正確做法：使用容器名稱（需自訂網路）
 DB_HOST=db
 
-# 確認容器的 DNS 解析
+# 跟著做：建立網路與兩個容器，確認容器的 DNS 解析
+docker network create demo-net
+docker run -d --name db --network demo-net -e POSTGRES_PASSWORD=secret postgres:16-alpine
+docker run -d --name api --network demo-net nginx:1.30-alpine
 docker exec api nslookup db
 # Server:    127.0.0.11
 # Address:   127.0.0.11:53
 # Name:      db
 # Address:   172.18.0.3
+
+# 重建 db 後 IP 可能改變，但名稱照樣解析得到
+docker rm -f db
+docker run -d --name db --network demo-net -e POSTGRES_PASSWORD=secret postgres:16-alpine
+docker exec api nslookup db
+
+# 清理
+docker rm -f api db
+docker network rm demo-net
 ```
 
 > 備註：這段指令在說什麼？
@@ -629,10 +787,9 @@ volumes:
 ```
 
 ```bash
-# 2. 定期備份
-# 建立一個 cron job
-# 每天凌晨 2 點執行一次備份腳本
-0 2 * * * /usr/local/bin/backup-volumes.sh
+# 2. 定期備份（備份腳本見第十章 10.7 的 backup.sh）
+# 用 crontab -e 加入一行：每天凌晨 2 點執行一次
+0 2 * * * /opt/myapp/backup.sh >> /var/log/backup.log 2>&1
 
 # 3. 使用 alias 防止手殘
 # alias dcdown='docker compose down'  # 不加 -v
@@ -640,29 +797,29 @@ volumes:
 
 ### 情境三：開發時 Bind Mount 的效能問題
 
-**問題**：macOS / Windows 上使用 Bind Mount 掛載原始碼，檔案 I/O 非常慢
+**問題**：macOS / Windows 上使用 Bind Mount 掛載原始碼，`npm install`、測試、建置都非常慢
+
+原因：Docker Desktop 的容器跑在 Linux VM 裡（見第一章），bind mount 的每一次檔案讀寫都要跨過主機與 VM 的邊界。`node_modules` 這種幾萬個小檔案的目錄最吃虧。
 
 ```yaml
-# macOS 上 Bind Mount 的效能最佳化
-
 services:
   api:
     volumes:
-      # 使用 delegated 一致性模式（犧牲一致性換取效能）
-      - ./backend:/app:delegated
+      # 原始碼仍用 bind mount（需要在主機上用編輯器修改）
+      - ./backend:/app
 
-      # 將 node_modules 放在 Volume 中（避免同步大量小檔案）
+      # node_modules 放在 named volume：檔案留在 VM 裡，不用跨邊界同步
       - node_modules:/app/node_modules
 
 volumes:
   node_modules:
 ```
 
-```bash
-# 或者使用 Docker Desktop 的 VirtioFS（macOS）
-# Docker Desktop → Settings → General → Choose file sharing implementation
-# 選擇 VirtioFS（比 gRPC FUSE 更快）
-```
+其他做法：
+
+- **確認 Docker Desktop 使用 VirtioFS**：macOS 的新版 Docker Desktop 預設就是 VirtioFS（Settings → General → Choose file sharing implementation）。舊教學裡的 `:cached`、`:delegated` 掛載選項現在已經沒有作用，不必再加。
+- **Windows**：程式碼放在 WSL2 的檔案系統（例如 `~/docker-practice`），不要放在 `/mnt/c/...`（見第一章）。
+- **改用 `docker compose watch`**：不用 bind mount，改由 Compose 把變動的檔案同步進容器，見第六章 6.6。
 
 ### 情境四：多個 Compose 專案共用同一個資料庫
 

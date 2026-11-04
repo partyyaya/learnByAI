@@ -8,6 +8,8 @@ Electron 應用主要由三個區塊組成：
 - **Renderer Process（渲染程序）**：負責 UI（HTML/CSS/JS）
 - **Preload Script（預載腳本）**：安全地橋接 Main 與 Renderer
 
+這三者不是三個進程。Electron 只有兩種進程：一個 Main process，加上每個視窗各自一個 Renderer process。Preload 是在 Renderer process 裡、網頁腳本執行**之前**先跑的一段程式；它和網頁在同一個進程，但處在隔離的 JavaScript 環境（`contextIsolation`），網頁碰不到它手上的 Electron API，只能使用它透過 `contextBridge` 刻意開放的函式。
+
 ---
 
 ## 3.2 調整專案結構
@@ -112,6 +114,11 @@ contextBridge.exposeInMainWorld("appInfo", {
   }
 });
 ```
+
+寫 preload 時一定會遇到兩個限制：
+
+- **不能直接掛到 `window` 上**：因為 `contextIsolation`，preload 裡寫 `window.appInfo = {...}`，網頁那邊看不到，一定要經過 `contextBridge.exposeInMainWorld`。傳過橋的物件會被複製一份，函式會被包成代理，class 實例的 prototype 與方法則會遺失，所以暴露的 API 最好是「一組普通函式 + 純資料」。
+- **preload 預設跑在 sandbox 裡**：Electron 20 起 renderer 預設 `sandbox: true`，preload 只能 `require("electron")` 與少數內建模組（例如 `events`、`timers`、`url`），`require("node:fs")` 或 `require("./helper")` 都會失敗。`process.platform` 這類唯讀資訊仍然讀得到，所以上面的範例沒問題。要讀檔或使用系統功能，就交給 Main 去做、透過下一章的 IPC 呼叫；第九章 9.3 會再完整說明 sandbox。
 
 ---
 

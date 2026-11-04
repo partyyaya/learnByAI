@@ -1,0 +1,72 @@
+{
+  "name": "nodejs-course-chapter-22",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": "24.22.1",
+    "npm": "11.19.1"
+  },
+  "packageManager": "npm@11.19.1",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.build.json",
+    "start": "node --enable-source-maps dist/main.js",
+    "dev": "tsc -p tsconfig.build.json --watch",
+    "test": "npm run test:compile && node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand",
+    "check": "npm run generate && npm run typecheck && npm test && npm run build && npm run test:runtime && npm run lab:nest && npm run lab:scopes && npm run lab:validation && npm run lab:responses && npm run lab:queries && npm run openapi:export && npm run test:parallel",
+    "test:runtime": "node scripts/check-database-runtime.cjs",
+    "seed": "node dist/generate-export.js",
+    "encoding": "node dist/encoding-demo.js",
+    "files": "node dist/files-demo.js",
+    "lab": "node dist/middleware-lab.js",
+    "generate": "prisma generate",
+    "db:deploy": "prisma migrate deploy",
+    "db:status": "prisma migrate status",
+    "db:seed": "node dist/seed-database.js",
+    "test:baseline": "npm test -- --testPathPatterns=migration-baseline.test.js",
+    "lab:nest": "node scripts/check-nest-lifecycle.cjs",
+    "lab:scopes": "node scripts/check-scopes.cjs",
+    "lab:validation": "node scripts/check-validation.cjs",
+    "lab:responses": "node scripts/check-responses.cjs",
+    "test:status-api": "node scripts/check-status-api.cjs",
+    "test:status-persistence": "node scripts/check-status-api.cjs --verify",
+    "lab:queries": "node scripts/check-query-plans.cjs",
+    "openapi:export": "node scripts/export-openapi.cjs",
+    "test:query-api": "node scripts/check-query-api.cjs",
+    "test:query-persistence": "node scripts/check-query-api.cjs --verify",
+    "test:compile": "node -e \"require('node:fs').rmSync('.test-dist', { recursive: true, force: true })\" && tsc -p tsconfig.json",
+    "test:parallel": "npm run test:compile && node scripts/check-parallel.cjs",
+    "test:focused": "npm test -- --testPathPatterns='testing-|fixture-lifecycle|parallel-'"
+  },
+  "devDependencies": {
+    "@jest/globals": "30.2.0",
+    "@types/node": "24.19.2",
+    "jest": "30.2.0",
+    "typescript": "5.9.3",
+    "@types/express": "5.0.6",
+    "supertest": "7.3.1",
+    "@types/supertest": "7.2.1",
+    "prisma": "7.10.1",
+    "@types/pg": "8.23.1",
+    "@nestjs/testing": "11.2.8"
+  },
+  "dependencies": {
+    "express": "5.3.0",
+    "zod": "4.6.7",
+    "@prisma/client": "7.10.1",
+    "@prisma/adapter-pg": "7.10.1",
+    "pg": "8.23.1",
+    "@nestjs/common": "11.2.8",
+    "@nestjs/core": "11.2.8",
+    "@nestjs/platform-express": "11.2.8",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "overrides": {
+    "@nestjs/platform-express": {
+      "express": "$express",
+      "multer": "2.5.0"
+    }
+  }
+}

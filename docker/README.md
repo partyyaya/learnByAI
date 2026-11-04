@@ -62,12 +62,14 @@
 ## 環境需求
 
 - 作業系統：macOS / Linux（推薦 Ubuntu 22.04+）/ Windows（WSL2）
-- Docker Engine：24.0+（建議使用最新穩定版）
-- Docker Compose：V2（已內建於 Docker Desktop）
+- Docker Engine：27.0+（建議使用最新穩定版；本課程以 Docker 29 實測）
+- Docker Compose：`docker compose` 指令（已內建於 Docker Desktop，Linux 安裝 `docker-compose-plugin`）
 - Kubernetes 練習工具（選配）：kubectl、minikube 或 kind
-- Helm：3.12+（管理 Kubernetes 應用與 Chart）
+- Helm：3.12+ 或 4.x（管理 Kubernetes 應用與 Chart；本課程用到的指令兩版通用）
 - Docker Swarm 練習建議：至少 1 台 Docker 主機（建議 2+ 台演練 manager/worker）
 - 建議搭配工具：curl、jq、dive（映像分析）、lazydocker（TUI 管理工具）
+
+各章的「跟著做」都在 `~/docker-practice` 底下操作（第一章 1.4 建立）。建立專案、安裝套件需要的 Node.js、Composer、Python 指令都在容器裡執行，**主機只需要安裝 Docker**。第三章建立的 `hello-docker`、`hello-go` 映像會在第七～九、十一、十三章繼續使用，第四章的 `compose-demo` 會在第十章延伸成正式環境的部署練習。
 
 ---
 

@@ -1,0 +1,139 @@
+name: nodejs-course-29-production
+services:
+  postgres:
+    image: postgres:17-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    environment:
+      POSTGRES_USER: course
+      POSTGRES_DB: course
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [production_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U course -d course"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    mem_limit: 512m
+    cpus: 1.0
+    stop_grace_period: 15s
+  migrate:
+    build:
+      context: .
+      target: migration
+      args: { RELEASE_ID: "${RELEASE_ID:-chapter29-local}" }
+    image: nodejs-course-29-migration:${RELEASE_ID:-chapter29-local}
+    environment: { DATABASE_URL_FILE: /run/secrets/database_url }
+    secrets: [database_url]
+    depends_on: { postgres: { condition: service_healthy } }
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    command: [migrate]
+  api:
+    build:
+      context: .
+      target: runtime
+      args: { RELEASE_ID: "${RELEASE_ID:-chapter29-local}" }
+    image: nodejs-course-29-api:${RELEASE_ID:-chapter29-local}
+    environment:
+      APP_ORIGIN: https://localhost:34429
+      DATABASE_URL_FILE: /run/secrets/database_url
+    secrets: [database_url]
+    depends_on: { postgres: { condition: service_healthy } }
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    cpus: 1.0
+    mem_limit: 512m
+    stop_grace_period: 8s
+  proxy:
+    image: nginx:1.30-alpine@sha256:0e52bd054126cdc040b1276c0af347aeb02a41b9cfe305d6094767ac30e97949
+    user: "101:101"
+    entrypoint: [nginx, -g, "daemon off;"]
+    volumes: [./deploy/nginx.conf:/etc/nginx/nginx.conf:ro]
+    secrets: [tls_certificate, tls_key]
+    depends_on: { api: { condition: service_healthy } }
+    ports: ["127.0.0.1:30829:8080", "127.0.0.1:34429:8443"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 64
+    cpus: 0.5
+    mem_limit: 128m
+    stop_signal: SIGQUIT
+    stop_grace_period: 10s
+  verifier:
+    build:
+      context: .
+      target: verifier
+    image: nodejs-course-29-verifier:local
+    # One-shot local verification writes evidence and a private cookie jar, never serves HTTP.
+    user: "0:0"
+    secrets: [local_ca]
+    volumes: [./.data:/evidence]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+  restore-db:
+    profiles: [operations]
+    image: postgres:17-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    environment:
+      POSTGRES_USER: course
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [restore_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U course -d postgres"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    mem_limit: 512m
+    stop_grace_period: 15s
+  backup:
+    profiles: [operations]
+    image: postgres:17-bookworm@sha256:858bb5e98eed02eb8cafbcdc007f9a65d1b613972028944a8ec2133ccaf80d27
+    user: "0:0"
+    environment: { PGPASSFILE: /run/secrets/backup_pgpass }
+    secrets: [backup_pgpass]
+    volumes:
+      - ./.data/backups:/backup
+      - ./deploy/backup-task.sh:/backup-task.sh:ro
+    entrypoint: [sh, /backup-task.sh]
+    read_only: true
+    tmpfs: [/tmp]
+  restore-verifier:
+    profiles: [operations]
+    image: nodejs-course-29-migration:${RELEASE_ID:-chapter29-local}
+    user: "0:0"
+    environment: { DATABASE_URL_FILE: /run/secrets/database_url }
+    secrets: [database_url]
+    volumes:
+      - ./.data/drill-plan.json:/evidence/plan.json:ro
+      - ./.data/production-proof.json:/evidence/production.json:ro
+      - ./.data/deployment-session.json:/evidence/session.json:ro
+      - ./.data/backup-source.json:/evidence/source.json
+      - ./.data/restore-proof.json:/evidence/result.json
+    entrypoint: [node, scripts/check-operations-data.cjs]
+    command: [restore]
+    read_only: true
+    tmpfs: [/tmp]
+
+secrets:
+  backup_pgpass: { file: ./deploy/local/pgpass }
+  postgres_password: { file: ./deploy/local/postgres_password }
+  database_url: { file: ./deploy/local/database_url }
+  tls_certificate: { file: ./deploy/local/tls.crt }
+  tls_key: { file: ./deploy/local/tls.key }
+  local_ca: { file: ./deploy/local/ca.crt }
+volumes:
+  production_data:
+  restore_data:

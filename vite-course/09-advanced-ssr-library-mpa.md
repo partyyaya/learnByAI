@@ -75,7 +75,9 @@ const { render } = await viteServer.ssrLoadModule('/src/entry-server.js')
 const html = await render(url)     // 在伺服器渲染出 HTML
 ```
 
-`ssrLoadModule` 是 Vite SSR 的核心:它讓你在 Node.js 伺服器端,**用 Vite 的轉換管線(第 04 章那套)即時載入並執行模組**——所以伺服器端也能享受「即時轉譯 TS/Vue、HMR」這些 dev 好處。
+`ssrLoadModule` 是 Vite SSR 的核心:它讓你在 Node.js 伺服器端,**用 Vite 的轉換管線(第 04 章那套)即時載入並執行模組**——所以伺服器端也能享受「即時轉譯 TS/Vue、改檔立刻生效」這些 dev 好處。
+
+> Vite 6 起,這層能力被整理成 **Environment API**:dev server 裡可以同時有多個「環境」(瀏覽器端 `client`、伺服器端 `ssr`,甚至 Cloudflare Workers 這類邊緣執行環境),各自有自己的 module graph 與執行器(Module Runner)。`ssrLoadModule` 仍然可用;新 API 主要是給框架作者用的,一般專案不必直接碰。
 
 **但要誠實說**:直接用 Vite 的 SSR 底層 API 要自己處理很多細節(伺服器框架、路由、entry 管理、生產部署)。所以實務上,**大多數人不直接用 Vite SSR API,而是用建立在 Vite 之上的「上層框架」**:
 
@@ -131,9 +133,10 @@ export default defineConfig({
       fileName: 'my-lib',             // 輸出檔名
       formats: ['es', 'cjs'],         // 同時輸出 ESM 和 CommonJS 兩種格式
     },
-    rollupOptions: {
+    rolldownOptions: {                // Vite 7 以前叫 rollupOptions
       // external:這些依賴「不要打包進去」,當作外部依賴
-      external: ['vue'],
+      // 用正規表示式連 'vue/xxx' 這類子路徑一起排除
+      external: ['vue', /^vue\//],
       output: {
         globals: {
           vue: 'Vue',                 // UMD 格式下,vue 對應全域的 Vue
@@ -147,8 +150,8 @@ export default defineConfig({
 逐項解釋:
 
 - **`lib.entry`**:套件入口是一個 JS 檔(你的 API 都從這裡 export 出去),不是 html。
-- **`formats: ['es', 'cjs']`**:為什麼要輸出多種格式?因為使用者的環境不一定——有人用現代 ESM、有人的舊工具鏈還在用 CommonJS。輸出多種格式才能讓最多人用得了(回扣第 00 章 CJS/ESM 共存的現實)。
-- **`external: ['vue']`**:把 Vue 排除在打包外,避免重複。
+- **`formats: ['es', 'cjs']`**:為什麼要輸出多種格式?因為使用者的環境不一定——有人用現代 ESM、有人的舊工具鏈還在用 CommonJS。輸出多種格式才能讓最多人用得了(回扣第 00 章 CJS/ESM 共存的現實)。產出的檔名會依格式區分,例如 `my-lib.js`(ESM)和 `my-lib.cjs`(CJS)。
+- **`external: ['vue', /^vue\//]`**:把 Vue 排除在打包外,避免重複。實務上 `package.json` 的 `dependencies` 與 `peerDependencies` 通常都要列進 external;只寫 `'vue'` 的話,`import 'vue/server-renderer'` 這種子路徑還是會被打包進去。
 - **`globals`**:給 UMD/IIFE 格式用的,告訴打包器「external 的 vue,在全域是叫 `Vue`」。
 
 ### 輸出格式白話解:ESM / CJS / UMD / IIFE
@@ -208,7 +211,7 @@ export default defineConfig({
 
 ### 別忘了型別宣告(.d.ts)
 
-如果你的套件是 TS 寫的,使用者會期待有型別提示。但第 01、04 章說過:**Vite/esbuild 只剝型別、不產生型別宣告檔**。所以要額外用工具產生 `.d.ts`:
+如果你的套件是 TS 寫的,使用者會期待有型別提示。但第 01、04 章說過:**Vite 的轉譯器只剝型別、不產生型別宣告檔**。所以要額外用工具產生 `.d.ts`:
 
 ```bash
 npm i -D vite-plugin-dts
@@ -235,12 +238,16 @@ SPA 只有一個 `index.html`。但有些網站天生是**多個獨立頁面**(M
 Vite 原生支援多入口。設定方式:
 
 ```ts
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
-import { resolve } from 'path'
+
+// ESM 裡沒有 __dirname,從 import.meta.url 算出設定檔所在的目錄
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   build: {
-    rollupOptions: {
+    rolldownOptions: {                // Vite 7 以前叫 rollupOptions
       input: {
         // 每個 key 是一個入口,value 是對應的 html 路徑
         main: resolve(__dirname, 'index.html'),
@@ -346,9 +353,9 @@ export default defineConfig({
 
 - **SSR**:伺服器先渲染有內容的 HTML(SEO + 首屏快),再靠 hydration 在瀏覽器「注入靈魂」;Vite 提供 `ssrLoadModule` 等底層能力,但實務建議用 Nuxt/SvelteKit/Astro。順帶認識 SSG。
 - **Library Mode**:打包「給別人用的套件」而非應用,關鍵差異是「依賴設 external 不打包」、「輸出多格式(ESM+CJS)」、「要另外產生 .d.ts」。
-- **MPA**:多個 HTML 入口,是第 01 章「HTML 即入口」的自然延伸;用 `rollupOptions.input` 設定多入口。
+- **MPA**:多個 HTML 入口,是第 01 章「HTML 即入口」的自然延伸;用 `build.rolldownOptions.input` 設定多入口。
 - **Monorepo**:pnpm workspace + Vite 能直接吃本地原始碼(改了即時 HMR);注意 `server.fs.allow` 的安全限制。
 
-**下一章(10)**,我們談 Vite 的**引擎內幕與未來**:為什麼 dev 用 esbuild、build 用 Rollup 會造成「行為不一致」?Vite 團隊為什麼要用 Rust 寫一個新引擎 **Rolldown** 來統一兩者?它跟 **Turbopack**、**esbuild** 的競合關係是什麼?這一章會把全課反覆提到的「雙引擎取捨」做一個總收束,讓你理解 Vite 正在往哪裡走。
+**下一章(10)**,我們談 Vite 的**引擎內幕與演進**:Vite 7 以前 dev 用 esbuild、build 用 Rollup,為什麼會造成「行為不一致」?Vite 團隊為什麼要用 Rust 寫新引擎 **Rolldown**,並在 Vite 8 用它統一兩者?升級到 Vite 8 要改什麼?它跟 **Turbopack**、**esbuild** 的競合關係是什麼?這一章會把全課反覆提到的「雙引擎取捨」做一個總收束。
 
 > 💡 **動手作業**:① 把一個專案改成 Library Mode 打包一個小工具函式(設 `lib.entry`、`external`),看產物跟「打包應用」差在哪。② 試著做一個有兩個 html 入口的 MPA 專案,build 後觀察 dist 裡的結構。③ (選做)用 pnpm 建一個最小 monorepo,讓 app 直接 import 一個本地 package,改 package 看 app 會不會即時 HMR。

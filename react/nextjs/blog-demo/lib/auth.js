@@ -28,6 +28,9 @@ export async function setSession(username) {
   const store = await cookies();
   store.set(TOKEN_NAME, `user:${username}`, {
     httpOnly: true,
+    // 正式環境（next start）只在 https 傳送；npm run dev 是 http，所以開發時不加。
+    // Chrome、Firefox 把 http://localhost 視為安全來源，本機 npm start 仍可登入。
+    secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
     maxAge: 60 * 60 * 24, // 一天

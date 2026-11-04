@@ -117,7 +117,7 @@ createServer((req, res) => {
 });
 ```
 
-`req` 是 `IncomingMessage`，具有可讀串流能力；`res` 是 `ServerResponse`，具有可寫串流能力。Node 原生 HTTP 主要提供協定與串流介面，不會替你完成 JSON schema 驗證或業務路由。[Node.js HTTP 文件](https://nodejs.org/api/http.html)
+`req` 是 `IncomingMessage`，具有可讀串流能力；`res` 是 `ServerResponse`，具有可寫串流能力。Node 原生 HTTP 主要提供協定與串流介面，不會替你完成 JSON schema 驗證或業務路由。[Node.js HTTP 文件](https://nodejs.org/docs/latest-v24.x/api/http.html)
 
 本章把處理流程拆成：
 

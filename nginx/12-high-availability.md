@@ -78,7 +78,7 @@
 >
 > 什麼是 VRRP（Virtual Router Redundancy Protocol）？
 >
-> - Keepalived 實作的標準協定（RFC 5798），Master 會定期（預設每 1 秒）對外發送「我還活著」的通告（advertisement）。
+> - Keepalived 實作的標準協定（IPv4 預設用 VRRPv2，RFC 3768；設 `vrrp_version 3` 可改用 RFC 5798 的 v3），Master 會定期（預設每 1 秒）對外發送「我還活著」的通告（advertisement）。
 > - Backup 若連續一段時間（約 3 × 通告間隔）收不到通告，就判定 Master 故障，依「優先權（priority）」高低選出新的 Master。
 > - 注意：VRRP 預設走多播位址 `224.0.0.18`，若你的網路環境（特別是雲端 VPC）封鎖多播，需改用 unicast 模式（見後文實務建議）。
 
@@ -147,7 +147,7 @@ keepalived --version
 >
 > - Keepalived 要安裝在「兩台 Nginx 主機」上（Master 與 Backup 各一份），不是裝在第三台機器。
 > - 設定檔預設路徑為 `/etc/keepalived/keepalived.conf`，套件安裝後可能附帶範例設定，建議先備份再覆寫。
-> - 兩台主機需在同一個二層網段（VIP 才能漂移）；若在雲端 VPC，請改用各雲商的浮動 IP / 彈性 IP 方案或 unicast 模式。
+> - 兩台主機需在同一個二層網段（VIP 才能漂移）。雲端 VPC（AWS、GCP、Azure）通常不支援這種 VIP：VRRP 多播被擋可以改 unicast（見後文），但 VIP 本身必須透過雲端 API 指派給網卡才連得到，靠 GARP 搶不過來。雲端上要嘛在 `notify_master` 腳本裡呼叫雲端 API 搬移 IP，要嘛直接採用架構四的雲端 LB。
 
 ### Master 設定
 
@@ -162,21 +162,22 @@ global_defs {
 vrrp_script check_nginx {
     script "/etc/keepalived/check_nginx.sh"  # 要執行的檢查腳本；exit 0 = 健康，非 0 = 失敗
     interval 2      # 每 2 秒檢查一次（單位：秒；預設 1，太密集會增加負載，太鬆會拉長故障偵測時間）
+    timeout 10      # 腳本最長可執行秒數，超過即算失敗（預設等於 interval；本腳本可能先重啟 Nginx 再等 2 秒，需放寬）
     weight -20      # 檢查失敗時把本節點優先權扣 20（100 → 80，低於 Backup 的 90，VIP 因此切換）
     fall 3          # 連續失敗 3 次才判定為失敗（避免單次抖動造成誤切換）
     rise 2          # 連續成功 2 次才判定為恢復（避免服務還不穩就急著切回來）
 }
 
-vrrp_instance VI_1 {            # 一個 VRRP 實例 = 一組 VIP 的容錯單位；名稱 VI_1 兩台要一致
+vrrp_instance VI_1 {            # 一個 VRRP 實例 = 一組 VIP 的容錯單位；名稱只在本機使用（日誌辨識），兩台不必相同
     state MASTER                # 初始角色：MASTER（啟動時先宣告自己是主）；實際角色仍由 priority 競選決定
     interface eth0              # VRRP 通告與 VIP 綁定的網路介面（用 ip addr 確認實際介面名，可能是 ens33、eth1 等）
-    virtual_router_id 51        # 虛擬路由器 ID（0~255）；同一組的 Master 和 Backup 必須相同，同網段不同組必須不同
+    virtual_router_id 51        # 虛擬路由器 ID（1~255）；同一組的 Master 和 Backup 必須相同，同網段不同組必須不同
     priority 100                # 優先權（1~254，數字越大越優先）；Master 要設得比 Backup 高
     advert_int 1                # VRRP 通告間隔（秒，預設 1）；Backup 約 3 倍時間收不到通告就接管，值越小切換越快但流量越多
 
-    authentication {            # VRRP 通告的認證設定，防止網段內其他主機偽造通告搶走 VIP
-        auth_type PASS          # 認證方式：PASS = 簡單明文密碼（另一種 AH 已少用）
-        auth_pass mypassword    # 認證密碼，Master/Backup 要一致（注意：只有前 8 個字元有效）
+    authentication {            # VRRP 通告的簡易密碼：用來區分同網段的不同組，不是安全機制
+        auth_type PASS          # PASS = 明文密碼，能監聽網段的人都看得到，擋不住刻意偽造
+        auth_pass mypassword    # Master/Backup 要一致（注意：只有前 8 個字元有效）
     }
 
     virtual_ipaddress {
@@ -205,7 +206,7 @@ vrrp_instance VI_1 {            # 一個 VRRP 實例 = 一組 VIP 的容錯單�
   - `fall 3` × `interval 2` = 最長約 6 秒才確認故障；加上 VRRP 通告逾時，整體切換時間約在 2～10 秒內。想更快可縮小 `interval` 與 `fall`，但誤判風險上升。
 - `state MASTER` + `priority 100`
   - `state` 只是「啟動瞬間的初始宣告」，真正的主備由 `priority` 決定：兩台同時在線時，priority 高者當 Master。
-  - 因此慣例是：Master 設 `state MASTER` + `priority 100`，Backup 設 `state BACKUP` + `priority 90`，兩者差距要大於健康檢查的 `weight` 絕對值才能正確觸發切換（100 − 20 = 80 < 90 ✓）。**若差距設太大（例如 Backup 只有 70），扣完分還是 Master 比較高，VIP 永遠不會切換——這是最常見的設定錯誤。**
+  - 因此慣例是：Master 設 `state MASTER` + `priority 100`，Backup 設 `state BACKUP` + `priority 90`，兩者差距要**小於**健康檢查的 `weight` 絕對值，扣分後 Master 才會低於 Backup、觸發切換（差距 10 < 20，100 − 20 = 80 < 90 ✓）。**若差距設太大（例如 Backup 只有 70），扣完分還是 Master 比較高，VIP 永遠不會切換——這是最常見的設定錯誤。**
 - `virtual_router_id 51`
   - 同一組 HA 配對的「群組編號」。兩台必須相同才會互相比較；若同一個網段還有別組 Keepalived，編號必須錯開，否則會互相干擾、出現腦裂或 VIP 亂跳。
 - `advert_int 1`
@@ -217,11 +218,12 @@ vrrp_instance VI_1 {            # 一個 VRRP 實例 = 一組 VIP 的容錯單�
 >
 > - Keepalived 預設是**搶占模式**：原 Master 修復、優先權恢復為 100 後，會自動把 VIP 搶回來，期間會再發生一次切換。
 > - 若不希望服務反覆切換（每次切換都有數秒風險），可在 `vrrp_instance` 內加上 `nopreempt`（注意：使用 `nopreempt` 時兩台的 `state` 都要寫 `BACKUP`，純靠 priority 競選），讓修復後的節點安分地當備機，等下次故障才接手。
-> - 也可用 `preempt_delay 60`（單位：秒）延遲搶占，給原 Master 一段「暖機觀察期」。
+> - 也可用 `preempt_delay 60`（單位：秒）延遲搶占，給原 Master 一段「暖機觀察期」；它和 `nopreempt` 一樣要求初始 `state` 不能是 `MASTER`，兩台都寫 `BACKUP` 才會生效。
 >
 > 實務建議：
 >
-> - 雲端 VPC 通常封鎖 VRRP 多播，需改用 unicast：在 `vrrp_instance` 內加 `unicast_src_ip <本機IP>` 與 `unicast_peer { <對方IP> }`。
+> - 網路封鎖 VRRP 多播時，可改用 unicast：在 `vrrp_instance` 內加 `unicast_src_ip <本機IP>` 與 `unicast_peer { <對方IP> }`。這只解決「通告送不到」；在雲端 VPC 裡 VIP 本身仍需透過雲端 API 搬移（見前面的安裝注意事項）。
+> - 若 Nginx 設定直接監聽 VIP（如 `listen 192.168.1.100:80;`），沒持有 VIP 的那台會因位址不存在而啟動失敗。兩台都設 `net.ipv4.ip_nonlocal_bind = 1`（寫進 `/etc/sysctl.d/` 後執行 `sudo sysctl --system`），或改用 `listen 80;` 監聽所有位址。
 > - 修改設定後用 `sudo systemctl reload keepalived` 套用，並以 `journalctl -u keepalived -f` 觀察狀態轉換日誌。
 
 ### Backup 設定
@@ -237,12 +239,13 @@ global_defs {
 vrrp_script check_nginx {
     script "/etc/keepalived/check_nginx.sh"
     interval 2                 # 每 2 秒檢查一次
+    timeout 10                 # 腳本最長執行 10 秒
     weight -20                 # 失敗時優先權 90 → 70
     fall 3                     # 連續失敗 3 次才算失敗
     rise 2                     # 連續成功 2 次才算恢復
 }
 
-vrrp_instance VI_1 {           # 實例名稱與 Master 相同
+vrrp_instance VI_1 {           # 實例名稱只在本機使用；沿用 VI_1 方便和 Master 對照
     state BACKUP               # 初始角色：BACKUP（啟動時先當備機，等著收 Master 的通告）
     interface eth0             # 依本機實際網卡名稱調整
     virtual_router_id 51       # 與 Master 相同（同一組才會互相通訊）
@@ -301,13 +304,15 @@ if ! pidof nginx > /dev/null; then
 fi
 
 # 第二關：行程在不代表服務正常，再用 HTTP 請求確認能回應
+# 打的是 12.8 節的 /health/live：只確認 Nginx 本身，後端全掛時不該觸發 VIP 切換
 # curl 參數逐一說明：
 #   -s             安靜模式，不顯示進度列與錯誤訊息
 #   -o /dev/null   把回應內容丟棄（不需要 body）
+#   --max-time 2   最多等 2 秒，避免 Nginx 半死不活時 curl 卡住
 #   -w "%{http_code}"  請求完成後只輸出 HTTP 狀態碼（例如 200、502）
 # grep -q "200"：檢查輸出是否包含 200；-q = 安靜模式，只回傳成功/失敗結束碼
-if ! curl -s -o /dev/null -w "%{http_code}" http://localhost/health | grep -q "200"; then
-    exit 1      # 行程在但無法正常回應（如 worker 卡死、upstream 全掛），同樣觸發 failover
+if ! curl -s -o /dev/null --max-time 2 -w "%{http_code}" http://127.0.0.1/health/live | grep -q "200"; then
+    exit 1      # 行程在但無法正常回應（如 worker 卡死），同樣觸發 failover
 fi
 
 exit 0          # 兩關都通過，回報健康
@@ -324,9 +329,9 @@ sudo /etc/keepalived/check_nginx.sh; echo "exit code: $?"
 > 這支腳本的設計重點：
 >
 > - **兩層檢查**：「行程存在」（第一關）+「HTTP 能回應」（第二關）。只檢查行程是不夠的——Nginx 行程可能還在，但已經無法服務（例如 worker 全部卡死）。
-> - **先自救再求援**：行程消失時先 `systemctl restart nginx` 試著拉起來，失敗才回報故障。這能避免「Nginx 被 OOM 殺掉一次」就觸發整組 VIP 切換。
-> - `http://localhost/health` 需要你在 Nginx 設定一個健康檢查端點（見 12.8 節的 `/health/live`）；若還沒設定，可先改成 `http://localhost/`。
-> - 建議再加上逾時保護：`curl --max-time 2 ...`，避免 Nginx 半死不活時 curl 卡住，拖慢 Keepalived 的檢查週期。
+> - **先自救再求援**：行程消失時先 `systemctl restart nginx` 試著拉起來，失敗才回報故障。這能避免「Nginx 被 OOM 殺掉一次」就觸發整組 VIP 切換。也因為會自救，單純 `systemctl stop nginx` 看不到切換，演練方式見下方「測試 failover」。
+> - `/health/live` 要先依 12.8 節設定好。curl 帶的 Host 是 `127.0.0.1`，會由 80 port 的**預設 server** 回應，所以這個端點必須設在預設 server 裡；若預設 server 只做 HTTPS 重導（如 11.2 的第一個 server），這裡會永遠拿到 301 而判定失敗。
+> - `--max-time 2` 加上重啟後的 `sleep 2`，整支腳本可能跑到 5 秒以上，所以 `vrrp_script` 的 `timeout` 設成 10；不設的話預設等於 `interval`（2 秒），自救那一輪一定被判定失敗。
 > - 注意腳本內的結束碼語意和 Nginx 無關：這是 Keepalived 的約定——`vrrp_script` 以「腳本結束碼是否為 0」判斷成敗。
 
 ### 通知腳本
@@ -388,21 +393,24 @@ ip addr show eth0
 # 從第三台機器測試 VIP 是否可連
 curl -I http://192.168.1.100/      # -I 只取回應標頭，確認 VIP 上的 Nginx 有回應
 
-# 測試 failover
-# 在 Master 上停止 Nginx（模擬服務故障）
+# 測試 failover：在 Master 上模擬「Nginx 掛掉且重啟不起來」
+# 只執行 systemctl stop nginx 的話，check_nginx.sh 下一輪就會自動把它拉起來，看不到切換；
+# 先暫時 mask（--runtime：重開機即失效），讓腳本的自救重啟失敗
+sudo systemctl mask --runtime nginx
 sudo systemctl stop nginx
 # 預期流程：健康檢查連續失敗 3 次（約 6 秒）→ Master 優先權 100-20=80 → Backup（90）接管 VIP
 # 在 Backup 上執行 ip addr show eth0，應可看到 192.168.1.100 已漂移過來
 # 同時觀察兩台的 /var/log/keepalived-state.log，應有成對的 BACKUP / MASTER 紀錄
 
-# 測試完記得把 Master 的 Nginx 拉起來
+# 測試完記得解除 mask 並把 Master 的 Nginx 拉起來
+sudo systemctl unmask --runtime nginx
 sudo systemctl start nginx
 # 預設搶占模式下，Master 恢復健康後會自動把 VIP 搶回去
 ```
 
 > 上線前建議完整演練三種故障情境：
 >
-> 1. **服務故障**：`systemctl stop nginx`（如上）——驗證健康檢查與 weight 扣分機制。
+> 1. **服務故障**：`mask` 後 `stop nginx`（如上）——驗證健康檢查與 weight 扣分機制；另外單獨 `systemctl stop nginx` 一次，確認腳本會自動把 Nginx 拉起來、VIP 不動。
 > 2. **主機故障**：直接重開機或關機 Master——驗證 VRRP 通告逾時接管（約 3 秒）。
 > 3. **網路故障**：拔線或 `ip link set eth0 down`——驗證 FAULT 狀態與 notify_fault 通知。
 >
@@ -419,33 +427,37 @@ sudo systemctl start nginx
 ```bash
 #!/bin/bash
 # /opt/scripts/sync-nginx-config.sh
-# 在 Master 上執行：把本機的 Nginx 設定同步到 Backup，兩邊都驗證後再重載
+# 在 Master 上以 root 執行（sudo /opt/scripts/sync-nginx-config.sh）：
+# 把本機的 Nginx 設定同步到 Backup，兩邊都驗證後再重載
 
-MASTER="10.0.1.10"        # Master 的內網 IP（此腳本就在這台上跑）
+# -e：任何指令失敗就立刻中止；-u：用到未定義的變數視為錯誤；-o pipefail：管線中任一段失敗都算失敗
+set -euo pipefail
+
 BACKUP="10.0.1.11"        # Backup 的內網 IP（同步目標）
 CONFIG_DIR="/etc/nginx"   # 要同步的設定目錄
 
 # 第一步：在 Master 上先測試設定語法——錯的設定絕不能往外散播
-nginx -t
-if [ $? -ne 0 ]; then     # $? = 上一個指令的結束碼；-ne 0 代表「不等於 0」（即測試失敗）
-    echo "Configuration test failed!"
+if ! nginx -t; then
+    echo "Configuration test failed on Master!"
     exit 1                # 立刻中止，不做任何同步
 fi
 
 # 第二步：用 rsync 把整個設定目錄同步到 Backup
 # 參數說明：
-#   -a  歸檔模式：遞迴複製並保留權限、時間戳、符號連結等屬性
+#   -a  歸檔模式：遞迴複製並保留權限、擁有者、時間戳、符號連結等屬性
 #   -v  顯示同步了哪些檔案（verbose）
 #   -z  傳輸時壓縮，節省頻寬
 #   --delete  刪除 Backup 上「Master 已不存在」的檔案，確保兩邊完全一致（小心使用！）
+#   --rsync-path="sudo rsync"  在 Backup 端以 sudo 執行 rsync，才能寫入 root 擁有的 /etc/nginx/
 # 路徑尾端的 / 很重要：$CONFIG_DIR/ 代表「同步目錄的內容」而非目錄本身
-rsync -avz --delete \
-    $CONFIG_DIR/ \
-    deploy@$BACKUP:$CONFIG_DIR/   # 以 deploy 使用者透過 SSH 寫入 Backup 的 /etc/nginx/
+rsync -avz --delete --rsync-path="sudo rsync" \
+    "$CONFIG_DIR/" \
+    "deploy@$BACKUP:$CONFIG_DIR/"
 
 # 第三步：先在 Backup 上測試並重載（&& 表示前一個成功才執行下一個）
-# 順序刻意「先 Backup 後 Master」：萬一新設定有問題，至少 Master 還在跑舊設定
-ssh deploy@$BACKUP "nginx -t && nginx -s reload"
+# nginx -t 要讀私鑰、寫日誌，一般使用者執行會失敗，所以遠端也要 sudo
+# Backup 驗證失敗時 ssh 回傳非 0，set -e 讓腳本停在這裡，Master 不會重載
+ssh "deploy@$BACKUP" "sudo nginx -t && sudo nginx -s reload"
 
 # 第四步：Backup 沒問題後，Master 才重載
 nginx -s reload
@@ -455,28 +467,31 @@ echo "Configuration synced and reloaded!"
 
 > 這支腳本的關鍵設計（逐條）：
 >
-> - **測試 → 同步 → 先重載備機 → 再重載主機**：任何一步失敗都不影響線上的 Master，把風險控制在備機。
+> - **測試 → 同步 → 先重載備機 → 再重載主機**：開頭的 `set -euo pipefail` 讓任何一步失敗都立刻中止，Backup 驗證不過時 Master 不會重載，把風險控制在備機。
 > - `--delete` 是雙面刃：能保證兩邊完全一致，但若 Backup 上有本機特有檔案（例如不同的憑證路徑）會被刪掉。確定兩台設定完全相同才使用，否則拿掉此參數。
-> - 前置需求：Master 對 Backup 要設定 SSH 金鑰免密碼登入（`ssh-keygen` + `ssh-copy-id deploy@10.0.1.11`），且 `deploy` 使用者需有寫入 `/etc/nginx` 與執行 `nginx -s reload` 的權限（一般透過 sudoers 限定指令授權）。
+> - 前置需求：Master 的 root 對 Backup 的 `deploy` 要設定 SSH 金鑰免密碼登入（`sudo ssh-keygen` + `sudo ssh-copy-id deploy@10.0.1.11`）；Backup 上的 `deploy` 要能免密碼 sudo 執行 rsync 與 nginx（sudoers 限定這兩個指令，例如 `deploy ALL=(root) NOPASSWD: /usr/bin/rsync, /usr/sbin/nginx`）。能 `sudo rsync` 等於能以 root 寫入任何檔案，這個帳號的金鑰要當成 root 等級保護。
 > - 常見錯誤：忘了同步後在 Backup 上 `nginx -t`，等到故障切換時才發現備機設定是壞的——備機的設定驗證和主機一樣重要。
 
 ### 方法二：使用 Git + CI/CD
 
 ```yaml
-# .gitlab-ci.yml 或 GitHub Actions
+# .gitlab-ci.yml（GitLab CI 語法；GitHub Actions 的寫法不同）
 deploy_nginx:
   stage: deploy                                    # 此任務屬於 deploy 階段（在 build/test 之後執行）
   script:
     - ansible-playbook -i inventory deploy-nginx.yml   # 用 Ansible 把設定推送到 inventory 清單中的所有 Nginx 主機
-  only:
-    - main                                         # 只有 main 分支的變更才會觸發部署（避免開發分支誤上線）
-  when: manual                                     # 需要有人在 CI 介面按下按鈕才執行（人工把關，而非合併即部署）
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'            # 只有 main 分支的變更才會出現這個任務（避免開發分支誤上線）
+      when: manual                                 # 需要有人在 CI 介面按下按鈕才執行（人工把關，而非合併即部署）
 ```
 
 ```yaml
 # deploy-nginx.yml (Ansible)
 ---
 - hosts: nginx_servers          # 目標主機群組（在 inventory 檔中定義，含所有 Nginx 節點）
+  become: true                  # 以 sudo 執行：寫入 /etc/nginx、重載 Nginx 都需要 root
+  serial: 1                     # 一次只處理一台：這台全部任務做完（含重載）才換下一台
+  any_errors_fatal: true        # 任何一台出錯就中止整個部署，不再往下一台推
   tasks:
     - name: Copy Nginx configuration
       copy:                     # 把 Git 倉庫中的設定目錄複製到每台主機
@@ -487,14 +502,13 @@ deploy_nginx:
         mode: '0644'            # 權限：擁有者可讀寫，其他人唯讀
 
     - name: Test Nginx configuration
-      command: nginx -t         # 每台主機都先做語法測試
-      register: nginx_test      # 把執行結果（含結束碼）存到變數 nginx_test，供後續任務判斷
+      command: nginx -t         # 語法測試；失敗時這個任務就失敗，這台不會執行後面的重載
+      changed_when: false       # 只是檢查，不算「有變更」
 
     - name: Reload Nginx
       service:
         name: nginx
         state: reloaded         # 用 reload 而非 restart：不中斷既有連線
-      when: nginx_test.rc == 0  # 條件執行：rc（return code）為 0（測試通過）才重載
 ```
 
 > 為什麼 Git + CI/CD 比 rsync 腳本更好？
@@ -502,7 +516,8 @@ deploy_nginx:
 > - **可追溯**：每次設定變更都有 commit 紀錄（誰改的、改了什麼、為什麼改），出問題可以 `git revert` 一鍵回滾。
 > - **可審查**：透過 Merge Request / Pull Request 讓第二雙眼睛把關，再加上 `when: manual` 的人工確認，雙重防呆。
 > - **可擴展**：未來從 2 台擴到 10 台 Nginx，只要在 inventory 加主機，部署流程完全不變。
-> - Ansible 會對每台主機依序執行任務，且 `copy` 模組是冪等的（內容沒變就不動作），重複執行也安全。
+> - Ansible 預設會對多台主機**平行**執行同一個任務；加上 `serial: 1` 才是一台做完再換下一台的滾動部署。`copy` 模組是冪等的（內容沒變就不動作），重複執行也安全。
+> - 注意：`nginx -t` 失敗時，新設定已經寫進那台的 `/etc/nginx`（線上仍跑舊設定，因為沒有重載）。修好後重跑，或 `git revert` 後再部署一次；在那之前不要 restart 那台 Nginx。
 
 ### 方法三：使用 Consul Template（動態設定）
 
@@ -607,6 +622,8 @@ sudo nginx -t && sudo nginx -s reload
 #    若發現問題：把 map 的 default 改回 blue 再 reload，即可秒級回滾——這就是藍綠部署最大的優勢
 ```
 
+> reload 只讓**新連線**走新設定：舊 worker 會繼續服務既有連線，等它們結束才退出。WebSocket 這類長連線（11.2 設了 `proxy_read_timeout 3600s`）可能還連著 blue 一段時間，所以 blue 不要切完就關。想限制舊 worker 最長存活時間，可在 main context（`nginx.conf` 最外層）設 `worker_shutdown_timeout 60s;`，時間到就關閉剩下的連線。
+
 ### 金絲雀部署（Canary Deployment）
 
 ```nginx
@@ -638,6 +655,7 @@ server {
 - `split_clients "${remote_addr}" $variant { ... }`
   - 運作原理：把來源字串（這裡是客戶端 IP `$remote_addr`，例如 `203.0.113.10`）做 MurmurHash2 雜湊，依雜湊值落在哪個百分比區間，決定 `$variant` 的值。
   - **同一個 IP 永遠落在同一個區間**——這就是用 `${remote_addr}` 當 key 的目的：同一位使用者的請求不會在新舊版本之間跳來跳去（黏性分流），避免新舊版本資料格式不一致造成的錯亂。
+  - Nginx 前面若還有雲端 LB 或 CDN（如架構四），`$remote_addr` 是它們的 IP，要先用 realip（見 11.6）還原真實 IP，否則分流是依 LB 節點而不是依使用者，比例完全不準。
   - 百分比總和不需要是 100%，`*` 接住所有剩餘流量；只能寫在 `http {}` 層級。
   - 換不同 key 有不同效果：用 `"${remote_addr}${http_user_agent}"` 可細分到「同 IP 不同裝置」；用 `$request_id` 則變成每個請求隨機分流（無黏性，較少用於金絲雀）。
 - `add_header X-Served-By $variant always;`
@@ -650,7 +668,8 @@ server {
 # 做法：修改 split_clients 中的百分比（例如 5% 改 25%），然後：
 sudo nginx -t && sudo nginx -s reload
 # 每個階段觀察錯誤率和回應時間（例如 5xx 比例、P95 延遲），
-# 任一指標惡化就把比例改回 0%（或刪除 canary 行）回滾
+# 任一指標惡化就刪除 canary 那一行（只留 * stable;）再 reload 回滾
+# split_clients 不接受 0%，寫 0% 會讓 nginx -t 失敗
 # 注意：調整百分比會改變雜湊區間邊界，部分使用者的分組可能改變，屬正常現象
 ```
 
@@ -664,6 +683,9 @@ sudo nginx -t && sudo nginx -s reload
 #!/bin/bash
 # /opt/scripts/backup-nginx.sh
 
+# 之後建立的檔案與目錄只有擁有者（root）能讀寫：備份檔權限 600、目錄 700（憑證備份內含私鑰）
+umask 077
+
 BACKUP_DIR="/backup/nginx"          # 備份檔存放目錄
 DATE=$(date +%Y%m%d_%H%M%S)         # 時間戳字串，例如 20260610_030000，當作備份檔名的一部分
 
@@ -672,11 +694,12 @@ mkdir -p $BACKUP_DIR
 
 # 備份設定檔
 # tar 參數：-c 建立壓縮檔、-z 用 gzip 壓縮、-f 指定輸出檔名
+# -C / etc/nginx：先切到根目錄，再以相對路徑 etc/nginx 打包（還原時解回 / 即可回到原位）
 # 結果範例：/backup/nginx/nginx_config_20260610_030000.tar.gz
-tar -czf $BACKUP_DIR/nginx_config_$DATE.tar.gz /etc/nginx/
+tar -czf $BACKUP_DIR/nginx_config_$DATE.tar.gz -C / etc/nginx
 
 # 備份 SSL 憑證（Let's Encrypt 的憑證、私鑰與續約設定都在 /etc/letsencrypt/）
-tar -czf $BACKUP_DIR/ssl_certs_$DATE.tar.gz /etc/letsencrypt/
+tar -czf $BACKUP_DIR/ssl_certs_$DATE.tar.gz -C / etc/letsencrypt
 
 # 保留最近 30 天的備份
 # find 參數：-name "*.tar.gz" 只找壓縮檔、-mtime +30 修改時間超過 30 天、-delete 直接刪除
@@ -705,7 +728,7 @@ sudo chmod +x /opt/scripts/backup-nginx.sh
 > 實務建議：
 >
 > - **備份不要只放本機**：主機整台壞掉時，放在本機的備份一起陪葬。建議再同步一份到異地（如 `rsync` 到備份主機、或上傳 S3 等物件儲存）。
-> - 憑證備份檔內含**私鑰**，務必限制權限（`chmod 600`）且不要放進 Git 倉庫。
+> - 憑證備份檔內含**私鑰**：腳本開頭的 `umask 077` 讓備份檔權限是 `600`（沒有它，預設會建立成任何人可讀的 `644`）；也不要放進 Git 倉庫，異地備份同樣要限制存取。
 > - 選凌晨 3 點是避開流量尖峰；備份本身吃 I/O，繁忙時段執行可能影響服務。
 > - 驗證方式：手動執行一次腳本，然後 `ls -lh /backup/nginx/` 確認檔案產生、`tar -tzf 備份檔.tar.gz | head` 確認內容可正常列出（-t = 只列出不解壓）。
 
@@ -727,34 +750,47 @@ if [ -z "$BACKUP_FILE" ]; then
     exit 1
 fi
 
-# 還原前先把「當前設定」備份一份——還原失敗時的逃生門
-# $(date +%s) = Unix 時間戳（如 1781234567），確保每次備份目錄名稱不重複
-cp -r /etc/nginx /etc/nginx.bak.$(date +%s)
+# 防呆：確認備份檔可讀、而且真的是 Nginx 設定備份（內含 etc/nginx/），
+# 避免清掉現有設定後才發現檔案損毀或拿錯檔（例如誤用 ssl_certs_*.tar.gz）
+if ! tar -tzf "$BACKUP_FILE" | grep -q '^etc/nginx/'; then
+    echo "Not a readable Nginx config backup: $BACKUP_FILE"
+    exit 1
+fi
 
-# 還原：解壓備份檔
+# 還原前先把「當前設定」完整複製一份——還原失敗時的逃生門
+# 目錄名稱存成變數，回滾時才能精確使用這一份
+# 時間戳精確到奈秒（%N），名稱不會重複；若目錄已存在，cp -a 會把設定複製進它底下的子目錄
+# cp -a：保留權限、擁有者與符號連結（sites-enabled 裡的連結）
+BAK_DIR="/etc/nginx.bak.$(date +%Y%m%d_%H%M%S_%N)"
+cp -a /etc/nginx "$BAK_DIR"
+
+# 還原：先清空再解壓，結果才會和備份「完全一致」
+# （直接解壓只會覆蓋同名檔案，備份之後才新增的設定檔會被留下來）
 # tar 參數：-x 解壓、-z 處理 gzip、-f 指定檔案
-# -C /：先切換到根目錄再解壓——因為備份時是以絕對路徑 /etc/nginx/ 打包，
-#       解壓到 / 才會把檔案放回原本的 /etc/nginx/ 位置
-tar -xzf $BACKUP_FILE -C /
+# -C /：備份裡存的是相對路徑 etc/nginx/，解壓到 / 才會放回原本的 /etc/nginx/
+rm -rf /etc/nginx
+tar -xzf "$BACKUP_FILE" -C /
 
 # 測試還原後的設定是否合法
-nginx -t
-if [ $? -eq 0 ]; then                # 結束碼 0 = 測試通過
+if nginx -t; then
     nginx -s reload                  # 套用還原的設定（不中斷服務）
-    echo "Restore completed successfully!"
+    echo "Restore completed successfully! Previous config kept at $BAK_DIR"
 else
-    # 還原的設定有問題 → 用剛剛存的逃生門復原
+    # 還原的設定有問題 → 整個換回剛剛存的那一份
+    # （不能寫 cp -r 備份目錄 /etc/nginx：目標已存在時，會變成複製到 /etc/nginx/ 底下的子目錄）
     echo "Configuration test failed! Rolling back..."
-    cp -r /etc/nginx.bak.* /etc/nginx
-    nginx -s reload
+    rm -rf /etc/nginx
+    cp -a "$BAK_DIR" /etc/nginx
+    # 線上一直在跑還原前的設定（剛才沒有 reload），換回目錄即可，不需要再重載
+    exit 1
 fi
 ```
 
 > 使用這支腳本的注意事項：
 >
 > - 整個流程的安全網是「**還原前先備份當前設定 → 還原後必過 `nginx -t` 才 reload**」，任何時刻線上服務都不會載入壞設定。
-> - 小陷阱：回滾用的 `cp -r /etc/nginx.bak.* /etc/nginx` 在**累積多個** `.bak.*` 目錄時會把多個目錄一起複製進去。實務上建議把時間戳存成變數（`BAK_DIR=/etc/nginx.bak.$(date +%s)`），回滾時精確使用該目錄，並定期清理舊的 `.bak.*`。
-> - 還原 SSL 憑證備份（`ssl_certs_*.tar.gz`）的做法相同，一樣用 `tar -xzf 檔名 -C /` 解回 `/etc/letsencrypt/`。
+> - 每次還原都會留下一份 `/etc/nginx.bak.<時間戳>`，確認沒問題後要定期清理。
+> - 還原 SSL 憑證備份（`ssl_certs_*.tar.gz`）的做法類似：先把現有的 `/etc/letsencrypt/` 另存一份，再用 `tar -xzf 檔名 -C /` 解回 `/etc/letsencrypt/`。
 > - 災難復原演練時，建議在測試機上實際跑一次「備份 → 砍掉設定 → 還原」，確認備份真的可用——**沒驗證過的備份等於沒有備份**。
 
 ---
@@ -846,10 +882,16 @@ server {
         auth_basic "Health Check";                    # 啟用 HTTP Basic 認證；字串是認證提示文字（realm）
         auth_basic_user_file /etc/nginx/.htpasswd;    # 帳密檔路徑（用 htpasswd 工具產生，見下方）
 
+        # 不能在這裡直接 return：return 比認證先執行，auth_basic 會被略過（原因見下方說明）
+        # try_files 在認證之後才執行；這個檔案不存在，所以會轉給 @health_detail 產生內容
+        try_files /__nonexistent__ @health_detail;
+    }
+
+    location @health_detail {
         default_type application/json;                # 回應宣告為 JSON
         return 200 '{
             "nginx": "running",
-            "uptime": "$connections_active active connections",
+            "active_connections": $connections_active,
             "version": "$nginx_version"
         }';
     }
@@ -862,17 +904,20 @@ server {
   - `/health/live`（存活）：只確認 Nginx 行程能回應，**不依賴後端**。給 Keepalived 的 `check_nginx.sh`、雲端 LB 用——後端全掛時 Nginx 本身仍健康，不應觸發 VIP 切換。
   - `/health/ready`（就緒）：連同後端一起檢查。給「要不要把流量導給這個節點」的判斷用，例如上游 LB 或部署流程的驗證。
   - `/health/detail`（詳細）：含內部狀態資訊，必須加認證保護。
+- 為什麼 `/health/detail` 要繞一層 `try_files` + `@health_detail`？
+  - `return` 在 rewrite 階段就送出回應，而 `auth_basic`、`allow`/`deny`、`limit_req` 都要到之後的階段才執行——同一個 location 裡寫 `return`，這些限制全部會被略過，沒帶帳密也拿得到內容。
+  - `try_files` 在認證之後才執行：先過 `auth_basic`，再因為 `/__nonexistent__` 不存在而轉進 `@health_detail`，由那裡的 `return` 產生 JSON。
 - `access_log off;`
   - 健康檢查通常每 2~10 秒一次、來自多個監控來源，不關日誌的話一天可多出數十萬行無意義紀錄，淹沒真正有用的存取紀錄。
 - `default_type text/plain;` + `return 200 'alive';`
   - `return` 直接產生回應，是成本最低的端點寫法（不讀磁碟、不連後端）。
-  - 注意：要設定回應的 Content-Type，應該用 `default_type`，而不是 `add_header Content-Type ...;`——`add_header` 只會「再附加一個」標頭，會造成回應出現兩個 Content-Type（一個來自預設值，一個來自 add_header），部分客戶端會解析錯亂。這是常見錯誤寫法，本範例已修正。
+  - 注意：要設定回應的 Content-Type，應該用 `default_type`，而不是 `add_header Content-Type ...;`——`add_header` 只會「再附加一個」標頭，會造成回應出現兩個 Content-Type（一個來自預設值，一個來自 add_header），部分客戶端會解析錯亂。
 - `proxy_connect_timeout 3s;` / `proxy_read_timeout 3s;`
   - 兩者預設都是 60 秒，對健康檢查來說太久——監控系統通常 5~10 秒就逾時，等 Nginx 60 秒後才回 504 毫無意義。健康檢查場景建議 1~3 秒。
 - `return 200 '{...}'` 中的變數：
   - `$connections_active`：目前活躍中的連線數（例如 `38`），由 `stub_status` 模組提供（官方套件預設已編入；可用 `nginx -V 2>&1 | grep stub_status` 確認）。
   - `$nginx_version`：Nginx 版本字串，例如 `1.24.0`。
-  - `return` 的字串中可以直接內插變數，每次請求會代入當下的值，渲染結果例如：`{"nginx": "running", "uptime": "38 active connections", "version": "1.24.0"}`。
+  - `return` 的字串中可以直接內插變數，每次請求會代入當下的值，渲染結果例如：`{"nginx": "running", "active_connections": 38, "version": "1.24.0"}`。
   - 安全提醒：版本號與連線數屬於內部資訊，洩漏給攻擊者有利於針對性攻擊，所以這個端點才需要 `auth_basic` 保護。
 
 ```bash
@@ -898,7 +943,8 @@ HEALTH_URL="http://localhost/health/live"
 
 while true; do
     # 檢查 Nginx 健康狀態
-    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" $HEALTH_URL)
+    # --max-time 5：最多等 5 秒；不加的話 Nginx 卡住時 curl 也會一直卡住，這支腳本就形同停擺
+    HTTP_CODE=$(curl -s -o /dev/null --max-time 5 -w "%{http_code}" $HEALTH_URL)
 
     if [ "$HTTP_CODE" != "200" ]; then
         RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -950,12 +996,11 @@ sudo apt update && sudo apt upgrade nginx -y
 sudo nginx -t && sudo systemctl restart nginx
 
 # 2. 確認 Backup 正常運行
-curl -I http://backup-server/health
+curl -I http://backup-server/health/live
 
-# 3. 手動觸發 failover（讓 Backup 接管流量）
-# 在 Master 上臨時降低優先權
+# 3. 回到 Master 主機，手動觸發 failover（讓 Backup 接管流量）
+# 停掉 Master 的 Keepalived：它會送出優先權 0 的通告，Backup 隨即接管 VIP
 sudo systemctl stop keepalived
-# 此時 Backup 會接管 VIP
 
 # 4. 更新原 Master
 sudo apt update && sudo apt upgrade nginx -y
@@ -963,9 +1008,10 @@ sudo nginx -t && sudo systemctl restart nginx
 
 # 5. 恢復 Keepalived
 sudo systemctl start keepalived
-# 根據優先權設定，可能會自動恢復為 Master
+# 預設搶占模式下，Master 會把 VIP 搶回來（再切換一次）；設了 nopreempt 則維持由 Backup 服務
 
-# 全程服務不中斷
+# 每次 VIP 切換，新請求在數秒內恢復，但打在舊節點上的既有連線（WebSocket、大檔下載）會中斷；
+# 本流程會切換兩次，請安排在離峰時段
 ```
 
 ### 情境三：流量突然暴增需要緊急擴容

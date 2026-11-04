@@ -18,7 +18,8 @@ const MAX_CONTENT_LENGTH = 2 * 1024 * 1024; // 單篇內容（HTML 字串）上�
 // 已存檔的圖片會以 note-image://images/<檔名> 的形式寫進記事內容
 const IMAGE_URL_PATTERN = /note-image:\/\/images\/([a-f0-9]+\.[a-z]+)/g;
 
-// 注意：這些路徑函式都不是常數，因為 app.getPath() 必須在 app ready 之後才呼叫得到
+// 注意：這些路徑函式都不是常數。main.js 會用 app.setPath() 改掉 userData，
+// 路徑等到真正讀寫時才計算，才不會拿到改之前的舊位置（也就不受 require 順序影響）
 function dataDir() {
   return path.join(app.getPath("userData"), "notepad");
 }

@@ -11,11 +11,12 @@ export default defineConfig({
   plugins: [
     vue(),
     VitePWA({
-      mode: 'development',
       // registerType: 'autoUpdate',
       registerType: 'prompt',
-      includeAssets: ['apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png'],
+      includeAssets: ['apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-512-maskable.png'],
       manifest: {
+        id: '/',
+        lang: 'zh-Hant',
         name: 'QR掃碼PWA',
         short_name: 'QR掃碼',
         description: 'Vue3 SPA QR code scanner with offline support',
@@ -37,7 +38,8 @@ export default defineConfig({
             type: 'image/png',
           },
           {
-            src: '/icons/icon-512.png',
+            // 內容縮在中央安全區內、背景不透明，遮罩裁切時不會切到 QR 定位點
+            src: '/icons/icon-512-maskable.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',

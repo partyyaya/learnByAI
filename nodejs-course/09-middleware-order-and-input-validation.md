@@ -237,6 +237,8 @@ export type DraftInput = z.output<typeof draftSchema>;
 
 Zod 的一般 object schema 預設會移除不認識的欄位；`strictObject` 則拒絕它們。本課要求傳入 authorId、status、role 等非允許欄位時回 400，所以選擇 strictObject。[Zod object 規格](https://zod.dev/api#objects)
 
+這個白名單檢查只看到解析後的物件。JSON 文字裡重複的同名 key 已由 parser 留下最後一個值，strictObject 不會偵測原文是否重複；若需求要求拒絕重複 JSON key，必須另外設計解析策略。這與 simple query parser 將重複參數解析成陣列後被 schema 拒絕，是不同的行為。
+
 ```json
 {"title":"文章","content":"內容","authorId":"u_other"}
 ```

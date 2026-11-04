@@ -115,13 +115,13 @@ npm run order
 
 先看兩邊相同的部分：呼叫 async 函式後，第一個 `await` 之前仍立即執行；遇到 `await` 才把後續留到之後。即使等待的是已完成的 Promise，也不代表後續會同步接著跑。
 
-再看差異：CommonJS 這個頂層情境會先處理 `nextTick`；ESM 的頂層評估本身已處於非同步模組執行流程，這裡排入的 microtask 會先被處理。不能把左欄推廣成「任何地方 nextTick 都永遠比 Promise 早」。[Node.js 的 nextTick 與 microtask 情境說明](https://nodejs.org/api/process.html#when-to-use-queuemicrotask-vs-processnexttick)
+再看差異：CommonJS 這個頂層情境會先處理 `nextTick`；ESM 的頂層評估本身已處於非同步模組執行流程，這裡排入的 microtask 會先被處理。不能把左欄推廣成「任何地方 nextTick 都永遠比 Promise 早」。[Node.js 的 nextTick 與 microtask 情境說明](https://nodejs.org/docs/latest-v24.x/api/process.html#when-to-use-queuemicrotask-vs-processnexttick)
 
 本章保留兩個原生檔案，就是為了讓模組格式與執行情境可見。若貼進測試框架、瀏覽器 Console 或另一個 Promise callback，請重新確認前提。
 
 ## 03.5 實驗二：timer 是門檻，不是準時保證
 
-`setTimeout(callback, 0)` 不表示現在立刻執行，也不保證恰好零毫秒後執行。callback 仍要等目前程式、相關佇列與事件迴圈排程；延遲只是安排執行的條件之一。[Node.js timers 文件](https://nodejs.org/api/timers.html)
+`setTimeout(callback, 0)` 不表示現在立刻執行，也不保證恰好零毫秒後執行。callback 仍要等目前程式、相關佇列與事件迴圈排程；延遲只是安排執行的條件之一。[Node.js timers 文件](https://nodejs.org/docs/latest-v24.x/api/timers.html)
 
 因此，不要在頂層把 `setTimeout(..., 0)` 與 `setImmediate(...)` 的順序當作跨情境保證。
 
@@ -235,7 +235,7 @@ npm run pool
 
 請比較排隊現象，不要把一次觀察到的完整完成順序當成所有機器的保證。測試只確認各工作完成與指定 pool 設定，不以毫秒門檻判斷通過。
 
-本實驗的固定字串與加密參數只用於製造工作量，不是密碼儲存建議。也不要看到排隊就直接把 pool 開很大；增加執行緒仍會競爭 CPU 與記憶體，需要量測。[Worker Threads 官方文件](https://nodejs.org/api/worker_threads.html)
+本實驗的固定字串與加密參數只用於製造工作量，不是密碼儲存建議。也不要看到排隊就直接把 pool 開很大；增加執行緒仍會競爭 CPU 與記憶體，需要量測。[Worker Threads 官方文件](https://nodejs.org/docs/latest-v24.x/api/worker_threads.html)
 
 ## 03.9 併發不等於平行，也不等於越多越好
 

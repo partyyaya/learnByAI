@@ -59,6 +59,8 @@ API 主機端口 **3013**，開發資料庫主機端口 **15413**。容器內連
 
 check 不清理開發 public；每套資料庫 fixture 建立隨機 schema，結束時只刪自己的 schema。測試用的匯出檔建立於臨時目錄，不依賴手動 seed。Jest 的 VM modules 旗標已寫入 scripts；一般 API 啟動不需要。
 
+test／test:baseline 會重建 .test-dist，test:runtime 則依賴其產物；它們與完整 check 不可在同一範例目錄並行。資料庫 schema 隔離不會防止編譯輸出互相覆寫。
+
 ## 匯出與停止
 
 先 build 並啟動 API，再產生檔案：
@@ -76,4 +78,4 @@ docker compose stop api postgres test-db
 
 開發資料保留在 postgres_data volume，不以 down -v 作一般停止。修改 src 後重新 build，修改測試後重新跑 test；test:runtime 依賴 `.test-dist` 與 `dist`，通常直接跑 check。
 
-npm ci 回報 5 項低嚴重度 audit 提示，沿用 Jest → deepmerge 開發依賴鏈；未使用會降級 Jest 的強制修復。套件與 lockfile 版本維持不變。
+2026-11-02 複查 npm ci 的 audit 回報 19 個受影響套件節點（3 low、16 moderate，無 high／critical），涉及 Jest／glob／minimatch／deepmerge 開發依賴鏈。套件及 lockfile 未改，未執行 audit fix --force；這不是 19 個彼此獨立的漏洞，也不是完整安全稽核。

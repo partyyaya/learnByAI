@@ -1,20 +1,24 @@
-import { useEffect } from 'react'
+import { lazy, useEffect } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import AdminLayout from '@/layouts/AdminLayout'
 import ProtectedRoute from '@/router/ProtectedRoute'
 import { useUiStore } from '@/stores/ui.store'
 
 import LoginPage from '@/pages/LoginPage'
-import DashboardPage from '@/pages/DashboardPage'
-import CourseListPage from '@/pages/courses/CourseListPage'
-import CourseFeedPage from '@/pages/courses/CourseFeedPage'
-import CourseDetailPage from '@/pages/courses/CourseDetailPage'
-import UserListPage from '@/pages/users/UserListPage'
-import EffectsLabPage from '@/pages/EffectsLabPage'
-import PerformanceLabPage from '@/pages/PerformanceLabPage'
-import SettingsPage from '@/pages/SettingsPage'
 import ForbiddenPage from '@/pages/ForbiddenPage'
 import NotFoundPage from '@/pages/NotFoundPage'
+
+// 後台內的頁面用 React.lazy 拆包（第 13 章）：第一次進入該路由才下載它的程式。
+// 登入頁是未登入時的第一個畫面，403 / 404 很小，維持一般 import。
+// 下載期間的載入畫面由 AdminLayout 裡的 Suspense 負責。
+const DashboardPage = lazy(() => import('@/pages/DashboardPage'))
+const CourseListPage = lazy(() => import('@/pages/courses/CourseListPage'))
+const CourseFeedPage = lazy(() => import('@/pages/courses/CourseFeedPage'))
+const CourseDetailPage = lazy(() => import('@/pages/courses/CourseDetailPage'))
+const UserListPage = lazy(() => import('@/pages/users/UserListPage'))
+const EffectsLabPage = lazy(() => import('@/pages/EffectsLabPage'))
+const PerformanceLabPage = lazy(() => import('@/pages/PerformanceLabPage'))
+const SettingsPage = lazy(() => import('@/pages/SettingsPage'))
 
 // 應用路由樹（第 08 章）：
 // - /login 為公開頁。

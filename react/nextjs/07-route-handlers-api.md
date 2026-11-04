@@ -48,9 +48,13 @@ export async function PUT(request) { /* 更新 */ }
 export async function DELETE(request) { /* 刪除 */ }
 ```
 
+> **Next.js 15 的 GET 預設不快取**：每次請求都會真的執行你的函式。Next.js 14 以前，沒讀 `request`、cookies 的 GET 會在 build 時算好一次、之後一直回同一份結果，所以舊教學常看到 `export const dynamic = "force-dynamic"`。在 15 想讓某個 GET 快取起來，反過來在檔案裡加 `export const dynamic = "force-static"`。
+
 ---
 
 ## 3. 讀取請求內容
+
+以下片段為了精簡，省略了 `import { NextResponse } from "next/server";`，實際寫進 `route.js` 時記得加上。
 
 ### 讀 body（POST/PUT 的 JSON）
 
@@ -61,6 +65,8 @@ export async function POST(request) {
   return NextResponse.json({ ok: true, received: body }, { status: 201 });
 }
 ```
+
+body 不是合法 JSON 時，`request.json()` 會直接丟錯，最後範例示範了怎麼用 `try/catch` 接住並回 400。對方送的是表單資料（`<form>` 預設的格式或 `multipart/form-data`）就改用 `await request.formData()`，純文字用 `await request.text()`；同一個請求的 body 只能讀一次。
 
 ### 讀查詢字串 `?q=...`
 
@@ -117,6 +123,8 @@ return res;
 NextResponse.redirect(new URL("/login", request.url));
 ```
 
+`NextResponse` 是 Web 標準 `Response` 的延伸，所以官方文件或別的範例寫 `return Response.json({ ... })` 也一樣能用；要設 cookie、轉址這類 Next.js 額外的功能時，用 `NextResponse` 比較方便。
+
 ---
 
 ## 5. Route Handler vs Server Action，怎麼選？
@@ -129,6 +137,8 @@ NextResponse.redirect(new URL("/login", request.url));
 | 想在 Server Component 內直接抓資料 | 直接 `await fetch`（第 5 章），不必先建 API |
 
 > 新手常犯的錯：為了在自己頁面顯示資料，先建一個 API route，再用 `useEffect` fetch 它。App Router 裡**根本不需要**——Server Component 直接抓就好。Route Handler 是給「真的需要對外 API」的情境。
+>
+> 改成在 Server Component 裡 `fetch("/api/todos")` 也不行：伺服器上沒有「目前網址」可以補全相對路徑，會直接報錯；就算寫成完整網址，也是多繞一趟 HTTP，而且 `npm run build` 時伺服器還沒啟動，打不到自己的 API。直接 import 資料層的函式（像最後範例的 `listTodos()`）才是正解。
 
 ---
 
@@ -173,6 +183,8 @@ export function removeTodo(id) {
   return todos.length < before; // 有沒有刪到東西
 }
 ```
+
+`store.js` 放在 `app/api/todos/` 裡不會變成網址：`app` 裡只有 `page.js`、`route.js` 這類特殊檔名才會對外公開，其他檔案可以放心和它們放在一起。
 
 ### `app/api/todos/route.js`（列表 + 新增）
 

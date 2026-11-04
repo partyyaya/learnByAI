@@ -1,0 +1,41 @@
+import type { Database } from './database.js';
+import type { ArticleScope } from './article-model.js';
+import type { ArticleRepository } from './article-repository.js';
+
+export function createPrismaArticleRepository(db: Database): ArticleRepository {
+  const whereFor = (scope: ArticleScope) => scope.kind === 'public'
+    ? { status: 'published' as const } : scope.kind === 'author' ? { authorId: scope.authorId } : {};
+  return {
+    async list({ page, pageSize, q, sort, status }, scope) {
+      // 可見範圍與外部篩選以 AND 相交；禁止讓 status 覆寫 published／authorId。
+      const where = { AND: [whereFor(scope), ...(status ? [{ status }] : []),
+        ...(q !== undefined ? [{ title: { contains: q.replace(/[\\%_]/g, '\\$&'), mode: 'insensitive' as const } }] : [])] };
+      const direction = sort === 'oldest' ? 'asc' as const : 'desc' as const;
+      const [data, total] = await db.$transaction([
+        db.article.findMany({ where, orderBy: [{ createdAt: direction }, { id: direction }], skip: (page - 1) * pageSize, take: pageSize }),
+        db.article.count({ where }),
+      ], { isolationLevel: 'RepeatableRead' });
+      return { data, meta: { page, pageSize, total } };
+    },
+    findVisible: (id, scope) => db.article.findFirst({ where: { id, ...whereFor(scope) } }),
+    create: input => db.article.create({ data: {
+      id: input.id, authorId: input.authorId, title: input.title, content: input.content,
+    } }),
+    withTransaction: work => db.$transaction(async tx => work({
+      async appendStatusAudit(input) { await tx.articleStatusAudit.create({ data: input }); },
+      findById: id => tx.article.findUnique({ where: { id } }),
+      async updateIfCurrent(current, changes) {
+        const result = await tx.article.updateMany({
+          where: { id: current.id, authorId: current.authorId, version: current.version, status: current.status },
+          data: {
+            ...(changes.title !== undefined ? { title: changes.title } : {}),
+            ...(changes.content !== undefined ? { content: changes.content } : {}),
+            status: changes.status, version: { increment: 1 },
+          },
+        });
+        if (result.count !== 1) return null;
+        return tx.article.findUniqueOrThrow({ where: { id: current.id } });
+      },
+    }), { isolationLevel: 'ReadCommitted', maxWait: 2000, timeout: 5000 }),
+  };
+}

@@ -32,7 +32,7 @@ log_format combined '$remote_addr - $remote_user [$time_local] '   # 客戶端 I
 
 > `combined` 格式怎麼讀？（逐欄位）
 >
-> - `$remote_addr`：客戶端 IP（若前面有代理/CDN，看到的會是代理 IP，真實 IP 要看 `$http_x_forwarded_for`）。
+> - `$remote_addr`：客戶端 IP（若前面有代理/CDN，看到的會是代理 IP，真實 IP 要看 `$http_x_forwarded_for`；但這個標頭客戶端可以自己偽造，要可靠地還原真實 IP 請用第八章的 realip 模組）。
 > - `$remote_user`：HTTP Basic 認證的使用者名稱，沒有認證時顯示 `-`。
 > - `[$time_local]`：伺服器本地時間，方括號是格式的一部分，例如 `[10/Jun/2026:14:23:05 +0800]`。
 > - `"$request"`：完整請求行，包含方法、URI 與協定版本，例如 `GET /index.html HTTP/1.1`。
@@ -67,8 +67,10 @@ log_format main '$remote_addr - $remote_user [$time_local] '
 >   - 若請求重試過多台後端，會以逗號分隔列出多個值，例如 `urt=3.001, 0.087`。
 >   - 純靜態檔請求沒有後端，值為 `-`。
 > - `$upstream_addr`：實際處理這次請求的後端位址，例如 `uaddr=10.0.0.11:8080`（重試時同樣會列出多個）。
-> - `$upstream_status`：後端回應的狀態碼，例如 `us=502`；可與 `$status` 比對（例如後端回 502，但 Nginx 因為 `proxy_intercept_errors` 改回自訂頁面）。
+> - `$upstream_status`：後端回應的狀態碼，例如 `us=200`；可與 `$status` 比對（例如後端回 502，但 Nginx 因為 `proxy_intercept_errors` 改回自訂頁面）。
+>   - 注意：後端根本沒回應時，Nginx 也會自己填值——連不上後端或後端標頭過大時是 `us=502`、等後端逾時是 `us=504`、客戶端先斷線是 `us=-`。所以 `us=502` 不代表後端真的回了 502，要對照 error.log。
 > - 判讀技巧：`rt` 大但 `urt` 小 → 慢在 Nginx 與客戶端之間（網路慢、客戶端收得慢）；`rt` 與 `urt` 都大 → 慢在後端。
+>   - 這個判讀的前提是 `proxy_buffering on`（預設）。設成 `off`（例如 SSE、串流）時，Nginx 讀後端的速度會被客戶端拖住，客戶端收得慢也會讓 `urt` 跟著變大；這時改看 `$upstream_header_time`（後端開始回應花的時間）比較準。
 
 ### 含效能指標的格式
 
@@ -94,7 +96,7 @@ log_format performance '$remote_addr [$time_local] '
 >   - `STALE`：後端故障時回應過期快取（搭配 `proxy_cache_use_stale`）
 >   - 未啟用快取時為 `-`。可用來計算快取命中率，評估快取設定是否有效。
 > - `$connection`：TCP 連線的序號（每條連線一個遞增編號），例如 `connection=8121`。
-> - `$connection_requests`：這條連線上目前是**第幾個請求**，例如 `connection_requests=7` 代表 Keep-Alive 連線被重複使用了 7 次。
+> - `$connection_requests`：這條連線上目前是**第幾個請求**，例如 `connection_requests=7` 代表這是該連線上的第 7 個請求（Keep-Alive 連線被重複使用了 6 次）。
 >   - 若大量請求都是 `1`，代表 Keep-Alive 沒有發揮作用（可檢查 `keepalive_timeout` 是否太短）。
 
 ### JSON 格式（方便後續分析工具解析）
@@ -113,9 +115,9 @@ log_format json_log escape=json '{'
     '"request_time": $request_time, '                          # 總處理時間（秒）：必為數字，不加引號
     '"http_referer": "$http_referer", '                        # 來源頁
     '"http_user_agent": "$http_user_agent", '                  # UA 字串（最容易含特殊字元，靠 escape=json 保護）
-    '"upstream_addr": "$upstream_addr", '                      # 後端位址：可能是 "-" 或多值，所以加引號當字串
-    '"upstream_status": "$upstream_status", '                  # 後端狀態碼：可能是 "-"，所以加引號
-    '"upstream_response_time": "$upstream_response_time", '    # 後端回應時間：可能是 "-" 或多值，所以加引號
+    '"upstream_addr": "$upstream_addr", '                      # 後端位址：可能是空值或多值，所以加引號當字串
+    '"upstream_status": "$upstream_status", '                  # 後端狀態碼：可能是空值、"-" 或多值，所以加引號
+    '"upstream_response_time": "$upstream_response_time", '    # 後端回應時間：可能是空值或多值，所以加引號
     '"http_x_forwarded_for": "$http_x_forwarded_for"'          # 代理鏈上的原始客戶端 IP
 '}';
 ```
@@ -123,7 +125,8 @@ log_format json_log escape=json '{'
 > 這段格式的幾個關鍵設計：
 >
 > - **為什麼有的欄位不加引號？** JSON 中數字不加引號。`$status`、`$body_bytes_sent`、`$request_time` 永遠是數字，直接輸出成 JSON number，分析工具（ELK / Loki / Datadog）就能直接做數值聚合（平均、P95），不用再轉型。
-> - **為什麼 upstream 相關欄位反而加引號？** 因為它們可能是 `-`（沒有後端）或逗號分隔的多值（請求重試多台後端），不是合法的 JSON number，加引號當字串才不會產生壞掉的 JSON。
+> - **為什麼 upstream 相關欄位反而加引號？** 因為它們可能是空值（沒有後端）、`-`（例如客戶端先斷線時的 `upstream_status`）或逗號分隔的多值（請求重試多台後端），不是合法的 JSON number，加引號當字串才不會產生壞掉的 JSON。
+> - 注意：`escape=json` 下沒有值的變數輸出成**空字串** `""`，不是一般格式裡的 `-`。在分析工具裡找「沒經過後端的請求」要用 `upstream_addr == ""`，用 `"-"` 會一筆都找不到。
 > - `$time_iso8601`：機器友善的時間格式（`2026-06-10T14:23:05+08:00`），比 `$time_local` 更適合給分析工具解析與排序。
 > - 多行單引號字串會被 Nginx 串接成一條格式，分行只是為了可讀性。
 >
@@ -154,6 +157,7 @@ http {
         # flush=5m  → 緩衝區中的日誌最多滯留 5 分鐘就寫入磁碟（單位可用 s/m/h）
         # 註：使用 gzip 會自動啟用緩衝（預設 64k，可用 buffer=32k 自行指定），
         #     日誌不再即時落盤，tail -f 會看到延遲，除錯時請留意
+        # 註：檔名結尾是 .gz，9.4 的 logrotate 樣式 *.log 匹配不到，要另外把這個路徑加進輪替設定
         access_log /var/log/nginx/myapp.access.log.gz json_log gzip flush=5m;
 
         # 寫法三：條件性日誌（只記錄特定請求）
@@ -235,7 +239,7 @@ connect() failed (111: Connection refused) while connecting to upstream
 # 後端超時
 upstream timed out (110: Connection timed out) while reading response header
 
-# 客戶端斷開連線
+# 客戶端斷開連線（info 等級）
 client prematurely closed connection
 
 # 請求體過大
@@ -253,7 +257,8 @@ open() "/var/www/html/favicon.ico" failed (2: No such file or directory)
 > - `upstream timed out (110: Connection timed out)`：後端有在跑，但**回應太慢**，超過 `proxy_read_timeout`（預設 60 秒）等逾時設定。
 >   - 查：後端是否過載、SQL 慢查詢；確認逾時值是否合理。客戶端通常收到 504 Gateway Timeout。
 > - `client prematurely closed connection`：客戶端等不及自己斷線（使用者關頁面、App 端逾時）。
->   - 偶發屬正常；大量出現代表回應太慢，使用者等不下去。
+>   - 這是 **info 等級**的訊息，在預設的 `error`（或上面建議的 `warn`）等級下看不到；要觀察時暫時把 `error_log` 調到 `info`。
+>   - 偶發屬正常；大量出現代表回應太慢，使用者等不下去（access log 上對應的是 499，見第十章）。
 > - `client intended to send too large body`：上傳內容超過 `client_max_body_size`（**預設只有 1m**）。
 >   - 查：依需求調大，例如 `client_max_body_size 50m;`。客戶端會收到 413。
 > - `open() ... failed (2: No such file or directory)`：請求的檔案在磁碟上不存在。
@@ -265,21 +270,34 @@ open() "/var/www/html/favicon.ico" failed (2: No such file or directory)
 
 ### 使用 logrotate（推薦）
 
+Ubuntu 的 nginx 套件已經附了 `/etc/logrotate.d/nginx`（預設 `rotate 14`，postrotate 用 `invoke-rc.d nginx rotate` 通知 Nginx），要調整就直接改這個檔；另建一個檔案去匹配同樣的路徑，logrotate 會報 `duplicate log entry` 錯誤。下面是一份逐行說明的版本：
+
 ```bash
 # /etc/logrotate.d/nginx
-/var/log/nginx/*.log {            # 對 /var/log/nginx/ 下所有 .log 檔套用以下規則
-    daily               # 每天輪替一次（可改 weekly / monthly；高流量站台甚至用 hourly）
-    missingok           # 檔案不存在也不報錯（例如某站台還沒產生日誌）
-    rotate 30           # 保留 30 份舊檔，更舊的自動刪除（daily + rotate 30 = 留 30 天）
-    compress            # 用 gzip 壓縮輪替出來的舊日誌（access.log.2.gz ...）
-    delaycompress       # 最新一份舊檔（access.log.1）先不壓縮，下一輪才壓
-    notifempty          # 日誌是空的就跳過這次輪替（避免產生一堆空檔案）
-    create 0640 www-data adm   # 輪替後建立新的空日誌：權限 0640、擁有者 www-data、群組 adm
-    sharedscripts       # 多個檔案匹配時，postrotate 腳本只執行一次（而不是每個檔案跑一次）
-    postrotate          # 「輪替完成後」要執行的指令，到 endscript 為止
-        # 輪替後通知 Nginx 重新開啟日誌檔案
-        if [ -f /var/run/nginx.pid ]; then            # 先確認 Nginx 有在跑（PID 檔存在）
-            kill -USR1 `cat /var/run/nginx.pid`       # 對 master 行程送 USR1 信號 = 重新開啟日誌檔
+# 注意：logrotate 不支援「行尾註解」，註解一定要獨立成一行，否則整段設定會被略過
+# 對 /var/log/nginx/ 下所有 .log 檔套用以下規則
+/var/log/nginx/*.log {
+    # 每天輪替一次（可改 weekly / monthly）
+    daily
+    # 檔案不存在也不報錯（例如某站台還沒產生日誌）
+    missingok
+    # 保留 30 份舊檔，更舊的自動刪除（daily + rotate 30 = 留 30 天）
+    rotate 30
+    # 用 gzip 壓縮輪替出來的舊日誌（access.log.2.gz ...）
+    compress
+    # 最新一份舊檔（access.log.1）先不壓縮，下一輪才壓
+    delaycompress
+    # 日誌是空的就跳過這次輪替（避免產生一堆空檔案）
+    notifempty
+    # 輪替後建立新的空日誌：權限 0640、擁有者 www-data、群組 adm
+    create 0640 www-data adm
+    # 多個檔案匹配時，postrotate 腳本只執行一次（而不是每個檔案跑一次）
+    sharedscripts
+    # 「輪替完成後」要執行的指令，到 endscript 為止
+    postrotate
+        # 先確認 Nginx 有在跑（PID 檔存在），再對 master 行程送 USR1 信號 = 重新開啟日誌檔
+        if [ -f /var/run/nginx.pid ]; then
+            kill -USR1 `cat /var/run/nginx.pid`
         fi
     endscript
 }
@@ -292,9 +310,12 @@ open() "/var/www/html/favicon.ico" failed (2: No such file or directory)
 > - **為什麼要 `delaycompress`？**
 >   承上，從「改名」到「Nginx 收到 USR1」之間有極短時間仍在寫舊檔；若立刻壓縮可能遺失這幾筆。延後一輪再壓最安全。
 > - **`create 0640 www-data adm` 的權限怎麼讀？**
->   `0640` = 擁有者可讀寫、群組唯讀、其他人不可讀；`www-data` 要與 Nginx worker 的執行使用者一致（CentOS/RHEL 通常是 `nginx`），否則新日誌可能寫不進去；`adm` 是 Debian/Ubuntu 慣例的日誌管理群組。
+>   `0640` = 擁有者可讀寫、群組唯讀、其他人不可讀；擁有者通常寫 Nginx worker 的執行使用者（Ubuntu 是 `www-data`，CentOS/RHEL 通常是 `nginx`）；`adm` 是 Debian/Ubuntu 慣例的日誌管理群組，加入這個群組的帳號不用 sudo 就能讀日誌。
+>   實際上 Nginx 收到 USR1 重開日誌時，master 會自動把檔案擁有者改成 worker 使用者，所以這裡寫錯不會讓日誌寫不進去，主要影響的是「誰能讀」。
 > - **`rotate 30` 要設多少？**
 >   依法規/稽核需求與磁碟空間權衡：一般網站常見 14~30 天，金融或合規場景可能要 90~180 天（建議搭配集中式日誌系統）。
+> - **可以改成 `hourly` 嗎？**
+>   可以寫，但只有 logrotate 本身每小時執行才會生效；Ubuntu 預設由 `logrotate.timer` 每天執行一次，不改排程的話 `hourly` 等同 `daily`。
 
 ```bash
 # 手動執行輪替測試
@@ -345,6 +366,7 @@ server {
 >
 > - `stub_status` 由 `http_stub_status_module` 提供，官方套件預設已內建；可用 `nginx -V 2>&1 | grep stub_status` 確認，沒有就需要重新編譯或改用內建的發行版套件。
 > - `allow` / `deny` 由上而下逐條比對，**命中第一條就停止**，所以 `deny all;` 一定放最後。
+> - 這個 server 只有在請求的 Host 是 `localhost` 時才會被選中。若機器上另有 `default_server`（Ubuntu 預設的 `sites-enabled/default` 就是），用 IP 或其他主機名稱存取會落到預設站台而得到 404——9.7 的 exporter 就會遇到。可在 `server_name` 補上 exporter 用的主機名稱，或把狀態頁放進另開 port（例如 `listen 8080;`）的專用 server。
 
 ```bash
 # 查看狀態
@@ -371,7 +393,7 @@ Waiting             等待新請求的 Keep-Alive 連線數
 
 > 用上面的輸出範例實際解讀一次：
 >
-> - `Active connections: 291`：此刻有 291 條客戶端連線，且恆等於 `Reading + Writing + Waiting`（6 + 179 + 106 = 291）。
+> - `Active connections: 291`：此刻有 291 條客戶端連線；在 HTTP/1.1 下大致等於 `Reading + Writing + Waiting`（6 + 179 + 106 = 291）。HTTP/2 一條連線可同時跑多個請求，而 `Writing` 是按請求計算，所以三者相加可能大於 Active。
 > - `accepts = 16630948`、`handled = 16630948`：兩者相等代表**沒有連線被丟棄**。
 >   - 若 `handled < accepts`，代表有連線被接受了卻處理不了——通常是 `worker_connections` 或檔案描述符到頂，需要擴容（參考第二章）。
 > - `requests = 31070465`：`requests ÷ handled ≈ 31070465 ÷ 16630948 ≈ 1.87`，平均每條連線處理約 1.87 個請求，代表 Keep-Alive 有被重複使用；若比值趨近 1，可檢查 `keepalive_timeout` 是否太短。
@@ -385,7 +407,7 @@ Waiting             等待新請求的 Keep-Alive 連線數
 
 ## 9.6 日誌分析
 
-以下指令都假設日誌是 9.2 的 `combined` 格式。awk 預設以空白切欄位，對應關係：
+以下指令都假設日誌是 9.2 的 `combined` 格式（`main` 格式的前段與它相同，同樣適用）。awk 預設以空白切欄位，對應關係：
 `$1`=客戶端 IP、`$4`=時間（含 `[`）、`$7`=URI、`$9`=狀態碼、`$10`=回應 bytes、`$NF`=最後一個欄位。
 
 ### 常用日誌分析指令
@@ -402,12 +424,14 @@ awk '{print $1}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head -2
 # 2. 找出請求最多的 URL（同上，只是改取第 7 欄 = 請求 URI）
 awk '{print $7}' /var/log/nginx/access.log | sort | uniq -c | sort -rn | head -20
 
-# 3. 找出回應時間最長的請求
-awk '$NF > 5 {print $0}' /var/log/nginx/access.log   # 超過 5 秒的請求
-# $NF 是「最後一欄」；此指令的前提是日誌格式「結尾是純數字的 $request_time」
-# （例如 log_format 最後一個欄位寫 $request_time）
-# 注意：combined 格式最後一欄是 UA 字串、9.2 的 main 格式結尾是 us=...，
-#       這些情況 $NF 不是數字，比較永遠不成立——請先確認自己的格式再用
+# 3. 找出回應時間超過 5 秒的請求（這一條需要 9.2 的 main 格式，combined 沒有記錄時間）
+awk 'match($0, / rt=[0-9.]+/) && substr($0, RSTART+4, RLENGTH-4) + 0 > 5' /var/log/nginx/access.log
+# match($0, / rt=[0-9.]+/) → 在整行中找「空白 + rt= + 數字」，找到時 RSTART = 起點、RLENGTH = 長度
+#                            （前面帶空白，才不會誤抓 urt= 或網址裡的 sort=）
+# substr(..., RSTART+4, RLENGTH-4) → 跳過「 rt=」這 4 個字元，取出數字部分
+# + 0 > 5                  → 加 0 強制當數值比較，大於 5 秒才印出整行
+# 注意：不要寫成 awk '$NF > 5'。最後一欄若不是純數字（例如 combined 的 UA、main 的 us=200），
+#       awk 會改用「字串比較」，結果是大部分的行都被印出來，而不是一行都沒有
 
 # 4. 統計 HTTP 狀態碼分佈（第 9 欄 = 狀態碼）
 awk '{print $9}' /var/log/nginx/access.log | sort | uniq -c | sort -rn
@@ -448,12 +472,15 @@ goaccess /var/log/nginx/access.log --log-format=COMBINED
 # 生成 HTML 報告
 # -o /var/www/report.html → 輸出成單一 HTML 報告檔
 # --real-time-html        → 持續監看日誌並透過 WebSocket（預設 port 7890）即時更新頁面；
+#                            瀏覽器要連得到 7890 port 才會即時更新；
 #                            拿掉此參數則只產生「一次性」的靜態報告
 goaccess /var/log/nginx/access.log -o /var/www/report.html --log-format=COMBINED --real-time-html
 
 # 搭配 Nginx 提供報告頁面（以下為 Nginx 設定，放進 server 區塊）
-# location = /report {                              # 用 = 精確匹配 /report 這個路徑
+# location = /report.html {                         # 用 = 精確匹配 /report.html 這個路徑
 #     alias /var/www/report.html;                   # alias 直接對應到單一檔案
+#                                                   # （Content-Type 依「網址」的副檔名決定；網址若寫成 /report，
+#                                                   #  會變成 application/octet-stream，瀏覽器改成下載檔案）
 #     auth_basic "Stats";                           # 啟用 Basic 認證（報告含流量細節，不可公開）
 #     auth_basic_user_file /etc/nginx/.htpasswd;    # 帳密檔（htpasswd 工具產生）
 # }
@@ -469,17 +496,19 @@ goaccess /var/log/nginx/access.log -o /var/www/report.html --log-format=COMBINED
 # 安裝 nginx-prometheus-exporter（把 stub_status 轉成 Prometheus 指標格式）
 docker run -d --name nginx-exporter \
     -p 9113:9113 \
-    nginx/nginx-prometheus-exporter:latest \
-    -nginx.scrape-uri=http://host.docker.internal/nginx_status
+    nginx/nginx-prometheus-exporter:1.5.0 \
+    --nginx.scrape-uri=http://host.docker.internal/nginx_status
 # 逐行說明：
 # docker run -d --name nginx-exporter → 背景（-d）執行容器，命名為 nginx-exporter 方便管理
 # -p 9113:9113                        → 把容器的 9113 port 映射到主機（exporter 的慣用 port）
-# nginx/nginx-prometheus-exporter:latest → 官方 exporter 映像檔
-# -nginx.scrape-uri=...               → 告訴 exporter 去哪裡抓 9.5 設定的 stub_status 頁面
+# nginx/nginx-prometheus-exporter:1.5.0 → 官方 exporter 映像檔（指定版本，避免 latest 無預警升級）
+# --nginx.scrape-uri=...              → 告訴 exporter 去哪裡抓 9.5 設定的 stub_status 頁面
+#                                       （旗標要用雙橫線；舊的單橫線寫法仍能跑，但會印出 deprecated 警告）
 #
 # 注意：host.docker.internal 在 Docker Desktop（macOS/Windows）可直接使用；
 #       Linux 上需加 --add-host=host.docker.internal:host-gateway，
-#       或直接改填主機 IP。同時 stub_status 的 allow 清單要放行容器來源 IP。
+#       或直接改填主機 IP。同時 stub_status 的 allow 清單要放行容器來源 IP，
+#       而且請求的 Host 不是 localhost，要先處理 9.5 提到的 server_name 問題，否則會拿到 404。
 ```
 
 ```yaml
@@ -487,7 +516,8 @@ docker run -d --name nginx-exporter \
 scrape_configs:
   - job_name: 'nginx'                  # 任務名稱，會成為指標上的 job 標籤
     static_configs:
-      - targets: ['localhost:9113']    # 去 9113 port 抓 exporter 吐出的指標（預設每 15 秒一次）
+      - targets: ['localhost:9113']    # 去 9113 port 抓 exporter 吐出的指標
+                                       # 抓取間隔由 global.scrape_interval 決定（沒設時預設 1m；官方範例設定檔設為 15s）
 ```
 
 > 驗證整條鏈路是否通：
@@ -515,7 +545,8 @@ scrape_configs:
    - 突然升高 → 後端效能問題或資源瓶頸
 
 4. 活躍連線數（Active connections）
-   - 接近 worker_connections 上限 → 需要擴容
+   - 接近 worker_processes × worker_connections → 需要擴容
+   - 反向代理時每個請求還要另佔一條連後端的連線，實際約只能服務一半（見第二章）
 
 5. 上游伺服器狀態（Upstream status）
    - 某台持續失敗 → 需要排查該伺服器
@@ -546,7 +577,8 @@ THRESHOLD_CONN=1000     # 活躍連線數閾值：超過 1000 條就告警（依
 # 檢查最近 5 分鐘的 5xx 錯誤數
 # date -d '5 minutes ago' 是 GNU date 語法（Linux 可用；macOS 要改用 date -v-5M）
 # '+%d/%b/%Y:%H:%M' 輸出與日誌時間欄位相同的格式，例如 10/Jun/2026:14:18
-FIVE_MINUTES_AGO=$(date -d '5 minutes ago' '+%d/%b/%Y:%H:%M')
+# LC_ALL=C 讓月份固定輸出英文縮寫（Jun）；系統語系是 zh_TW 時 %b 會變成「6月」，永遠比對不到日誌
+FIVE_MINUTES_AGO=$(LC_ALL=C date -d '5 minutes ago' '+%d/%b/%Y:%H:%M')
 # awk -v time="..."   → 把 shell 變數傳進 awk，awk 內以 time 取用
 # $4 >= "["time       → "[" 與 time 字串相接後，與第 4 欄（如 [10/Jun/2026:14:20:31）做字串比較，
 #                        篩出「時間在 5 分鐘前之後」的行
@@ -598,14 +630,16 @@ du -sh /var/log/nginx/*        # -s 只顯示總計、-h 以人類可讀單位�
 # 錯誤做法：rm /var/log/nginx/access.log
 #   → Nginx 的檔案描述符仍指向被刪除的 inode，會繼續寫入「看不見的檔案」，
 #     空間不會釋放（df 看起來還是滿的），直到 Nginx 重啟或 reopen 為止
-# 正確做法（兩種擇一）：
-> /var/log/nginx/access.log    # 用 shell 重導向把檔案內容清空為 0 bytes，inode 不變，Nginx 可繼續正常寫入
-# 或
-truncate -s 0 /var/log/nginx/access.log   # truncate 指令把檔案截斷成 0 bytes（-s 0 = 目標大小為 0），效果相同
+# 正確做法：把檔案截斷成 0 bytes，inode 不變，Nginx 可繼續正常寫入
+sudo truncate -s 0 /var/log/nginx/access.log   # truncate 把檔案截斷成指定大小（-s 0 = 目標大小為 0）
+# 注意：不要寫成 sudo > /var/log/nginx/access.log——重導向是由目前（非 root）的 shell 執行，
+#       會得到 Permission denied；在 root shell（sudo -i）裡才可以用 > 檔名 清空
 
 # 3. 設定 logrotate 防止再次發生
 # 確認 /etc/logrotate.d/nginx 設定正確（參考 9.4 的逐行說明）
-sudo logrotate -f /etc/logrotate.d/nginx   # 強制執行一次輪替，立即釋放空間並驗證設定有效
+sudo logrotate -f /etc/logrotate.d/nginx   # 強制執行一次輪替，驗證設定有效
+# 注意：搭配 delaycompress 時，剛輪替出來的 access.log.1 不會壓縮，這一步不會馬上釋放空間；
+#       緊急騰出空間要靠步驟 2
 ```
 
 ```nginx
@@ -614,6 +648,9 @@ sudo logrotate -f /etc/logrotate.d/nginx   # 強制執行一次輪替，立即�
 location ~* \.(js|css|png|jpg|gif|ico)$ {   # ~* = 不分大小寫的正規匹配，命中常見靜態資源副檔名
     access_log off;                          # 此類請求不寫存取日誌
 }
+# 注意：正規匹配的 location 優先於一般前綴 location（例如 location / { proxy_pass ...; }），
+#       這類請求會改由 Nginx 直接從 root 找檔案。若靜態檔原本是後端提供的，
+#       這個區塊裡也要寫上同樣的 proxy_pass，否則會變成 404
 ```
 
 ### 情境二：分析異常流量來源
@@ -621,25 +658,29 @@ location ~* \.(js|css|png|jpg|gif|ico)$ {   # ~* = 不分大小寫的正規匹�
 **問題**：網站流量突然暴增，需要分析來源
 
 ```bash
-# 1. 按 IP 統計請求數（最近 1 小時）
-HOUR_AGO=$(date -d '1 hour ago' '+%d/%b/%Y:%H')      # 產生 1 小時前的「日期:小時」字串，如 10/Jun/2026:13
+# 1. 按 IP 統計請求數（從上一個整點起算）
+HOUR_AGO=$(LC_ALL=C date -d '1 hour ago' '+%d/%b/%Y:%H')   # 產生 1 小時前的「日期:小時」字串，如 10/Jun/2026:13
 awk -v time="$HOUR_AGO" '$4 >= "["time' /var/log/nginx/access.log | \
     awk '{print $1}' | sort | uniq -c | sort -rn | head -20
-# 第一個 awk：篩出時間欄位（$4）在 1 小時前之後的行（字串比較，限制同 9.8 的注意事項）
+# 第一個 awk：篩出時間欄位（$4）在 1 小時前那個整點之後的行（字串比較，限制同 9.8 的注意事項）
+#             只比到「小時」，所以 14:59 執行時會涵蓋 13:00 起將近 2 小時的資料
 # 第二個 awk 之後：取 IP → 排序 → 計數 → 依次數排序 → 取前 20 名（同 9.6 的指令 1）
 
 # 2. 分析異常 IP 的請求模式
-grep "1.2.3.4" /var/log/nginx/access.log | tail -50
-# grep 撈出該 IP 的所有日誌行，tail -50 只看最近 50 筆
+awk '$1 == "1.2.3.4"' /var/log/nginx/access.log | tail -50
+# awk '$1 == "..."'：第 1 欄（客戶端 IP）完全相等才算；tail -50 只看最近 50 筆
+# 不要用 grep "1.2.3.4"：那是子字串比對（. 還會匹配任意字元），會連 11.2.3.4、1.2.3.45 一起撈出來
 # 觀察重點：是否狂打同一個 URI、間隔是否規律（腳本特徵）、狀態碼是否大量 404（掃描器特徵）
 
 # 3. 檢查是否為爬蟲
-grep "1.2.3.4" /var/log/nginx/access.log | awk -F'"' '{print $6}' | sort -u
+awk '$1 == "1.2.3.4"' /var/log/nginx/access.log | awk -F'"' '{print $6}' | sort -u
 # 以雙引號切欄取 $6（User-Agent），sort -u 去除重複只留不同的 UA
 # 正常瀏覽器 UA 固定；一個 IP 出現大量不同 UA，或 UA 是 python-requests/curl，多半是程式行為
 
 # 4. 必要時封鎖惡意 IP
-echo "deny 1.2.3.4;" >> /etc/nginx/conf.d/blocked-ips.conf   # 把 deny 指令「附加」（>>）到封鎖清單設定檔
+echo "deny 1.2.3.4;" | sudo tee -a /etc/nginx/snippets/blocked-ips.conf   # tee -a = 以 root 權限「附加」到封鎖清單設定檔
+# 不能寫成 sudo echo ... >> 檔案：重導向由目前（非 root）的 shell 執行，會 Permission denied
+# 這個清單檔要已在 http 或 server 區塊用 include /etc/nginx/snippets/blocked-ips.conf; 引入才會生效（設定見第八章）
 sudo nginx -t && sudo nginx -s reload                        # 先驗證語法，通過才重載（&& 確保前者成功才執行後者）
 # 之後該 IP 的請求會收到 403；封鎖清單集中放一個檔案，方便管理與解除
 ```
@@ -675,6 +716,8 @@ server {
 >
 > 注意 `add_header` 與 `proxy_set_header` 方向相反：前者是「給客戶端的回應」、後者是「給後端的請求」，兩行缺一不可。
 > 若希望 4xx/5xx 錯誤回應也帶上 ID（排錯時最需要），請寫成 `add_header X-Request-ID $request_id always;`。
+>
+> `proxy_set_header` 的繼承是「全有或全無」：location 裡只要寫了任何一條，server／http 層設定的 `proxy_set_header`（例如 `Host`、`X-Forwarded-For`）在這個 location 就全部失效。若上層已有這些設定，請把 `X-Request-ID` 改加在同一層，或在 location 裡整組重寫（第十一章有完整說明）。
 
 ```bash
 # 用 request_id 追蹤完整的請求鏈路

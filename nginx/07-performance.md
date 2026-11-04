@@ -53,7 +53,7 @@ events {
 - `worker_rlimit_nofile 65535;`
   - 在 Linux 中，每條連線、每個開啟的檔案、每個日誌檔都佔用一個檔案描述符（fd）。
   - 系統預設每個行程只能開 1024 個 fd；一個反向代理請求常同時佔用「客戶端連線 + 上游連線 + 日誌檔」2~4 個 fd，1024 很快就不夠。
-  - 設為 `65535` 是常見起手式；**還必須同步調整系統層級限制**（見 7.8 的 `limits.conf`），否則仍會被系統擋住。
+  - 設為 `65535` 是常見起手式。master 以 root 身分 fork 出 worker 時，會在降權成 `www-data` 之前替 worker 呼叫 `setrlimit`，所以**這一行本身就能把 worker 的上限調上去**，不需要改 `/etc/security/limits.conf`（驗證方式見 7.8）。
 - `worker_connections 4096;`
   - 單一 worker 可同時維持的連線上限，注意這個數字**包含**與後端伺服器的連線，不只是客戶端。
   - 建議值範圍：小型站台 `1024~2048`、API / 反向代理 `2048~4096`、大量長連線（WebSocket）`4096~8192`。
@@ -84,6 +84,8 @@ events {
 
 ## 7.3 檔案傳輸優化
 
+> 第二章的 `nginx.conf` 在 `http` 區塊已經寫過 `sendfile`、`tcp_nopush`、`keepalive_timeout`、`types_hash_max_size` 等指令。同一層重複寫同名指令，`nginx -t` 會報 `"sendfile" directive is duplicate` 之類的錯誤，請直接修改既有那一行的值，不要再加一行。
+
 ```nginx
 http {
     # 使用 sendfile 系統呼叫，避免用戶空間與核心空間的資料複製
@@ -92,7 +94,7 @@ http {
     # 搭配 sendfile 使用，在一個封包中發送 HTTP 標頭和檔案開頭
     tcp_nopush on;
 
-    # 減少小封包延遲（適合即時互動應用）
+    # 減少小封包延遲（預設即為 on，寫出來是明確宣告）
     tcp_nodelay on;
 
     # Keep-Alive 設定
@@ -119,7 +121,7 @@ http {
   - **只在 `sendfile on` 時才生效**，因此兩者通常成對出現。
 - `tcp_nodelay on;`
   - 關閉 Nagle 演算法（Nagle 會把小封包攢在一起延遲送出，等到收到 ACK 或攢滿才發）。
-  - 設 `on` 表示有資料就立刻送出，降低小封包的延遲，適合 API、即時互動應用。
+  - 預設就是 `on`。Nginx 不會對每條連線都開 `TCP_NODELAY`，只在連線進入 Keep-Alive 狀態、SSL 連線、不緩衝的代理（unbuffered proxying）與 WebSocket 代理時才開，讓這些情境下的小封包不必等待。
   - 看似與 `tcp_nopush` 矛盾，但 Nginx 會聰明處理：傳輸過程用 nopush 攢滿封包，**最後一個不滿的封包**改用 nodelay 立即送出，兩者可以同時開啟。
 - `keepalive_timeout 65;`
   - 單位是秒；客戶端連線在閒置這麼久之後才關閉，期間可重複使用同一條連線發送多個請求，省去重複 TCP 握手。
@@ -176,7 +178,9 @@ http {
 
 ## 7.4 Gzip 壓縮
 
-壓縮可以大幅減少傳輸大小，加快頁面載入速度：
+壓縮可以大幅減少傳輸大小，加快頁面載入速度。第二章的 `http` 區塊已經有 `gzip on`、`gzip_types` 等設定；已存在的指令請直接改值，不要重複寫，否則 `nginx -t` 會報 `"gzip" directive is duplicate`。
+
+> Brotli 壓縮率比 gzip 好，但它需要第三方模組 ngx_brotli，Nginx 官方套件沒有內建，本章只示範 gzip。
 
 ```nginx
 http {
@@ -198,10 +202,9 @@ http {
         application/json
         application/javascript
         application/xml
-        application/xml+rss
+        application/rss+xml
         application/x-javascript
         application/vnd.ms-fontobject
-        font/opentype
         image/svg+xml;
 
     # 對所有代理請求都進行壓縮
@@ -231,6 +234,8 @@ http {
 - `gzip_types ...;`
   - 列出「除了 `text/html` 之外」要壓縮的 MIME 類型——`text/html` **永遠會被壓縮**，不必也不能寫進來（寫了會有警告）。
   - 只列文字類型（HTML/CSS/JS/JSON/XML/SVG）；**不要**加入 jpg、png、mp4、woff2 等本身已壓縮的格式，再壓只是浪費 CPU。
+  - 這裡比對的是回應的 `Content-Type`，名稱必須和 `mime.types` 一致：例如 RSS 是 `application/rss+xml`（常見的 `application/xml+rss` 是錯的寫法，永遠比對不到）。
+  - HTTPS 站台要留意 BREACH 攻擊：若同一個回應既含秘密值（如 CSRF token），又會反射使用者輸入，壓縮後的長度變化可能洩漏秘密。這類頁面可以不壓縮，或讓應用程式每次回應都把 token 遮罩成不同的值。
 - `gzip_proxied any;`
   - 控制「帶有 `Via` 標頭、代表經過代理的請求」要不要壓縮，預設 `off`（經代理的請求一律不壓）。
   - `any` 表示全部都壓；其他選項如 `no-cache`、`expired` 可只對不會被代理快取的回應壓縮。Nginx 在 CDN 或多層代理後面時建議設 `any`。
@@ -294,22 +299,28 @@ server {
     server_name myapp.com;
     root /var/www/myapp;
 
+    # 站台共用的安全標頭（片段檔見第三章與 8.3）
+    include snippets/security-headers.conf;
+
     # HTML — 不快取或短時間快取
     location ~* \.html$ {
-        expires -1;                # 送出過去時間的 Expires 標頭 = 立即過期
+        expires -1;                # 負值：送出過去時間的 Expires，並加上 Cache-Control: no-cache
         add_header Cache-Control "no-store, no-cache, must-revalidate";
+        include snippets/security-headers.conf;   # 這個 location 有自己的 add_header，安全標頭要重新引入（原因見下方「繼承陷阱」）
     }
 
     # CSS/JS — 使用含 hash 的檔名，長時間快取
     location ~* \.(css|js)$ {
         expires 1y;                # 相當於 Cache-Control: max-age=31536000（一年）
         add_header Cache-Control "public, immutable";
+        include snippets/security-headers.conf;
     }
 
     # 圖片 — 中等時間快取
     location ~* \.(jpg|jpeg|png|gif|ico|svg|webp)$ {
         expires 30d;               # 快取 30 天
         add_header Cache-Control "public";
+        include snippets/security-headers.conf;
     }
 
     # 字型 — 長時間快取
@@ -317,12 +328,14 @@ server {
         expires 1y;
         add_header Cache-Control "public, immutable";
         add_header Access-Control-Allow-Origin "*";   # 字型受 CORS 限制，跨網域載入需要這行
+        include snippets/security-headers.conf;
     }
 
     # 媒體檔案
     location ~* \.(mp4|webm|ogg|mp3|wav)$ {
         expires 30d;
         add_header Cache-Control "public";
+        include snippets/security-headers.conf;
     }
 }
 ```
@@ -332,7 +345,7 @@ server {
 - `location ~* \.html$ { ... }`
   - `~*` 是不區分大小寫的正規表示式匹配，`\.html$` 表示路徑以 `.html` 結尾。
 - `expires -1;`
-  - `expires` 會自動產生 `Expires` 與 `Cache-Control: max-age` 兩個標頭；負值代表「已過期」，瀏覽器每次都得回來確認。
+  - `expires` 會自動產生 `Expires` 與 `Cache-Control` 兩個標頭：正值產生 `Cache-Control: max-age=<秒數>`；負值則送出過去時間的 `Expires` 並產生 `Cache-Control: no-cache`，瀏覽器每次都得回來確認。
   - HTML 是「入口檔案」，裡面引用了帶 hash 的 CSS/JS 檔名——HTML 一旦被快取住，使用者就拿不到新版資源，所以 HTML 必須不快取。
 - `add_header Cache-Control "no-store, no-cache, must-revalidate";`
   - `no-store`：完全不准存任何副本（最嚴格）。
@@ -344,9 +357,9 @@ server {
   - `public`：允許瀏覽器**與中間代理/CDN** 都快取（相對的 `private` 只允許瀏覽器存）。
   - `immutable`：告訴瀏覽器「這個檔案永遠不會變，效期內連確認都不用發」。能這樣設的前提是**檔名含內容 hash**（如 `app.3f8a2b.js`），內容一變檔名就變，舊快取自然失效。
 - `add_header Access-Control-Allow-Origin "*";`
-  - 字型檔受瀏覽器 CORS 政策限制：若字型放在 CDN 或其他網域，沒有這個標頭瀏覽器會拒絕載入（主控台出現 CORS 錯誤）。圖片與 JS 沒有這個限制。
+  - 字型檔受瀏覽器 CORS 政策限制：若字型放在 CDN 或其他網域，沒有這個標頭瀏覽器會拒絕載入（主控台出現 CORS 錯誤）。一般 `<img>` 與傳統 `<script>` 沒有這個限制，但 `<script type="module">`（Vite 等建置工具的預設輸出）跨網域載入同樣要 CORS 標頭。
 
-> **常見錯誤（add_header 的繼承陷阱）**：`add_header` 只要在 `location` 內出現**任何一條**，就會**完全覆蓋**而非疊加上層（`server`/`http`）定義的所有 `add_header`。如果你在 `server` 層加了安全性標頭（如 `X-Frame-Options`），又在 `location` 裡加了 `Cache-Control`，安全性標頭會在這個 location 消失——需要把它們在 location 內重新宣告一次。
+> **常見錯誤（add_header 的繼承陷阱）**：`add_header` 只要在 `location` 內出現**任何一條**，就會**完全覆蓋**而非疊加上層（`server`/`http`）定義的所有 `add_header`。如果你在 `server` 層引入了安全標頭，又在 `location` 裡加了 `Cache-Control`，安全標頭會在這個 location 消失——所以上面每個有自己 `add_header` 的 location 都重新 `include snippets/security-headers.conf;`。Nginx 1.29.3 起也可以在該 location 寫 `add_header_inherit merge;` 讓上層標頭疊加進來；Ubuntu 24.04 套件的 1.24 沒有這個指令。
 >
 > **驗證快取標頭**：
 >
@@ -396,6 +409,7 @@ http {
 
             # 顯示快取狀態（方便除錯）
             add_header X-Cache-Status $upstream_cache_status;
+            include snippets/security-headers.conf;   # 有自己的 add_header，安全標頭要重新引入（見 7.5）
 
             # 在後端不可用時使用過期快取
             proxy_cache_use_stale error timeout http_500 http_502 http_503 http_504;
@@ -430,7 +444,7 @@ http {
   - 快取檔案實際存放的磁碟目錄，須確保 Nginx worker 的執行使用者（如 `www-data`）有寫入權限。
 - `levels=1:2`
   - 快取檔名是快取 key 的 MD5 值；`1:2` 表示用 MD5 **最後 1 個字元**當第一層目錄、**再往前 2 個字元**當第二層。
-  - 例如 key 的 MD5 為 `...d7b6ec9`，檔案會存在 `/var/cache/nginx/9/ec/b7f54b2df7773722d382f4809d65029c9...`。
+  - 例如 key 的 MD5 為 `b7f54b2df7773722d382f4809d65029c`，檔案會存在 `/var/cache/nginx/c/29/b7f54b2df7773722d382f4809d65029c`。
   - 為什麼要分層？因為單一目錄放幾十萬個檔案時，檔案系統的查找會明顯變慢；不設 `levels` 所有檔案會擠在同一層。
 - `keys_zone=my_cache:10m`
   - 格式為「名稱:大小」。`my_cache` 是這塊快取的名字，後面 `proxy_cache my_cache;` 就是在引用它。
@@ -454,13 +468,15 @@ http {
   - 依狀態碼設定快取多久：成功回應（200）存 60 分鐘；重導向（301/302）存 10 分鐘；404 只存 1 分鐘（避免長時間擋住「之後補上的頁面」，但又能吸收重複的無效請求）。
   - 若後端回應帶有 `Cache-Control: max-age` 或 `Expires` 標頭，**以後端標頭優先**，這裡的設定是後備值。
   - 沒列到的狀態碼（如 500）不會被快取。
+  - **後端回應帶 `Set-Cookie`，或 `Cache-Control: private` / `no-cache` / `no-store`（以及 `Vary: *`）時，一律不快取。** 很多框架只要開了 session 就會在每個回應送這些標頭，這時 `X-Cache-Status` 會永遠是 `MISS`。可以用 `proxy_ignore_headers` 忽略它們，但前提是你確定這些回應與使用者無關，否則會把某人的 session 快取給所有人。7.7 的 `fastcgi_cache` 規則相同。
 - `proxy_cache_key "$scheme$request_method$host$request_uri";`
   - 組出快取的唯一鍵。以請求 `GET http://myapp.com/products?page=2` 為例，key 會是 `httpGETmyapp.com/products?page=2`。
   - `$scheme`＝協定（http/https）、`$request_method`＝方法（GET/POST）、`$host`＝Host 標頭、`$request_uri`＝含查詢參數的完整 URI。
   - key 設計很重要：少放了 `$host` 會讓多個站台共用快取（資料互串）；如果回應依登入者不同，還得把識別資訊加進 key，否則會把 A 使用者的頁面快取給 B 使用者看。
+  - 因為 key 含 `$request_method`，`HEAD` 與 `GET` 會各存一份（Nginx 預設會把 `HEAD` 轉成 `GET` 去後端取資料再快取）。所以用 `curl -I`（HEAD）驗證看到 `HIT`，不代表瀏覽器的 `GET` 也會命中；下方驗證改用 GET。
 - `add_header X-Cache-Status $upstream_cache_status;`
   - `$upstream_cache_status` 是 Nginx 內建變數，記錄這次請求的快取結果（HIT/MISS/...，完整列表見下方）。
-  - 加進回應標頭後，用 `curl -I` 就能直接觀察快取行為，是除錯快取問題的第一工具。
+  - 加進回應標頭後，用 curl 印出回應標頭（見下方驗證）就能直接觀察快取行為，是除錯快取問題的第一工具。
 - `proxy_cache_use_stale error timeout http_500 http_502 http_503 http_504;`
   - 「降級保命」機制：當後端發生連線錯誤（`error`）、逾時（`timeout`）或回傳 500/502/503/504 時，改用**已過期的舊快取**回應，而不是把錯誤丟給使用者。
   - 效果是：後端掛掉時，有快取的頁面仍能正常瀏覽（狀態顯示 `STALE`）。
@@ -497,23 +513,27 @@ X-Cache-Status 值說明：
 > **驗證快取是否生效**：
 >
 > ```bash
+> # 用 GET 請求、只印回應標頭（-s 靜默、-o /dev/null 丟棄內容、-D - 把標頭印到畫面）
 > # 第一次請求：應該看到 X-Cache-Status: MISS（去後端拿）
-> curl -I http://myapp.com/products
+> curl -s -o /dev/null -D - http://myapp.com/products | grep -i x-cache
 >
 > # 立刻再請求一次：應該變成 HIT（從快取回）
 > # 注意：若設了 proxy_cache_min_uses 2，第二次仍是 MISS，第三次才會 HIT
-> curl -I http://myapp.com/products
+> curl -s -o /dev/null -D - http://myapp.com/products | grep -i x-cache
 >
 > # 帶上繞過條件：應該看到 BYPASS
-> curl -I "http://myapp.com/products?nocache=1"
+> curl -s -o /dev/null -D - "http://myapp.com/products?nocache=1" | grep -i x-cache
 > ```
+>
+> 一直是 `MISS`？先檢查後端回應是否帶了 `Set-Cookie` 或 `Cache-Control: private/no-cache/no-store`（見上方 `proxy_cache_valid` 的說明）。
 
 ### 手動清除快取
 
 ```bash
 # 方法一：刪除快取目錄
 sudo rm -rf /var/cache/nginx/*   # 直接清空整個快取目錄（粗暴但有效）
-sudo nginx -s reload             # 重載讓 Nginx 重建 keys_zone 的記憶體索引
+# 不需要 reload：Nginx 讀快取時發現檔案不存在，會當成 MISS 重新向後端取。
+# reload 會沿用原本的 keys_zone，記憶體裡的索引不會重建；要連索引一起歸零，請用 sudo systemctl restart nginx
 
 # 方法二：使用 proxy_cache_purge 模組（需要額外安裝）
 # 開源版 Nginx 沒有內建，需自行編譯第三方模組 ngx_cache_purge
@@ -568,6 +588,7 @@ http {
             fastcgi_pass unix:/var/run/php/php-fpm.sock;  # 透過 Unix Socket 交給 PHP-FPM
             fastcgi_index index.php;                       # 目錄請求時的預設 PHP 檔
             include fastcgi_params;                        # 引入標準 FastCGI 參數對應表
+            fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;  # fastcgi_params 不含這行；少了它 PHP-FPM 找不到腳本，只會回「File not found.」
 
             # 啟用 FastCGI 快取
             fastcgi_cache php_cache;             # 引用上面定義的 keys_zone
@@ -577,6 +598,7 @@ http {
             fastcgi_cache_key "$scheme$request_method$host$request_uri";  # 快取鍵組成
 
             add_header X-Cache-Status $upstream_cache_status;  # 回應標頭顯示 HIT/MISS/BYPASS
+            include snippets/security-headers.conf;            # 有自己的 add_header，安全標頭要重新引入（見 7.5）
         }
     }
 }
@@ -585,6 +607,8 @@ http {
 ### 這段指令在做什麼？（逐條）
 
 - `fastcgi_cache_*` 系列與 7.6 的 `proxy_cache_*` 是同一套機制的兄弟版本：`proxy_*` 用於 `proxy_pass`（HTTP 後端），`fastcgi_*` 用於 `fastcgi_pass`（PHP-FPM），參數意義完全相同。
+- `fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;`
+  - 告訴 PHP-FPM 要執行哪個實體檔案（例如 `/var/www/mysite/index.php`）。`fastcgi_params` 檔沒有定義它（同目錄的 `fastcgi.conf` 才有），所以要自己補上，或改成 `include fastcgi.conf;`。
 - `set $skip_cache 0;`
   - 自訂變數 `$skip_cache`，預設 `0`；後面三個 `if` 像開關一樣，命中任一條件就翻成 `1`。
   - `fastcgi_cache_bypass` / `fastcgi_no_cache` 的規則是「值非空且非 `0` 就成立」，所以 `0` = 正常快取、`1` = 跳過快取。
@@ -609,15 +633,12 @@ Nginx 調得再好，系統核心參數沒跟上一樣會卡住。以下參數�
 ```bash
 # /etc/sysctl.conf
 
-# 增加最大檔案描述符數
-fs.file-max = 65535                      # 整個系統可開啟的 fd 總數上限（所有行程加總）
-
 # TCP 連線優化
 net.core.somaxconn = 65535               # 單一 socket 的 accept 佇列上限（預設僅 128/4096，高併發瞬間湧入會溢出）
 net.core.netdev_max_backlog = 65535      # 網卡收包速度快過核心處理速度時，允許排隊的封包數
 net.ipv4.tcp_max_syn_backlog = 65535     # 半連線佇列上限（收到 SYN、還沒完成三向交握的連線數）
 
-# TCP Keep-Alive
+# TCP Keep-Alive（只作用在開了 SO_KEEPALIVE 的 socket，Nginx 預設不開，見下方說明）
 net.ipv4.tcp_keepalive_time = 600        # 連線閒置 600 秒後開始發送 keepalive 探測（預設 7200 秒太長）
 net.ipv4.tcp_keepalive_intvl = 30        # 每次探測間隔 30 秒
 net.ipv4.tcp_keepalive_probes = 5        # 連續 5 次探測無回應就判定連線死亡並回收
@@ -632,7 +653,7 @@ net.ipv4.tcp_wmem = 4096 65536 16777216  # TCP 傳送緩衝：最小 / 預設 / 
 net.ipv4.tcp_tw_reuse = 1                # 對「對外發起的連線」重用 TIME_WAIT socket（反向代理對後端大量短連線時特別有用）
 
 # 本地端口範圍
-net.ipv4.ip_local_port_range = 1024 65535   # 對外連線可用的來源 port 範圍，擴大後約有 6.4 萬個可用 port
+net.ipv4.ip_local_port_range = 10000 65535  # 對外連線可用的來源 port 範圍，約 5.5 萬個；起點避開 3306、5432、8080 等本機服務 port
 
 # 套用設定
 # sudo sysctl -p                          # 重新讀取 /etc/sysctl.conf 並立即生效（不需重開機）
@@ -643,9 +664,10 @@ net.ipv4.ip_local_port_range = 1024 65535   # 對外連線可用的來源 port �
 > - **三個 backlog（somaxconn / netdev_max_backlog / tcp_max_syn_backlog）**
 >   - 想像成三道排隊閘門：封包先過網卡佇列、再過 SYN 半連線佇列、完成交握後進 accept 佇列等 Nginx 來收。
 >   - 任何一道佇列滿了，新連線就會被默默丟棄——客戶端看到的是「偶發連線逾時」，非常難排查。預設值是為一般桌面環境設計的，伺服器必須加大。
->   - 注意：Nginx `listen` 指令的 `backlog` 參數會受 `somaxconn` 上限約束，兩邊要一起調。
+>   - 注意：Nginx 在 Linux 上呼叫 `listen()` 時預設只要求 511 的 backlog，所以光調 `somaxconn`，Nginx 的 accept 佇列不會變大；要同時在 `listen` 指令寫 `backlog`（例如 `listen 80 backlog=65535;`），而它又受 `somaxconn` 上限約束，兩邊要一起調。
 > - **TCP Keep-Alive 三兄弟**
 >   - 用來回收「對端已消失但本端不知道」的殭屍連線。依上面設定，一條死連線最長 600 + 30×5 = 750 秒會被回收；用預設值則要超過 2 小時。
+>   - 這組參數只作用在開了 `SO_KEEPALIVE` 的 socket。Nginx 預設不開：客戶端連線要在 `listen` 加 `so_keepalive=on`，對後端的連線要設 `proxy_socket_keepalive on;` 才會套用；沒開時，Nginx 靠自己的 `client_header_timeout`、`send_timeout`、`keepalive_timeout` 等逾時回收閒置連線。
 >   - 這是**核心層**的 TCP keepalive，與 Nginx 的 HTTP `keepalive_timeout` 是兩回事，不要混淆。
 > - **TCP 緩衝區（rmem / wmem）**
 >   - 三個值是「最小 預設 最大」（單位 bytes）；核心會依連線狀況在範圍內自動調節，所以只要把「最大」放寬即可，不必改預設值。
@@ -656,26 +678,29 @@ net.ipv4.ip_local_port_range = 1024 65535   # 對外連線可用的來源 port �
 >   - 千萬不要去找已被新核心移除的 `tcp_tw_recycle`——它在 NAT 環境會造成連線異常，新核心（4.12+）已將其刪除。
 > - **ip_local_port_range**
 >   - 每條對外連線都要佔用一個本機來源 port。範圍太小時，連往同一個後端最多就只能開那麼多條連線，會出現 `Cannot assign requested address` 錯誤。
+>   - 起點不要設到 1024：對外連線可能剛好佔走 MySQL（3306）、後端服務（8080）等要 listen 的 port，那個服務重啟時就會 bind 失敗。
+
+**檔案描述符（fd）上限**：worker 的上限由 7.2 的 `worker_rlimit_nofile` 決定。master 以 root 身分 fork 出 worker，並在降權前替 worker 呼叫 `setrlimit`，所以只要設了這行，worker 就拿得到 65535。`/etc/security/limits.conf` 只作用在登入工作階段，對 systemd 啟動的 Nginx 沒有效果，不必修改；`fs.file-max` 是整台機器所有行程加總的上限，Ubuntu 的 systemd 開機時已把它設成最大值，也不要再寫一個較小的數字（那反而是調低）。若要連 master 本身的上限一起提高，用 systemd 的 override：
 
 ```bash
-# 增加使用者的檔案描述符限制
-# /etc/security/limits.conf
+# 開啟 nginx.service 的 override 編輯器（會建立 /etc/systemd/system/nginx.service.d/override.conf）
+sudo systemctl edit nginx
+# 在編輯器中輸入以下兩行後存檔：
+#   [Service]
+#   LimitNOFILE=65535
 
-www-data soft nofile 65535   # soft：目前生效的限制（行程可自行調高到 hard 為止）
-www-data hard nofile 65535   # hard：上限天花板，只有 root 能再提高
+# 重新啟動讓新上限生效（reload 不會改變已在執行的 master）
+sudo systemctl restart nginx
 ```
 
-> **常見錯誤**：只設了 Nginx 的 `worker_rlimit_nofile`，卻沒改 `limits.conf` 和 `fs.file-max`，三者任一沒到位，高併發時照樣噴 `Too many open files`。設定後可用以下指令驗證：
+> **驗證 worker 實際拿到的 fd 上限**：
 >
 > ```bash
-> # 查看 Nginx worker 行程實際生效的 fd 限制（將 <PID> 換成 worker 的行程編號）
-> cat /proc/<PID>/limits | grep "open files"
->
-> # 查看系統層級上限
-> cat /proc/sys/fs/file-max
+> # pgrep -f 找出第一個 worker 的 PID，再看它的 limits；Soft/Hard 兩欄應為 65535
+> grep 'open files' /proc/$(pgrep -f 'nginx: worker' | head -1)/limits
 > ```
 >
-> 另外，`limits.conf` 的修改要**重新登入或重啟服務**才生效；若 Nginx 由 systemd 管理，較可靠的做法是在 service 設定中加 `LimitNOFILE=65535`。
+> 若數字仍是 1024，通常是 `worker_rlimit_nofile` 沒寫在最外層（main context），或修改後沒有 reload。
 
 ---
 
@@ -726,7 +751,8 @@ df -h                  # 以人類可讀單位顯示磁碟用量（磁碟滿會�
 
 ```nginx
 # 優化靜態資源服務
-location /static/ {
+# ^~：命中這個前綴後不再比對正規表示式 location。少了它，/static/app.css 會被 7.5 的 ~* \.(css|js)$ 搶走，下面的設定全部不生效
+location ^~ /static/ {
     alias /var/www/myapp/static/;   # alias：把 /static/ 對應到此實體目錄（注意結尾斜線要成對）
 
     # 啟用 sendfile（零拷貝傳輸，原理見 7.3）
@@ -736,6 +762,7 @@ location /static/ {
     # 長時間快取
     expires max;          # 送出最遠的過期時間（Cache-Control: max-age 約 10 年）
     add_header Cache-Control "public, immutable";   # 允許 CDN 快取；immutable=效期內連驗證都免了
+    include snippets/security-headers.conf;          # 有自己的 add_header，安全標頭要重新引入（見 7.5）
 
     # 開啟 gzip
     gzip on;
@@ -761,21 +788,18 @@ events {
     use epoll;                # Linux 高效事件模型
 }
 
-# 同時增加系統檔案描述符限制
+# 同時提高 worker 的 fd 上限
 # （此指令位於全域區塊，與 events 同層；連線數調高 fd 上限必須跟著調）
 worker_rlimit_nofile 65535;
 ```
 
 ```bash
-# 系統層級
-sudo sysctl -w fs.file-max=65535   # -w 立即修改核心參數（重開機會失效，永久生效需寫入 /etc/sysctl.conf）
-
-# 把使用者層級的 fd 限制附加到 limits.conf（tee -a 表示附加寫入，需要 sudo 權限）
-echo "www-data soft nofile 65535" | sudo tee -a /etc/security/limits.conf
-echo "www-data hard nofile 65535" | sudo tee -a /etc/security/limits.conf
+# 套用並確認 worker 實際拿到的 fd 上限（Soft/Hard 應為 65535）
+sudo nginx -t && sudo nginx -s reload
+grep 'open files' /proc/$(pgrep -f 'nginx: worker' | head -1)/limits
 ```
 
-> **為什麼三個地方都要改？**因為限制是層層套疊的：`worker_connections`（Nginx 自身）≤ `worker_rlimit_nofile`（行程 fd 上限）≤ `limits.conf`（使用者上限）≤ `fs.file-max`（系統總量）。任何一層卡住，調其他層都沒用。改完記得 `sudo nginx -t && sudo nginx -s reload`，並觀察錯誤日誌確認警告不再出現。
+> **這兩個數字的關係**：每條連線（含連往後端的連線）都佔一個 fd，worker 還要開日誌檔與靜態檔，所以 `worker_rlimit_nofile` 要大於 `worker_connections`，常見做法是設成它的 2 倍以上（這裡 8192 → 65535）。`worker_rlimit_nofile` 由 master 在降權前替 worker 設定，不受 `/etc/security/limits.conf` 影響；只有 master 本身的上限才需要用 7.8 的 `systemctl edit nginx`（`LimitNOFILE`）調整。改完觀察錯誤日誌，確認 `worker_connections are not enough` 不再出現。
 
 ---
 

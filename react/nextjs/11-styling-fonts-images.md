@@ -54,11 +54,37 @@ export default function Card({ title, children }) {
 
 > `styles.card` 會被編譯成像 `Card_card__a1b2c` 的唯一 class，所以不同檔案用同名 `.card` 也不會打架。
 
+兩個常見的卡關點：
+
+- class 名稱有連字號（如 `.post-title`）時，`styles.postTitle` 會是 `undefined`，要寫成 `styles["post-title"]`。所以 CSS Modules 裡習慣用小駝峰命名（`.postTitle`）。
+- CSS Modules 裡的選擇器至少要帶一個 class 或 id。像 `h1 { … }` 這種只有標籤的寫法會編譯失敗（`Selector "h1" is not pure`），要改寫成 `.title h1`，或放到 `globals.css`。
+
 ---
 
 ## 3. Tailwind CSS
 
-建立專案時可直接勾 Tailwind；若沒勾，之後也能加。裝好後直接在 `className` 用 utility：
+建立專案時可直接勾 Tailwind；若沒勾（第 1 章建議先選 No），之後也能加。`create-next-app@15` 搭配的是 **Tailwind CSS v4**，手動加的步驟是：
+
+```bash
+npm install -D tailwindcss @tailwindcss/postcss
+```
+
+```js
+// postcss.config.mjs（專案根目錄）
+const config = {
+  plugins: ["@tailwindcss/postcss"],
+};
+export default config;
+```
+
+```css
+/* app/globals.css 最上面加這一行 */
+@import "tailwindcss";
+```
+
+> **版本提醒**：v4 不需要 `tailwind.config.js`，會自動掃描專案裡用到的 class。網路上看到 `@tailwind base;`、`@tailwind components;` 加上 `tailwind.config.js` 的 `content` 設定，是 v3 的寫法，不要和 v4 混用。
+
+裝好後重啟 `npm run dev`，直接在 `className` 用 utility：
 
 ```jsx
 export default function Card({ title, children }) {
@@ -77,13 +103,13 @@ export default function Card({ title, children }) {
 
 ## 4. next/font：字型優化
 
-用 `next/font` 載入字型，Next.js 會在 build 時自我託管字型檔（不連 Google 伺服器）、自動 `font-display: swap`、並保留空間避免版面跳動：
+用 `next/font` 載入字型，Next.js 會在 dev／build 時把字型檔下載下來、跟你的站一起部署（瀏覽器不必連 Google 伺服器），自動加上 `font-display: swap`，並用調整過尺寸的備用字型先頂著，減少字型換上時的版面跳動：
 
 ```jsx
 // app/layout.js
-import { Inter, Noto_Sans_TC } from "next/font/google";
+import { Noto_Sans_TC } from "next/font/google";
 
-const inter = Inter({ subsets: ["latin"] });
+// 要在模組最上層呼叫並存成常數，不能寫在元件函式裡
 const notoTC = Noto_Sans_TC({ subsets: ["latin"], weight: ["400", "700"] });
 
 export default function RootLayout({ children }) {
@@ -95,13 +121,15 @@ export default function RootLayout({ children }) {
 }
 ```
 
-> 好處：字型檔和你的站一起部署，沒有第三方請求（更快、更隱私），也不會有「字型載入完才跳字」的閃動（FOUT）。
+> 好處：字型檔和你的站一起部署，沒有第三方請求（更快、更隱私）；字型載入前先顯示備用字、載入後換上時，版面幾乎不會跳動。
+
+> **為什麼中文字型填 `subsets: ["latin"]`？** `subsets` 決定要「預先載入」哪一段字。Noto Sans TC 沒有中文子集可以選，Google 會把中文字切成很多小檔，頁面用到哪些字，瀏覽器才下載哪幾個，所以填 `latin` 就好。不填 `subsets` 會報錯（`Preload is enabled but no subsets were specified`）。
 
 ---
 
 ## 5. next/image：圖片優化
 
-`<Image>` 會自動：依裝置給合適尺寸、轉現代格式（WebP/AVIF）、lazy load、保留空間避免版面位移（CLS）。
+`<Image>` 會自動：依裝置給合適尺寸、轉現代格式（預設 WebP，要 AVIF 可在 `images.formats` 開）、lazy load、保留空間避免版面位移（CLS）。
 
 ### 本地圖片（放在 public/）
 
@@ -120,7 +148,11 @@ export default function Logo() {
 }
 ```
 
-`width`/`height` 是必要的（除非用 `fill`），用來預留空間、避免載入時版面跳動。
+`src` 寫字串路徑時，`width`/`height` 是必要的（除非用 `fill`）。它們代表圖片原始的寬高比，讓瀏覽器在圖片還沒下載前就先預留空間、避免版面跳動。實際顯示多大，仍可以用 CSS 調整。
+
+> 也可以把圖片當模組匯入：`import logo from "./logo.png"`，再寫 `<Image src={logo} alt="站標" />`。Next.js 會在建置時讀出寬高，就不用自己填。
+
+> 首屏最顯眼的大圖（例如頁首主視覺）加上 `priority`，Next.js 就不會延遲載入它，而是提早下載，讓畫面主體更快出現。其他圖片維持預設的 lazy load 即可。
 
 ### 填滿容器（fill）
 
@@ -132,9 +164,13 @@ export default function Logo() {
 </div>
 ```
 
+`fill` 會讓圖片以 `position: absolute` 撐滿最近的定位父層，所以父層一定要設 `position: relative`（或 `absolute`／`fixed`）並給高度，不然圖片會跑版或高度變 0。`objectFit: "cover"` 讓圖片等比例裁切填滿，不會變形。
+
+用 `fill` 時建議再加 `sizes`，告訴瀏覽器這張圖實際顯示多寬（例如 `sizes="(max-width: 640px) 100vw, 320px"`）。沒寫的話，瀏覽器會假設圖片和視窗一樣寬，下載到比需要大很多的檔案。
+
 ### 遠端圖片：要先允許網域
 
-用外部網址的圖片，必須在 `next.config.mjs` 白名單網域，否則報錯：
+用外部網址的圖片，必須在 `next.config.mjs` 白名單網域，否則報錯（`hostname "…" is not configured under images in your next.config.js`）：
 
 ```js
 // next.config.mjs
@@ -147,6 +183,10 @@ const nextConfig = {
 };
 export default nextConfig;
 ```
+
+- 改了 `next.config.mjs` 要**重啟** `npm run dev` 才會生效。
+- 舊教學常見的 `images.domains` 已棄用，請用 `remotePatterns`。
+- 遠端圖片 Next.js 在建置時讀不到尺寸，所以一樣要給 `width`/`height`，或改用 `fill`。
 
 ---
 
@@ -162,7 +202,7 @@ export default nextConfig;
 
 ## 最後範例：套版的文章卡片列表
 
-> 用 CSS Modules + next/font + next/image 做出一排文章卡片。原樣建立以下檔案即可跑（圖片用遠端 Unsplash，記得設定 next.config）。
+> 用 CSS Modules + next/font + next/image 做出一排文章卡片。原樣建立以下檔案即可跑（圖片用遠端 Unsplash，記得設定 next.config；字型和圖片都要連網下載）。
 
 ### `next.config.mjs`
 

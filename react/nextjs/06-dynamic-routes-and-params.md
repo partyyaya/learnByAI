@@ -54,6 +54,8 @@ export default async function DocsPage({ params }) {
 - `[...slug]`：至少要有一段（`/docs` 本身不匹配）。
 - `[[...slug]]`（雙中括號）：**可選**，連 `/docs` 也匹配，此時 `slug` 是 `undefined`。
 
+所以改用 `[[...slug]]` 時要給預設值，例如 `const { slug = [] } = await params;`，不然上面的 `slug.join` 在 `/docs` 會直接報錯。
+
 ---
 
 ## 3. searchParams：查詢字串
@@ -70,9 +72,11 @@ export default async function ProductsPage({ searchParams }) {
 }
 ```
 
+`searchParams` 的值是**字串**（網址沒帶就是 `undefined`；同名參數出現多次，如 `?tag=a&tag=b`，則是字串陣列），所以要給預設值、數字要自己用 `Number()` 轉。
+
 > 用 `searchParams` 做篩選/分頁時，該頁會變成**動態渲染**（每次請求都重算），因為查詢字串在建置時未知。這很合理，也是預期行為。
 
-要改查詢字串，在 Client 端用 `<Link href="/products?page=2">` 或 `router.push`。
+要改查詢字串，用 `<Link href="/products?page=2">`（Server、Client 元件都能用），或在 Client 元件裡用 `useRouter()` 的 `router.push()`；最後範例還示範了用 `method="get"` 的表單。
 
 ---
 
@@ -97,6 +101,12 @@ export default async function PostPage({ params }) {
 
 好處：這些頁在 build 時就變成靜態檔，上線後超快、又能被 CDN 快取。
 
+幾個細節：
+
+- 回傳的值要是**字串**（catch-all 段則是字串陣列），和網址拿到的 `params` 一樣，所以最後範例寫 `String(i + 1)`。
+- 沒列在清單裡的值，預設（`dynamicParams = true`）會在第一次被請求時才即時產生，之後一樣快取起來；想讓清單以外的值一律 404，就在同一個檔案加 `export const dynamicParams = false;`。
+- `npm run dev` 每次請求都會即時渲染，看不出差別；要跑 `npm run build`，在輸出的路由表裡看到 `●`（SSG）和預先產生的路徑才算生效。
+
 ---
 
 ## 5. 找不到就 notFound()
@@ -115,6 +125,8 @@ export default async function Page({ params }) {
 ```
 
 搭配同層或上層的 `not-found.js`（第 4 章）就能有漂亮的 404 畫面，也對 SEO 正確（真的回 404 狀態碼）。
+
+`notFound()` 是靠丟出一個 Next.js 專用的例外來中斷渲染，所以呼叫後不必 `return`，下一行的 `product.name` 也不會在找不到時執行。也因為這樣，**不要把它包在 `try/catch` 裡**，否則會被你的 `catch` 吃掉、404 就不會出現（第 10 章的 `redirect()` 也是同樣道理）。
 
 ---
 
@@ -150,7 +162,10 @@ async function getPosts() {
 export default async function BlogPage({ searchParams }) {
   const sp = await searchParams; // Next.js 15：Promise
   const keyword = (sp.q ?? "").toLowerCase();
-  const page = Math.max(1, Number(sp.page ?? "1"));
+  // 非數字（如 ?page=abc）會得到 NaN，就當第 1 頁
+  const page = Math.max(1, parseInt(sp.page, 10) || 1);
+  // 關鍵字放進網址前要編碼，否則輸入 & 或 # 會把查詢字串弄壞
+  const q = encodeURIComponent(sp.q ?? "");
 
   const all = await getPosts();
   const filtered = keyword
@@ -182,11 +197,11 @@ export default async function BlogPage({ searchParams }) {
 
       <nav className="pager">
         {page > 1 && (
-          <Link href={`/blog?q=${sp.q ?? ""}&page=${page - 1}`}>← 上一頁</Link>
+          <Link href={`/blog?q=${q}&page=${page - 1}`}>← 上一頁</Link>
         )}
         <span>第 {page} / {totalPages || 1} 頁</span>
         {page < totalPages && (
-          <Link href={`/blog?q=${sp.q ?? ""}&page=${page + 1}`}>下一頁 →</Link>
+          <Link href={`/blog?q=${q}&page=${page + 1}`}>下一頁 →</Link>
         )}
       </nav>
     </main>

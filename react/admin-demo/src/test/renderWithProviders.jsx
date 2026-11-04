@@ -54,8 +54,12 @@ export function renderWithProviders(
       <QueryClientProvider client={queryClient}>
         {/* MemoryRouter：把網址存在記憶體而非真實 URL，
             jsdom 環境不能用 BrowserRouter 的 history API 導頁。
-            initialEntries 就是「假的瀏覽紀錄」，陣列最後一項是當前頁。 */}
-        <MemoryRouter initialEntries={[route]}>
+            initialEntries 就是「假的瀏覽紀錄」，陣列最後一項是當前頁。
+            future 和 main.jsx 的 BrowserRouter 相同，測試輸出才不會出現 Future Flag 警告。 */}
+        <MemoryRouter
+          initialEntries={[route]}
+          future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+        >
           {path ? (
             // 有 path 才需要 Routes：唯有比對到路由樣板，
             // React Router 才會把 :id 解析成參數餵給 useParams()。

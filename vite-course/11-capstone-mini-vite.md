@@ -21,6 +21,8 @@
 
 **心法**:我們會「逐步長出」這個工具——先讓最基本的能跑,再一層層加功能。每加一層,都對應回前面某一章。建議你**邊讀邊真的把 code 打出來跑**,卡住的地方就回去複習對應章節。
 
+> **為什麼用 esbuild,不用 Vite 8 的 Oxc / Rolldown?** 真實的 Vite 8 用 Oxc 轉譯、Rolldown 預打包;我們選 esbuild,是因為它一個套件就同時提供 `transform`(轉譯)和 `build`(打包)兩個最簡單的 API,最適合拿來示範原理。換成哪個工具,mini-vite 的架構都一樣。
+
 ---
 
 ## 11.2 專案初始化
@@ -108,7 +110,9 @@ import path from 'node:path'
 const root = process.cwd()        // 專案根目錄
 
 const server = http.createServer(async (req, res) => {
-  const url = req.url
+  // 只取路徑部分,去掉 ?t=xxx 這類查詢字串。
+  // 現在看起來多餘,但 11.6 的 HMR 會用 /src/counter.ts?t=時間戳 重抓模組,少了這行就會 404
+  const url = req.url.split('?')[0]
 
   // 處理首頁:回傳 index.html
   if (url === '/' || url === '/index.html') {
@@ -157,7 +161,7 @@ if (url.endsWith('.ts') || url.endsWith('.js')) {
   // ⭐ 關鍵:改寫裸匯入(下一步詳解),先留個 hook
   code = await rewriteImports(code)
 
-  res.setHeader('Content-Type', 'application/javascript')   // 一定要是這個 MIME!
+  res.setHeader('Content-Type', 'text/javascript')   // 一定要是 JS 的 MIME!
   res.end(code)
   return
 }
@@ -165,8 +169,8 @@ if (url.endsWith('.ts') || url.endsWith('.js')) {
 
 **逐點解釋**:
 
-- `transform(code, { loader: 'ts' })`:這就是第 04 章「esbuild 剝型別」的真身。它**只轉譯不檢查型別**——你現在親手見證了第 01、04 章那句「Vite dev 不檢查型別」是怎麼回事:因為我們呼叫的就是個純轉譯函式。
-- `Content-Type: application/javascript`:**極重要**。瀏覽器靠這個 header 決定「要不要把回應當 ES module 執行」。MIME 錯了,瀏覽器會拒絕執行 module,報 `Failed to load module script` 之類的錯。
+- `transform(code, { loader: 'ts' })`:這就是第 04 章「剝型別」的真身。它**只轉譯不檢查型別**——你現在親手見證了第 01、04 章那句「Vite dev 不檢查型別」是怎麼回事:因為我們呼叫的就是個純轉譯函式。
+- `Content-Type: text/javascript`:**極重要**(第 02 章)。瀏覽器靠這個 header 決定「要不要把回應當 ES module 執行」。MIME 錯了,瀏覽器會拒絕執行 module,報 `Failed to load module script` 之類的錯。(`application/javascript` 瀏覽器也接受,但現行標準建議用 `text/javascript`,真實 Vite 也是回這個。)
 - `format: 'esm'`:確保輸出是 `import`/`export` 形式,瀏覽器原生 ESM 才吃得下(第 02 章)。
 
 現在 `main.ts` 能被轉成 JS 回傳了。但瀏覽器執行它時,遇到 `import { ref } from 'vue'`——**裸匯入**,瀏覽器不知道 `vue` 在哪(第 02 章障礙 2)。下一步。
@@ -184,13 +188,12 @@ if (url.endsWith('.ts') || url.endsWith('.js')) {
 
 ```js
 import { build } from 'esbuild'
-import { fileURLToPath } from 'node:url'
 
 const CACHE_DIR = path.join(root, 'node_modules', '.mini-vite')
 
 // 啟動時預打包指定依賴(真實 Vite 會自動掃描,我們簡化成寫死清單)
 async function preBundle(deps) {
-  console.log('Pre-bundling dependencies:', deps.join(', '))   // 第 03 章那行訊息!
+  console.log('Pre-bundling dependencies:', deps.join(', '))   // 對應第 03 章的預打包步驟
   fs.mkdirSync(CACHE_DIR, { recursive: true })
 
   for (const dep of deps) {
@@ -222,7 +225,8 @@ async function rewriteImports(code) {
         // 裸匯入 → 改寫成特殊前綴路徑,等等用這個路徑去拿預打包產物
         return `from '/@modules/${source}'`
       }
-      // 相對路徑維持原樣(瀏覽器自己抓得到),但補上副檔名等細節可在此處理
+      // 相對路徑維持原樣,瀏覽器自己抓得到
+      // (真實 Vite 會改寫成 /src/... 的絕對路徑,資源還會加上 ?import,第 02 章)
       return full
     }
   )
@@ -239,7 +243,7 @@ if (url.startsWith('/@modules/')) {
   const dep = url.slice('/@modules/'.length)         // 取出 'vue'
   const filePath = path.join(CACHE_DIR, `${dep}.js`) // 預打包產物
   const code = fs.readFileSync(filePath, 'utf-8')
-  res.setHeader('Content-Type', 'application/javascript')
+  res.setHeader('Content-Type', 'text/javascript')
   res.end(code)
   return
 }
@@ -299,7 +303,8 @@ function broadcast(payload) {
 ### 4b. 監看檔案變動,推送 HMR 訊息
 
 ```js
-// 監看 src 目錄的檔案變動(真實 Vite 用 chokidar,Node 內建 fs.watch 也夠示範)
+// 監看 src 目錄的檔案變動(真實 Vite 用 chokidar,Node 內建 fs.watch 也夠示範;
+// 編輯器存一次檔,fs.watch 有時會連發兩次事件,示範用可以先不管)
 fs.watch(path.join(root, 'src'), { recursive: true }, (event, filename) => {
   if (!filename) return
   const modulePath = '/src/' + filename.replace(/\\/g, '/')
@@ -321,7 +326,7 @@ fs.watch(path.join(root, 'src'), { recursive: true }, (event, filename) => {
 ```js
 // 在 server callback 裡加上對 client 的回應:
 if (url === '/@mini-vite/client') {
-  res.setHeader('Content-Type', 'application/javascript')
+  res.setHeader('Content-Type', 'text/javascript')
   res.end(clientScript)         // clientScript 內容見下
   return
 }
@@ -372,14 +377,14 @@ if (url.endsWith('.ts') || url.endsWith('.js')) {
   // ...前面的讀檔、esbuild transform、rewriteImports...
 
   // 在模組頂部注入 hot context(讓使用者能用 import.meta.hot.accept)
-  const cleanUrl = url.split('?')[0]      // 去掉 ?t=xxx
+  // url 在 11.3 已經去掉 ?t=xxx,所以新舊版模組都用同一個 key 註冊
   const hotHeader = `
     import { createHotContext as __vite_createHotContext } from '/@mini-vite/client'
-    import.meta.hot = __vite_createHotContext('${cleanUrl}')
+    import.meta.hot = __vite_createHotContext('${url}')
   `
   code = hotHeader + code
 
-  res.setHeader('Content-Type', 'application/javascript')
+  res.setHeader('Content-Type', 'text/javascript')
   res.end(code)
   return
 }
@@ -393,13 +398,18 @@ if (url.endsWith('.ts') || url.endsWith('.js')) {
 // src/counter.ts 末尾加上:
 if (import.meta.hot) {
   import.meta.hot.accept((newModule) => {
+    // 舊版 setupCounter 綁的 click 監聽還掛在按鈕上;
+    // 換一顆乾淨的按鈕再交給新版,否則每次熱更新都會多疊一個監聽(第 05 章 dispose 談的殘留問題)
+    const oldBtn = document.querySelector('#btn')!
+    const newBtn = oldBtn.cloneNode(true) as HTMLButtonElement   // cloneNode 不會複製事件監聽
+    oldBtn.replaceWith(newBtn)
     // 模組更新時,用新版重新初始化,不整頁刷新(第 05 章)
-    newModule.setupCounter(document.querySelector('#btn'))
+    newModule.setupCounter(newBtn)
   })
 }
 ```
 
-**跑跑看**:改 `counter.ts` 裡的文字(例如 `count:` 改成 `次數:`),存檔——瀏覽器**不整頁刷新**就更新了!如果你改的是「沒有 accept」的檔(例如 main.ts 沒寫 accept),則會看到整頁重載。**這完全複現了第 05 章「有邊界就 HMR、沒邊界就整頁重載」的行為。**
+**跑跑看**:先點幾下按鈕,再改 `counter.ts` 裡的文字(例如 `count:` 改成 `次數:`),存檔——瀏覽器**不整頁刷新**就更新了!你會注意到計數歸零:新版 `setupCounter` 是重新初始化的,這正是第 05 章說的「自己 accept 的代價」;要保留計數,得像第 05 章那樣用 `hot.data` 把值帶過去,或交給框架的 HMR runtime。如果你改的是「沒有 accept」的檔(例如 main.ts 沒寫 accept),則會看到整頁重載。**這完全複現了第 05 章「有邊界就 HMR、沒邊界就整頁重載」的行為。**
 
 > 🎯 **這就是 HMR 的全貌**:WebSocket 推訊息(4a/4b)→ client 收到後重抓新模組(4c)→ 呼叫使用者註冊的 accept callback(4d/4e)→ 局部更新、頁面不重載。你親手把第 05 章那張「從存檔到畫面更新」的流程圖變成了能跑的程式碼。
 
@@ -447,7 +457,7 @@ if (import.meta.hot) {
 2. **建立 module graph**(第 05 章):記錄「誰 import 誰」,讓 HMR 能沿 importers 往上找邊界,而不只是「自己 accept」。
 3. **支援 CSS**(第 04 章):攔截 `.css` 請求,把它包成「建立 `<style>` 注入」的 JS 模組,並加上 CSS 的 HMR(換 `<style>` 內容)。
 4. **自動掃描依賴**(第 03 章):不要寫死 `['vue']`,而是掃描原始碼裡的裸匯入,自動決定要預打包哪些。
-5. **加快取失效判斷**(第 03 章):記錄 `package.json`/lockfile 的指紋,沒變就跳過預打包。
+5. **加快取失效判斷**(第 03 章):記錄 lockfile 與設定的指紋,沒變就跳過預打包。
 
 > 做完任何一個,你對對應章節的理解都會再深一層。這就是「手寫」的價值——它逼你面對所有「看書時以為懂、其實沒想清楚」的細節。
 
@@ -457,18 +467,18 @@ if (import.meta.hot) {
 
 恭喜你走到這裡。回顧整門課,你從「為什麼前端需要建構工具」一路走到「親手實作一個 mini-vite」:
 
-- **第 00 章**:建構工具演進史、CJS vs ESM、「dev 不打包 + build 用 Rollup」的雙引擎心智模型。
+- **第 00 章**:建構工具演進史、CJS vs ESM、「dev 不打包 + build 才打包」的雙路徑心智模型。
 - **第 01 章**:專案結構、`index.html` 是入口、dev/build/preview 的差別。
 - **第 02 章**:No-bundle dev server——瀏覽器原生 ESM 是一切的根基。
-- **第 03 章**:依賴預打包——用 esbuild 解決 CJS 相容與請求爆炸。
+- **第 03 章**:依賴預打包——用原生 bundler(Vite 8 是 Rolldown)解決 CJS 相容與請求爆炸。
 - **第 04 章**:轉換管線——各種資源如何即時變成 JS 模組。
 - **第 05 章**:HMR——module graph、邊界、`import.meta.hot` 的精妙設計。
 - **第 06、07 章**:Plugin 系統——Vite 的能力幾乎都是 plugin,小核心 + 大生態。
 - **第 08 章**:生產建構——tree shaking、code splitting、hash 快取的完整故事。
 - **第 09 章**:進階場景——SSR、Library Mode、MPA、Monorepo。
-- **第 10 章**:引擎內幕與 Rolldown——雙引擎的代價與 Rust 化的未來。
+- **第 10 章**:引擎內幕與 Rolldown——雙引擎的代價,以及 Vite 8 用 Rolldown + Oxc 完成的 Rust 化。
 - **第 11 章**:把 02~05 章親手實作成 mini-vite。
 
-但這門課真正想留給你的,不是這些功能的用法(它們會隨版本變),而是**第 10 章那個判斷框架**:面對任何工具,問「它解決了什麼痛、帶來什麼新代價、什麼場景不划算」。Vite 會演進、Rolldown 會成為主流、未來還會有新工具——但你建立的這套「看穿工具設計取捨」的能力,會一直有用。
+但這門課真正想留給你的,不是這些功能的用法(它們會隨版本變),而是**第 10 章那個判斷框架**:面對任何工具,問「它解決了什麼痛、帶來什麼新代價、什麼場景不划算」。Vite 會繼續演進(Rolldown 已經成為預設、Full Bundle Mode 正在實驗)、未來還會有新工具——但你建立的這套「看穿工具設計取捨」的能力,會一直有用。
 
 > 💡 **最後的作業**:把你的 mini-vite 完整跑通(11.3~11.6),然後挑 11.8 的任一個延伸挑戰做做看。當你能對著自己寫的 mini-vite,清楚講出「這一行對應 Vite 的哪個機制、為什麼這樣設計」,你就真正從「會用 Vite 的人」變成了「懂 Vite 的人」。這正是本課程的終點,也是你下一段學習的起點。

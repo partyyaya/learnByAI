@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint",
     "setup": "prisma generate && prisma migrate deploy && prisma db seed",
     "db:seed": "node prisma/seed.js",
     "db:studio": "prisma studio",
@@ -17,11 +17,14 @@
   },
   "dependencies": {
     "@prisma/client": "^6.2.1",
-    "next": "^15.1.4",
+    "next": "^15.5.28",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.7",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.28",
     "prisma": "^6.2.1"
   }
 }

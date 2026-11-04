@@ -24,6 +24,8 @@
 
 React 透過 state 更新觸發重新渲染。
 
+為什麼不用一般變數就好？`let count = 0; count++` 有兩個問題：改了它 React 不會知道要重新渲染；就算因為別的原因重新渲染，元件函式重跑時它又回到 `0`。state 同時解決了這兩件事。
+
 ---
 
 ## 2. `useState` 基本用法
@@ -32,6 +34,7 @@ React 透過 state 更新觸發重新渲染。
 const [count, setCount] = useState(0);
 ```
 
+- `0`：初始值，只在第一次渲染時使用
 - `count`：當前狀態值
 - `setCount`：更新狀態的函式
 
@@ -150,6 +153,16 @@ function handleClick() {
 <button onClick={handleClick}>點我</button>;
 ```
 
+`onClick` 要的是「一個函式」，讓 React 在點擊時才呼叫。寫成 `handleClick()` 會在渲染當下就執行，交給 `onClick` 的變成它的回傳值；如果裡面又更新 state，就會「渲染 → 更新 → 再渲染」停不下來，React 會報 `Too many re-renders` 錯誤。
+
+需要帶參數時，包一層箭頭函式，點擊時才帶著參數呼叫：
+
+```jsx
+<button onClick={() => handleDelete(task.id)}>刪除</button>
+```
+
+事件處理器會收到一個事件物件（常命名為 `event` 或 `e`）：輸入框用 `e.target.value` 取得目前的輸入內容，表單送出時用 `event.preventDefault()` 阻止瀏覽器重新整理頁面。本章最後範例兩者都會用到。
+
 ---
 
 ## 4. 陣列 state 的不可變更新
@@ -176,6 +189,8 @@ setItems((prev) =>
 setItems((prev) => prev.filter((item) => item.id !== targetId));
 ```
 
+為什麼不直接 `prev.push(newItem)` 或 `item.done = true`？React 用 `Object.is` 比較新舊 state，回傳的還是同一個陣列時，React 會當作沒有變化而跳過重新渲染；而且你同時改掉了舊的那份快照。`push`、`splice`、`sort`、`reverse` 都會直接改原陣列，要改用展開、`map`、`filter`，或先複製再排序（`[...prev].sort(...)`）。
+
 ---
 
 ## 5. `useRef`：不觸發渲染的記憶
@@ -199,14 +214,25 @@ function SearchBox() {
 }
 ```
 
+React 把 `<input>` 放上畫面後，才會把這個 DOM 節點存進 `inputRef.current`；所以第一次渲染期間它還是 `null`，要在事件處理器或 Effect（第 7 章）裡使用。
+
 ### 5.2 保存「改變時不需要重新渲染」的值
 
 例如計時器 id、上一次的滾動位置：
 
 ```jsx
 const timerRef = useRef(null);
-timerRef.current = setInterval(/* ... */);
+
+function handleStart() {
+  timerRef.current = setInterval(/* ... */);
+}
+
+function handleStop() {
+  clearInterval(timerRef.current);
+}
 ```
+
+`ref.current` 的讀寫要放在事件處理器或 Effect 裡，不要直接寫在元件函式本體：本體每次渲染都會執行，這裡就會變成每渲染一次就多開一個計時器。
 
 state 與 ref 的分工：
 
@@ -226,7 +252,7 @@ state 與 ref 的分工：
 
 `useReducer` 有兩個角色：
 
-- **reducer**：`(state, action) => newState` 的純函式，集中所有更新邏輯
+- **reducer**：`(state, action) => newState` 的純函式（同樣的輸入永遠得到同樣的結果，不改外部資料、不發 API），集中所有更新邏輯
 - **dispatch**：發送一個 `action`（描述「發生了什麼事」）來觸發更新
 
 ```jsx
@@ -235,7 +261,7 @@ import { useReducer } from "react";
 function tasksReducer(tasks, action) {
   switch (action.type) {
     case "added":
-      return [...tasks, { id: Date.now(), title: action.title, done: false }];
+      return [...tasks, { id: action.id, title: action.title, done: false }];
     case "toggled":
       return tasks.map((task) =>
         task.id === action.id ? { ...task, done: !task.done } : task
@@ -248,10 +274,12 @@ function tasksReducer(tasks, action) {
 }
 
 function TaskApp() {
+  // initialTasks 與本章最後範例相同
   const [tasks, dispatch] = useReducer(tasksReducer, initialTasks);
 
   // 元件裡不再直接寫更新邏輯，只發送「發生了什麼事」
-  const handleAdd = (title) => dispatch({ type: "added", title });
+  // id 在發送 action 時產生，reducer 裡不呼叫 Date.now()，才能保持純函式
+  const handleAdd = (title) => dispatch({ type: "added", id: Date.now(), title });
   const handleToggle = (id) => dispatch({ type: "toggled", id });
   const handleDelete = (id) => dispatch({ type: "deleted", id });
 
@@ -297,7 +325,7 @@ function TaskApp() {
 ### `src/App.jsx`
 
 ```jsx
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import "./App.css";
 
 const initialTasks = [
@@ -310,11 +338,7 @@ function App() {
   const [tasks, setTasks] = useState(initialTasks);
   const [draft, setDraft] = useState("");
 
-  const doneCount = useMemo(
-    () => tasks.filter((task) => task.done).length,
-    [tasks]
-  );
-
+  const doneCount = tasks.filter((task) => task.done).length;
   const progress = tasks.length === 0 ? 0 : Math.round((doneCount / tasks.length) * 100);
 
   function handleSubmit(event) {
@@ -493,8 +517,10 @@ button.danger {
 
 1. `tasks` 與 `draft` 都屬於會變動資料，所以都用 `useState` 管理。
 2. `handleSubmit` 透過 `event.preventDefault()` 避免表單送出刷新頁面。
-3. `handleToggle`、`handleDelete` 都使用不可變更新，確保 React 能正確偵測變化。
-4. `progress` 是由 `tasks` 推導出來的結果，不需要獨立 state，避免資料重複來源。
+3. 輸入框寫成 `value={draft}` 加 `onChange`，畫面上的文字永遠等於 `draft` state（受控元件，第 6 章細講）；只給 `value` 不給 `onChange`，輸入框會打不了字，React 也會在 console 警告。
+4. `handleToggle`、`handleDelete` 都使用不可變更新，確保 React 能正確偵測變化。
+5. `doneCount` 與 `progress` 是由 `tasks` 推導出來的結果，每次渲染直接算出來即可，不需要獨立 state，避免資料重複來源。
+6. 「重設」按鈕寫了 `type="button"`：`<form>` 裡的按鈕預設是 `type="submit"`，不寫的話按重設也會送出表單、觸發 `handleSubmit`。
 
 ---
 

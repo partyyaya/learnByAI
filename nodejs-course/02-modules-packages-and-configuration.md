@@ -119,7 +119,7 @@ console.log(formatTitle('模組練習'));
 
 執行 `node modules/cjs/main.cjs`，預期輸出 `文章：模組練習`。`require` 載入模組，這裡取得的是 `module.exports` 指向的物件，再從中取出函式。
 
-若使用 `exports` 簡寫，要注意 `exports.formatTitle = formatTitle` 與 `exports = { formatTitle }` 不同；後者只改變區域變數的指向，不會替換 `module.exports`。初學時先沿用完整寫法。[Node.js CommonJS 文件](https://nodejs.org/api/modules.html)
+若使用 `exports` 簡寫，要注意 `exports.formatTitle = formatTitle` 與 `exports = { formatTitle }` 不同；後者只改變區域變數的指向，不會替換 `module.exports`。初學時先沿用完整寫法。[Node.js CommonJS 文件](https://nodejs.org/docs/latest-v24.x/api/modules.html)
 
 ### ESM：`import` 與 `export`
 
@@ -158,7 +158,7 @@ node modules/commonjs-scope/main.js
 node modules/esm-scope/main.js
 ```
 
-較新的 Node 對沒有明確標記的 `.js` 還可能進行語法偵測。本課都明寫 `type` 或使用 `.cjs`／`.mjs`，讓讀者能從檔案判斷規則。[Node.js 套件格式說明](https://nodejs.org/api/packages.html)
+較新的 Node 對沒有明確標記的 `.js` 還可能進行語法偵測。本課都明寫 `type` 或使用 `.cjs`／`.mjs`，讓讀者能從檔案判斷規則。[Node.js 套件格式說明](https://nodejs.org/docs/latest-v24.x/api/packages.html)
 
 ## 02.5 Node 如何找到匯入的對象？
 
@@ -178,7 +178,7 @@ node modules/esm-scope/main.js
 import { formatTitle } from './format.mjs';
 ```
 
-省略成 `./format` 會失敗，也不能依賴 Node 自動把目錄匯入補成 `index.js`。這是原生 ESM 的解析規則，不能直接套用前端打包器的便利行為。[Node.js ESM 匯入規則](https://nodejs.org/api/esm.html#mandatory-file-extensions)
+省略成 `./format` 會失敗，也不能依賴 Node 自動把目錄匯入補成 `index.js`。這是原生 ESM 的解析規則，不能直接套用前端打包器的便利行為。[Node.js ESM 匯入規則](https://nodejs.org/docs/latest-v24.x/api/esm.html#mandatory-file-extensions)
 
 ### TypeScript 為什麼在 `.ts` 裡寫 `.js`？
 
@@ -250,7 +250,7 @@ node -e "require('@course/article-label/internal.cjs')"
 
 `internal.cjs` 確實存在，也會由套件自己以相對路徑載入；只是沒有透過套件名稱對外公開。這讓內部拆檔不必成為使用者依賴的介面。
 
-`exports` 是介面與解析邊界，不是檔案存取的安全隔離。`private: true` 則是避免 npm 發布套件，也不代表檔案被加密或只有特定使用者能讀。[Node.js 套件入口文件](https://nodejs.org/api/packages.html#package-entry-points)
+`exports` 是介面與解析邊界，不是檔案存取的安全隔離。`private: true` 則是避免 npm 發布套件，也不代表檔案被加密或只有特定使用者能讀。[Node.js 套件入口文件](https://nodejs.org/docs/latest-v24.x/api/packages.html#package-entry-points)
 
 這裡拆出本地套件是為了觀察入口規則，實務上不必為每個小函式建立套件。應用內的 `article.ts`、`config.ts` 仍可直接用模組分工。
 
@@ -285,7 +285,7 @@ node -e "require('./modules/esm/async-value.mjs')"
 node -e "import('./modules/esm/async-value.mjs').then(mod => console.log(mod.value))"
 ```
 
-預期輸出 `ready`。Node 24 的 `require()` 已能載入符合條件的同步 ESM，但不能同步等待含 top-level await 的模組圖；不要把「所有 ESM 都不能 require」當成固定規則。[Node.js require 與 ESM 說明](https://nodejs.org/api/modules.html#loading-ecmascript-modules-using-require)
+預期輸出 `ready`。Node 24 的 `require()` 已能載入符合條件的同步 ESM，但不能同步等待含 top-level await 的模組圖；不要把「所有 ESM 都不能 require」當成固定規則。[Node.js require 與 ESM 說明](https://nodejs.org/docs/latest-v24.x/api/modules.html#loading-ecmascript-modules-using-require)
 
 不需要現在就做混合格式的專案。先能看懂既有依賴使用哪種格式、失敗時查哪一層規則，再決定是否需要橋接。
 
@@ -325,7 +325,7 @@ ENABLE_AUDIT_LOG=false
 node --env-file=.env --enable-source-maps dist/main.js
 ```
 
-Node 會在載入應用模組之前讀取檔案，讓入口驗證拿到完整設定。檔案路徑相對於目前工作目錄；不存在時會失敗。既有環境變數優先於檔案中的同名值，連既有的空字串也不會自動被補上。[Node.js env-file 文件](https://nodejs.org/api/cli.html#--env-filefile)
+Node 會在載入應用模組之前讀取檔案，讓入口驗證拿到完整設定。檔案路徑相對於目前工作目錄；不存在時會失敗。既有環境變數優先於檔案中的同名值，連既有的空字串也不會自動被補上。[Node.js env-file 文件](https://nodejs.org/docs/latest-v24.x/api/cli.html#--env-filefile)
 
 主機 Bash／zsh 可以用一次性環境變數覆蓋檔案設定：
 
@@ -400,7 +400,7 @@ const config = loadConfig(process.env);
 // 驗證成功後才繼續執行文章規則。
 ```
 
-正式連資料庫或開始監聽連接埠時，也應沿用這個順序。避免在被匯入的模組頂層直接連線、寫資料或啟動服務，讓單純匯入函式的測試也產生副作用。[Node.js 模組快取說明](https://nodejs.org/api/modules.html#caching)
+正式連資料庫或開始監聽連接埠時，也應沿用這個順序。避免在被匯入的模組頂層直接連線、寫資料或啟動服務，讓單純匯入函式的測試也產生副作用。[Node.js 模組快取說明](https://nodejs.org/docs/latest-v24.x/api/modules.html#caching)
 
 ## 02.10 設定錯誤時，要能清楚停止啟動
 

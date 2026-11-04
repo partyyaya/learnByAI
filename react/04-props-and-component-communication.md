@@ -24,6 +24,22 @@
 
 > 子元件不應直接修改 props，props 是唯讀資料。
 
+傳遞與接收的寫法：
+
+```jsx
+// 父元件：像寫 HTML 屬性一樣傳；字串可以直接用引號，其他型別要用 {}
+<LessonCard title="JSX 與元件拆分" minutes={42} />
+
+// 子元件：收到的是一個 props 物件，通常直接在參數解構（第 2 章）
+function LessonCard({ title, minutes, level = "beginner" }) {
+  return <p>{title}（{minutes} 分鐘，{level}）</p>;
+}
+```
+
+`minutes={42}` 傳的是數字；寫成 `minutes="42"` 就變成字串了。父元件沒傳 `level` 時，會用解構預設值 `"beginner"`。
+
+那 `state` 呢？props 是「別人交給我的」資料；state 是「元件自己記住、會隨互動改變」的資料，例如目前選了哪個篩選條件。元件更新自己的 state 會觸發重新渲染，新的值再透過 props 往下傳。`useState` 第 5 章才會詳細介紹，本章最後範例會先用到它。
+
 ---
 
 ## 2. 單向資料流（One-way Data Flow）
@@ -54,6 +70,14 @@ function Panel({ title, children }) {
 }
 ```
 
+使用時，寫在開始與結束標籤中間的內容，就會以 `children` 這個 prop 傳進 `Panel`：
+
+```jsx
+<Panel title="統計資訊">
+  <p>課程總數：5</p>
+</Panel>
+```
+
 `Panel` 可以裝不同內容，維持一致外觀但不綁定特定業務邏輯。
 
 ---
@@ -70,6 +94,8 @@ function Filter({ onChangeLevel }) {
 
 這不是「子元件改父元件」，而是子元件通知父元件「請你更新 state」。
 
+這裡包一層箭頭函式，是為了「點擊時才」帶著 `"beginner"` 呼叫 `onChangeLevel`；直接寫 `onClick={onChangeLevel("beginner")}` 會在渲染當下就執行（第 5 章會再說明）。慣例上，接收 callback 的 prop 以 `on` 開頭（`onChangeLevel`），元件內處理事件的函式以 `handle` 開頭（`handleSubmit`）。
+
 ---
 
 ## 5. Props Drilling 與 Context
@@ -82,7 +108,7 @@ React 內建的 `Context` 可以解決這個問題：
 ```jsx
 import { createContext, useContext } from "react";
 
-// 1) 建立 Context
+// 1) 建立 Context（參數是上層找不到 Provider 時的預設值）
 const UserContext = createContext(null);
 
 // 2) 在上層提供資料
@@ -101,6 +127,8 @@ function UserBadge() {
   return <span>{user.name}（{user.role}）</span>;
 }
 ```
+
+> **React 19**：可以直接寫 `<UserContext value={user}>`，不必加 `.Provider`；本課使用的 `<UserContext.Provider>` 寫法在 19 仍然可用。
 
 三種傳遞方式怎麼選：
 
@@ -138,7 +166,7 @@ function UserBadge() {
 ### `src/App.jsx`
 
 ```jsx
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import CourseSummary from "./components/CourseSummary";
 import LessonList from "./components/LessonList";
 import LevelFilter from "./components/LevelFilter";
@@ -156,10 +184,10 @@ const lessonData = [
 function App() {
   const [activeLevel, setActiveLevel] = useState("all");
 
-  const filteredLessons = useMemo(() => {
-    if (activeLevel === "all") return lessonData;
-    return lessonData.filter((lesson) => lesson.level === activeLevel);
-  }, [activeLevel]);
+  const filteredLessons =
+    activeLevel === "all"
+      ? lessonData
+      : lessonData.filter((lesson) => lesson.level === activeLevel);
 
   const publishedCount = filteredLessons.filter((lesson) => lesson.published).length;
 
@@ -340,8 +368,8 @@ button.active {
 
 ### 範例解釋
 
-1. `App` 擁有篩選狀態 `activeLevel`，因此它是資料的單一來源（single source of truth）。
-2. `LevelFilter` 不持有篩選 state，只透過 `onChangeLevel` 通知父元件更新。
+1. `App` 擁有篩選狀態 `activeLevel`，因此它是資料的單一來源（single source of truth）。`useState("all")` 建立初始值為 `"all"` 的 state，`setActiveLevel` 是更新它的函式；每次更新後 `App` 重新渲染，`filteredLessons` 與 `publishedCount` 也跟著從新的 `activeLevel` 重新算出來，不需要另外存成 state。
+2. `LevelFilter` 不持有篩選 state，只透過 `onChangeLevel` 通知父元件更新。`App` 直接把 `setActiveLevel` 當成 `onChangeLevel` 傳下去，所以子元件呼叫 `onChangeLevel("beginner")`，就等於呼叫 `setActiveLevel("beginner")`。
 3. `CourseSummary` 與 `LessonList` 都是純展示元件，根據 props 呈現結果。
 4. `Panel` 透過 `children` 把布局邏輯抽離，讓各區塊可重用且一致。
 

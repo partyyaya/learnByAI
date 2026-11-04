@@ -151,7 +151,7 @@ document.getElementById("aboutPlatform").textContent = `平台：${window.appInf
 - **`parent` 與 `modal` 是兩件事**：`parent` 決定視覺與生命週期的從屬（跟著主視窗最小化、永遠在上層、主視窗關閉時一起關閉）；`modal: true` 才會鎖住父視窗，適合「非做決定不可」的對話框。偏好設定這種應該用 `modal: false`。
 - **`BrowserWindow.getAllWindows()` 會列出所有視窗**，第二章 `window-all-closed` 判斷的就是這個清單。多視窗之後要小心：主視窗被隱藏、但子視窗還開著時，這個事件並不會觸發。
 
-> 想知道某個 IPC 是哪個視窗發出來的，用 `BrowserWindow.fromWebContents(event.sender)`——這在只有一個視窗時無所謂，多視窗之後就是必備寫法（第七章的對話框、4.6 的標題列主題都用了它）。
+> 想知道某個 IPC 是哪個視窗發出來的，用 `BrowserWindow.fromWebContents(event.sender)`——這在只有一個視窗時無所謂，多視窗之後就是必備寫法（4.6 的進度條、第七章的對話框都用了它）。
 
 ---
 
@@ -323,10 +323,25 @@ app.on("before-quit", () => {
 ```javascript
 const { globalShortcut } = require("electron");
 
+// 全域快捷鍵會跟所有程式搶同一組按鍵，挑一組其他軟體不太會用的組合
+const TOGGLE_WINDOW_ACCELERATOR = "CommandOrControl+Alt+Shift+L";
+
 function registerShortcuts(mainWindow) {
-  globalShortcut.register("CommandOrControl+Shift+I", () => {
-    mainWindow.webContents.toggleDevTools();
+  const ok = globalShortcut.register(TOGGLE_WINDOW_ACCELERATOR, () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    // 視窗在前景就藏起來，否則叫到前景：從任何地方都能一鍵切換
+    if (mainWindow.isVisible() && mainWindow.isFocused()) {
+      mainWindow.hide();
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
+
+  // 組合鍵已被其他程式註冊時會靜默失敗，只能從回傳值得知
+  if (!ok) {
+    console.warn(`全域快捷鍵 ${TOGGLE_WINDOW_ACCELERATOR} 註冊失敗，可能已被其他程式占用`);
+  }
 }
 
 function unregisterShortcuts() {
@@ -336,9 +351,9 @@ function unregisterShortcuts() {
 module.exports = { registerShortcuts, unregisterShortcuts };
 ```
 
-> `globalShortcut` 是「**系統層級**」的快捷鍵：即使 App 不在前景、甚至視窗全部隱藏，按下組合鍵仍會被你的 App 攔截，並且會**蓋掉其他軟體對同一組合鍵的使用**。它適合「從背景喚出 App」這類場景。
+> `globalShortcut` 是「**系統層級**」的快捷鍵：即使 App 不在前景、甚至視窗全部隱藏，按下組合鍵仍會觸發，所以適合本例這種「從背景喚出 App」的場景。代價是註冊期間，這組按鍵**不會再傳給目前在前景的程式**：如果你註冊的是 `CommandOrControl+Shift+I`，你的 App 開著的時候，Chrome、VS Code 的開發者工具快捷鍵就全部失效。反過來，如果組合鍵已經被其他程式註冊成全域快捷鍵，`register()` 不會搶過來，而是靜默失敗並回傳 `false`，所以上面要檢查回傳值。
 >
-> 如果只是想在 App 自己的視窗內提供快捷鍵，應改用選單項目的 `accelerator`（如 5.5 的 `CmdOrCtrl+R`），它只在 App 為前景視窗時生效，不會干擾其他程式。本例註冊 `CommandOrControl+Shift+I` 純粹為了示範 API；實務上「開關 DevTools」這種功能建議放在選單的 `accelerator`。
+> 只想在 App 自己的視窗內提供快捷鍵（例如開關 DevTools），應改用選單項目的 `accelerator`（如 5.5 的 `CmdOrCtrl+R`），它只在 App 為前景視窗時生效，不會干擾其他程式。
 
 ---
 
@@ -384,6 +399,7 @@ if (!gotTheLock) {
 const path = require("node:path");
 const { app, BrowserWindow } = require("electron");
 const { registerSystemIpc } = require("./ipc/system.ipc");
+const { registerWindowIpc } = require("./ipc/window.ipc");
 const { buildAppMenu } = require("./menu");
 const { createTray } = require("./tray");
 const { registerShortcuts, unregisterShortcuts } = require("./shortcut");
@@ -441,6 +457,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(() => {
     registerSystemIpc(); // 第四章
+    registerWindowIpc(); // 第四章 4.6
     createMainWindow();
     buildAppMenu(mainWindow); // 本章新增
     createTray(mainWindow); // 本章新增
@@ -484,7 +501,7 @@ npm run dev
 - 選單列是否可使用「重新整理」與「官方文件」，macOS 上是否出現 App 名稱選單與「編輯」選單
 - 「說明 → 關於本課程」是否開出子視窗；**連點多次是否只會有一個子視窗**、關掉後再點是否還能重新開啟
 - 系統匣是否可顯示/隱藏視窗，按視窗關閉鈕後是否能再從系統匣叫回
-- `Cmd/Ctrl + Shift + I` 是否可開關 DevTools
+- 切到其他程式後按 `Cmd/Ctrl + Alt/Option + Shift + L`，是否能把主視窗叫到前景；再按一次是否會藏起來
 - 重複啟動 App（再次 `npm run dev` 或再點一次圖示）時，是否只會把既有視窗帶回前景、而非開出第二份
 
 ---
@@ -494,7 +511,7 @@ npm run dev
 - 你已具備桌面應用核心互動能力
 - 你會開出從屬於主視窗的子視窗，並避免重複開啟與參考殘留
 - 你可用系統匣讓 App 在背景運作
-- 你可透過快捷鍵提升操作效率
+- 你知道全域快捷鍵與選單 `accelerator` 的差別，並會檢查全域快捷鍵是否註冊成功
 - 你用單一實例鎖避免 App 被重複開啟，並讓選單在 macOS 上行為正確
 
 ---

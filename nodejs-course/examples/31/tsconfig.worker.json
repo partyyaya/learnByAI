@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": {
+    "outDir": ".worker-dist"
+  },
+  "include": [],
+  "files": [
+    "src/notification-worker.ts",
+    "src/notification-dispatcher.ts",
+    "src/queue-operator.ts"
+  ]
+}

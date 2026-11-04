@@ -18,6 +18,7 @@
 | 08 | [08-push-notifications.md](./08-push-notifications.md) | Web Push 推播通知實作 |
 | 09 | [09-testing-and-debugging.md](./09-testing-and-debugging.md) | 測試、除錯與品質驗證 |
 | 10 | [10-deployment-and-real-world.md](./10-deployment-and-real-world.md) | 部署上線與實際情境排查 |
+| 11 | [11-vite-plugin-pwa-and-workbox.md](./11-vite-plugin-pwa-and-workbox.md) | vite-plugin-pwa 與 Workbox（範例專案導讀） |
 
 ---
 
@@ -48,14 +49,22 @@
 
 維運篇（上線必備）
   09 測試與除錯 → 10 部署與真實情境排查
+
+工具篇（實戰專案）
+  11 vite-plugin-pwa 與 Workbox
 ```
+
+## 範例專案
+
+[qr-pwa-app/](./qr-pwa-app/README.md)：Vue 3 + vite-plugin-pwa 的離線 QR 掃碼 App，含更新彈窗與安裝引導，第十一章逐項說明它的設定。
 
 ## 環境需求
 
-- Node.js：20+（建議 LTS）
+- Node.js：22.12+（Node 20 已於 2026-04-30 停止維護）
 - 瀏覽器：Chrome / Edge 最新版（用於完整 PWA 偵錯）
+- 實機：Android 手機與 iPhone 各一台（安裝、推播的行為差異只能在實機上確認）
 - 開發工具：Cursor / VS Code
-- 本機 HTTPS：`localhost` 可視為安全環境；正式環境需 HTTPS
+- 本機 HTTPS：`localhost`、`127.0.0.1` 可視為安全環境；正式環境需 HTTPS
 
 ---
 

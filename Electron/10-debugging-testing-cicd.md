@@ -23,6 +23,41 @@ ELECTRON_ENABLE_LOGGING=true npm run dev
 npx electron --version
 ```
 
+### 對 Main process 下中斷點
+
+DevTools 只看得到 renderer。Main process 的程式（IPC handler、選單、自動更新）要另外接除錯器：
+
+```bash
+# 以 inspector 模式啟動，Main process 會在 9229 埠等待除錯器連線
+npx electron --inspect=9229 .
+```
+
+接著在 Chrome 打開 `chrome://inspect`，在 Remote Target 找到 Electron 的項目按 inspect，就能對 `src/main/` 的程式下中斷點。要從第一行就停住（例如排查啟動流程），改用 `--inspect-brk=9229`。
+
+VS Code 使用者可以建立 `.vscode/launch.json`，按 F5 直接啟動並在 main.js 設中斷點：
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Main Process",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron",
+      "windows": {
+        "runtimeExecutable": "${workspaceFolder}/node_modules/.bin/electron.cmd"
+      },
+      "args": ["."],
+      "outputCapture": "std"
+    }
+  ]
+}
+```
+
+> 如果 `npm run dev` 一啟動就出現 `TypeError: Cannot read properties of undefined (reading 'whenReady')`，先檢查環境變數 `ELECTRON_RUN_AS_NODE`。它被設成 `1` 時，Electron 會以純 Node.js 模式執行，`require("electron")` 拿到的只是一個路徑字串，`app` 自然是 `undefined`。某些編輯器或其擴充套件開出來的終端機會帶著這個變數，執行 `unset ELECTRON_RUN_AS_NODE`（Windows PowerShell：`Remove-Item Env:ELECTRON_RUN_AS_NODE`）後再啟動即可。admin-dashboard 實戰專案的 `scripts/dev.mjs` 會自動移除它。
+
 ---
 
 ## 10.3 日誌與當機回報
@@ -41,11 +76,14 @@ npm install electron-log
 ```javascript
 const log = require("electron-log/main");
 
-// 讓 renderer 端的 console 也能匯流到同一份 log 檔
-log.initialize();
+// 讓 renderer 也能使用 electron-log；spyRendererConsole 會把 renderer 的 console.* 一併寫進 log 檔
+log.initialize({ spyRendererConsole: true });
 
-// 保留主控台輸出，同時寫入檔案
+// 檔案只記 info 以上的層級，避免 debug 訊息把 log 塞滿
 log.transports.file.level = "info";
+
+// 接住 main process 沒被 catch 的例外與 Promise rejection，寫進 log 檔
+log.errorHandler.startCatching();
 
 module.exports = log;
 ```
@@ -68,7 +106,7 @@ log 檔預設位置（依平台）：
 
 ### 捕捉當機事件
 
-即使程序整個掛掉，也應留下線索。監聽兩個當機事件寫進 log：
+main process 裡沒被 catch 的 JavaScript 例外，上面的 `errorHandler.startCatching()` 已經會寫進 log。但 renderer 或 GPU 程序整個掛掉時不會丟出例外，要另外監聽兩個當機事件：
 
 ```javascript
 // renderer 程序當掉（例如頁面 OOM、崩潰）
@@ -90,7 +128,7 @@ app.on("child-process-gone", (_event, details) => {
 
 ```bash
 # 安裝 ESLint（JavaScript 靜態分析）與 Prettier（格式化工具）
-npm install --save-dev eslint prettier eslint-config-prettier
+npm install --save-dev eslint @eslint/js globals prettier eslint-config-prettier
 
 # 初始化 ESLint 設定（互動式）
 npx eslint --init
@@ -100,9 +138,12 @@ npx eslint --init
 >
 > ```javascript
 > // eslint.config.js
+> const js = require("@eslint/js");
 > const globals = require("globals");
 >
 > module.exports = [
+>   // flat config 預設一條規則都不開，要明確加入官方推薦規則（no-unused-vars、no-undef 等）
+>   js.configs.recommended,
 >   {
 >     // main / preload：Node.js 環境
 >     files: ["src/main/**/*.js", "src/preload/**/*.js"],
@@ -117,8 +158,6 @@ npx eslint --init
 >   require("eslint-config-prettier")
 > ];
 > ```
->
-> 需要 `npm install --save-dev globals`。
 
 `package.json` 可新增：
 
@@ -285,12 +324,12 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -318,7 +357,8 @@ jobs:
 流程重點：
 
 - `--publish always`：electron-builder 打包完會直接把產物與 `latest*.yml` 上傳到 GitHub Release。第九章的自動更新讀取的正是這些檔案，這一步把「發版 → 使用者收到更新」整條鏈路接起來；少了它，建置產物會隨 CI 執行環境一起消失。
-- 這份 workflow 和第九章的 macOS 自動更新前提是一組：若 `build.mac.notarize: true`，GitHub repo 必須設定 `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` secrets。若只是課程本機練習、還沒有 Apple Developer 憑證，請先保留 `identity: null`、不要把未簽章 mac 版上傳成 auto-update 正式發佈。
+- Release 的名稱來自 `package.json` 的版本（`v` + version），不是你推上去的 tag，所以發版前一定要先更新版本號（見 10.8）。第九章 9.6 的 publish 設定加了 `releaseType: "release"`，上傳後就是正式 Release；少了它，electron-builder 預設建立 draft，electron-updater 看不到，使用者也就收不到更新。
+- 這份 workflow 和第九章的 macOS 自動更新前提是一組：若 `build.mac.notarize: true`，GitHub repo 必須設定 `CSC_LINK` / `CSC_KEY_PASSWORD` / `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` secrets。若只是課程練習、還沒有 Apple Developer 憑證，先拿掉 `notarize: true`，並在 `build.mac` 加上 `"identity": null` 明確跳過簽章（notepad-app 與 admin-dashboard 實戰專案就是這樣設定的）。但未簽章的 mac 版無法自動更新（第九章 9.9），別把它發佈成正式版本。
 - 此範例只在 macOS runner 上打包 mac 版。若要同時發佈 Windows / Linux 版，可用 `strategy.matrix` 在各自平台的 runner 上執行同一組步驟（electron-builder 的簽章與部分安裝檔格式無法跨平台產生）。
 - 上面只跑了 lint 與單元測試。要把 10.6 的 E2E 也納入把關，加一個步驟即可——但 **Linux runner 沒有桌面環境**，`electron.launch()` 會因為開不了視窗而失敗，必須包一層虛擬顯示器：
 
@@ -337,36 +377,30 @@ jobs:
 ## 10.8 發版建議流程
 
 ```bash
-# 先確認工作區乾淨，避免把暫存測試檔打進正式版
+# 先確認工作區乾淨：這次要發版的變更都已經 commit
 git status
 
-# 將本次版本變更加入暫存區
-git add .
-
-# 建立 release commit，方便追蹤這次發版內容
-git commit -m "release: v1.1.0"
-
-# 建立語意化版本標籤，觸發 CI/CD 發佈流程
-git tag v1.1.0
+# 更新 package.json 的版本號，並自動建立 commit 與 v1.1.0 tag
+# （electron-builder 用 package.json 的版本命名 Release，自動更新也是比對這個版本；tag 只負責觸發 CI）
+npm version 1.1.0 -m "release: v%s"
 
 # 推送主分支最新程式碼到遠端
 git push origin main
 
-# 單獨推送版本標籤，讓 CI 依 tag 觸發發版工作
+# 推送版本標籤，讓 CI 依 tag 觸發發版工作
 git push origin v1.1.0
-
-# 若你習慣一次推送，可改用以下單行指令（二選一）
-# git push origin main --tags
 ```
+
+`npm version` 會一次完成「改版本號、commit、打 tag」三件事，tag 與 `package.json` 的版本就不會對不上。工作區有未 commit 的變更時它會拒絕執行，這也順便擋掉了把暫存檔打進正式版的情況。
 
 ---
 
 ## 10.9 本章小結
 
-- 你建立了可重複的除錯與驗證流程
+- 你會對 Main process 下中斷點，並建立了可重複的除錯與驗證流程
 - 你用 electron-log 與當機事件建立了打包後也查得到的可觀測性
 - 你導入了 Lint、單元測試與 E2E 測試基礎
-- 你掌握了以 Git Tag 觸發 CI/CD 發版的實務路線
+- 你掌握了以 `npm version` 更新版本、Git Tag 觸發 CI/CD 發版的實務路線
 
 ---
 

@@ -28,6 +28,8 @@ function Title() {
 }
 ```
 
+瀏覽器其實看不懂 JSX：Vite 會在你存檔時先把它轉成一般的 JavaScript 函式呼叫，再交給瀏覽器執行。所以含 JSX 的檔案請用 `.jsx` 副檔名；寫在 `.js` 檔裡，Vite 預設不會轉換，會直接報語法解析錯誤。
+
 ---
 
 ## 2. JSX 三個必懂規則
@@ -65,10 +67,16 @@ const name = "Gary";
 return <h1>Hi, {name}</h1>;
 ```
 
+大括號裡只能放「運算式」，也就是會算出一個值的東西：變數、`lesson.title`、`a + b`、函式呼叫、三元運算子都可以；`if`、`for` 這類陳述式不行，第 6 節會介紹替代寫法。
+
 ### 2.3 屬性名稱用駝峰式（camelCase）
 
 - `class` -> `className`
 - `onclick` -> `onClick`
+
+`style` 不寫成 CSS 字串，而是傳一個物件，CSS 屬性名稱同樣改成駝峰式：`style={{ fontSize: 14, backgroundColor: "#eee" }}`。外層 `{}` 表示「這裡要插入 JS」，內層 `{}` 才是物件本身。
+
+> **從 HTML 貼過來最常踩的錯**：JSX 的每個標籤都必須關閉。HTML 可以只寫 `<br>`、`<img src="...">`、`<input>`，JSX 要寫成 `<br />`、`<img src="..." />`、`<input />`，否則會直接編譯失敗。
 
 ---
 
@@ -89,6 +97,8 @@ function LessonCard() {
 
 - 元件名稱首字母大寫
 - 一個元件只做一件事（顯示卡片、顯示標題、顯示清單）
+
+首字母大寫不只是風格：React 靠它分辨標籤種類，小寫開頭（`<article>`）當成 HTML 標籤，大寫開頭（`<LessonCard />`）才會去找你寫的元件。寫成 `<lessonCard />` 會被當成一個不存在的 HTML 標籤，畫面上什麼都不會出現，只會在 console 看到警告。
 
 ---
 
@@ -116,6 +126,12 @@ function LessonCard() {
 ```
 
 `key` 建議用資料本身的 id，不要用 index（除非真的沒有穩定 id）。
+
+`key` 是給 React 看的：重新渲染時，React 靠它對應「哪一筆是哪一筆」，才知道該新增、移除或保留哪個元素。少了 `key`，console 會出現 `Each child in a list should have a unique "key" prop.` 警告。
+
+- `key` 要放在 `map` 直接回傳的那個元素上（這裡是 `<LessonCard>`，不是 `LessonCard` 裡面的 `<article>`）。
+- `key` 不會傳進子元件的 props；子元件需要 id 時，要另外用一般的 prop 傳。
+- 用 index 當 key 的問題：清單插入、刪除或排序後，同一個 index 會對應到不同資料，元件內的狀態（例如輸入框內容、勾選狀態）可能跟錯項目。
 
 ---
 
@@ -219,6 +235,8 @@ function CourseHeader({ title, subtitle }) {
 
 export default CourseHeader;
 ```
+
+`App` 裡的 `<CourseHeader title="..." subtitle="..." />`、`<LessonList lessons={lessons} />`，是把資料當成 **props** 傳給子元件；子元件在參數位置用第 2 章的解構 `{ title, subtitle }` 取出來。下一章會詳細說明 props。
 
 ### `src/components/LessonCard.jsx`
 

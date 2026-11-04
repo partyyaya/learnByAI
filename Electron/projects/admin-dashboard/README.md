@@ -62,7 +62,7 @@
 
 ## 快速開始
 
-> 需要 **Node.js 20.19 以上**（Vite 8 的要求）。本機預設的 `node` 可能是舊版，請先 `nvm use 20.19.5` 再操作。
+> 需要 **Node.js 22.12 以上**（Vite 8 與 electron-builder 的相依套件都有版本要求）。本機預設的 `node` 可能是舊版，請先 `nvm use 22` 再操作。
 
 ```bash
 cd Electron/projects/admin-dashboard
@@ -814,7 +814,7 @@ contextBridge.exposeInMainWorld("appWindow", {
 ipcMain.on("titlebar:theme", (event, theme) => {
   const overlay = TITLEBAR_THEMES[theme];
   const win = BrowserWindow.fromWebContents(event.sender);
-  // macOS 的紅綠燈顏色改不動；setTitleBarOverlay 也只有 Windows 有
+  // macOS 的紅綠燈顏色改不動；setTitleBarOverlay 也只有 Windows / Linux 有
   if (!overlay || !win || IS_MAC || typeof win.setTitleBarOverlay !== "function") return;
   win.setTitleBarOverlay({ height: TITLEBAR_HEIGHT, ...overlay });
 });
@@ -887,9 +887,7 @@ npm run dist    # vite build + electron-builder       → release/後台管理-1
 
 - **打包前一定要先 `vite build`**，所以 `pack` / `dist` 兩個指令都把它串在前面了。忘了的話 `dist-renderer/` 是舊的，或者根本不存在，打出來的 App 一開就白畫面。
 - **macOS 產物指定 universal + zip**：universal 同時支援 Intel 與 Apple Silicon；zip 是之後若接上 electron-updater 時的 macOS 更新包格式。
-- **`identity: null` 是「不簽章」**。自己在本機跑沒問題，發給別人會被 Gatekeeper 擋。要散佈得申請 Apple Developer ID 憑證再加 notarize，見第八章。
-
-> `npm install` 時 `node-abi` 會警告需要 Node 22.12+。那是 `electron-builder` 的相依套件，只在**打包**時才會用到；`npm run dev` 與 `npm run build` 在 Node 20.19 上完全正常。真的要打包再切到 Node 22 以上。
+- **`identity: null` 是「不簽章」**。自己在本機跑沒問題，發給別人會被 Gatekeeper 擋。要散佈得申請 Apple Developer ID 憑證再加 notarize，見第九章 9.9。
 
 ---
 

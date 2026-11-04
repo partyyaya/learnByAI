@@ -13,7 +13,7 @@ Next.js 課程（[../](../)）第 15 章的整合成品：用 **App Router + Ser
 
 ## 需求
 
-- Node.js **18.18+ 或 20+**（本機若預設太舊：`nvm use 20`）
+- Node.js **22 LTS 或更新的 LTS 版本**（本機若預設太舊：`nvm use 22`）
 
 ## 快速開始
 
@@ -63,7 +63,7 @@ blog-demo/
 │  ├─ ThemeToggle.js     # 主題切換（Client）
 │  ├─ page.js            # 首頁：已發佈文章列表
 │  ├─ posts/[id]/
-│  │  ├─ page.js         # 文章詳情 + generateMetadata
+│  │  ├─ page.js         # 文章詳情 + generateMetadata（getPost 用 cache() 只查一次）
 │  │  └─ not-found.js    # 找不到文章
 │  ├─ login/
 │  │  ├─ page.js         # 登入表單（Client）
@@ -74,7 +74,8 @@ blog-demo/
 │     ├─ actions.js      # 建立/刪除/切換發佈 Server Actions
 │     ├─ PostForm.js     # 新增表單（Client）
 │     └─ SubmitButton.js # 送出中狀態按鈕（Client）
-└─ middleware.js         # 保護 /admin 的第一道防護
+├─ middleware.js         # 保護 /admin 的第一道防護
+└─ eslint.config.mjs     # ESLint 設定（npm run lint）
 ```
 
 ## 操作導覽

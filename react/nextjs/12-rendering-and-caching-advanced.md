@@ -28,6 +28,8 @@ App Router 的每個頁面，Next.js 會判斷它是**靜態**還是**動態**�
 
 > 心智模型：**能靜態就靜態，需要即時或個人化才動態。** Next.js 會自動判斷，你也能手動指定。
 
+> **怎麼確認判斷結果**：跑 `npm run build`，輸出的路由表會在每條路由前標 `○`（靜態）或 `ƒ`（動態）。`npm run dev` 的開發模式每次請求都會重新渲染，看不出靜態、ISR 的差別，所以本章的實驗都要用 `npm run build && npm start` 觀察。
+
 ---
 
 ## 2. 三種策略：SSG / SSR / ISR
@@ -38,27 +40,32 @@ App Router 的每個頁面，Next.js 會判斷它是**靜態**還是**動態**�
 | **SSR**（伺服器渲染） | 每次請求 | 個人化、即時：儀表板、購物車、需登入頁 |
 | **ISR**（增量靜態再生） | build 產生 + 定時背景更新 | 內容會變但可容忍延遲：部落格列表、商品頁 |
 
-ISR 就是第 5 章的 `next: { revalidate: 秒數 }`——兼顧靜態速度與內容更新。
+ISR 就是第 5 章的 `next: { revalidate: 秒數 }`，下一節也會介紹整頁層級的 `export const revalidate`。它兼顧靜態速度與內容更新。過期後的第一個請求仍會先拿到舊頁面，同時在背景重新產生，下一個請求才看到新版。
 
 ---
 
 ## 3. 路由段設定：整頁層級控制
 
-在 `page.js` / `layout.js` export 這些變數，可以控制整條路由段的行為：
+在 `page.js` / `layout.js` export 這些變數，可以控制整條路由段的行為（下面是選項一覽，同一個檔案的 `dynamic` 只能選一種）：
 
 ```jsx
 // 強制動態（每次請求都重新渲染）
 export const dynamic = "force-dynamic";
 
-// 強制靜態（用到動態 API 會報錯，適合確保頁面是靜態）
+// 強制靜態：就算用了 cookies()、headers()、searchParams，也只會拿到空值
 export const dynamic = "force-static";
+
+// 要求靜態：一用到動態 API 就讓 build 報錯，適合確保頁面一定是靜態
+export const dynamic = "error";
 
 // 整頁的重新驗證秒數（ISR）
 export const revalidate = 60;
 
-// 控制此段所有 fetch 的預設快取
+// 控制此段 fetch 的預設快取：沒寫 cache 選項的 fetch 一律當 force-cache
 export const fetchCache = "default-cache";
 ```
+
+> 這些值必須直接寫成字面值。`export const revalidate = 60 * 5` 這種算式，Next.js 在建置時讀不懂，會直接讓 build 失敗（`Unsupported node type "BinaryExpression"`），要寫成 `300`。
 
 常見組合：
 
@@ -76,7 +83,9 @@ export default async function BlogPage() {
 
 ## 4. 快取非 fetch 的資料：unstable_cache
 
-`fetch` 的快取只對 `fetch` 有效。但你若用 **Prisma / DB 查詢**（不是 fetch），要另外用 `unstable_cache` 包起來才能快取：
+`fetch` 的快取只對 `fetch` 有效。但你若用 **Prisma / DB 查詢**（不是 fetch），要另外用 `unstable_cache` 包起來，「這份資料」才會被快取。
+
+先分清兩層快取：沒用到動態 API 的頁面，就算直接查 Prisma，整頁也會在 build 時產生成靜態 HTML（第 15 章的首頁就是這樣，再配 `revalidate`）。`unstable_cache` 管的是資料這一層：頁面是動態的（例如讀了 cookies），查詢結果也能重複使用，不必每次都打 DB；也可以掛上 tag，讓你精準失效。
 
 ```jsx
 import { unstable_cache } from "next/cache";
@@ -97,6 +106,8 @@ export default async function Page() {
 
 > 名稱有 `unstable_` 前綴代表 API 可能微調，但功能穩定、廣泛使用。用它把「昂貴的 DB 查詢」快取起來，能大幅減少資料庫壓力。
 
+> **注意**：快取的結果會先轉成 JSON 存起來，所以命中快取時，`Date` 欄位（如 `createdAt`）會變成字串。要格式化日期時，先用 `new Date(post.createdAt)` 包一次最保險。
+
 ---
 
 ## 5. cache tags 與 revalidateTag
@@ -116,6 +127,7 @@ await fetch(url, { next: { tags: ["posts"] } });
 ```jsx
 "use server";
 import { revalidateTag } from "next/cache";
+import { prisma } from "@/lib/prisma";
 
 export async function createPost(formData) {
   await prisma.post.create({ /* … */ });
@@ -128,13 +140,17 @@ export async function createPost(formData) {
 - `revalidatePath("/blog")`：我知道要更新哪條路徑。
 - `revalidateTag("posts")`：我只知道「文章資料變了」，讓所有用到文章的地方一起更新。
 
+> **版本提醒**：本課的 `revalidateTag("posts")` 是 Next.js 15 的寫法。到了 Next.js 16，`revalidateTag` 要多傳第二個參數（快取設定檔，例如 `revalidateTag("posts", "max")`），只傳一個參數會被標示為棄用。
+
 ---
 
 ## 6. PPR 概念（部分預渲染）
 
 Next.js 正在推進 **Partial Prerendering（PPR）**：同一頁裡，靜態外殼（版面、頁首）先秒出，動態區塊（個人化內容）用 Suspense 串流補上——把 SSG 的速度與 SSR 的即時合在同一頁。
 
-它目前屬於實驗性功能（需在 config 開啟），觀念先知道即可：**未來趨勢是「一頁混合靜態與動態」，而不是整頁二選一。**
+它在 Next.js 15 屬於實驗性功能：要在 config 開 `experimental.ppr`，而且只有 canary 版能開，正式版一開就會 build 失敗。觀念先知道即可：**未來趨勢是「一頁混合靜態與動態」，而不是整頁二選一。**
+
+> 到了 Next.js 16，這套做法改由 `cacheComponents` 設定搭配 `"use cache"` 提供，`experimental.ppr` 不再使用。
 
 ---
 
@@ -149,7 +165,7 @@ Next.js 正在推進 **Partial Prerendering（PPR）**：同一頁裡，靜態�
 
 ## 最後範例：同一份資料，三種渲染策略對照
 
-> 三個頁面用同一支資料函式，分別示範 SSG / ISR / SSR，讓你直接看出差異。原樣建立即可跑，`npm run build` 時留意每頁的標記（○ 靜態、ƒ 動態）。
+> 三個頁面用同一支資料函式，分別示範 SSG / ISR / SSR，讓你直接看出差異。原樣建立即可跑，`npm run build` 時留意每頁的標記（○ 靜態、ƒ 動態；ISR 頁同樣是 ○，旁邊會另外註明重新驗證的間隔）。
 
 ### `lib/data.js`（共用資料函式）
 
@@ -168,7 +184,8 @@ export async function getSnapshot() {
 ```jsx
 import { getSnapshot } from "@/lib/data";
 
-// 沒有任何動態 API、沒有 revalidate → 預設靜態，build 時算一次
+// 沒有任何動態 API、沒有 revalidate → 預設就是靜態，build 時算一次
+// 這裡再加 force-static，明確鎖定為靜態
 export const dynamic = "force-static";
 
 export default async function SsgPage() {
@@ -199,7 +216,7 @@ export default async function IsrPage() {
       <h1>ISR（增量靜態再生）</h1>
       <p>值：{snap.value}</p>
       <p className="muted">渲染時間：{snap.renderedAt}</p>
-      <p className="muted">重整：10 秒內<strong>不變</strong>，過期後下次重整才更新。</p>
+      <p className="muted">重整：10 秒內<strong>不變</strong>；過期後第一次重整仍是舊的（背景同時重新產生），再重整一次才看到新的。</p>
     </main>
   );
 }

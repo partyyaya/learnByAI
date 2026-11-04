@@ -127,7 +127,7 @@ export default function Timer() {
 }
 ```
 
-若改成 `setCount(count + 1)` 卻保留 `[]`，callback 會一直要求設成最初的 `count + 1`。
+若改成 `setCount(count + 1)` 卻保留 `[]`，callback 會一直要求設成最初的 `count + 1`，也就是每秒都設成 1，畫面停在 1。
 加上 `[count]` 可以讓它讀新值，但也會每次清掉並重建計時器。
 這裡用 updater 消除了對外層 `count` 的讀取，所以 `[]` 才是合理的；若計時器還使用 `step` prop，就仍應把 `step` 列入依賴。
 
@@ -137,9 +137,9 @@ export default function Timer() {
 
 ## 3. API 狀態建議拆三種
 
-1. `loading`: 是否正在請求
-2. `error`: 是否失敗
-3. `data`: 成功資料
+1. `loading`：是否正在請求
+2. `error`：是否失敗
+3. `data`：成功資料
 
 不要只用單一布林值，否則畫面狀態會不完整。
 
@@ -151,24 +151,30 @@ export default function Timer() {
 可用 `AbortController` 取消前一個請求：
 
 ```jsx
-const controller = new AbortController();
-fetch(url, { signal: controller.signal });
-return () => controller.abort();
+useEffect(() => {
+  const controller = new AbortController();
+  fetch(url, { signal: controller.signal });
+  return () => controller.abort();
+}, [url]);
 ```
+
+`url` 一改變，React 會先執行上一次的 cleanup，中止還沒回來的舊請求，再替新的 `url` 發出請求。
+被中止的 `fetch` 會以名為 `AbortError` 的錯誤 reject：這是我們主動取消的，不該顯示成錯誤訊息。
+`finally` 也一樣會執行；若在那裡關掉 loading，會連新請求的 loading 一起關掉。完整寫法見第 6 節與最後範例。
 
 ---
 
 ## 5. 為什麼開發時 effect 會跑兩次？（StrictMode）
 
 用本章範例打 API 時，你會在 Network 面板看到**同一個請求發了兩次**。  
-這不是 bug：`main.jsx` 裡的 `<React.StrictMode>` 在**開發模式**會刻意把
+這不是 bug：`main.jsx` 裡的 `<React.StrictMode>` 在**開發模式**會刻意在元件掛載時
 額外執行一次「setup → cleanup」，再執行正常的 setup，幫你提早發現無法正確清理的 Effect。
 
 要知道三件事：
 
 1. 這次額外檢查只發生在開發模式；正式版仍可能因重新掛載或依賴改變而再次執行。
 2. 不要為了「只跑一次」移除 StrictMode 或亂加旗標——正確解法是把 cleanup 寫好。
-3. 本章範例的 `AbortController` 就是正確示範：第一次的請求會在 cleanup 時被中止。
+3. 本章範例的 `AbortController` 就是正確示範：第一次的請求會在 cleanup 時被中止，在 Chrome 的 Network 面板通常會標示為 `(canceled)`。
 
 > 判斷準則：**檢查 setup 與 cleanup 是否對稱；像送出訂單這種由特定操作觸發的行為，應放在事件處理器。**
 
@@ -204,7 +210,7 @@ export function useTodos(userId) {
       } catch (err) {
         if (err.name !== "AbortError") setError(err.message);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }
 
@@ -282,7 +288,10 @@ function App() {
           setError(err.message || "發生未知錯誤");
         }
       } finally {
-        setLoading(false);
+        // 被中止的是舊請求，新的 Effect 已接手 loading，這裡不能把它關掉
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     }
 
@@ -402,9 +411,10 @@ li {
 ### 範例解釋
 
 1. 第一個 `useEffect` 依賴 `userId`，所以每次切換使用者都會重新抓取資料。
-2. `AbortController` 在 cleanup 時中止前一次請求，避免競態覆蓋問題。
-3. 狀態被拆成 `loading / error / todos`，畫面分支清楚，不會互相衝突。
-4. 第二個 `useEffect` 示範非 API 副作用（同步更新頁面標題）。
+2. `AbortController` 在 cleanup 時中止前一次請求，避免競態覆蓋問題。被中止的請求仍會走到 `catch` 與 `finally`，所以兩處都先排除中止的情況；否則會誤報錯誤，或在新請求還沒回來時就關掉 loading，讓上一位使用者的待辦出現在新標題下。
+3. `fetch` 只有在網路層失敗（例如斷線、被中止）時才會 reject；伺服器回 404、500 仍算拿到回應，所以要自己檢查 `response.ok` 並丟出錯誤，才會進到 `catch`。
+4. 狀態被拆成 `loading / error / todos`，畫面分支清楚，不會互相衝突。
+5. 第二個 `useEffect` 示範非 API 副作用（同步更新頁面標題）。
 
 ---
 

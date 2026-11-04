@@ -49,7 +49,7 @@ React 是一個「用元件建構 UI」的函式庫。
 
 ### 3.1 安裝 Node.js
 
-建議安裝 Node.js LTS 版本（18+）。
+建議安裝 Node.js 22 LTS 或更新的 LTS 版本。
 
 安裝後請確認：
 
@@ -57,6 +57,8 @@ React 是一個「用元件建構 UI」的函式庫。
 node -v
 npm -v
 ```
+
+`node -v` 若顯示 `v18`、`v20` 等舊版本，請先升級：較新的 Vite 需要較新的 Node，版本太舊時安裝會出現 Node 版本不符的警告（例如 `EBADENGINE`），`npm run dev` 也可能直接失敗。
 
 ### 3.2 推薦工具
 
@@ -75,7 +77,11 @@ npm install
 npm run dev
 ```
 
-啟動後會看到本機開發網址（通常是 `http://localhost:5173`）。
+第一次執行 `npm create` 時，npm 可能會問是否安裝 `create-vite`（`Ok to proceed?`），按 `y` 繼續；若建立工具還詢問其他選項，選預設值即可（如果它已經幫你裝好並啟動，後面的 `npm install`、`npm run dev` 就不用再跑）。
+
+啟動後會看到本機開發網址（通常是 `http://localhost:5173`），用瀏覽器打開即可；要停止開發伺服器，在終端機按 `Ctrl + C`。
+
+> **版本說明**：這個模板會安裝最新版的 React（目前是 19），可以在 `package.json` 的 `dependencies` 看到版本。本課範例以 React 18 寫成，在 19 上照樣能跑；少數在 19 有差異或有新寫法的地方，課文會另外提醒。
 
 ---
 
@@ -83,8 +89,9 @@ npm run dev
 
 建立完成後，先認識幾個最常碰到的檔案：
 
-- `index.html`：入口 HTML，提供掛載節點
-- `src/main.jsx`：React 進入點，掛載根元件
+- `package.json`：專案用到的套件與版本，以及 `npm run dev` 這類指令的定義
+- `index.html`：入口 HTML，提供掛載節點（`<div id="root"></div>`）
+- `src/main.jsx`：React 進入點，把根元件掛到 `#root` 上
 - `src/App.jsx`：主要頁面元件
 - `src/assets/`：圖片與靜態資源
 
@@ -100,7 +107,7 @@ npm run dev
 
 1. 啟動開發伺服器：`npm run dev`
 2. 修改 `src` 內元件
-3. 觀察瀏覽器即時更新（HMR）
+3. 觀察瀏覽器即時更新（HMR，Hot Module Replacement：存檔後只替換改到的模組，不用手動重新整理）
 4. 開啟 console 看是否有錯誤
 5. 版本控制提交（每個小步驟一個 commit）
 
@@ -119,6 +126,8 @@ npm run dev
 
 ## 最後範例：React 開發環境健康檢查頁
 
+以下三個檔案，直接用整份內容取代模板裡的同名檔案。
+
 ### `src/main.jsx`
 
 ```jsx
@@ -133,6 +142,9 @@ ReactDOM.createRoot(document.getElementById("root")).render(
   </React.StrictMode>
 );
 ```
+
+- 模板原本在這裡引入 `./index.css`，本例改成引入 `./App.css`，樣式全部寫在 `App.css`。`index.css` 不再使用，留著或刪掉都可以；若保留原本的引入，模板的預設樣式（背景色、排版等）會和本例樣式疊在一起，畫面會跟預期不同。
+- `<React.StrictMode>` 是開發模式專用的檢查工具，不會出現在畫面上；它造成的「某些程式執行兩次」現象，第 7 章會說明。
 
 ### `src/App.jsx`
 
@@ -169,6 +181,8 @@ function App() {
 
 export default App;
 ```
+
+`{today}` 這種大括號寫法、`goals.map(...)` 渲染清單與 `key`，第 3 章會詳細說明，這裡先照打、確認畫面出現即可。
 
 ### `src/App.css`
 

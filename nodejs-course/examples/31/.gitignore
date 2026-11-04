@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.test-dist/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.data/
+src/generated/
+deploy/local/
+.runtime-dist/
+deploy/.init-*/
+.worker-dist/

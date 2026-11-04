@@ -244,11 +244,11 @@ upstream backend {
 | 參數 | 說明 |
 |------|------|
 | `weight=N` | 權重，預設為 1 |
-| `max_fails=N` | 允許失敗次數，超過則視為不可用，預設為 1 |
+| `max_fails=N` | 在 `fail_timeout` 時間內失敗達到這個次數就視為不可用，預設為 1（設 0 停用計數） |
 | `fail_timeout=Ns` | 失敗後的暫停時間，預設為 10s |
 | `backup` | 備用伺服器 |
 | `down` | 標記為永久下線 |
-| `max_conns=N` | 限制最大並發連線數 |
+| `max_conns=N` | 限制最大並發連線數（要搭配 `zone` 才是全部 worker 共用的上限） |
 | `slow_start=Ns` | 伺服器恢復後，權重逐漸增加的時間（商業版） |
 
 > 補充說明（容易誤解的地方）
@@ -259,6 +259,7 @@ upstream backend {
 > - `backup`：平常完全不接請求，只有所有非 backup 伺服器都不可用時才啟用；不能與 `hash`、`ip_hash`、`random` 演算法併用。
 > - `down`：常用於維護或滾動更新（見 5.8）；在 `ip_hash` 場景要下線伺服器時，用 `down` 而不是刪除該行，才能維持其他客戶端的雜湊對應。
 > - `max_conns=N`：限制單台伺服器的最大並發連線數，預設 0（不限制）；後端容量有限（例如資料庫連線池只有 50 條）時很實用。
+>   - 注意：upstream 沒有 `zone` 時，這個上限是**每個 worker 各自計算**——4 個 worker 就可能同時開到 4 倍。要當成整體上限，在 upstream 裡加一行 `zone backend 64k;`，讓這個群組的設定與執行期狀態放進各 worker 共用的共享記憶體。
 > - `slow_start`：僅商業版（NGINX Plus）支援，開源版寫了會報錯。
 
 ---
@@ -316,7 +317,7 @@ server {
   - 含重試在內的總時間上限，超過 10 秒就放棄、回錯誤給客戶端。
   - 預設 0 = 不限制。與 `tries` 兩者「先到先生效」。
 
-> **常見錯誤**：POST 等「非冪等」請求預設**不會**被轉送到下一台重試（避免重複扣款、重複建單）。若確定後端能承受重複請求，才在 `proxy_next_upstream` 額外加上 `non_idempotent`。
+> **常見錯誤**：POST 等「非冪等」請求，只要已經送到某台後端，預設就**不會**再轉送到下一台重試（避免重複扣款、重複建單）；連線階段就失敗、請求根本沒送出去的情況，仍會換下一台。若確定後端能承受重複請求，才在 `proxy_next_upstream` 額外加上 `non_idempotent`。
 
 ---
 
@@ -371,14 +372,15 @@ server {
   - 不設會怎樣：查不到時 `$backend_server` 會是空字串，`proxy_pass http://;` 直接導致 500 錯誤。
 - `proxy_pass http://$backend_server;`
   - `proxy_pass` 搭配**變數**使用：轉發目標在每個請求時動態決定。
-  - 注意：走變數時就**不會**經過 upstream 群組，因此 5.4 / 5.5 的 `max_fails`、`backup`、`keepalive` 等機制都不適用，該台掛了也不會自動轉移到別台。
+  - 注意：這個例子的 map 結果是 `IP:port`，所以**不會**經過 upstream 群組，5.4 / 5.5 的 `max_fails`、`backup`、`keepalive` 等機制都不適用，該台掛了也不會自動轉移到別台。
+  - 改進做法：讓 map 輸出 upstream 群組名稱（例如 `server1 app1;`，再分別定義 `upstream app1 { ... }`、`upstream app2 { ... }`）。`proxy_pass` 的變數值會先比對已定義的 upstream 名稱，命中時這些機制就能照常運作。
   - 若 map 的結果是域名而非 IP，還需要額外設定 `resolver`，否則無法解析。
 
 > **誰負責寫入 Cookie？**
 >
 > - 這個方法需要**後端應用程式**在第一次回應時設定 Cookie，例如：`Set-Cookie: SERVERID=server1; Path=/`。
 > - 之後瀏覽器每次請求都會帶上這個 Cookie，Nginx 依它把請求導回同一台。
-> - 補充：開源版 Nginx 沒有 `sticky cookie` 指令（那是商業版 NGINX Plus 的功能），`map + $cookie_*` 正是開源版常見的替代做法。
+> - 補充：`sticky` 指令原本是商業版 NGINX Plus 專屬，開源版到 1.29.6 才有（在 upstream 裡寫 `sticky cookie srv_id expires=1h;`，Nginx 會自己發 Cookie 並依它導回同一台）；1.24 沒有這個指令，`map + $cookie_*` 正是常見的替代做法。
 > - 與 ip_hash 相比的優點：不受 CDN / NAT 影響，粘性跟著瀏覽器走，而不是跟著出口 IP 走。
 
 ### 方法三：後端共享 Session（最佳解法）
@@ -429,7 +431,7 @@ upstream api_servers {
     # 備用伺服器（上面三台全部不可用時才啟用）
     server 10.0.2.10:3000 backup;
 
-    # Keep-Alive 連線池（需搭配下方 proxy_http_version 1.1 與 Connection "" 才會生效）
+    # Keep-Alive 連線池（1.24 需搭配下方 proxy_http_version 1.1 與 Connection "" 才會生效）
     keepalive 32;               # 每個 worker 行程最多保留 32 條「閒置」後端連線
     keepalive_requests 1000;    # 單條後端連線最多承載 1000 個請求後關閉重建
     keepalive_timeout 60s;      # 閒置的後端連線最多保留 60 秒
@@ -444,7 +446,7 @@ server {
 
     location / {
         proxy_pass http://api_servers;   # 轉發給 upstream 群組
-        proxy_http_version 1.1;          # 對後端改用 HTTP/1.1（預設 1.0 不支援 Keep-Alive）
+        proxy_http_version 1.1;          # 對後端改用 HTTP/1.1（1.24 預設 1.0，不支援 Keep-Alive）
 
         # Keep-Alive 支援（配合 upstream 的 keepalive）
         proxy_set_header Connection "";  # 清空 Connection 標頭，後端連線才能重複使用
@@ -468,8 +470,8 @@ server {
 
     # 健康檢查端點（不需負載均衡，由 Nginx 直接回應）
     location /nginx-health {
+        default_type text/plain;              # 標示回應為純文字
         return 200 'OK';                      # 直接回 200 與內容 OK，不打後端
-        add_header Content-Type text/plain;   # 標示回應為純文字
     }
 }
 ```
@@ -494,12 +496,13 @@ server {
 **為什麼需要 `proxy_http_version 1.1` 和 `Connection ""`？**
 
 > - `proxy_http_version 1.1;`
->   - Nginx 對後端**預設使用 HTTP/1.0**，而 HTTP/1.0 不支援連線重複使用——不設這行，upstream 的 `keepalive` 形同虛設。
+>   - Nginx 1.24 對後端**預設使用 HTTP/1.0**，而 HTTP/1.0 不支援連線重複使用——不設這行，upstream 的 `keepalive` 形同虛設。
 > - `proxy_set_header Connection "";`
->   - Nginx 預設會對後端送出 `Connection: close`，等於每個請求做完就要求後端關閉連線。
+>   - Nginx 1.24 預設會對後端送出 `Connection: close`，等於每個請求做完就要求後端關閉連線。
 >   - 把值設為空字串 `""` 時，Nginx 會**完全不送出**這個標頭；HTTP/1.1 預設行為就是 keep-alive，連線因此才能真正重複使用。
->   - 另一個作用：`Connection` 是「逐跳標頭」（hop-by-hop header），只對相鄰兩端有效；清空它可避免把客戶端帶來的 `Connection: close` 原封不動轉給後端造成干擾。
-> - 三者缺一不可：`keepalive`（連線池）+ `proxy_http_version 1.1`（協定支援）+ `proxy_set_header Connection ""`（不主動要求關閉）。
+>   - 補充：`Connection` 是「逐跳標頭」（hop-by-hop header），只對相鄰兩端有效；客戶端送來的 `Connection` 本來就不會轉給後端，Nginx 對後端送什麼，完全由 `proxy_set_header Connection` 決定。
+> - 在 1.24 三者缺一不可：`keepalive`（連線池）+ `proxy_http_version 1.1`（協定支援）+ `proxy_set_header Connection ""`（不主動要求關閉）。
+> - 版本差異：1.29.7 起 `proxy_http_version` 預設就是 1.1、預設不送 `Connection` 標頭，upstream 也預設啟用 `keepalive`（每個 worker 32 條），這三行寫了也無害。
 
 **log_format 中的 upstream 變數**
 
@@ -531,7 +534,7 @@ server {
 **健康檢查端點**
 
 > - `location /nginx-health` 用來給外部監控（或上層 LB）確認「Nginx 本身」活著，請求不會進到後端。
-> - 補充：更乾淨的寫法是在這個 location 裡用 `default_type text/plain;` 取代 `add_header Content-Type ...;`，可避免回應出現重複的 Content-Type 標頭。
+> - `default_type text/plain;` 指定這個回應的 Content-Type；不要改用 `add_header Content-Type ...;`，那會讓回應出現兩個 Content-Type 標頭。
 
 > **驗證方式**：
 >
@@ -634,6 +637,7 @@ proxy_read_timeout 120s;
 # → 調整容錯參數
 upstream backend {
     server 10.0.1.10:3000 max_fails=5 fail_timeout=10s;
+    server 10.0.1.11:3000 max_fails=5 fail_timeout=10s;
 }
 
 # 3. 後端記憶體不足
@@ -645,6 +649,7 @@ ssh admin@10.0.1.10 "free -m && top -bn1 | head -20"
 >
 > - `proxy_read_timeout 120s;` 與 `upstream { ... }` 是 Nginx 設定（要寫回對應的設定檔再 reload），不是 bash 指令；這裡只是並列展示排查方向。
 > - `max_fails=5 fail_timeout=10s` 的調整邏輯：放寬失敗次數（3 → 5）、縮短停用時間（30s → 10s），讓偶發抖動不會輕易把整台踢下線。
+> - upstream 裡只有一台伺服器時，`max_fails` / `fail_timeout` 會被忽略，那台永遠不會被標記為不可用。
 > - `free -m`：以 MB 為單位查看記憶體使用；`top -bn1 | head -20`：批次模式跑一次 top 並取前 20 行，快速看 CPU / 記憶體吃緊的行程。
 
 ### 情境三：負載不均勻
@@ -702,7 +707,7 @@ sudo nginx -s reload
 - `least_conn` 是大多數場景的最佳選擇
 - 被動健康檢查透過 `max_fails` 和 `fail_timeout` 實現
 - 使用 `keepalive` 減少後端連線建立的開銷
-- upstream 的 `keepalive` 必須搭配 `proxy_http_version 1.1` 與 `proxy_set_header Connection "";` 才會生效
+- 在 1.24，upstream 的 `keepalive` 必須搭配 `proxy_http_version 1.1` 與 `proxy_set_header Connection "";` 才會生效（1.29.7 起三者都是預設）
 - `hash` 演算法用於快取場景時，記得加上 `consistent` 避免擴縮容造成快取雪崩
 - Session 持久化最好透過後端共享 Session 儲存來實現
 - 滾動更新可以實現零停機部署

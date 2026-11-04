@@ -168,7 +168,7 @@ const adapter = new PrismaPg({ connectionString, max: 5 });
 const db = new PrismaClient({ adapter });
 ```
 
-這是最小輪廓。完整程式還處理 schema 名稱、連線等待上限與 SQL statement timeout。每個程序建立一份 client／pool，不應每次 HTTP 請求都建立再銷毀一個連線池。[Prisma 7 PostgreSQL adapter](https://www.prisma.io/docs/orm/v7/core-concepts/supported-databases/postgresql)
+這是最小輪廓。完整程式還處理 schema 名稱、連線等待上限與 SQL statement timeout。正式入口讓同一應用共用一份 client／pool，不應每次 HTTP 請求都建立再銷毀連線池；測試若在同一程序建立兩個獨立應用，仍可各有自己的 pool，關閉其中一個不能影響另一個。max: 5 是每份 pool 的上限，不是所有程序合計五條連線。[Prisma 7 PostgreSQL adapter](https://www.prisma.io/docs/orm/v7/core-concepts/supported-databases/postgresql)
 
 ## 11.7 migration 是結構變更的歷史
 

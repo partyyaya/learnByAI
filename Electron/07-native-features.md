@@ -8,6 +8,8 @@
 - 原生對話框（Dialog）
 - 剪貼簿（Clipboard）
 - 開啟外部連結（Shell）
+- 拖放檔案取得路徑（webUtils）
+- 深層連結（自訂協定）
 
 ---
 
@@ -113,6 +115,7 @@ const { syncAutoLaunchOnStartup } = require("./store/auto-launch"); // 第六章
 
 app.whenReady().then(() => {
   registerSystemIpc(); // 第四章
+  registerWindowIpc(); // 第四章 4.6
   registerSettingsIpc(); // 第六章
   syncAutoLaunchOnStartup(); // 第六章 6.8
   registerNativeIpc(); // 本章新增
@@ -150,6 +153,13 @@ contextBridge.exposeInMainWorld("appInfo", {
 contextBridge.exposeInMainWorld("systemApi", {
   getInfo() {
     return ipcRenderer.invoke("system:get-info");
+  }
+});
+
+// 第四章 4.6：進度條
+contextBridge.exposeInMainWorld("appWindow", {
+  setProgress(value) {
+    ipcRenderer.send("window:set-progress", value);
   }
 });
 
@@ -244,7 +254,56 @@ npm run dev
 
 ---
 
-## 7.6 深層連結（自訂協定 `myapp://`）
+## 7.6 拖放檔案：取得檔案路徑
+
+把檔案拖進視窗是桌面 App 很常見的操作。網頁的 `drop` 事件拿得到 `File` 物件，但若要交給 Main 讀檔，需要的是**完整路徑**。舊教學常寫 `file.path`，這個由 Electron 額外加上的屬性已在 Electron 32 移除；現在要在 preload 用 `webUtils.getPathForFile()` 換成路徑。
+
+`src/preload/preload.js`：開頭的 `require` 多取一個 `webUtils`，並在 7.3 的 `nativeApi` 加一個方法：
+
+```javascript
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
+
+// ...其他 API 保留不動
+
+contextBridge.exposeInMainWorld("nativeApi", {
+  // ...7.3 的 showOpenDialog、notify、copy、openExternal 保留不動
+
+  // 本節新增：把拖進來的 File 物件換成完整路徑
+  getPathForFile(file) {
+    return webUtils.getPathForFile(file);
+  }
+});
+```
+
+`src/renderer/index.html` 加一塊拖放區：
+
+```html
+<div id="dropZone">把檔案拖到這裡</div>
+```
+
+`src/renderer/app.js`（加在檔案最後）：
+
+```javascript
+const dropZone = document.getElementById("dropZone");
+
+// dragover 不取消預設行為的話，drop 事件根本不會觸發
+dropZone.addEventListener("dragover", (event) => event.preventDefault());
+
+dropZone.addEventListener("drop", (event) => {
+  event.preventDefault();
+  const paths = [...event.dataTransfer.files].map((file) => window.nativeApi.getPathForFile(file));
+  nativeOutput.textContent = JSON.stringify(paths, null, 2);
+});
+```
+
+兩個注意點：
+
+- 檔案若被丟在拖放區**以外**的地方，Chromium 的預設行為是把整個視窗導向那個檔案。第九章 9.5 的導航限制會把這種導航擋下來。
+- 之後若要把路徑交給 Main 讀檔，Main 端仍要自己檢查（副檔名、檔案大小）。Renderer 可以傳任何字串過來，「這是使用者剛拖進來的檔案」只是前端的說法。
+
+---
+
+## 7.7 深層連結（自訂協定 `myapp://`）
 
 深層連結讓外部（瀏覽器、其他 App、OAuth 登入回呼）能用 `myapp://...` 這種自訂網址喚起你的 App 並帶入資料，是「在 App 中開啟」、登入回跳這類功能的基礎。
 
@@ -283,19 +342,43 @@ function findDeepLink(argv) {
   return argv.find((arg) => arg.startsWith(`${PROTOCOL}://`));
 }
 
+// 視窗還沒建立、或頁面還沒載入完時收到的網址，先存在這裡
+let pendingUrl = null;
+
+// 把視窗叫到前景，並把網址推給 Renderer
+function deliverDeepLink(url, mainWindow) {
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send("deeplink:received", url);
+}
+
 function handleDeepLink(url, mainWindow) {
   if (!url) return;
   console.log("收到深層連結：", url);
-  // 這裡依需求解析 url（例如 new URL(url) 取 query/path）並更新畫面
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    if (!mainWindow.isVisible()) mainWindow.show();
-    mainWindow.focus();
-    mainWindow.webContents.send("deeplink:received", url);
+
+  // 冷啟動時視窗可能還沒建立，或頁面還在載入、Renderer 還沒訂閱 deeplink:received；
+  // 這時 webContents.send 出去的訊息會直接遺失，所以先暫存，等頁面載入完再送
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isLoading()) {
+    pendingUrl = url;
+    return;
   }
+
+  deliverDeepLink(url, mainWindow);
 }
 
-module.exports = { registerProtocol, findDeepLink, handleDeepLink };
+// 建立主視窗後呼叫：每次頁面載入完成（包含重新整理），都把暫存的網址補送出去。
+// did-finish-load 觸發的當下 isLoading() 仍然是 true，所以這裡直接送，不再經過 handleDeepLink 的檢查
+function flushPendingDeepLink(mainWindow) {
+  mainWindow.webContents.on("did-finish-load", () => {
+    if (!pendingUrl) return;
+    const url = pendingUrl;
+    pendingUrl = null;
+    deliverDeepLink(url, mainWindow);
+  });
+}
+
+module.exports = { registerProtocol, findDeepLink, handleDeepLink, flushPendingDeepLink };
 ```
 
 ### 在 main.js 接上（延續第五章的單一實例鎖結構）
@@ -304,7 +387,8 @@ module.exports = { registerProtocol, findDeepLink, handleDeepLink };
 const {
   registerProtocol,
   findDeepLink,
-  handleDeepLink
+  handleDeepLink,
+  flushPendingDeepLink
 } = require("./deeplink");
 
 registerProtocol(); // 深層連結：註冊 myapp:// 協定
@@ -324,7 +408,8 @@ if (!gotTheLock) {
     handleDeepLink(findDeepLink(argv), mainWindow); // 深層連結
   });
 
-  // macOS 專屬：透過 open-url 事件送達
+  // macOS 專屬：透過 open-url 事件送達。冷啟動時它可能比 whenReady 更早觸發，
+  // 這時 mainWindow 還不存在，handleDeepLink 會先把網址暫存起來
   app.on("open-url", (event, url) => {
     event.preventDefault();
     handleDeepLink(url, mainWindow); // 深層連結
@@ -333,32 +418,37 @@ if (!gotTheLock) {
   app.whenReady().then(() => {
     // ...第五章既有的視窗與功能建立（createMainWindow 等）
 
+    flushPendingDeepLink(mainWindow); // 頁面載入完成後補送暫存的網址
+
     // Windows / Linux：App 原本沒在跑、被協定喚起時，網址在啟動 argv 裡
     handleDeepLink(findDeepLink(process.argv), mainWindow); // 深層連結
   });
 }
 ```
 
-> 測試方式（打包後，或 macOS 上已把協定註冊給 electron）：在終端機執行
+> 測試方式：在終端機執行
 >
 > - macOS：`open "myapp://test?foo=bar"`
 > - Windows：`start myapp://test?foo=bar`
 >
 > App 應被喚到前景，並在終端機／DevTools 印出收到的網址。
 >
+> **macOS 必須用打包後的版本測**：macOS 只會把協定交給 Info.plist 裡有宣告該協定的 App，這無法在執行期用 `setAsDefaultProtocolClient` 補上，所以要在第八章的 electron-builder 設定加上 `protocols`，由打包流程寫進 Info.plist。開發模式下的 `npm run dev` 用的是 node_modules 裡的 Electron.app，它的 Info.plist 沒有 `myapp`。Windows 則在開發模式就能測，`setAsDefaultProtocolClient` 會直接寫進登錄檔。
+>
 > 兩個實務注意點：
 >
-> 1. **macOS 冷啟動**：若 App 沒在跑就被協定喚起，`open-url` 可能在視窗建立前就觸發，此時 `mainWindow` 還不存在。正式專案可先把網址暫存成 `pendingDeepLink`，等 `whenReady` 建好視窗再處理。
-> 2. **要讓 Renderer 收到 `deeplink:received`**，做法就是第四章 4.7 的 Main → Renderer 推送模式：preload 用 `ipcRenderer.on` 轉成 `onDeepLink(cb)`，回傳取消訂閱函式，而且不要把 `event` 或 `ipcRenderer` 暴露給前端。
+> 1. **網址是不可信的輸入**：任何網頁放一個 `<a href="myapp://...">` 就能觸發你的 App，網址裡的內容可能是任何東西。請用 `new URL()` 解析，只接受預期的路徑與參數格式，不要直接拿去開檔、執行指令或塞進 `innerHTML`。
+> 2. **要讓 Renderer 收到 `deeplink:received`**，做法就是第四章 4.7 的 Main → Renderer 推送模式：preload 用 `ipcRenderer.on` 轉成 `onReceived(callback)`，回傳取消訂閱函式，而且不要把 `event` 或 `ipcRenderer` 暴露給前端。
 
 ---
 
-## 7.7 本章小結
+## 7.8 本章小結
 
 - 你已整合 Electron 的常用原生能力
 - 你透過 IPC 保持 Renderer 與系統 API 的安全邊界
 - 你可以把 Web UI 轉成真正的桌面操作體驗
-- 你學會用自訂協定做深層連結，並理解三平台送達路徑的差異
+- 你會用 `webUtils.getPathForFile()` 取得拖放檔案的路徑
+- 你學會用自訂協定做深層連結，理解三平台送達路徑的差異，並處理冷啟動時頁面還沒載入的情況
 
 ---
 

@@ -95,9 +95,10 @@ npm run test:run
 | **課程無限捲動** | `useInfiniteQuery`「載入更多」 | 10 |
 | **使用者管理** | 依權限顯示選單、表格、分頁 | 08、11 |
 | **Effects 實驗室** | 課程第 7 章寫法：`useEffect` + `AbortController` 手動抓資料，對照 Query 的差異 | 07 |
-| **效能實驗室** | 2000 筆列表 + `React.memo` / `useMemo` / `useCallback` | 13 |
+| **效能實驗室** | 2000 筆列表 + `React.memo` / `useMemo` / `useCallback`；頁尾可故意觸發渲染錯誤，觀察 Error Boundary | 13 |
 | **設定** | 主題切換、側欄偏好、收藏清單（`persist` 存 localStorage） | 11 |
 | **404** | 萬用路由回饋 | 08 |
+| **所有後台頁面** | `React.lazy` 拆包（`App.jsx`）；`AdminLayout` 用 `Suspense` + Error Boundary 包住內容區 | 13 |
 
 ---
 
@@ -108,7 +109,7 @@ src/
 ├── main.jsx          進入點：Router + QueryClientProvider + 啟動 mock
 ├── App.jsx           路由樹與受保護路由
 ├── router/           路由設定、選單設定、ProtectedRoute
-├── layouts/          後台外殼（Sidebar + Header + Outlet）
+├── layouts/          後台外殼（Sidebar + Header + Outlet，內容區包 Suspense 與 ErrorBoundary）
 ├── pages/            各頁面（檔名以 Page 結尾）
 ├── components/ui/    共用基礎 UI（Button、Card、DataTable、Modal...）
 ├── stores/           Zustand 全域狀態（auth / ui / courseFilter）
@@ -137,8 +138,21 @@ src/
 
 ---
 
+## 部署（第 14 章）
+
+`npm run build` 產出的 `dist/` 是純靜態檔，任何靜態託管都能放。React Router 的深層網址（如 `/courses/3`）
+只存在前端，重新整理時伺服器要把它導回 `index.html`，專案已附兩種平台的設定：
+
+| 檔案 | 給誰用 |
+|------|--------|
+| `vercel.json` | Vercel：把所有路徑 rewrite 到 `/index.html` |
+| `public/_redirects` | Netlify：build 時會被複製到 `dist/` 根目錄 |
+| `.env.production` | 正式 build 的環境變數。本專案沒有真後端，部署後也要開 mock（`VITE_USE_MOCK=true`） |
+
+部署完，直接在網址列打開一個深層網址再重新整理，不是 404 就代表設定成功。
+
 ## 接真後端
 
-1. 把 `.env.development` 的 `VITE_USE_MOCK` 改成 `false`。
+1. 把 `.env.development`（正式環境是 `.env.production`）的 `VITE_USE_MOCK` 改成 `false`。
 2. 在 `vite.config.js` 的 `server.proxy` 設定後端網域。
 3. 其餘程式（`services` / `hooks` / `pages`）不需改動——因為 mock 只在 `src/mock` 攔截。

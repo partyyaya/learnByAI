@@ -1,6 +1,6 @@
 # Next.js 完整課程（App Router，Next.js 15）
 
-> 這是 React 課程的延伸。學完 [../](../)（React 基礎 + TanStack Query + Zustand）後，這套課帶你進到 **Next.js 15 App Router**：Server Components、Server Actions、資料庫、認證、渲染策略、SEO 與部署，最後做出一個可上線的全端部落格。
+> 這是 React 課程的延伸。學完 [React 課程](../)（React 基礎 + TanStack Query + Zustand）後，這套課帶你進到 **Next.js 15 App Router**：Server Components、Server Actions、資料庫、認證、渲染策略、SEO 與部署，最後做出一個可上線的全端部落格。
 
 ---
 
@@ -32,13 +32,14 @@
 
 > **[blog-demo/](./blog-demo/)** — Next.js 15 App Router + Server Actions + Prisma(SQLite) + Cookie 認證打造的全端部落格。
 
-- 文章列表／詳情（動態路由）、Server Actions 做 CRUD、登入 / 路由守衛、`next/image`、SEO metadata、亮/暗主題。
-- 用 SQLite + Prisma，`npm install && npm run dev` 即可跑起，不需額外資料庫伺服器。
+- 文章列表／詳情（動態路由）、Server Actions 做 CRUD、登入 / 路由守衛、SEO metadata、亮/暗主題。
+- 用 SQLite + Prisma，`npm install` → `npm run setup`（建資料庫並塞入範例文章）→ `npm run dev` 三步就能跑起，不需額外資料庫伺服器。
 - 每個頁面都標註對應章節，邊操作邊對照學習。詳見 [blog-demo/README.md](./blog-demo/README.md)。
 
 ```bash
 cd blog-demo
 npm install
+npm run setup   # 第一次跑才需要：建立 SQLite 資料庫 + 塞入初始文章
 npm run dev
 ```
 
@@ -75,18 +76,18 @@ npm run dev
 
 ## 開發環境
 
-- Node.js: **18.18+ 或 20+**（Next.js 15 需求；本機用 `nvm use 20`）
+- Node.js: **22 LTS 或更新的 LTS 版本**（Next.js 15 最低要求 18.18，但 Node 18、20 都已停止維護；本機用 `nvm use 22`）
 - 套件管理: `npm` / `pnpm` / `yarn` 擇一
 - 編輯器: Cursor / VS Code
 - 瀏覽器: Chrome / Edge
 
-> 註：若你機器預設 Node 太舊（如 v12），先 `nvm install 20 && nvm use 20` 再操作。
+> 註：若你機器預設 Node 太舊（如 v12），先 `nvm install 22 && nvm use 22` 再操作。
 
 ## 快速開始
 
 ```bash
-# 1) 建立 Next.js 專案（選 App Router、TypeScript 可依喜好）
-npx create-next-app@latest my-next-course
+# 1) 建立 Next.js 15 專案（各選項怎麼選見第 1 章）
+npx create-next-app@15 my-next-course
 
 # 2) 進入專案
 cd my-next-course
@@ -96,6 +97,8 @@ npm run dev
 ```
 
 打開 `http://localhost:3000` 就會看到首頁。
+
+> **為什麼寫 `@15`**：現在 `@latest` 會裝到 Next.js 16，部分寫法和本課不同（例如 `middleware.js` 改名 `proxy.js`、移除 `next lint`）。指定 `@15` 讓你的專案和課程、blog-demo 同版本，差異整理在[第 1 章](./01-nextjs-intro-and-setup.md)。
 
 ---
 

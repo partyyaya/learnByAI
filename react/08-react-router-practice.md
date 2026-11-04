@@ -27,8 +27,10 @@ Router 幫你處理：
 ## 2. 安裝
 
 ```bash
-npm install react-router-dom
+npm install react-router-dom@6
 ```
+
+> **版本提醒：**不加 `@6` 會裝到 React Router v7。本章用到的 `BrowserRouter`、`Routes`、`Route`、`Link`、`NavLink`、`Outlet`、`useParams` 在 v7 照樣可用、寫法相同（v7 也可以改從 `react-router` 匯入）；這裡鎖定 v6，是為了和後面章節與 admin-demo 一致。
 
 ---
 
@@ -36,9 +38,12 @@ npm install react-router-dom
 
 - `BrowserRouter`：啟用路由
 - `Routes` / `Route`：定義路由規則
-- `NavLink`：建立導覽連結
+- `Link`：建立站內連結，取代 `<a href>`；點擊時只在瀏覽器內切換畫面，不會整頁重新載入
+- `NavLink`：建立導覽連結，網址符合時會自動加上 `active` class
 - `Outlet`：在 Layout 中渲染子頁面
 - `useParams`：取得動態路由參數
+
+> **官方文件的另一種寫法：**React Router 文件常見 `createBrowserRouter` + `RouterProvider`（資料路由，支援 loader／action）。本課程與 admin-demo 用的是 `<BrowserRouter>` + `<Routes>` 的宣告式寫法，資料抓取則交給第 9 章的 TanStack Query。
 
 ---
 
@@ -53,7 +58,11 @@ npm install react-router-dom
       |- /courses
       |- /courses/:courseId
       |- /about
+      |- *（其他網址 → 404）
 ```
+
+寫成程式時，子路由的 `path` 不加開頭的 `/`（寫成 `courses`），會自動接在父路由 `/` 後面；`index` 代表父路徑本身，也就是 `/`。
+`:courseId` 是動態片段，`/courses/react-basic` 的 `react-basic` 會變成 `courseId` 參數。
 
 ---
 
@@ -85,6 +94,14 @@ ReactDOM.createRoot(document.getElementById("root")).render(
   </React.StrictMode>
 );
 ```
+
+> **Console 出現 `React Router Future Flag Warning`？**這是 v6.28 之後加入的開發模式提醒（`v7_startTransition`、`v7_relativeSplatPath`），預告 v7 會改變的行為，不是錯誤，本章程式照常運作。想提前採用 v7 行為並消除警告，可以把 `<BrowserRouter>` 改成：
+>
+> ```jsx
+> <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+> ```
+>
+> admin-demo 的 `src/main.jsx` 就是這樣設定的。
 
 ### `src/App.jsx`
 
@@ -327,10 +344,10 @@ ul {
 
 ### 範例解釋
 
-1. `AppLayout` 提供共用導覽與 `Outlet`，避免每頁重複寫 header。
+1. `AppLayout` 提供共用導覽與 `Outlet`，避免每頁重複寫 header。`NavLink` 符合目前網址時會加上 `active` class，CSS 的 `a.active` 就是靠它變色；預設只要網址是 `to` 本身或它底下的路徑就算符合，所以在 `/courses/react-basic` 時「課程」也會亮起。加上 `end` 則只在網址完全相同時才算；首頁的 `/` 本來就只在剛好是 `/` 時亮起，加 `end` 是把意圖寫清楚。
 2. `Routes` 內使用巢狀路由，讓首頁與其他頁面共用同一層布局。
-3. `CourseDetailPage` 透過 `useParams` 讀取 `courseId`，做動態資料匹配。
-4. `NotFoundPage` 讓錯誤路徑有明確回饋，提升導航體驗。
+3. `CourseDetailPage` 透過 `useParams` 讀取 `courseId`，做動態資料匹配。`useParams` 拿到的值一律是字串；這裡的 `id` 本來就是字串所以能直接 `===` 比較，若資料的 id 是數字，要先 `Number(courseId)` 再比。
+4. `NotFoundPage` 讓錯誤路徑有明確回饋，提升導航體驗。它放在 `AppLayout` 底下，所以 404 畫面仍保有導覽列。注意 `/courses/abc` 這種網址仍會符合 `courses/:courseId`，不會進到 404，所以 `CourseDetailPage` 要自己處理「找不到課程」。
 
 ---
 

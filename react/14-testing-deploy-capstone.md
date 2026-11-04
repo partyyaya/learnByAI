@@ -31,7 +31,7 @@
 Vite 專案的標準測試組合：
 
 ```bash
-npm install -D vitest jsdom @testing-library/react @testing-library/jest-dom @testing-library/user-event
+npm install -D vitest jsdom @testing-library/react @testing-library/dom @testing-library/jest-dom @testing-library/user-event
 ```
 
 各套件角色：
@@ -39,6 +39,7 @@ npm install -D vitest jsdom @testing-library/react @testing-library/jest-dom @te
 - `vitest`：測試框架（跑測試、斷言），與 Vite 共用設定，速度快
 - `jsdom`：在 Node 中模擬瀏覽器 DOM
 - `@testing-library/react`：渲染元件並以使用者視角查詢
+- `@testing-library/dom`：`getByRole` 等查詢的底層實作；`@testing-library/react` 從 v16 起不再自帶，要自己裝
 - `@testing-library/jest-dom`：補充 DOM 斷言（如 `toBeInTheDocument`）
 - `@testing-library/user-event`：模擬真實使用者操作（輸入、點擊）
 
@@ -61,8 +62,9 @@ export default defineConfig({
 });
 ```
 
-Vitest 直接讀 `vite.config.js`，所以專案原本設定的路徑別名（`@` → `src/`）
-在測試檔裡同樣有效，不必再設定一次。
+這段 `test` 是加進你原本的 `vite.config.js`，`plugins` 等既有設定照舊保留。
+Vitest 直接讀 `vite.config.js`，所以專案若設定了路徑別名（例如 admin-demo 的 `@` → `src/`），
+在測試檔裡同樣有效，不必再設定一次。`npm create vite` 建立的專案預設沒有這個別名，本章的範例除了 §5.5 之外都用相對路徑。
 
 ### 建立 `src/test/setup.js`
 
@@ -71,6 +73,9 @@ import "@testing-library/jest-dom";
 ```
 
 目前只需要這一行；到 §5.5 會再往裡面加「每個測試前重設 Zustand 與 localStorage」。
+
+這行會擴充全域的 `expect`，所以要搭配上面的 `globals: true`。若你不開 globals，改寫成 `import "@testing-library/jest-dom/vitest";`，
+否則每個測試檔一開跑就會失敗在 `ReferenceError: expect is not defined`。
 
 ### 加入 npm script
 
@@ -91,7 +96,9 @@ import "@testing-library/jest-dom";
 ## 3. 第一個測試：純函式
 
 最容易上手也最划算的測試對象，是第 6 章的 `validateForm` 這類純函式。  
-先把它抽到獨立檔案（`src/utils/validateForm.js`），再寫測試：
+先把它抽到獨立檔案（`src/utils/validateForm.js`），再寫測試。搬的時候記得三件事：
+它用到的 `levelOptions` 要一起搬過去（否則會報 `levelOptions is not defined`）、函式前面加上 `export`、
+`App.jsx` 改成 `import { validateForm } from "./utils/validateForm";`。
 
 ```js
 // src/utils/validateForm.test.js
@@ -173,7 +180,9 @@ import userEvent from "@testing-library/user-event";
 
 | 元件用了什麼 | 由誰提供 | 少給了會看到的錯誤 |
 |---|---|---|
-| `<Link>`、`useNavigate`、`useParams` | Router | `useNavigate() may be used only in the context of a <Router> component` |
+| `useNavigate` | Router | `useNavigate() may be used only in the context of a <Router> component` |
+| `<Link>` | Router | `Cannot destructure property 'basename' of ... as it is null`（React Router 6 後期版本；字面上完全看不出是少了 Router） |
+| `useParams` | Router + 對應的 `<Route>` | 不報錯，只會拿到空物件（見 5.2） |
 | `useQuery`、`useMutation` | `QueryClientProvider` | `No QueryClient set, use QueryClientProvider to set one` |
 | Zustand store | 不需要 Provider | 不報錯，但測試之間會互相污染 |
 
@@ -217,7 +226,7 @@ const course = { id: 7, title: "React Router 巢狀路由", minutes: 90 };
 describe("CourseCard", () => {
   it("課程名稱是連到詳情頁的連結", () => {
     // 少了 MemoryRouter 這一層，render 會直接拋錯，
-    // 而且錯誤訊息只提到 useHref/useNavigate，完全看不出是測試設定的問題。
+    // 而且錯誤訊息是「Cannot destructure property 'basename'...」，完全看不出是測試設定的問題。
     render(
       <MemoryRouter>
         <CourseCard course={course} />
@@ -235,6 +244,10 @@ describe("CourseCard", () => {
 `BrowserRouter` 依賴瀏覽器的 history API 去改真實網址，jsdom 裡沒有真的可導覽的網址。
 `MemoryRouter` 把「目前在哪一頁」存在記憶體裡：不碰真實網址、可以用 `initialEntries` 指定起點，
 而且每次 render 都是全新的，測試之間不會殘留上一次導頁的結果。
+
+跑這類測試時，終端機的 stderr 可能會印出 `⚠️ React Router Future Flag Warning: ...`。
+那是 React Router v6 後期版本提醒「升級到 v7 時某些行為會改變」，不是測試失敗；只要最後顯示 passed 就可以先不理它。
+想消掉它，就在 `MemoryRouter` 加上和第 8 章 `BrowserRouter` 相同的 `future` 設定；admin-demo 的 `renderWithProviders` 就是這樣做的。
 
 ### 5.2 用到 `useParams`：還要加上 Routes / Route
 
@@ -290,7 +303,9 @@ describe("CourseDetail", () => {
 
 > 這裡有個難查的坑：忘了包 `Routes`，`courseId` 會是 `undefined`。
 > 元件不會拋錯，只會顯示「找不到課程」——如果後面接的是 `useQuery` 且設了
-> `enabled: Boolean(id)`，畫面更會永遠卡在載入中，錯誤訊息完全不會提到路由。
+> `enabled: Boolean(id)`，查詢根本不會發出：用 `isPending` 判斷載入的畫面會永遠卡在載入中，
+> 用 `isLoading` 判斷的（v5 裡查詢沒在跑時 `isLoading` 是 `false`）則會往下讀到 `undefined` 的 `data` 而報錯。
+> 兩種情況的錯誤訊息都完全不會提到路由。
 
 ### 5.3 用到 `useQuery` / `useMutation`：包 QueryClientProvider
 
@@ -400,6 +415,9 @@ describe("CourseList", () => {
   });
 });
 ```
+
+`vi.mock` 雖然寫在 import 下面，Vitest 會把它提升到檔案最上方先執行。所以 `import { fetchCourses }` 拿到的已經是 `vi.fn()` 做出來的假函式，
+測試裡才能用 `mockResolvedValue`（回傳成功的 Promise）、`mockRejectedValue`（回傳失敗的 Promise）指定這一次 API 的結果。
 
 **`retry: false` 是測試設定裡最重要的一行。**
 正式環境設 `retry: 1`（甚至預設的 3）很合理——網路偶爾抖一下就自動重來。
@@ -520,12 +538,16 @@ afterEach(() => {
 });
 ```
 
+這份 setup 的 store 名稱與路徑照 admin-demo：store 放在 `src/stores/*.store.js`，用 `@` 別名匯入（設定在 admin-demo 的 `vite.config.js` 的 `resolve.alias`）。
+你的專案請換成實際有的 store 與路徑，例如沿用第 11 章的寫法就是 `import { useUiStore } from "../store/useUiStore";`。
+沒有用 `persist` 的 store 也要列進來——它們一樣會跨測試殘留，只是不會寫進 localStorage。
+
 ### 5.6 這一節的錯誤訊息對照表
 
 | 症狀 | 原因 | 解法 |
 |---|---|---|
 | `No QueryClient set` | 沒包 `QueryClientProvider` | 用 `renderWithProviders` |
-| `useNavigate() may be used only in the context of a <Router>` | 沒包 Router | 同上 |
+| `useNavigate() may be used only in the context of a <Router>` 或 `Cannot destructure property 'basename'` | 沒包 Router | 同上 |
 | `useParams()` 回傳空物件 | 只包了 `MemoryRouter`，沒有 `Routes` / `Route` | 傳 `path` 選項 |
 | 元素明明會出現卻 `Unable to find` | 用了 `getBy*` 沒等非同步 | 改用 `findBy*` 或 `waitFor` |
 | 錯誤狀態的測試很慢又逾時 | `retry` 沒關 | 測試用的 QueryClient 設 `retry: false` |
@@ -566,7 +588,12 @@ VITE_API_URL=https://api.example.com
 const baseURL = import.meta.env.VITE_API_URL;
 ```
 
-注意：前端環境變數會被打包進 JS，**任何人都看得到**，絕不能放密鑰。
+- `npm run dev` 使用 `.env.development`，`npm run build` 使用 `.env.production`；沒有分環境的共用值可以放在 `.env`。
+- 讀到的值一律是字串：`VITE_USE_MOCK=true` 讀出來是 `"true"`，判斷時要寫 `import.meta.env.VITE_USE_MOCK === "true"`（admin-demo 的 `main.jsx` 就是這樣寫）。
+- 沒有 `VITE_` 開頭的變數在程式裡讀到的是 `undefined`，不會報錯，很容易以為是值沒設好。
+
+注意：前端環境變數會在 build 時直接替換進 JS，**任何人打開瀏覽器都看得到**，絕不能放密鑰。
+也因為是 build 時寫死的，在託管平台上改了環境變數，要重新 build（重新部署）才會生效。
 
 ---
 
@@ -579,12 +606,17 @@ React Router 的路徑（如 `/courses/react-basic`）只存在於前端。
 
 | 平台 | 設定方式 |
 |------|----------|
-| Vercel | 偵測到 Vite 專案自動處理，通常零設定 |
+| Vercel | 會自動偵測 Vite 並執行 build，但深層路由**不會**自動 fallback；在專案根目錄加 `vercel.json`，內容：`{ "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }] }` |
 | Netlify | 在 `public/` 加 `_redirects` 檔，內容：`/*  /index.html  200` |
-| GitHub Pages | 不支援 rewrite，需設定 `base` 並用 404.html 技巧（或改用 HashRouter） |
+| GitHub Pages | 不支援 rewrite，需設定 Vite 的 `base`（React Router 也要設相同的 `basename`），並用 404.html 技巧（或改用 HashRouter） |
 | Nginx | `try_files $uri $uri/ /index.html;` |
 
+`public/` 裡的檔案會原封不動複製到 `dist/` 根目錄，所以 Netlify 的 `_redirects` 放在 `public/`；`vercel.json` 則是給 Vercel 讀的專案設定，放在專案根目錄（和 `package.json` 同一層）。
+
+admin-demo 兩份都有放。它沒有真後端，所以另外附了 `.env.production`，讓正式 build 也啟用前端 mock；少了這個檔，`VITE_USE_MOCK` 在 build 時是 `undefined`，部署上去所有 API 請求都會失敗。
+
 部署流程以 Vercel 為例：推上 GitHub → 在 Vercel 匯入 repo → 它自動執行 `npm run build` 並發布 `dist/`，之後每次 push 自動重新部署。
+部署完成後，直接在網址列輸入一個深層路由（例如 `/courses/1`）再重新整理，確認不是 404，才算 fallback 設定成功。
 
 ---
 
@@ -620,7 +652,8 @@ React Router 的路徑（如 `/courses/react-basic`）只存在於前端。
 
 ### 參考實作
 
-卡關時可對照課程附帶的 [admin-demo/](./admin-demo/)——它就是這份規格的完整參考解答（外加使用者管理與效能實驗室）。建議先自己做，再回頭比對架構差異。
+卡關時可對照課程附帶的 [admin-demo/](./admin-demo/)——它實作了這份規格的必做需求與加分項（外加使用者管理與效能實驗室）。建議先自己做，再回頭比對架構差異。
+幾個比較不好找的位置：第 6 項的 `React.lazy` 在 `src/App.jsx`；加分項的 Error Boundary 在 `src/components/ui/ErrorBoundary.jsx`，由 `src/layouts/AdminLayout.jsx` 包住內容區（效能實驗室頁尾可以故意觸發錯誤來觀察）；第 8 項的部署設定是根目錄的 `vercel.json`、`public/_redirects` 與 `.env.production`。
 
 測試的部分（第 7 項需求）在 demo 裡也備齊了，`cd admin-demo && npm install && npm run test` 就能跑：
 
@@ -716,19 +749,20 @@ describe("學習任務追蹤器", () => {
 ### 執行結果
 
 ```bash
-npm run test
+npm run test:run -- --reporter=verbose
 
- ✓ src/App.test.jsx (5)
-   ✓ 學習任務追蹤器 (5)
-     ✓ 預設渲染三筆任務
-     ✓ 輸入文字並送出後，清單新增一筆任務
-     ✓ 空白輸入送出時，不會新增任務
-     ✓ 勾選任務會切換完成狀態
-     ✓ 刪除任務後，清單少一筆
+ ✓ src/App.test.jsx > 學習任務追蹤器 > 預設渲染三筆任務
+ ✓ src/App.test.jsx > 學習任務追蹤器 > 輸入文字並送出後，清單新增一筆任務
+ ✓ src/App.test.jsx > 學習任務追蹤器 > 空白輸入送出時，不會新增任務
+ ✓ src/App.test.jsx > 學習任務追蹤器 > 勾選任務會切換完成狀態
+ ✓ src/App.test.jsx > 學習任務追蹤器 > 刪除任務後，清單少一筆
 
  Test Files  1 passed (1)
       Tests  5 passed (5)
 ```
+
+`--reporter=verbose` 會逐條列出測試名稱；不加的話預設只印一行 `✓ src/App.test.jsx (5 tests)` 加上統計。
+實際輸出還會多出開始時間與耗時，格式也會隨 Vitest 版本略有不同，重點是最後的 passed 數量。
 
 ### 範例解釋
 

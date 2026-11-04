@@ -31,13 +31,13 @@ import worker from './w.js?worker' // import 一個 Worker
 
 ---
 
-## 4.2 TypeScript / JSX:用 esbuild「剝型別」
+## 4.2 TypeScript / JSX:用 Oxc「剝型別」
 
-最常見的轉換:把 `.ts` / `.tsx` 轉成 `.js`。Vite 用 **esbuild** 做這件事(又是 esbuild,因為要即時、要快)。
+最常見的轉換:把 `.ts` / `.tsx` 轉成 `.js`。Vite 8 用 Rust 寫的 **Oxc** 做這件事(Vite 7 以前是 esbuild),因為要即時、要快。
 
 ### 它做什麼:transpile(轉譯),不是 type-check(型別檢查)
 
-這點第 01 章強調過,這裡講清楚機制。esbuild 對一個 `.ts` 檔做的事是**「剝掉型別語法(type stripping)」**:
+這點第 01 章強調過,這裡講清楚機制。轉譯器對一個 `.ts` 檔做的事是**「剝掉型別語法(type stripping)」**:
 
 ```ts
 // 你寫的 TS:
@@ -48,27 +48,27 @@ const count: number = 5
 ```
 
 ```js
-// esbuild 轉出來的 JS(型別語法被剝光):
+// 轉出來的 JS(型別語法被剝光):
 function greet(name) {
   return `Hello, ${name}`
 }
 const count = 5
 ```
 
-**注意**:esbuild **只是把 `: string`、`: number` 這些型別標註刪掉**,它**完全不檢查**你型別寫得對不對。
+**注意**:轉譯器**只是把 `: string`、`: number` 這些型別標註刪掉**,它**完全不檢查**你型別寫得對不對。
 
 ```ts
 const count: number = "我是字串"   // 型別明顯錯誤
-// → esbuild 照轉不誤,變成 const count = "我是字串",dev 不報錯!
+// → 照轉不誤,變成 const count = "我是字串",dev 不報錯!
 ```
 
 **為什麼故意不檢查?** 再強調一次:型別檢查很慢(要建立完整的型別關係圖),會拖垮「即時轉譯」。Vite 選擇速度,把型別檢查丟給 `tsc`(build 時)和編輯器(即時標紅)。
 
-> **延伸的小陷阱**:因為 esbuild 是「單檔獨立轉譯、不看其他檔案的型別資訊」,有些**依賴型別資訊才能正確編譯**的 TS 特性會出問題,最典型的是:
-> - `const enum`:它需要跨檔內聯,esbuild 單檔轉譯處理不了,行為可能不如預期。
-> - 純型別的 import 若沒寫 `import type`,可能被誤刪或誤留。
+> **延伸的小陷阱**:因為轉譯是「單檔獨立轉譯、不看其他檔案的型別資訊」,有些**依賴型別資訊才能正確編譯**的 TS 特性會出問題,最典型的是:
+> - `const enum`:它需要跨檔內聯,單檔轉譯處理不了,行為可能不如預期。
+> - 純型別的 import 若沒寫 `import type`,轉譯器不知道它是型別還是值,可能被誤刪或誤留。
 >
-> 解法是設定 TS 的 `isolatedModules: true`(現代模板預設就開了),它會強制你寫出「每個檔案都能獨立編譯」的程式碼,避免踩雷。知道有這回事即可。
+> 解法是讓 TS 幫你擋下這些寫法。現在的 create-vite 範本開了兩個選項:`verbatimModuleSyntax`(型別一律要寫 `import type`)和 `erasableSyntaxOnly`(禁止 `enum`、`namespace` 這類需要產生程式碼的 TS 語法,只留下「刪掉就好」的型別語法)。比較舊的專案常見的是 `isolatedModules: true`,目的相同:保證每個檔案都能獨立轉譯。知道有這回事即可。
 
 ---
 
@@ -133,7 +133,7 @@ npm i -D sass          # 裝了就能 import .scss / .sass
 import './style.scss'  // Vite 偵測到 .scss,自動先用 sass 編譯成 CSS,再走前面的流程
 ```
 
-> **為什麼 Vite 不用配 loader?** Vite 對常見資源(CSS、預處理器、JSON、圖片)有**內建**處理,開箱即用。你只要補上「編譯器本身」(如 `sass`)即可。這是 Vite「約定優於設定」哲學的體現。
+> **為什麼 Vite 不用配 loader?** Vite 對常見資源(CSS、預處理器、JSON、圖片)有**內建**處理,開箱即用。你只要補上「編譯器本身」(如 `sass`,或速度更快的 `sass-embedded`,Vite 兩種都支援)即可。PostCSS 也是內建的:專案根目錄有 `postcss.config.js`,Vite 就會自動套用。這是 Vite「約定優於設定」哲學的體現。
 
 ---
 
@@ -182,6 +182,19 @@ import tinyIcon from './tiny.png'
 
 **為什麼?** 小圖獨立成檔,反而多一次 HTTP 請求划不來;直接內聯進 JS,省一個請求。這個門檻可調(`build.assetsInlineLimit`)。
 
+### 路徑要動態組出來時:`new URL(..., import.meta.url)`
+
+`import` 的路徑必須是寫死的字串(第 00 章的靜態結構),所以「依變數決定要哪張圖」不能用 import。這時用標準的 `new URL`:
+
+```js
+function getFlagUrl(country) {
+  // Vite 看得懂這個寫法:會把 ./flags/ 底下符合的圖片都納入建構,build 後換成帶 hash 的真實網址
+  return new URL(`./flags/${country}.png`, import.meta.url).href
+}
+```
+
+**為什麼這樣可以?** `new URL(相對路徑, import.meta.url)` 是瀏覽器原生的語法,意思是「相對於目前這個模組的位置」。dev 時它本來就能跑;build 時 Vite 會認出這個固定寫法,幫你處理檔案複製與 hash。注意 `import.meta.url` 必須原樣寫在 `new URL(...)` 裡,包成別的變數 Vite 就認不出來了。
+
 ---
 
 ## 4.5 import 字尾(query suffix):`?raw` / `?url` / `?worker` / `?inline`
@@ -203,9 +216,12 @@ import shaderSource from './shader.glsl?raw'
 ```js
 import workletUrl from './worklet.js?url'
 // 強制拿到 URL 字串,即使它是 JS(預設 import JS 會執行它,加 ?url 就只給你網址)
+audioContext.audioWorklet.addModule(workletUrl)
 ```
 
-**用途**:有些 API 需要的是「檔案的網址」(例如 `new Worker(url)`、`audioWorklet.addModule(url)`)。`?url` 保證你拿到的是 URL,而非被當模組執行。
+**用途**:有些 API 需要的是「檔案的網址」(例如 `audioWorklet.addModule(url)`)。`?url` 保證你拿到的是 URL,而非被當模組執行。
+
+> ⚠️ **`?url` 的檔案會被「原樣」輸出**:build 時它被當成一般資源複製(小於 4KB 還會被內聯成 data URL),**不經轉譯、也不打包**。所以 `.ts` 檔、或裡面還有 `import 'lodash-es'` 的 JS,用 `?url` 引入後到了正式環境就跑不動。Web Worker 請改用下面的 `?worker`,或標準寫法 `new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })`——這兩種 Vite 都會幫你轉譯並打包 Worker 的程式碼。
 
 ### `?worker` —— 我要把它當 Web Worker
 
@@ -225,6 +241,26 @@ import css from './style.css?inline'
 ```
 
 > **心智模型**:這些字尾是你對 Vite 下的「明確指令」。預設行為(import 圖片給 URL、import CSS 自動注入)適用大多數情況;當你要的不是預設,就用字尾覆寫它。記住最常用的 `?raw`(要文字)和 `?url`(要網址)即可,其他遇到再查。
+
+### 一次匯入一整批檔案:`import.meta.glob`
+
+字尾處理的是「單一檔案要怎麼匯入」;如果你想「把某個資料夾底下的檔案全部匯入」,例如自動註冊所有頁面、載入所有 Markdown 文章,Vite 提供 `import.meta.glob`:
+
+```js
+// 懶載入:拿到「路徑 → 載入函式」的物件,用到才 import(每個檔案各自成為 chunk,第 08 章)
+const pages = import.meta.glob('./pages/*.ts')
+// { './pages/home.ts': () => import('./pages/home.ts'), './pages/about.ts': () => ... }
+
+const mod = await pages['./pages/home.ts']()
+
+// 立即載入:加 eager: true,直接拿到模組本身(全部一起打包進來)
+const configs = import.meta.glob('./configs/*.json', { eager: true })
+
+// 也能搭配字尾:例如把所有 .md 當文字讀進來
+const posts = import.meta.glob('./posts/*.md', { query: '?raw', import: 'default' })
+```
+
+**它怎麼運作?** `import.meta.glob(...)` 不是執行期的函式。Vite 在轉譯時就把它展開成一個寫滿 `import()`(或靜態 `import`)的物件——所以 glob 的參數必須是**字串字面量**,不能用變數組出來。新增或刪除符合條件的檔案時,Vite 也會自動更新這個物件。
 
 ---
 
@@ -257,6 +293,8 @@ public/
 ```
 
 - Vite **完全不處理它**:`public/` 裡的東西原封不動複製到 `dist/` 根目錄,**檔名不變、不加 hash**。
+- 引用時寫根路徑 `/favicon.ico`,**不要**寫成 `/public/favicon.ico`,也不要從 JS `import` 它。
+- 如果網站部署在子路徑(第 08 章的 `base`),HTML 和 CSS 裡的 `/favicon.ico` Vite 會自動補上前綴,但**JS 字串裡寫死的路徑不會**被改寫。在 JS 裡要寫成 `` `${import.meta.env.BASE_URL}favicon.ico` ``。
 - **適用**(滿足以下任一才用 public):
   - 檔名**必須固定**、不能加 hash 的(例如 `robots.txt`、`manifest.json`、`favicon.ico`,因為外部會用固定網址找它)。
   - 不會被任何程式 import、但就是要存在於輸出目錄的檔。
@@ -323,7 +361,7 @@ location = /favicon.ico {
 Vite 把環境變數掛在 `import.meta.env` 上:
 
 ```js
-console.log(import.meta.env.MODE)        // 'development' 或 'production'
+console.log(import.meta.env.MODE)        // 預設 dev 是 'development'、build 是 'production',可用 --mode 自訂
 console.log(import.meta.env.DEV)         // dev 時為 true
 console.log(import.meta.env.PROD)        // build 時為 true
 console.log(import.meta.env.BASE_URL)    // 部署的基底路徑
@@ -348,18 +386,31 @@ console.log(import.meta.env.DB_PASSWORD)     // undefined ❌ 讀不到!
 
 你的前端程式碼最終會被打包、送到使用者瀏覽器,**任何人都能看到原始碼**。如果 Vite 把所有環境變數(包含 `DB_PASSWORD` 這種機密)都塞進前端,那等於把密碼公開給全世界。
 
-所以 Vite 規定:**只有以 `VITE_` 開頭的變數,才會被注入到前端程式碼**。其他變數(像 `DB_PASSWORD`)Vite 故意不給,逼你不要把機密寫進前端。這是一道「防呆 + 防洩漏」的護欄。
+所以 Vite 規定:**只有以 `VITE_` 開頭的變數,才會被注入到前端程式碼**(前綴可用 `envPrefix` 改)。其他變數(像 `DB_PASSWORD`)Vite 故意不給,逼你不要把機密寫進前端。這是一道「防呆 + 防洩漏」的護欄。
+
+反過來也要記住:**`VITE_` 開頭的變數一定會進到前端產物裡,任何人都看得到**。API 金鑰、密碼這類機密,不管叫什麼名字,都不該放進前端環境變數。
 
 > **常見錯誤**:「我設了環境變數但讀到 undefined!」99% 是忘了加 `VITE_` 前綴。記住:**前端要讀的環境變數,名字一定要 `VITE_` 開頭。**
+
+想讓編輯器知道有哪些 `VITE_` 變數(有自動補全、打錯字會標紅),在 `src/` 下建一個 `env.d.ts`:
+
+```ts
+// src/env.d.ts
+interface ImportMetaEnv {
+  readonly VITE_API_URL: string
+}
+```
 
 ### 多環境 `.env` 檔
 
 ```
-.env                # 所有情況都載入
-.env.local          # 所有情況載入,但會被 git ignore(放本機機密)
-.env.development    # 只在 dev(vite)載入
-.env.production     # 只在 build(vite build)載入
+.env                  # 所有 mode 都載入
+.env.local            # 所有 mode 都載入,放本機專用的值(範本的 .gitignore 有 *.local,不會進版控)
+.env.[mode]           # 只在該 mode 載入,例如 .env.development、.env.production
+.env.[mode].local     # 只在該 mode 載入,本機專用
 ```
+
+決定載入哪個檔的是 **mode**,不是指令:`vite` 預設 mode 是 `development`、`vite build` 預設是 `production`,但 `vite build --mode staging` 就會改載入 `.env.staging`。同一個變數出現在多個檔案時,**mode 專用的檔案優先於 `.env`**;而**執行 Vite 之前就已經存在的環境變數優先度最高**,不會被 `.env` 蓋掉——所以 CI 上可以用 `VITE_API_URL=https://api.example.com npm run build` 直接覆寫。
 
 **用途**:讓 dev 連測試 API、production 連正式 API,自動切換:
 
@@ -371,7 +422,21 @@ VITE_API_URL=http://localhost:8080
 VITE_API_URL=https://api.example.com
 ```
 
-程式裡照樣寫 `import.meta.env.VITE_API_URL`,Vite 會依當下是 dev 還是 build **自動載入對應的 `.env` 檔**,你不用改任何程式碼。
+程式裡照樣寫 `import.meta.env.VITE_API_URL`,Vite 會依當下的 mode **自動載入對應的 `.env` 檔**,你不用改任何程式碼。
+
+> ⚠️ **`vite.config.ts` 裡讀不到 `.env`**:Vite 是先執行設定檔、才決定 mode 去載入 `.env` 的,所以設定檔裡的 `process.env.VITE_API_URL` 是 `undefined`。要在設定裡用,得自己呼叫 `loadEnv`:
+>
+> ```ts
+> import { defineConfig, loadEnv } from 'vite'
+>
+> export default defineConfig(({ mode }) => {
+>   // 第三個參數是前綴;給 '' 代表全部變數都載入(設定檔跑在 Node,不會外洩到前端)
+>   const env = loadEnv(mode, process.cwd(), '')
+>   return {
+>     server: { proxy: { '/api': env.API_TARGET } },
+>   }
+> })
+> ```
 
 ### build 時的真相:環境變數是「靜態替換」
 
@@ -388,7 +453,9 @@ fetch("https://api.example.com" + '/users')
 **為什麼這很重要?** 兩個推論:
 
 1. **環境變數的值在 build 那一刻就定死了**。你不能 build 完一次,再靠改環境變數去改變產物的行為——要改就得重新 build。
-2. 因為是靜態替換,`import.meta.env.PROD` 這種布林值在 build 後會變成 `true`/`false` 字面量,於是 `if (import.meta.env.PROD) {...}` 裡的 dev-only 程式碼會被 tree shaking 整段砍掉(第 08 章)。這是個很有用的特性。
+2. 因為是靜態替換,`import.meta.env.DEV` 這種布林值在 build 後會變成 `false` 字面量,於是 `if (import.meta.env.DEV) {...}` 裡的 dev-only 程式碼(除錯面板、詳細 log)會變成 `if (false) {...}`,在壓縮階段被整段砍掉(第 08 章)。這是個很有用的特性。
+
+想定義自己的編譯期常數(例如版本號 `__APP_VERSION__`),用 `define` 選項,原理一樣是建構時的文字替換:`define: { __APP_VERSION__: JSON.stringify('1.2.0') }`。
 
 ---
 
@@ -397,12 +464,12 @@ fetch("https://api.example.com" + '/users')
 這一章我們拆完了 Vite 的「轉換管線」與資源處理:
 
 - **核心觀念**:一切皆模組,Vite 把各種資源**即時包裝成 JS 模組**回傳給瀏覽器。
-- **TS/JSX**:esbuild 只「剝型別」不「檢查型別」,所以快;型別檢查交給 tsc。
+- **TS/JSX**:Oxc 只「剝型別」不「檢查型別」,所以快;型別檢查交給 tsc。
 - **CSS**:dev 包成 JS 注入(為了 HMR),build 抽成獨立檔(為了效能);`.module.css` 自動開 CSS Modules。
-- **靜態資源**:import 圖片拿到的是 **URL**(且 build 會加 hash);小檔自動 base64 內聯。
-- **import 字尾**:`?raw`(要文字)、`?url`(要網址)、`?worker`(當 Worker)、`?inline`(強制內聯)。
+- **靜態資源**:import 圖片拿到的是 **URL**(且 build 會加 hash);小檔自動 base64 內聯;路徑要動態組時用 `new URL(..., import.meta.url)`。
+- **import 字尾**:`?raw`(要文字)、`?url`(要網址,檔案原樣輸出)、`?worker`(當 Worker)、`?inline`(強制內聯);一次匯入一批檔案用 `import.meta.glob`。
 - **public vs import**:預設用 import(Vite 管 URL 與快取);只有檔名必須固定的才放 public。
-- **環境變數**:`import.meta.env` + `VITE_` 前綴(安全護欄);多 `.env` 檔自動切環境;build 時是靜態文字替換。
+- **環境變數**:`import.meta.env` + `VITE_` 前綴(安全護欄,但 `VITE_` 變數本身是公開的);依 mode 載入 `.env` 檔;設定檔裡要用 `loadEnv`;build 時是靜態文字替換。
 
 **下一章(05)是 dev 體驗的靈魂——HMR 熱更新**:你改一行 code,為什麼畫面能「不刷新整頁就更新」,還保留住目前的狀態(例如輸入框沒被清空)?第 02 章那個 `@vite/client` 到底在幹嘛?module graph、HMR 邊界、`import.meta.hot` API 怎麼運作?框架(Vue/React)怎麼接上 HMR?下一章全部揭曉,也為「手寫 mini-vite」的 capstone 打下最後一塊基礎。
 

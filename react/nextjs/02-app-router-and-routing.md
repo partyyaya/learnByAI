@@ -32,7 +32,7 @@ app/
 │     └─ page.js           → /blog/settings
 ```
 
-> 只有放了 `page.js` 的資料夾才會變成可瀏覽的網址。只有 `layout.js` 而沒有 `page.js` 的資料夾，本身不能被瀏覽。
+> 只有放了 `page.js` 的資料夾才會變成可瀏覽的網址。只有 `layout.js` 而沒有 `page.js` 的資料夾，本身不能被瀏覽。反過來說，`app/` 裡放一般元件檔（例如第 3 章的 `app/Counter.js`）也不會變成網址，只有保留檔名才有特殊作用。
 
 ---
 
@@ -75,6 +75,8 @@ export default function Nav() {
 
 `<Link>` 底層還是渲染成 `<a>`，所以 SEO 與可及性都沒問題。
 
+> **怎麼確認沒有整頁重載**：打開 DevTools 的 Network 面板，用 `<Link>` 切頁時不會出現新的整份 HTML 文件請求，只會看到網址帶 `?_rsc=` 的請求（伺服器送回的新頁面內容）。另外 prefetch 只在正式模式（`npm run build && npm run start`）才啟用；`npm run dev` 時每個頁面第一次打開還要先編譯，切頁比較慢是正常的。
+
 ---
 
 ## 4. 巢狀 Layout
@@ -101,7 +103,7 @@ export default function BlogLayout({ children }) {
 }
 ```
 
-> 導覽時，共用的 Layout **不會重新渲染**，只有 `children`（頁面內容）會換。這就是為什麼側邊欄、頁首能保持狀態。
+> 導覽時，共用的 Layout **不會重新渲染**，只有 `children`（頁面內容）會換。這就是為什麼側邊欄、頁首能保持狀態。想親眼確認：在側邊欄放一個 `<input />`，打幾個字再切到子頁，字還在就代表 Layout 沒有重建。
 
 ---
 
@@ -111,6 +113,7 @@ export default function BlogLayout({ children }) {
 
 ```text
 app/
+├─ layout.js          # 根版面（仍然需要，含 <html><body>）
 ├─ (marketing)/
 │  ├─ layout.js       # 行銷頁專用版面
 │  ├─ page.js         → /        （注意：不是 /marketing）
@@ -121,6 +124,8 @@ app/
 ```
 
 `(marketing)` 與 `(shop)` 都不進網址，但各自有獨立 Layout。
+
+> 注意：因為 group 名稱不進網址，不同位置的頁面可能撞到同一個網址。例如已經有 `app/page.js` 又建 `app/(marketing)/page.js`，兩個都是 `/`，Next.js 會報錯。改成 group 結構時，記得把原本的頁面搬進去，而不是複製一份。
 
 ---
 

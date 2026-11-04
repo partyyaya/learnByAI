@@ -81,7 +81,37 @@ export default function Error({ error, reset }) {
 - `error`：被丟出的錯誤物件。
 - `reset()`：重新嘗試渲染出錯的段落。
 
-> `error.js` 只攔它「子層」的錯誤，攔不到同層 `layout.js` 自己的錯。要攔 Layout 的錯，得放在**上一層**。
+開發模式下，Next.js 可能還會另外跳出錯誤提示（dev overlay）蓋在畫面上，關掉它就能看到 `error.js` 的畫面；正式環境不會有這層提示。
+
+> **正式環境看不到原始錯誤訊息**：`npm run dev` 時 `error.message` 就是你丟出的訊息；build 之後，Server Component 丟出的錯誤會被換成一段通用訊息，避免把伺服器細節外洩給使用者，只留下 `error.digest` 這個代號讓你到伺服器 log 對照。所以正式環境的錯誤畫面別依賴 `error.message` 的內容。
+
+> **`reset()` 只會在瀏覽器重新渲染**：它不會重新向伺服器要資料。如果錯誤來自 Server Component（例如抓資料失敗），只呼叫 `reset()` 通常還是同一個錯誤。要真的重試，搭配 `router.refresh()`，並放在同一個 `startTransition` 裡：
+
+```jsx
+"use client";
+import { startTransition } from "react";
+import { useRouter } from "next/navigation";
+
+export default function Error({ reset }) {
+  const router = useRouter();
+
+  function retry() {
+    startTransition(() => {
+      router.refresh(); // 重新向伺服器要這一頁的 Server Component 結果
+      reset();          // 清掉錯誤狀態，重新渲染這一段
+    });
+  }
+
+  return (
+    <div>
+      <h2>這個區塊出錯了</h2>
+      <button onClick={retry}>再試一次</button>
+    </div>
+  );
+}
+```
+
+> `error.js` 只攔它「子層」的錯誤，攔不到同層 `layout.js` 自己的錯。要攔 Layout 的錯，得放在**上一層**。根 `app/layout.js` 沒有上一層，要用 `app/global-error.js`：它出錯時會取代整個根 layout，所以要自己寫 `<html>` 和 `<body>`，同樣必須是 Client Component。
 
 ---
 
@@ -95,7 +125,7 @@ import { notFound } from "next/navigation";
 
 export default async function Page({ params }) {
   const { slug } = await params; // Next.js 15：params 是 Promise，要 await
-  const post = await getPost(slug);
+  const post = await getPost(slug); // getPost 是你自己的抓資料函式（第 5 章）
   if (!post) notFound(); // 觸發最近的 not-found.js
   return <article>{post.title}</article>;
 }
@@ -108,16 +138,19 @@ export default function NotFound() {
 }
 ```
 
+- `notFound()` 會直接中斷渲染，後面的程式不會執行，所以不用再寫 `return`。
+- 使用者打了根本不存在的網址（沒有對應的路由）時，顯示的是根目錄的 `app/not-found.js`；像上面放在 `[slug]` 裡的 not-found.js，只在你呼叫 `notFound()` 時才用到。
+
 ---
 
 ## 5. 導覽狀態：usePathname / useRouter
 
-要在導覽列「標示目前在哪一頁」，需要知道目前路徑——這是瀏覽器行為，得用 Client Component：
+要在導覽列「標示目前在哪一頁」，需要知道目前路徑。但 Layout 切頁時不會重新渲染，也拿不到目前路徑，所以要在 Client Component 裡用 `usePathname` 讀：
 
 ```jsx
 "use client";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 
 export default function NavItem({ href, children }) {
   const pathname = usePathname();        // 目前網址路徑
@@ -178,7 +211,7 @@ function BackButton() {
 
 ## 最後範例：帶側邊欄的後台版面 + loading/error 狀態
 
-> 五個檔案組成一個 `/dashboard` 區塊，示範 Layout + loading + error + 導覽 active 狀態。
+> 六個檔案組成一個 `/dashboard` 區塊，示範 Layout + loading + error + 導覽 active 狀態。
 
 ### `app/dashboard/layout.js`
 
@@ -235,6 +268,22 @@ export default async function DashboardPage() {
         <li>使用者：{stats.users}</li>
         <li>文章：{stats.posts}</li>
       </ul>
+    </div>
+  );
+}
+```
+
+> 這個 loading 效果在 `npm run dev` 每次重新整理都看得到。`npm run build` 之後，像這樣沒用到任何「請求當下才知道」資料的頁面，會在建置時就先產生好（第 12 章的靜態渲染），那 1.5 秒花在建置階段，使用者就看不到 loading 了。
+
+### `app/dashboard/reports/page.js`
+
+```jsx
+// 對應 /dashboard/reports；切過來時側邊欄不會重繪，只有 active 換到「報表」
+export default function ReportsPage() {
+  return (
+    <div>
+      <h1>報表</h1>
+      <p>這裡之後可以放圖表或匯出功能。</p>
     </div>
   );
 }

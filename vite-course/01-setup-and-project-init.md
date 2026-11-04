@@ -1,6 +1,6 @@
 # 第 01 章:環境與專案初始化
 
-> 上一章我們建立了「Vite = dev 不打包 + build 用 Rollup」的心智模型。
+> 上一章我們建立了「Vite = dev 不打包 + build 才打包」的心智模型。
 > 這一章開始動手:把專案跑起來、看懂專案結構、認識 `vite.config.ts`,
 > 並把 `dev` / `build` / `preview` 三個指令的差別徹底分清楚。
 > 每個檔案、每個指令我都會解釋「它是什麼、為什麼存在」。
@@ -16,14 +16,14 @@ Vite 跑在 Node.js 上,所以先確認 Node 版本。
 node -v
 ```
 
-**版本要求**:Vite 需要較新的 Node(目前 Vite 6/7 要求 Node 18+ 或 20+)。
+**版本要求**:Vite 7 與 Vite 8 要求 Node **20.19 以上**或 **22.12 以上**。Node 20 已在 2026 年 4 月結束維護,新專案建議直接用 Node 22 或 24(LTS)。
 
-**為什麼要管 Node 版本?** 因為 Vite 本身用了不少新版 Node 才有的 API。版本太舊會直接啟動失敗,報一些看起來莫名其妙的錯。如果你機器上同時有多個專案需要不同 Node 版本,強烈建議用版本管理器:
+**為什麼要管 Node 版本?** 因為 Vite 本身用了不少新版 Node 才有的 API(例如 Vite 7 起只以 ESM 發佈,靠的是 Node 20.19 / 22.12 起內建的 `require(esm)`)。版本太舊會直接啟動失敗,報一些看起來莫名其妙的錯。如果你機器上同時有多個專案需要不同 Node 版本,強烈建議用版本管理器:
 
 ```bash
 # 用 nvm(macOS / Linux 常見)安裝並切換 Node 版本
-nvm install 20      # 安裝 Node 20
-nvm use 20          # 切換到 Node 20
+nvm install 24      # 安裝 Node 24
+nvm use 24          # 切換到 Node 24
 ```
 
 ### 套件管理器:npm / pnpm / yarn
@@ -59,13 +59,15 @@ pnpm create vite
 執行後它會問你幾個問題:
 
 ```
-✔ Project name: … my-vite-app          ← 專案資料夾名稱
-✔ Select a framework: › Vue            ← 選框架(Vanilla/Vue/React/Svelte/Solid/Qwik...)
-✔ Select a variant: › TypeScript       ← 選變體(JS 還是 TS)
+✔ Project name: … my-vite-app                  ← 專案資料夾名稱
+✔ Select a framework: › Vanilla                ← 選框架(Vanilla/Vue/React/Svelte/Solid/Qwik...)
+✔ Select a variant: › TypeScript               ← 選變體(JS 還是 TS)
+✔ Install with npm and start now? › No         ← 要不要順便安裝並啟動
 ```
 
 - **Framework**:選你要用的框架。選 `Vanilla` 就是純 JS、不綁框架,**本課程示範會用 Vanilla + TypeScript**,因為要研究 Vite 本身,框架越少干擾越好。
 - **Variant**:`TypeScript` 或 `JavaScript`。建議 TypeScript,跟現代專案接軌。
+- **Install and start now**:選 Yes 會直接 `npm install` + `npm run dev`。這裡選 No,下面一步一步自己來,順便看懂每一步。
 
 也可以一行指定、跳過問答:
 
@@ -87,7 +89,7 @@ npm run dev         # 啟動開發伺服器
 執行 `npm run dev`,你會看到:
 
 ```
-  VITE v7.0.0  ready in 312 ms      ← 注意這個時間!幾百毫秒就好了
+  VITE v8.3.5  ready in 312 ms      ← 注意這個時間!幾百毫秒就好了
 
   ➜  Local:   http://localhost:5173/
   ➜  Network: use --host to expose
@@ -106,15 +108,21 @@ my-vite-app/
 ├── index.html          ← ⭐ 整個應用的入口(注意:在根目錄,不在 src 裡!)
 ├── package.json        ← 專案資訊、依賴清單、npm scripts
 ├── tsconfig.json       ← TypeScript 編譯設定
-├── vite.config.ts      ← Vite 設定檔(本課程的主角)
+├── .gitignore
 ├── public/             ← 靜態資源(原樣複製,不經處理)
-│   └── vite.svg
+│   ├── favicon.svg
+│   └── icons.svg
 └── src/                ← 你的原始碼
     ├── main.ts         ← JS 應用的進入點
-    ├── style.css
     ├── counter.ts
-    └── typescript.svg
+    ├── style.css
+    └── assets/         ← 會被 import 的圖片(經 Vite 處理,第 04 章)
+        ├── hero.png
+        ├── typescript.svg
+        └── vite.svg
 ```
+
+> 注意範本裡**沒有** `vite.config.ts`:Vanilla 專案全用預設值就能跑。本課程的主角設定檔,下面會手動建立。
 
 ### `index.html` —— 為什麼它在「根目錄」而不是 src 裡?
 
@@ -127,8 +135,9 @@ my-vite-app/
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <title>Vite App</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>my-vite-app</title>
   </head>
   <body>
     <div id="app"></div>
@@ -169,22 +178,22 @@ my-vite-app/
     "preview": "vite preview"
   },
   "devDependencies": {
-    "typescript": "~5.6.0",
-    "vite": "^7.0.0"
+    "typescript": "~7.0.2",
+    "vite": "^8.3.5"
   }
 }
 ```
 
 逐行解釋幾個重點欄位:
 
-- **`"type": "module"`**:告訴 Node「這個專案的 `.js` 檔請當成 ESM 來解讀」。**為什麼重要?** 因為 `vite.config.ts` 裡你會寫 `import { defineConfig } from 'vite'`,要能用 `import` 語法,就需要這行(或把設定檔副檔名改成 `.mts`)。
+- **`"type": "module"`**:告訴 Node「這個專案的 `.js` 檔請當成 ESM 來解讀」。**為什麼重要?** 專案裡跑在 Node 上的 `.js`(例如 `postcss.config.js`、自己寫的腳本)會依它決定是 ESM 還是 CommonJS。`vite.config.ts` 目前還是會被 Vite 先打包再載入,所以拿掉這行 `import` 語法照樣能用;但 Vite 8 會警告:之後預計成為預設的原生載入方式(`configLoader: 'native'`)需要這行,或把設定檔改名成 `.mts`。
 - **`scripts`**:這就是 `npm run xxx` 背後實際執行的指令,下一節 1.4 專門講。
-- **`devDependencies`**:`vite` 和 `typescript` 都放在這裡,而不是 `dependencies`。**為什麼?** 因為它們只在「開發 / 建構」時需要,你的程式真正上線跑的時候(那些 dist 裡的檔案)用不到 Vite 本身。`devDependencies` 的東西在 `npm install --production` 時會被跳過。
+- **`devDependencies`**:`vite` 和 `typescript` 都放在這裡,而不是 `dependencies`。**為什麼?** 因為它們只在「開發 / 建構」時需要,你的程式真正上線跑的時候(那些 dist 裡的檔案)用不到 Vite 本身。`devDependencies` 的東西在 `npm install --omit=dev` 時會被跳過。
 - **`"private": true`**:防止你手滑 `npm publish` 把專案發佈到公開 npm。
 
 ### `vite.config.ts` —— 本課程的主角
 
-`vanilla-ts` 模板可能沒有這個檔(因為 Vanilla 不需要設定),但我們手動建一個,因為整門課都圍繞它。在根目錄建立:
+`vanilla-ts` 模板沒有這個檔(因為 Vanilla 不需要設定),但我們手動建一個,因為整門課都圍繞它。在根目錄建立:
 
 ```ts
 // vite.config.ts
@@ -203,15 +212,27 @@ export default defineConfig({
 
 直接 `export default {}` 也能跑,但你打 `server.` 的時候編輯器不會提示有哪些選項。`defineConfig` 幫物件套上了 Vite 的型別定義,於是你打字時會跳出所有合法選項——這在你不熟 API 時超級有用。**它沒有任何執行期魔法,純粹是給型別用的。**
 
-> 補充:設定檔可以是 `vite.config.js`、`.ts`、`.mjs`、`.mts`。用 `.ts` 最常見。Vite 啟動時會自己先把這個設定檔轉譯一次再讀取,所以你能在裡面用 TS 和 ESM。
+`defineConfig` 也可以接一個**函式**,當設定要依「現在是 dev 還是 build、哪個 mode」而不同時很好用:
 
-### `tsconfig.json` —— 給 TypeScript 看的,不是給 Vite 看的
+```ts
+export default defineConfig(({ command, mode }) => ({
+  // command:'serve'(dev / preview)或 'build'
+  // mode:預設 dev 是 'development'、build 是 'production',可用 --mode 自訂
+  base: command === 'build' ? '/my-app/' : '/',
+}))
+```
+
+> 補充:設定檔可以是 `vite.config.js`、`.ts`、`.mjs`、`.mts`、`.cjs`、`.cts`。用 `.ts` 最常見。Vite 啟動時會自己先把這個設定檔打包轉譯一次再讀取,所以你能在裡面用 TS 和 ESM。
+
+### `tsconfig.json` —— 主要給 TypeScript 看,Vite 只讀其中幾個欄位
 
 這裡有個**極重要、極多人搞錯**的觀念:
 
 > **Vite 在 dev 階段「不做型別檢查」。**
 
-Vite 用 esbuild 把 `.ts` 轉成 `.js` 時,做的是「**剝掉型別語法**(type stripping)」,而**不是「檢查型別對不對」**。也就是說,你寫 `const x: number = "字串"` 這種型別錯誤,**Vite dev 不會報錯,照樣跑給你看**。
+Vite 用 Oxc(Vite 7 以前是 esbuild)把 `.ts` 轉成 `.js` 時,做的是「**剝掉型別語法**(type stripping)」,而**不是「檢查型別對不對」**。也就是說,你寫 `const x: number = "字串"` 這種型別錯誤,**Vite dev 不會報錯,照樣跑給你看**。
+
+Vite 轉譯時只會參考 tsconfig 裡少數會影響輸出的欄位,例如 JSX 相關的 `jsx`、`jsxImportSource`,以及 `experimentalDecorators`、`useDefineForClassFields`、`verbatimModuleSyntax`。其他像 `target` 會被忽略(輸出目標由 Vite 自己的 `build.target` 決定),`paths` 路徑別名預設也**不會**生效(1.5 會講怎麼處理)。
 
 **為什麼 Vite 故意不檢查型別?** 因為型別檢查很慢,會拖垮「即時轉譯」的速度。Vite 的哲學是:速度優先,型別檢查交給專門的工具(`tsc`)或編輯器(VS Code 會即時標紅)。
 
@@ -221,7 +242,7 @@ Vite 用 esbuild 把 `.ts` 轉成 `.js` 時,做的是「**剝掉型別語法**(t
 "build": "tsc && vite build"
 ```
 
-- `tsc`(更常見是 `tsc --noEmit` 或 `vue-tsc`):**只做型別檢查**,確認沒有型別錯誤。
+- `tsc`:**只做型別檢查**,確認沒有型別錯誤。它之所以不輸出 `.js` 檔,是因為範本的 tsconfig 設了 `"noEmit": true`;拿掉那行,`tsc` 會在原始碼旁邊產生一堆 `.js`。(Vue 範本用的是 `vue-tsc -b`,才看得懂 `.vue` 檔。)
 - `&&`:前面成功才執行後面。所以**型別有錯就會中斷,不會打包出有問題的產物**。
 - `vite build`:真正的打包。
 
@@ -238,7 +259,7 @@ Vite 用 esbuild 把 `.ts` 轉成 `.js` 時,做的是「**剝掉型別語法**(t
 
 ## 1.4 dev / build / preview 三個指令徹底分清楚
 
-這三個指令對應第 00 章「雙引擎」的不同階段,**搞混它們是新手最大的困惑來源**,我們一個一個講透。
+這三個指令對應第 00 章「雙路徑」的不同階段,**搞混它們是新手最大的困惑來源**,我們一個一個講透。
 
 ### `vite`(即 `npm run dev`)—— 開發引擎
 
@@ -247,8 +268,8 @@ npm run dev
 ```
 
 - **做什麼**:啟動一個開發伺服器(預設 `http://localhost:5173`)。
-- **背後引擎**:第 00 章講的「不打包」那一套——瀏覽器原生 ESM + esbuild 即時轉譯 + 依賴預打包 + HMR。
-- **特性**:啟動秒級、改檔即時更新(HMR)、**不產生任何檔案到硬碟**(東西都在記憶體裡即時轉)。
+- **背後引擎**:第 00 章講的「不打包」那一套——瀏覽器原生 ESM + Oxc 即時轉譯 + Rolldown 依賴預打包 + HMR。
+- **特性**:啟動秒級、改檔即時更新(HMR)、**不輸出建構產物**(原始碼的轉譯結果都在記憶體裡;唯一寫到硬碟的是第 03 章的依賴預打包快取 `node_modules/.vite`)。
 - **用途**:你每天 90% 的時間都待在這。
 
 ### `vite build`(即 `npm run build`)—— 生產引擎
@@ -257,8 +278,8 @@ npm run dev
 npm run build
 ```
 
-- **做什麼**:用 **Rollup** 把整個專案打包、壓縮、最佳化,輸出到 `dist/` 資料夾。
-- **背後引擎**:跟 dev 完全是兩套東西!這裡是 Rollup,認真做 tree shaking、code splitting、壓縮、檔名加 hash。
+- **做什麼**:用 **Rolldown**(Vite 7 以前是 Rollup)把整個專案打包、壓縮、最佳化,輸出到 `dist/` 資料夾。
+- **背後引擎**:跟 dev 是完全不同的路徑!這裡是真的打包,認真做 tree shaking、code splitting、壓縮、檔名加 hash。
 - **產出**:`dist/` 裡是一堆優化過、可直接丟到任何靜態伺服器的檔案。
 
 打包完去看 `dist/`:
@@ -267,8 +288,8 @@ npm run build
 dist/
 ├── index.html
 └── assets/
-    ├── index-a1b2c3d4.js     ← 檔名帶了一段 hash
-    └── index-e5f6g7h8.css
+    ├── index-UTN1MRYU.js     ← 檔名帶了一段 hash
+    └── index-CsUDhMuy.css
 ```
 
 > **為什麼檔名要加一段亂碼(hash)?** 這叫「快取破壞(cache busting)」。瀏覽器會快取靜態檔。如果檔名永遠是 `index.js`,你改了程式重新上線,使用者瀏覽器可能還用舊的快取。而把內容的雜湊值寫進檔名,內容一變、檔名就變,瀏覽器就會視為新檔重新下載。內容沒變則檔名不變,快取繼續生效。第 08 章詳解。
@@ -291,15 +312,15 @@ npm run preview    # 再 preview
 
 > **心智模型一句話**:
 > - `dev` = 開發時用,跑原始碼,快、有 HMR。
-> - `build` = 產生上線檔案,跑 Rollup,慢但優化。
-> - `preview` = 在本機檢查 build 出來的東西對不對,**preview 不是用來開發的**。
+> - `build` = 產生上線檔案,跑 Rolldown,慢但優化。
+> - `preview` = 在本機檢查 build 出來的東西對不對,**preview 不是用來開發的,也不是正式環境的伺服器**(上線請交給 Nginx、CDN 或部署平台)。
 
 ### 三者對照表
 
 | 指令 | 引擎 | 跑的是什麼 | 產生檔案? | 主要用途 |
 |------|------|-----------|-----------|----------|
-| `vite`(dev) | esbuild + 原生 ESM | 未打包的原始碼 | ❌(記憶體) | 日常開發 |
-| `vite build` | Rollup | — | ✅ 輸出 `dist/` | 產生上線檔案 |
+| `vite`(dev) | 原生 ESM + Oxc 轉譯 + Rolldown 預打包 | 未打包的原始碼 | ❌(只有預打包快取) | 日常開發 |
+| `vite build` | Rolldown | — | ✅ 輸出 `dist/` | 產生上線檔案 |
 | `vite preview` | 簡易靜態伺服器 | `dist/` 的產物 | ❌ | 驗證打包結果 |
 
 ---
@@ -309,6 +330,7 @@ npm run preview    # 再 preview
 設定的細節會散落在後面各章,但這裡先給你一張「全貌地圖」,讓你知道一個設定檔大概長怎樣、各區塊管什麼。**現在不用背,看過有印象即可**,之後遇到再回來查。
 
 ```ts
+import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 
 export default defineConfig({
@@ -329,11 +351,12 @@ export default defineConfig({
   resolve: {
     alias: {
       // 設定路徑別名:讓你用 @/utils 代替 ../../../src/utils
-      '@': '/src',
+      // 值要給「檔案系統的絕對路徑」,這裡用 import.meta.url 算出專案的 src 目錄
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
 
-  // 4. build:生產建構(Rollup)的設定。第 08 章詳解。
+  // 4. build:生產建構(Rolldown)的設定。第 08 章詳解。
   build: {
     outDir: 'dist',      // 輸出目錄
     sourcemap: false,    // 是否產生 source map
@@ -347,11 +370,23 @@ export default defineConfig({
 })
 ```
 
-這六個區塊就是你 90% 會動到的設定。把它們對應到第 00 章的雙引擎:
+這六個區塊就是你 90% 會動到的設定。把它們對應到第 00 章的雙路徑:
 
 - `server`、`optimizeDeps` → 偏 **dev** 引擎。
 - `build` → 偏 **生產** 引擎。
 - `plugins`、`resolve`、`css` → 兩邊都會用到。
+
+> ⚠️ **別名要「兩邊都設」**:`resolve.alias` 只告訴 Vite 怎麼找檔案,TypeScript 和編輯器並不知道 `@` 是什麼,會標紅「找不到模組」。所以 tsconfig 也要加上對應的 `paths`:
+>
+> ```json
+> {
+>   "compilerOptions": {
+>     "paths": { "@/*": ["./src/*"] }
+>   }
+> }
+> ```
+>
+> 反過來,如果你只想維護一份,Vite 8 可以設 `resolve.tsconfigPaths: true`,讓 Vite 直接讀 tsconfig 的 `paths`(預設關閉,會多一點解析成本)。
 
 ---
 

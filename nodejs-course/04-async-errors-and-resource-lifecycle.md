@@ -161,7 +161,7 @@ node --unhandled-rejections=strict experiments/errors.cjs callback
 
 前兩者分別輸出 `local caught` 與 `caller caught`，並正常結束；後兩者預期以非零狀態結束。每條指令獨立執行，錯誤堆疊就是觀察結果。
 
-自動驗證以 `--unhandled-rejections=strict` 固定未處理 rejection 的失敗方式。不要加一個全域處理器把這些錯誤吞掉，讓測試表面變綠；需要修正的是遺失的錯誤路徑。[Node.js 程序錯誤事件](https://nodejs.org/api/process.html#event-unhandledrejection)
+自動驗證以 `--unhandled-rejections=strict` 固定未處理 rejection 的失敗方式。不要加一個全域處理器把這些錯誤吞掉，讓測試表面變綠；需要修正的是遺失的錯誤路徑。[Node.js 程序錯誤事件](https://nodejs.org/docs/latest-v24.x/api/process.html#event-unhandledrejection)
 
 ## 04.5 EventEmitter：emit 不會自動 await listener
 
@@ -187,7 +187,7 @@ node --unhandled-rejections=strict experiments/errors.cjs async-listener
 
 如果事件處理需要做非同步工作，要明確接住 Promise，例如在 listener 內呼叫 `processMessage(message).catch(reportError)`。`reportError` 本身也必須妥善處理失敗；`void` 只表達不使用回傳值，並不等於處理 rejection。
 
-Node 也提供 `captureRejections` 協助轉送 async listener 的拒絕，但仍需要設計 `'error'` 的處理者，且它不會替你停止來源或清理資源。[EventEmitter 官方文件](https://nodejs.org/api/events.html)
+Node 也提供 `captureRejections` 協助轉送 async listener 的拒絕，但仍需要設計 `'error'` 的處理者，且它不會替你停止來源或清理資源。[EventEmitter 官方文件](https://nodejs.org/docs/latest-v24.x/api/events.html)
 
 ### 特殊的 `'error'` 事件
 
@@ -225,13 +225,13 @@ controller.abort(new Error('user cancelled'));
 await observed;
 ```
 
-這個範例的 `await` 應放在 async 函式中。Promise timer 會以 `AbortError` 拒絕；不同 API 對取消錯誤的包裝可能不同，不應假設所有 API 都直接丟出 `signal.reason`。本章自己寫的 helper 則明確約定保留該 reason。[Promise timers 文件](https://nodejs.org/api/timers.html#timers-promises-api)
+這個範例的 `await` 應放在 async 函式中。Promise timer 會以 `AbortError` 拒絕；不同 API 對取消錯誤的包裝可能不同，不應假設所有 API 都直接丟出 `signal.reason`。本章自己寫的 helper 則明確約定保留該 reason。[Promise timers 文件](https://nodejs.org/docs/latest-v24.x/api/timers.html#timers-promises-api)
 
 ### 已取消與未來取消，都要處理
 
 只註冊 `'abort'` listener 不夠，因為 signal 可能在工作開始前就已經取消。工作應先檢查 `signal.aborted` 或呼叫 `signal.throwIfAborted()`，再註冊後續需要的 listener。
 
-成功後也要移除取消 listener。`{ once: true }` 只表示事件發生一次後移除；如果工作先成功、事件從未發生，listener 仍需要清理。[AbortController／AbortSignal 文件](https://nodejs.org/api/globals.html#class-abortcontroller)
+成功後也要移除取消 listener。`{ once: true }` 只表示事件發生一次後移除；如果工作先成功、事件從未發生，listener 仍需要清理。[AbortController／AbortSignal 文件](https://nodejs.org/docs/latest-v24.x/api/globals.html#class-abortcontroller)
 
 ## 04.7 為什麼只用 Promise.race 還不夠？
 
@@ -315,7 +315,7 @@ function cleanup(): void {
 
 如果真實共享來源在等待取消後仍可能發出 `'error'`，來源擁有者應維持自己的長期錯誤處理，直到來源停止。不能因為這次等待結束，就假設來源不再需要錯誤監聽。
 
-若需求只是等待一次事件，Node 的 `events.once(source, 'message', { signal })` 已提供 Promise 形式及相應清理，通常可優先使用；收到參數後仍需驗證 payload。本章手寫版本是為了逐條看清擁有權與離開路徑。[events.once 文件](https://nodejs.org/api/events.html#eventsonceemitter-name-options)
+若需求只是等待一次事件，Node 的 `events.once(source, 'message', { signal })` 已提供 Promise 形式及相應清理，通常可優先使用；收到參數後仍需驗證 payload。本章手寫版本是為了逐條看清擁有權與離開路徑。[events.once 文件](https://nodejs.org/docs/latest-v24.x/api/events.html#eventsonceemitter-name-options)
 
 ## 04.9 finally 與資源擁有權
 
@@ -341,7 +341,7 @@ try {
 
 這裡的 `await` 讓 `finally` 等結果確定後才執行。不要在 `finally` 任意 `return`，否則可能覆蓋原本的結果或錯誤；清理若可能失敗，也需要定義如何保留主要錯誤。
 
-timer 的 `unref()` 只是讓它不單獨維持程序存活，並不等於取消 timer，也不會清理其他 listener。本章使用 `clearTimeout` 直接釋放自己建立的 timer，不用 `unref` 掩蓋資源管理問題。[Node.js timer 生命週期](https://nodejs.org/api/timers.html#timeoutunref)
+timer 的 `unref()` 只是讓它不單獨維持程序存活，並不等於取消 timer，也不會清理其他 listener。本章使用 `clearTimeout` 直接釋放自己建立的 timer，不用 `unref` 掩蓋資源管理問題。[Node.js timer 生命週期](https://nodejs.org/docs/latest-v24.x/api/timers.html#timeoutunref)
 
 同樣地，設 `process.exitCode = 1` 不會替你關閉尚在運作的伺服器或連線；07 章再處理程序層級的關閉順序。用 `process.exit()` 強行退出也不能證明資源已正確清理。
 

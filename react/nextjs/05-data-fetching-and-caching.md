@@ -43,10 +43,11 @@ export default async function UsersPage() {
 Next.js 會依 `fetch` 的選項決定快取行為。三種最常用：
 
 ```jsx
-// (A) 預設在 Next.js 15：不快取，每次請求都重抓（等同 no-store）
+// (A) 不快取：Next.js 15 不寫選項時就不快取；要「每次請求都重抓」請明確寫 no-store
 await fetch(url);
+await fetch(url, { cache: "no-store" });
 
-// (B) 明確快取，建置後就固定（適合不常變的資料）
+// (B) 明確快取：抓一次就存起來重複使用，直到你讓它失效（適合不常變的資料）
 await fetch(url, { cache: "force-cache" });
 
 // (C) 定時重新驗證：最多 60 秒用舊資料，過期後下次請求時背景更新
@@ -54,6 +55,10 @@ await fetch(url, { next: { revalidate: 60 } });
 ```
 
 > 版本差異提醒：Next.js 14 的 `fetch` 預設會快取；**Next.js 15 預設不快取**。要快取請明確寫 `cache: "force-cache"` 或 `next: { revalidate }`。本課以 Next.js 15 行為為準。
+
+> **不寫選項 ≠ `no-store`**：兩者都不會把結果存進快取，差別在 `npm run build`。不寫選項時，如果這頁沒用到其他「請求當下才知道」的東西，Next.js 仍會在建置時把整頁預先產生成靜態頁，fetch 只在建置時跑一次；寫了 `cache: "no-store"`，這頁就變成每次請求才渲染，每次都重抓。所以真的需要即時資料時，請明確寫 `no-store`（靜態／動態頁的判斷在第 12 章）。
+
+`force-cache` 存起來的資料不會自己過期，要更新得用 `revalidatePath`／`revalidateTag` 讓它失效（第 8、12 章）。
 
 選擇原則：
 
@@ -67,12 +72,26 @@ await fetch(url, { next: { revalidate: 60 } });
 
 `next: { revalidate: 60 }` 的意思是：
 
-1. 第一個人來，抓資料、產生頁面、快取起來。
+1. 建置時（或第一次有人請求時）抓資料、產生頁面、快取起來。
 2. 60 秒內來的人，直接吃快取（超快）。
 3. 60 秒後第一個來的人，先拿到舊頁面，Next.js 在背景重抓、更新快取。
 4. 之後的人就吃到新版。
 
 這叫 **ISR**：既有靜態頁的速度，又能定時更新。第 12 章會更深入。
+
+> **開發模式看不到完整的快取效果**：`npm run dev` 時，頁面每次請求都會重新渲染，不會有「整頁靜態、背景更新」這回事。fetch 的資料快取（`force-cache`、`revalidate`）在開發模式仍會生效，但瀏覽器強制重新整理（Cmd/Ctrl + Shift + R）或 DevTools 勾了「Disable cache」時會略過它。想看真正的 ISR，要用 `npm run build && npm run start`（第 12 章會這樣實測）。
+
+> **怎麼看出有沒有吃到快取**：jsonplaceholder 的資料不會變，光看畫面分不出來。在 `next.config.mjs` 打開 fetch 紀錄，`npm run dev` 的終端機就會在每個 fetch 後面標出 `(cache hit)`、`(cache miss)` 或 `(cache skip)`，skip／miss 還會附上原因：
+
+```js
+// next.config.mjs
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  logging: { fetches: { fullUrl: true } },
+};
+
+export default nextConfig;
+```
 
 ---
 
@@ -188,6 +207,8 @@ export default async function Stats() {
   return <p className="stats">目前共有 100 篇文章、1280 次造訪。</p>;
 }
 ```
+
+> 在 `npm run dev` 每次請求都會重新渲染，所以看得到「統計載入中…」再換成統計。`npm run build` 之後，這頁會被預先產生（第 3 節的 ISR），統計在建置時就算好放進 HTML，fallback 不會出現——串流要在「每次請求才渲染」的動態頁才看得到（第 12 章）。
 
 ### `app/posts/[id]/page.js`
 

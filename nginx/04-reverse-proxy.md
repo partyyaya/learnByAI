@@ -62,7 +62,7 @@ server {
 
     location / {
         proxy_pass http://localhost:3000;  # 轉發目的地：本機 3000 port 的後端服務
-        proxy_http_version 1.1;            # 與後端改用 HTTP/1.1（預設是 1.0）
+        proxy_http_version 1.1;            # 與後端改用 HTTP/1.1（1.24 預設是 1.0）
 
         # 傳遞重要的標頭資訊（各標頭的詳細說明見 4.5）
         proxy_set_header Host $host;
@@ -75,35 +75,42 @@ server {
 
 > **`proxy_http_version 1.1;` 為什麼幾乎都要加？**
 >
-> - Nginx 與後端溝通時，預設使用 HTTP/1.0。
+> - Nginx 1.24 與後端溝通時，預設使用 HTTP/1.0（1.29.7 起預設改為 1.1，寫了也無害）。
 > - HTTP/1.0 不支援連線重用（keep-alive），每個請求都要重新建立 TCP 連線；也不支援 `Upgrade` 機制。
 > - 因此只要用到 upstream keepalive（第五章）或 WebSocket（本章場景三），就必須是 1.1；一般反向代理也建議統一加上。
+>
+> **`localhost` 小提醒**：有些系統的 `/etc/hosts` 讓 `localhost` 同時對應 IPv6 的 `::1`（例如 Debian、官方 Docker 映像），Nginx 會先試 `[::1]:3000`；後端若只聽 `127.0.0.1`，error log 就會不斷出現 `connect() failed (111: Connection refused) ... upstream: "http://[::1]:3000/"` 才退回 IPv4。直接寫 `proxy_pass http://127.0.0.1:3000;` 可避免。
 
 ### proxy_pass 的斜線問題（非常重要！）
 
 ```nginx
 # 情境：請求 /api/users
+# 判斷依據：proxy_pass 的 host:port 後面「有沒有 URI 部分」（就算只有一個 / 也算有）
 
-# 有尾斜線 — 會去掉匹配的前綴
+# 有 URI 部分（/）— location 匹配到的前綴 /api/ 被替換成 /
 location /api/ {
     proxy_pass http://localhost:3000/;
     # 結果：轉發到 http://localhost:3000/users
 }
 
-# 無尾斜線 — 保留完整路徑
+# 沒有 URI 部分 — 原始路徑整段照轉
 location /api/ {
     proxy_pass http://localhost:3000;
     # 結果：轉發到 http://localhost:3000/api/users
 }
 
-# 帶路徑且有尾斜線
+# URI 部分是 /v2/ — 前綴 /api/ 被替換成 /v2/
 location /api/ {
     proxy_pass http://localhost:3000/v2/;
     # 結果：轉發到 http://localhost:3000/v2/users
 }
 ```
 
-> **記住**：`proxy_pass` 有沒有尾斜線，行為完全不同！這是最常見的踩坑點。
+> **記住**：關鍵是 `proxy_pass` 有沒有 URI 部分——有的話，location 匹配到的前綴會被「整段替換」成這個 URI，所以兩邊的斜線要成對，這是最常見的踩坑點：
+>
+> - `location /api/` 配 `proxy_pass http://localhost:3000/v2;`（URI 少了尾斜線）→ `/api/users` 變成 `/v2users`。
+> - `location /api` 配 `proxy_pass http://localhost:3000/;`（location 少了尾斜線）→ `/api/users` 變成 `//users`。
+> - 正規表示式 location（`~`、`~*`）裡的 `proxy_pass` 不能帶 URI 部分，`nginx -t` 會直接報錯。
 
 ---
 
@@ -157,7 +164,7 @@ server {
   - 設 `0` 代表不限制，但會失去對惡意大請求的保護，不建議。
 - `proxy_connect_timeout 60s;`
   - Nginx 與後端「建立 TCP 連線」的逾時，超過回 502。
-  - 預設 60s，且官方規定**不能超過 75s**。同機房的後端通常 3~10 秒內連得上，實務常設更短（如 `5s`）讓故障盡早暴露。
+  - 預設 60s；官方文件註明這個值**通常無法超過 75s**（受作業系統的 TCP 連線逾時限制，設更大也不會生效）。同機房的後端通常 3~10 秒內連得上，實務常設更短（如 `5s`）讓故障盡早暴露。
 - `proxy_send_timeout 60s;` / `proxy_read_timeout 60s;`
   - 注意計時對象：是「**兩次成功寫入／讀取之間**」的間隔，不是整個請求或回應的總時間。
   - 只要後端持續有資料往來，連線就不會被切斷；後端「完全沒回應」超過 `proxy_read_timeout` 才會逾時（回 504）。
@@ -200,8 +207,8 @@ server {
         try_files $uri $uri/ /index.html;  # SPA 路由支援
     }
 
-    # API 請求轉發到後端
-    location /api/ {
+    # API 請求轉發到後端（^~：命中這個前綴後，不再比對下方的正規表示式 location）
+    location ^~ /api/ {
         proxy_pass http://localhost:8080/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -217,6 +224,8 @@ server {
     }
 }
 ```
+
+> 為什麼 `/api/` 要加 `^~`？正規表示式 location 的優先順序高於一般前綴 location；少了 `^~`，`/api/users/1/avatar.png`、`/api/export.css` 這類請求會被下方的靜態資源規則搶走，直接回 404，根本到不了後端。
 
 ### 場景二：微服務架構路由
 
@@ -258,8 +267,8 @@ proxy_set_header Host $host;
 proxy_set_header X-Real-IP $remote_addr;
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 proxy_set_header X-Forwarded-Proto $scheme;
-proxy_connect_timeout 30s;
-proxy_read_timeout 30s;
+proxy_connect_timeout 5s;
+proxy_read_timeout 60s;
 ```
 
 ### 場景三：WebSocket 代理
@@ -290,6 +299,8 @@ server {
 }
 ```
 
+> 若 `proxy_pass` 指向第五章啟用了 `keepalive` 的 upstream，把 map 的 `'' close;` 改成 `'' '';`：一般 HTTP 請求就不送 `Connection` 標頭，後端連線才能重用；寫 `close` 會讓每個非 WebSocket 請求都斷線重連。
+
 ### 場景四：代理到外部服務
 
 ```nginx
@@ -301,11 +312,16 @@ server {
     location /external-api/ {
         proxy_pass https://api.external-service.com/;
         proxy_set_header Host api.external-service.com;
-        proxy_set_header Accept-Encoding "";
         proxy_ssl_server_name on;  # 使用 SNI
+
+        # 驗證對方憑證（預設 off＝不驗證，被中間人冒充也不會發現）
+        proxy_ssl_verify on;
+        proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;  # 系統內建的 CA 清單（Ubuntu 路徑）
     }
 }
 ```
+
+> 注意：`proxy_pass` 裡的網域只在 Nginx 啟動／reload 時解析一次，外部服務換了 IP，Nginx 仍會連舊 IP；需要動態解析的做法見第十章。
 
 ---
 
@@ -325,6 +341,8 @@ proxy_set_header X-Real-IP $remote_addr;
 # 3. X-Forwarded-For — 記錄整個代理鏈的 IP
 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 # 格式：client_ip, proxy1_ip, proxy2_ip
+# 注意：這是「附加」在客戶端自己帶來的值後面，最左邊幾筆客戶端可以任意偽造；
+# 最外層的 Nginx（前面沒有 CDN／其他代理）可改用 $remote_addr 直接覆寫，信任前端代理的做法見第八章
 
 # 4. X-Forwarded-Proto — 傳遞原始協定
 proxy_set_header X-Forwarded-Proto $scheme;
@@ -375,7 +393,9 @@ location / {
 
 ```javascript
 // Node.js/Express 後端讀取真實 IP
-app.set('trust proxy', true);
+// 只信任本機的 Nginx（Nginx 與 Node 同機）；不同機時改填 Nginx 的 IP，例如 '10.0.1.5'
+// 不要設 true：true 會取 X-Forwarded-For 最左邊一筆，那是客戶端可以自己偽造的值
+app.set('trust proxy', 'loopback');
 const clientIP = req.headers['x-real-ip'] || req.ip;
 ```
 
@@ -419,9 +439,10 @@ location / {
     proxy_redirect http://localhost:3000/ /;
 
     # 修正回應 body 中的 URL（需要 ngx_http_sub_module）
+    proxy_set_header Accept-Encoding "";   # 要求後端回未壓縮內容：sub_filter 無法替換 gzip 壓縮過的回應
     sub_filter 'http://localhost:3000' '';
     sub_filter_once off;
-    sub_filter_types text/html text/css application/javascript;
+    sub_filter_types text/css application/javascript;   # text/html 預設就包含，不用再列
 }
 ```
 
@@ -430,33 +451,43 @@ location / {
 **問題**：前端請求 API 時出現 CORS 錯誤
 
 ```nginx
+# 允許跨域呼叫的來源白名單（map 只能放在 http 層，例如 conf.d/*.conf 的最外層）
+map $http_origin $cors_origin {
+    default                     "";              # 不在名單內 → 空字串，add_header 就不會送出這個標頭
+    "https://myapp.com"         $http_origin;
+    "https://admin.myapp.com"   $http_origin;
+}
+
 location /api/ {
     proxy_pass http://localhost:3000/;
 
     # 添加 CORS 標頭
-    add_header 'Access-Control-Allow-Origin' '$http_origin' always;
-    add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
-    add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, Accept' always;
+    add_header 'Access-Control-Allow-Origin' $cors_origin always;
     add_header 'Access-Control-Allow-Credentials' 'true' always;
+    add_header 'Vary' 'Origin' always;    # 回應依 Origin 而不同，提醒 CDN／快取分開存
 
-    # 處理 OPTIONS 預檢請求
+    # 處理 OPTIONS 預檢請求（if 裡寫了 add_header，外層的不會繼承進來，所以整組重寫）
     if ($request_method = 'OPTIONS') {
-        add_header 'Access-Control-Allow-Origin' '$http_origin';
+        add_header 'Access-Control-Allow-Origin' $cors_origin;
+        add_header 'Access-Control-Allow-Credentials' 'true';   # 預檢回應也要帶，否則帶 Cookie 的請求在預檢就被擋
         add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
         add_header 'Access-Control-Allow-Headers' 'Authorization, Content-Type, Accept';
         add_header 'Access-Control-Max-Age' 86400;
-        add_header 'Content-Length' 0;
+        add_header 'Vary' 'Origin';
         return 204;
     }
 }
 ```
+
+> - 一定要用白名單：直接回填 `$http_origin`，再加上 `Allow-Credentials: true`，等於任何網站都能帶著使用者的 Cookie 呼叫你的 API 並讀到回應。
+> - 後端若自己也送 CORS 標頭，回應會出現兩個 `Access-Control-Allow-Origin`，瀏覽器會直接拒絕；兩邊只留一邊處理（可用 `proxy_hide_header Access-Control-Allow-Origin;` 隱藏後端的）。
 
 ---
 
 ## 4.7 本章小結
 
 - 反向代理是 Nginx 最核心的功能之一
-- `proxy_pass` 的尾斜線會影響路徑轉發行為，務必注意
+- `proxy_pass` 有沒有帶 URI 部分（連一個尾斜線 `/` 也算）決定路徑怎麼轉發，務必注意
 - 設定 `proxy_set_header` 傳遞客戶端真實資訊給後端
 - WebSocket 需要額外設定 `Upgrade` 和 `Connection` 標頭
 - 502 是最常見的反向代理錯誤，通常是後端服務未啟動

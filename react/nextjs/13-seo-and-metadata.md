@@ -36,6 +36,8 @@ export default function AboutPage() {
 }
 ```
 
+> `metadata` 和 `generateMetadata` 只能從 Server Component 的檔案 export。檔案開頭有 `"use client"` 時，build 會報錯。需要互動的頁面，把互動部分抽成 Client 元件，`page.js` 本身保持 Server Component，metadata 就能放在 `page.js`。
+
 ### 標題樣板（title template）
 
 在根 Layout 設定樣板，子頁只要給主標，就會自動套上站名後綴：
@@ -53,6 +55,8 @@ export const metadata = {
 
 之後子頁 `title: "關於我們"` 會顯示為 `關於我們 | My Blog`。
 
+> 樣板只會套用到「下層」路由段。`app/page.js`（首頁）和根 Layout 在同一層，首頁自己寫的 `title` 不會套上 `| My Blog`。首頁通常直接用 `default` 那個標題。
+
 ---
 
 ## 3. generateMetadata：動態頁的 metadata
@@ -62,7 +66,7 @@ export const metadata = {
 ```jsx
 // app/blog/[slug]/page.js
 export async function generateMetadata({ params }) {
-  const { slug } = await params;
+  const { slug } = await params; // Next.js 15：params 是 Promise
   const post = await getPost(slug);
 
   if (!post) return { title: "找不到文章" };
@@ -78,7 +82,18 @@ export default async function PostPage({ params }) {
 }
 ```
 
-> `generateMetadata` 與頁面各自抓資料，但 Next.js 會**自動去重**（相同的 fetch 只打一次），所以不用擔心抓兩次。
+> `generateMetadata` 與頁面各自抓資料。如果用的是 `fetch`，Next.js 會**自動去重**：同一次請求裡相同的 fetch 只打一次，所以不用擔心抓兩次。
+
+> 自動去重只對 `fetch` 有效。如果 `getPost` 是查資料庫（像 Prisma），同一次請求就會真的查兩次。要去重的話，用 React 的 `cache()` 把函式包起來：
+>
+> ```js
+> import { cache } from "react";
+> import { prisma } from "@/lib/prisma";
+>
+> export const getPost = cache(async (slug) => {
+>   return prisma.post.findUnique({ where: { slug } });
+> });
+> ```
 
 ---
 
@@ -119,6 +134,10 @@ export const metadata = {
 };
 ```
 
+社群平台抓預覽圖時需要完整網址，所以相對路徑一定要靠 `metadataBase` 補成完整網址。沒設的話，Next.js 在 build 時會警告。自己架站時，它只能暫時用 `http://localhost:3000` 補，分享出去的圖就抓不到。上線前記得改成正式網域。
+
+> **合併規則是「淺層」的**：子頁的 metadata 會和上層合併，但 `openGraph` 這種物件是整個覆蓋，不會逐欄合併。子頁只要寫了 `openGraph: { title: "…" }`，Layout 設的 `openGraph.images` 就不見了。需要共用的欄位，可以抽成一個常數，在子頁用展開運算子 `...` 帶進去。
+
 ---
 
 ## 5. sitemap.js 與 robots.js
@@ -151,6 +170,8 @@ export default function robots() {
   };
 }
 ```
+
+> sitemap 與 robots 裡的網址要寫完整（含 `https://` 與網域），`metadataBase` 不會套用到這裡。實務上常把網域放進環境變數（例如第 14 章的 `NEXT_PUBLIC_SITE_URL`），避免到處寫死。
 
 ---
 
@@ -186,7 +207,12 @@ export default async function Image({ params }) {
 }
 ```
 
-> 好處：每篇文章自動有一張帶標題的分享圖，不用美編手工做圖。
+> 好處：每篇文章自動有一張帶標題的分享圖，不用美編手工做圖。放了這個檔，Next.js 會自動在該頁加上 `og:image`（以及 `twitter:image`）標籤，不用再手寫 `openGraph.images`。
+
+寫這種 JSX 時有幾個和網頁不一樣的地方：
+
+- 畫圖的引擎不是瀏覽器，只支援部分 CSS，排版用 flexbox。**一個 `<div>` 裡有兩個以上子元素時，一定要寫 `display: "flex"`**，否則會報錯。
+- 中文字會在產生圖片時自動向 Google Fonts 抓 Noto Sans TC 來補，所以伺服器要能連外。想用自己的字型（或要確實顯示粗體），可以用 `ImageResponse` 的 `fonts` 選項載入字型檔。
 
 ---
 
@@ -358,7 +384,7 @@ export default function robots() {
 .excerpt { color: #6b7280; }
 ```
 
-> 驗證：造訪 `/blog/hello-nextjs`，檢視原始碼看 `<title>`、`<meta>` 有沒有出現；造訪 `/blog/hello-nextjs/opengraph-image` 看動態圖；造訪 `/sitemap.xml`、`/robots.txt`。
+> 驗證：造訪 `/blog/hello-nextjs`，檢視原始碼看 `<title>`（應為 `用 App Router 打造部落格 | My Blog`）、`<meta>` 有沒有出現；造訪 `/blog/hello-nextjs/opengraph-image` 看動態圖；造訪 `/sitemap.xml`、`/robots.txt`。原始碼裡 `og:image` 的網址，在 `npm run dev` 時會是 localhost，build 後則由 `metadataBase` 補成 `https://example.com/...`。換成正式網域後，就會指向你的站。
 
 ---
 

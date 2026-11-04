@@ -145,7 +145,7 @@ events {
 >
 > **小知識（理論值）**：最大並發連線數 = `worker_processes × worker_connections`
 >
-> - 這是理論上限；實際值還會受 `worker_rlimit_nofile`、系統 `ulimit -n`、Keep-Alive 與反向代理行為影響。
+> - 這是理論上限；實際值還會受 worker 的 fd 上限（`worker_rlimit_nofile`）、Keep-Alive 與反向代理行為影響。
 > - 若是反向代理場景，一個請求常同時佔用「客戶端連線 + 上游連線」，可服務的客戶端數通常會低於理論值。
 >
 > 實務上怎麼設定（建議起手式）？
@@ -154,7 +154,7 @@ events {
 > - `worker_connections`：
 >   - 小型站台：`1024 ~ 2048`
 >   - 一般 API / 反向代理：`2048 ~ 4096`
->   - 大量長連線（WebSocket）：`4096 ~ 8192`（需同步調高 fd 限制）
+>   - 大量長連線（WebSocket）：`4096 ~ 8192`（需同步調高 `worker_rlimit_nofile`）
 > - `worker_rlimit_nofile`：至少要覆蓋你的連線需求，常見起手式 `65535`。
 > - 反向代理估算：可服務客戶端常用粗估值約為 `(worker_processes × worker_connections) / 2`。
 >
@@ -180,14 +180,14 @@ events {
 > # 套用新設定（不中斷服務）
 > sudo systemctl reload nginx
 >
-> # 查看目前 shell 的 fd 限制（需搭配系統層級一起調整）
-> ulimit -n
+> # 查看 worker 實際拿到的 fd 上限（看的是 nginx 行程本身，不是目前 shell 的 ulimit -n）
+> grep 'open files' /proc/$(pgrep -f 'nginx: worker' | head -1)/limits
 >
 > # 快速確認 worker 數量是否符合預期
-> ps -ef | rg "nginx: worker process"
+> ps -ef | grep "nginx: worker process"
 > ```
 >
-> - 如果你要調到 `worker_connections 8192+`，請同時檢查系統 `nofile` 限制（可參考後面的 `worker_rlimit_nofile` 章節）。
+> - 如果你要調到 `worker_connections 8192+`，請確認 `worker_rlimit_nofile` 夠大（見補充說明【6】）。
 
 ### HTTP Context
 
@@ -307,7 +307,7 @@ server {
 >
 > - `listen 80 default_server;`：把這個 `server` 設成該 port 的預設站台（沒匹配到 `server_name` 時接手）。
 > - `listen 443 ssl;`：啟用 HTTPS 監聽（需搭配憑證設定）。
-> - `listen 443 ssl http2;`：在 HTTPS 上啟用 HTTP/2（較新版本也可改用 `http2 on;` 寫法）。
+> - `listen 443 ssl http2;`：在 HTTPS 上啟用 HTTP/2（1.24 只認這個寫法；1.25.1 起改成 `listen 443 ssl;` 加一行 `http2 on;`，舊寫法仍可用但 `nginx -t` 會出現 deprecated 警告）。
 > - `listen 127.0.0.1:8080;`：只綁定本機回環位址（僅本機可連）。
 > - `listen unix:/run/nginx.sock;`：使用 Unix Domain Socket（常見於同機反向代理場景）。
 
@@ -325,7 +325,7 @@ location = /api/health {
     return 200 'OK';
 }
 
-# 2. 前綴匹配（優先，匹配後停止搜尋）
+# 2. 前綴匹配（若它是最長的前綴匹配，就停止搜尋、不再比對正規表示式）
 location ^~ /static/ {
     root /var/www;
 }
@@ -335,7 +335,7 @@ location ~ \.php$ {
     fastcgi_pass unix:/var/run/php/php-fpm.sock;
 }
 
-# 4. 正規表示式匹配（不區分大小寫）
+# 4. 正規表示式匹配（不區分大小寫；和 ~ 之間依出現順序比對，沒有誰優先）
 location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
     expires 30d;
 }
@@ -357,7 +357,7 @@ location / {
   - `=` 代表「完全相等」才匹配。
   - 常用在健康檢查端點，直接回傳固定內容，不走後端。
 - `location ^~ /static/ { root /var/www; }`
-  - `^~` 代表前綴匹配成功後就停止，**不再進入正規表示式比對**。
+  - `^~` 代表：當它是「最長的前綴匹配」時就停止，**不再進入正規表示式比對**（若另有更長的一般前綴命中，仍會進入 regex 比對）。
   - 常用於靜態資源路徑，避免被後面的 regex 規則攔走。
   - `root /var/www;` 代表實際檔案路徑會是 `/var/www/static/...`。
 - `location ~ \.php$ { fastcgi_pass unix:/var/run/php/php-fpm.sock; }`
@@ -391,13 +391,19 @@ location / {
 
 ### 匹配優先順序
 
+Nginx 實際的比對流程：
+
 ```
-1. = （精確匹配）          → 最高優先
-2. ^~ （前綴匹配，停止搜尋）→ 次高
-3. ~ （正規，區分大小寫）   → 第三
-4. ~* （正規，不區分大小寫）→ 第四
-5. 無修飾符（一般前綴）     → 最長匹配優先
+1. 先找 =（精確匹配）：命中就直接使用，結束
+2. 在所有前綴 location（^~ 與無修飾符）中找出「最長的匹配」
+   - 若這個最長匹配帶 ^~ → 直接使用，結束（不比對 regex）
+   - 否則先記住它，進入下一步
+3. 依設定檔中「出現的順序」逐一比對 regex（~ 與 ~* 之間沒有優先順序）
+   - 第一個命中的 regex 就使用，結束
+4. 沒有 regex 命中 → 使用第 2 步記住的最長前綴
 ```
+
+> 例：若在上面的設定再加一個 `location /static/img/`，請求 `/static/img/a.jpg` 時最長前綴就變成 `/static/img/`（不帶 `^~`），於是繼續比對 regex，被 `location ~* \.(jpg|jpeg|png|gif|ico|css|js)$` 搶走；`^~ /static/` 擋不住它。
 
 ---
 
@@ -426,8 +432,10 @@ $http_referer           # Referer 標頭
 $http_x_forwarded_for   # X-Forwarded-For 標頭
 
 # 伺服器相關
-$host           # 請求的 Host 標頭
-$server_name    # 匹配到的 server_name
+$host           # 請求的主機名稱：依序取請求行的主機名、Host 標頭、server_name；會轉小寫並去掉 port
+                #（要保留原樣含 port，用 $http_host）
+$server_name    # 處理這個請求的 server 區塊的「第一個」server_name，不一定是請求的網域
+                #（server_name example.com www.example.com; 時，請求 www 也會得到 example.com）
 $server_port    # 伺服器 port
 $scheme         # 協定（http 或 https）
 
@@ -551,6 +559,8 @@ curl -v -H "Host: api.example.com" http://你的伺服器IP/
 ```
 
 > 重點：進不進 `default_server`，看的是 **Host 標頭有沒有匹配到 server_name**，而不是 URL 路徑。
+>
+> 注意：同一個 `IP:port` 只能有一個 `default_server`。Ubuntu 原廠的 `sites-enabled/default` 已經宣告了 `listen 80 default_server;`，再加上面的區塊會讓 `nginx -t` 報 `a duplicate default server for 0.0.0.0:80`；請先移除 `sites-enabled/default` 連結，或直接修改那個檔案（第三章 3.4 有完整做法）。
 
 ### 情境三：修改設定後忘記重載
 
@@ -558,10 +568,13 @@ curl -v -H "Host: api.example.com" http://你的伺服器IP/
 
 ```bash
 # 確認設定是否已重載
-# 方法一：看 Nginx master process 的啟動時間
-ps aux | grep nginx
+# 方法一：看 worker process 的 PID 與啟動時間
+# reload 不會重啟 master（PID 與啟動時間都不變），只會換一批新的 worker
+ps -o pid,lstart,cmd -C nginx
 
 # 方法二：檢查錯誤日誌
+# 設定有錯導致重載失敗時會留下 [emerg]；但重載成功的紀錄是 notice 等級，
+# 日誌等級設成 warn 或 error（Ubuntu 預設）時看不到
 tail -f /var/log/nginx/error.log
 
 # 正確流程
@@ -574,7 +587,7 @@ sudo nginx -t && sudo nginx -s reload
 
 - Nginx 設定檔採用巢狀區塊結構：main → events / http → server → location
 - 每次修改設定後，務必使用 `nginx -t` 測試語法
-- Location 匹配有明確的優先順序，精確匹配 > 前綴匹配 > 正規匹配
+- Location 匹配有明確的優先順序：`=` 精確匹配 > `^~` 前綴（且為最長前綴時）> 正規匹配（依出現順序）> 一般前綴（最長者）
 - 善用 `include` 將設定模組化，提高可維護性
 - 熟悉常用內建變數，可以靈活運用在日誌、條件判斷與標頭設定中
 
@@ -604,7 +617,7 @@ Nginx 透過 `mime.types` 檔案，根據副檔名對應到正確的 MIME 類型
 | `.pdf` | `application/pdf` | 開啟 PDF 檢視器 |
 | `.zip` | `application/zip` | 觸發下載 |
 
-如果沒有引入 `mime.types`，Nginx 會把所有檔案都當成 `application/octet-stream`（預設的二進位類型），瀏覽器就會直接下載檔案而不是正確地顯示——這就是為什麼有時候 CSS 沒生效、圖片變下載的原因。
+如果沒有引入 `mime.types`，Nginx 只剩內建的少數對應（`html`、`gif`、`jpg`），其他副檔名一律用 `default_type` 的值回傳；常見的 nginx.conf 把它設成 `application/octet-stream`（二進位類型），瀏覽器就可能直接下載檔案或拒絕套用——這就是為什麼有時候 CSS 沒生效、檔案變下載的原因。（`default_type` 沒設時預設是 `text/plain`。）
 
 `mime.types` 檔案內容範例（節錄）：
 
@@ -612,7 +625,7 @@ Nginx 透過 `mime.types` 檔案，根據副檔名對應到正確的 MIME 類型
 types {
     text/html                             html htm shtml;
     text/css                              css;
-    text/javascript                       js;
+    application/javascript                js;
     application/json                      json;
     application/pdf                       pdf;
     image/jpeg                            jpeg jpg;
@@ -663,7 +676,7 @@ server {
 }
 ```
 
-也可以放共用設定（如 Gzip、SSL 參數），讓所有站台共享：
+也可以放 http 層級的共用設定（如 Gzip），讓所有站台共享：
 
 ```nginx
 # /etc/nginx/conf.d/gzip.conf
@@ -674,6 +687,8 @@ gzip_types text/plain text/css application/json application/javascript;
 gzip_vary on;
 ```
 
+> 注意：`conf.d/*.conf` 是在 `http { }` 裡被 include 的，和 `nginx.conf` 的 http 區塊算同一層；同一個指令在同一層寫兩次，`nginx -t` 會報 `"gzip" directive is duplicate`。Ubuntu 原廠的 `nginx.conf` 已經有一行 `gzip on;`，建立這個檔之前要先把那行註解掉。
+
 重點：`conf.d/` 目錄內**只有 `.conf` 結尾的檔案會被載入**。如果想暫時停用某個設定，只要把副檔名改掉（例如改成 `.conf.disabled`）再重載 Nginx 即可。
 
 [⬆ 回到 include 指令](#include-指令)
@@ -683,7 +698,7 @@ gzip_vary on;
 <a id="note-3"></a>
 ### 【3】已啟用的站台（`include /etc/nginx/sites-enabled/*;`）
 
-這是 **Ubuntu / Debian** 系統特有的站台管理模式，搭配 `sites-available` 目錄一起使用。CentOS / RHEL 預設沒有這兩個目錄，只使用 `conf.d/`。
+這是 **Ubuntu / Debian** 系統特有的站台管理模式，搭配 `sites-available` 目錄一起使用。RHEL 系發行版與 nginx.org 官方套件預設沒有這兩個目錄，只使用 `conf.d/`。
 
 **運作原理**：
 
@@ -709,7 +724,7 @@ sites-enabled/      ← 存放符號連結（symlink），指向 sites-available
 **前置作業（如果目錄不存在需要手動建立）**：
 
 ```bash
-# 1. 建立目錄（CentOS 或乾淨安裝時可能不存在）
+# 1. 建立目錄（RHEL 系或 nginx.org 官方套件預設不存在）
 sudo mkdir -p /etc/nginx/sites-available
 sudo mkdir -p /etc/nginx/sites-enabled
 
@@ -740,7 +755,7 @@ sudo nginx -t && sudo nginx -s reload
 | 啟用/停用站台 | 要改檔名或刪除檔案 | 只需新增或移除符號連結 |
 | 保留已停用的設定 | 需自行管理 | 原始檔案始終保留在 `sites-available` |
 | 適合場景 | 設定少、簡單環境 | 多站台、需要頻繁切換的環境 |
-| 發行版預設 | CentOS / RHEL | Ubuntu / Debian |
+| 發行版預設 | RHEL 系、nginx.org 官方套件 | Ubuntu / Debian |
 
 兩種方式都能達到相同效果，選擇你的系統預設的方式即可。重要的是團隊統一一種做法，不要混用。
 
@@ -808,13 +823,19 @@ www-data  1236  worker process
 | 發行版 | 預設使用者 |
 |--------|-----------|
 | Ubuntu / Debian | `www-data` |
-| CentOS / RHEL | `nginx` |
+| RHEL / Rocky / Alma | `nginx` |
+| nginx.org 官方套件 / 官方 Docker 映像 | `nginx` |
 | macOS (Homebrew) | `nobody` |
 
-**注意**：`user` 指定的使用者必須對網站目錄有讀取權限，否則會出現 403 Forbidden：
+**注意**：`user` 指定的使用者必須「讀得到」網站檔案，而且路徑上的每一層目錄都要有執行（x）權限讓它進得去，否則會出現 403 Forbidden。worker 只需要讀，不需要擁有或寫入網站目錄，所以擁有者維持 root（或部署帳號）即可：
 
 ```bash
-sudo chown -R www-data:www-data /var/www/mysite
+# 目錄 755、檔案 644（分開設，避免把一般檔案也設成可執行）
+sudo find /var/www/mysite -type d -exec chmod 755 {} +
+sudo find /var/www/mysite -type f -exec chmod 644 {} +
+
+# 檢查路徑上每一層目錄的權限（任何一層少了 x 都會 403）
+namei -l /var/www/mysite/index.html
 ```
 
 [⬆ 回到 Main Context](#main-context全域設定)
@@ -824,31 +845,36 @@ sudo chown -R www-data:www-data /var/www/mysite
 <a id="note-6"></a>
 ### 【6】最大檔案描述符數（`worker_rlimit_nofile 65535;`）
 
-在 Linux 中，**每一個網路連線、開啟的檔案、日誌檔案都會佔用一個「檔案描述符」（File Descriptor, fd）**。系統預設每個行程只能開啟 1024 個，對高流量網站來說遠遠不夠。
+在 Linux 中，**每一個網路連線、開啟的檔案、日誌檔案都會佔用一個「檔案描述符」（File Descriptor, fd）**。許多系統給一般行程的預設上限只有 1024 個，對高流量網站來說遠遠不夠。
 
 一個簡單的 HTTP 請求可能就需要多個 fd：
 
 ```
 1 個 fd — 客戶端連線（socket）
 1 個 fd — 讀取靜態檔案（如 index.html）
-1 個 fd — 寫入存取日誌（access.log）
 1 個 fd — 連線到後端（如果是反向代理）
 ─────────
-一個請求可能用掉 2~4 個 fd
+一個請求可能用掉 2~3 個 fd
+（日誌檔是每個 worker 啟動時開一次、所有請求共用，不會每個請求多佔一個）
 ```
 
 所以如果 `worker_connections` 設為 4096，每個連線平均用 2 個 fd，就需要至少 8192 個檔案描述符。設為 65535 可以確保不會因為 fd 不足而拒絕連線。
 
-**常見錯誤**：如果設定了 `worker_rlimit_nofile` 但系統層級的限制沒調整，仍然會失敗：
+**`worker_rlimit_nofile` 本身就夠了**：master 以 root 身分 fork worker 時，會直接用這個值替 worker 設定上限（setrlimit），不需要另外改系統設定。`/etc/security/limits.conf` 只對登入工作階段生效，對 systemd 啟動的服務沒有作用；目前 shell 的 `ulimit -n` 也和 nginx 行程無關。
 
 ```bash
-# 查看當前系統限制
-ulimit -n
+# 驗證 worker 實際拿到的上限
+grep 'open files' /proc/$(pgrep -f 'nginx: worker' | head -1)/limits
+```
 
-# 需要同步調整系統層級限制
-# /etc/security/limits.conf
-www-data soft nofile 65535
-www-data hard nofile 65535
+若 master 本身也需要更高的上限，用 systemd 的設定調整：
+
+```bash
+sudo systemctl edit nginx
+# 在編輯器中加入以下兩行後存檔：
+#   [Service]
+#   LimitNOFILE=65535
+sudo systemctl restart nginx
 ```
 
 [⬆ 回到 Main Context](#main-context全域設定)

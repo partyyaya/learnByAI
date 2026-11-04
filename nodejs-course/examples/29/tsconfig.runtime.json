@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.build.json",
+  "compilerOptions": { "outDir": ".runtime-dist" },
+  "include": [],
+  "files": ["src/main.ts", "src/readiness-probe.ts"]
+}

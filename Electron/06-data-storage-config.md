@@ -75,10 +75,26 @@ module.exports = {
 const { ipcMain } = require("electron");
 const { getSetting, setSetting } = require("../store/settings.store");
 
+// Renderer 只能讀寫這幾個鍵，值也必須在允許範圍內（第四章 4.9：Main 端驗證輸入）
+const SETTING_RULES = {
+  theme: (value) => value === "light" || value === "dark",
+  language: (value) => value === "zh-Hant" || value === "en"
+};
+
+function isAllowedKey(key) {
+  return typeof key === "string" && Object.hasOwn(SETTING_RULES, key);
+}
+
 function registerSettingsIpc() {
-  ipcMain.handle("settings:get", async (_event, key) => getSetting(key));
+  ipcMain.handle("settings:get", async (_event, key) => {
+    if (!isAllowedKey(key)) return undefined;
+    return getSetting(key);
+  });
 
   ipcMain.handle("settings:set", async (_event, key, value) => {
+    if (!isAllowedKey(key) || !SETTING_RULES[key](value)) {
+      return { ok: false, reason: "invalid-setting" };
+    }
     setSetting(key, value);
     return { ok: true };
   });
@@ -87,6 +103,8 @@ function registerSettingsIpc() {
 module.exports = { registerSettingsIpc };
 ```
 
+不要做成「Renderer 給什麼 key 就存什麼」：那等於讓頁面可以改寫設定檔裡的任何欄位，包括之後 6.7 只該由 Main 寫入的視窗狀態。`autoLaunch` 也不在清單裡，因為它要連動作業系統設定，6.8 會另開專用通道。
+
 在 `src/main/main.js` 的 `app.whenReady()` 註冊（完整區塊，保留前幾章已接上的功能）：
 
 ```javascript
@@ -94,6 +112,7 @@ const { registerSettingsIpc } = require("./ipc/settings.ipc");
 
 app.whenReady().then(() => {
   registerSystemIpc(); // 第四章
+  registerWindowIpc(); // 第四章 4.6
   registerSettingsIpc(); // 本章新增
   createMainWindow();
   buildAppMenu(mainWindow); // 第五章
@@ -133,6 +152,13 @@ contextBridge.exposeInMainWorld("appInfo", {
 contextBridge.exposeInMainWorld("systemApi", {
   getInfo() {
     return ipcRenderer.invoke("system:get-info");
+  }
+});
+
+// 第四章 4.6：進度條
+contextBridge.exposeInMainWorld("appWindow", {
+  setProgress(value) {
+    ipcRenderer.send("window:set-progress", value);
   }
 });
 
@@ -192,6 +218,8 @@ themeToggleBtn.addEventListener("click", async () => {
 initTheme();
 ```
 
+> 這個寫法有個小瑕疵：主題要等 IPC 回來才套用，存成 dark 的使用者每次開 App 都會先看到一瞬間的淺色畫面。notepad-app 實戰專案的解法是讓 Main 在建立視窗時就把主題交給 preload：`webPreferences.additionalArguments: ["--initial-theme=dark"]` 會出現在 preload 的 `process.argv` 裡，preload 同步讀出來暴露給頁面，第一個畫面就是對的顏色；同時把 `BrowserWindow` 的 `backgroundColor` 設成對應的底色。要讓捲軸、右鍵選單這類原生元件也跟著變色，再設定 `nativeTheme.themeSource`。
+
 ---
 
 ## 6.7 記住視窗大小與位置
@@ -234,7 +262,7 @@ module.exports = {
 
 再改第五章的 `createMainWindow`，開窗時套用存下來的尺寸、關窗前把當前尺寸寫回。
 
-下面是**完整取代第五章 5.9 的版本**，請整段換掉——特別注意 `close` handler：本節只是在第五章「按關閉鈕改成隱藏」的邏輯**前面**多存一次視窗狀態，`event.preventDefault()` 與 `mainWindow.hide()` 必須保留：
+下面是新版的 `createMainWindow`，請用它**整個取代 5.9 `main.js` 裡的同名函式**，檔案其他部分（`require`、單一實例鎖、`whenReady`）保留不動；第一行的 `require` 加到檔案上方其他 `require` 旁邊。特別注意 `close` handler：本節只是在第五章「按關閉鈕改成隱藏」的邏輯**前面**多存一次視窗狀態，`event.preventDefault()` 與 `mainWindow.hide()` 必須保留：
 
 ```javascript
 const { getWindowState, saveWindowState } = require("./store/settings.store");
@@ -312,9 +340,15 @@ function isAutoLaunchSupported() {
   return IS_SUPPORTED;
 }
 
+// 開發模式（npm run dev）時 process.execPath 是 node_modules 裡的 Electron，
+// 這時呼叫登入項目 API，會把「Electron」本身設成開機啟動。所以只有打包後才碰作業系統。
+function canUseLoginItems() {
+  return IS_SUPPORTED && app.isPackaged;
+}
+
 // 以作業系統的實際狀態為準（使用者可能直接去系統設定關掉），再同步回我們的設定檔
 function getAutoLaunch() {
-  if (!IS_SUPPORTED) return false;
+  if (!canUseLoginItems()) return Boolean(getSetting("autoLaunch"));
   const { openAtLogin } = app.getLoginItemSettings();
   if (openAtLogin !== getSetting("autoLaunch")) setSetting("autoLaunch", openAtLogin);
   return openAtLogin;
@@ -323,19 +357,22 @@ function getAutoLaunch() {
 function setAutoLaunch(enabled) {
   if (!IS_SUPPORTED) return { ok: false, reason: "platform-not-supported" };
 
-  app.setLoginItemSettings({
-    openAtLogin: Boolean(enabled),
-    // macOS 13+ 會把「隱藏啟動」交給系統設定管理，這裡不再使用已被標記為 deprecated 的 openAsHidden
-    args: []
-  });
+  if (canUseLoginItems()) {
+    app.setLoginItemSettings({
+      openAtLogin: Boolean(enabled),
+      // macOS 13+ 會把「隱藏啟動」交給系統設定管理，這裡不再使用已被標記為 deprecated 的 openAsHidden
+      args: []
+    });
+  }
 
+  // 開發模式只寫設定檔；打包後啟動時，syncAutoLaunchOnStartup() 會把它推給作業系統
   setSetting("autoLaunch", Boolean(enabled));
   return { ok: true, enabled: Boolean(enabled) };
 }
 
 // App 啟動時把設定檔的值推回作業系統，避免兩邊不一致
 function syncAutoLaunchOnStartup() {
-  if (!IS_SUPPORTED || !app.isPackaged) return;
+  if (!canUseLoginItems()) return;
   const wanted = Boolean(getSetting("autoLaunch"));
   if (app.getLoginItemSettings().openAtLogin !== wanted) {
     app.setLoginItemSettings({ openAtLogin: wanted, args: [] });
@@ -352,13 +389,10 @@ const { ipcMain } = require("electron");
 const { getSetting, setSetting } = require("../store/settings.store");
 const { isAutoLaunchSupported, getAutoLaunch, setAutoLaunch } = require("../store/auto-launch");
 
-function registerSettingsIpc() {
-  ipcMain.handle("settings:get", async (_event, key) => getSetting(key));
+// ...6.4 的 SETTING_RULES 與 isAllowedKey 保留不動
 
-  ipcMain.handle("settings:set", async (_event, key, value) => {
-    setSetting(key, value);
-    return { ok: true };
-  });
+function registerSettingsIpc() {
+  // ...6.4 的 settings:get、settings:set 保留不動
 
   // 本節新增
   ipcMain.handle("settings:get-auto-launch", async () => ({
@@ -412,8 +446,9 @@ async function initAutoLaunch() {
 }
 
 autoLaunchToggle.addEventListener("change", async () => {
-  const result = await window.settingsApi.setAutoLaunch(autoLaunchToggle.checked);
-  if (!result.ok) autoLaunchToggle.checked = false; // 設定失敗就把 UI 打回原狀
+  const wanted = autoLaunchToggle.checked;
+  const result = await window.settingsApi.setAutoLaunch(wanted);
+  if (!result.ok) autoLaunchToggle.checked = !wanted; // 設定失敗就把 UI 打回原狀
 });
 
 initAutoLaunch();
@@ -423,7 +458,7 @@ initAutoLaunch();
 
 > 三個務必知道的限制：
 >
-> 1. **開發模式測不出真實效果**：`npm run dev` 時 `process.execPath` 指向的是 `node_modules` 裡的 Electron 執行檔，設定下去等於叫系統開機自動啟動「Electron」而不是你的 App。上面的 `syncAutoLaunchOnStartup()` 因此加了 `app.isPackaged` 判斷，這個功能要打包後才驗得準。
+> 1. **開發模式測不出真實效果**：`npm run dev` 時 `process.execPath` 指向的是 `node_modules` 裡的 Electron 執行檔，設定下去等於叫系統開機自動啟動「Electron」而不是你的 App。上面因此用 `canUseLoginItems()` 把三個函式都擋在 `app.isPackaged` 之後：開發模式只寫設定檔、勾選框照樣能切換，真正的開機啟動要打包後才驗得到。
 > 2. **Linux 不支援**：`setLoginItemSettings` / `getLoginItemSettings` 只標示支援 macOS 與 Windows。Linux 要自己寫 `~/.config/autostart/<app>.desktop`，或改用 `auto-launch` 這類第三方套件。
 > 3. **使用者可能繞過你的 UI**：macOS 的「登入項目」與 Windows 工作管理員的「開機」分頁都能直接關掉。所以讀取時要以 `app.getLoginItemSettings()` 為準（上面的 `getAutoLaunch()` 就是這樣做），不要只信自己設定檔裡的值。
 
@@ -487,10 +522,12 @@ const { registerSettingsIpc } = require("./ipc/settings.ipc");
 // ❌ 太晚：settings.store.js 在這行 require 時就已經算好舊路徑了
 const { getWindowState } = require("./store/settings.store");
 app.setPath("userData", path.join(app.getPath("appData"), "electron-course-app"));
-// → 設定檔仍然寫在 ~/Library/Application Support/Electron/settings.json
+// → 設定檔仍然寫在預設的 <appData>/<App 名稱>/settings.json，不是上一行指定的資料夾
 ```
 
-所以 `app.setPath("userData", ...)` 要放在 `require("electron")` 之後、其他自己的模組 `require` 之前。notepad-app 實戰專案就是這樣排的，避免之後調整 `productName` 影響既有記事資料。
+所以 `app.setPath("userData", ...)` 要放在 `require("electron")` 之後、其他自己的模組 `require` 之前。
+
+另一種做法不受 `require` 順序影響：store 不在模組最外層算路徑，而是寫成函式，每次讀寫時才呼叫 `app.getPath("userData")`。notepad-app 實戰專案用的就是這種寫法，所以它的 `app.setPath()` 雖然排在 `require` 之後，只要在第一次讀寫資料前執行就有效，也不會因為之後調整 `productName` 影響既有記事資料。
 
 ---
 
@@ -512,6 +549,11 @@ function tokenFile() {
 async function saveToken(token) {
   if (!(await safeStorage.isAsyncEncryptionAvailable())) {
     throw new Error("ENCRYPTION_NOT_AVAILABLE");
+  }
+  // Linux 沒有可用的金鑰服務（例如沒裝 gnome-keyring）時會退回 basic_text：
+  // 用寫死在 Electron 裡的密碼加密，等同沒加密
+  if (process.platform === "linux" && safeStorage.getSelectedStorageBackend() === "basic_text") {
+    throw new Error("WEAK_ENCRYPTION_BACKEND");
   }
   const encrypted = await safeStorage.encryptStringAsync(token);
   await fs.writeFile(tokenFile(), encrypted);

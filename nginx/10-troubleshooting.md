@@ -51,8 +51,9 @@ http {
 >   - 放不下時不會直接報錯，而是改用下面的大緩衝區，所以這個值通常不必調太大。
 > - `large_client_header_buffers 4 32k;`
 >   - 兩個參數：`4` 是緩衝區「個數」、`32k` 是「每個的大小」。
->   - **單一標頭行**（例如一條超大的 Cookie）超過 32k → 回 `400`，error.log 會出現 `client sent too long header line` 或回應頁顯示 `Request Header Or Cookie Too Large`。
+>   - **單一標頭行**（例如一條超大的 Cookie）超過 32k → 回 `400`，回應頁顯示 `400 Request Header Or Cookie Too Large`。
 >   - **請求行（URL）** 超過 32k → 回 `414 Request-URI Too Large`。
+>   - 對應的 error.log 訊息 `client sent too long header line`、`client sent too long URI` 都是 **info 等級**，預設的 `error` 等級看不到；要確認時暫時把 `error_log` 調到 `info`。
 >   - 預設 `4 8k` 對一般網站足夠；若有 SSO/JWT 等超長 Cookie 場景，常調到 `4 16k` 或 `4 32k`。不要無上限調大——這是每連線都可能配置的記憶體，調太大會放大記憶體用量與被攻擊面。
 >
 > 修改後驗證：
@@ -74,15 +75,17 @@ http {
 
 # 1. 檢查檔案權限
 ls -la /var/www/mysite/        # -l 長格式顯示權限與擁有者，-a 連隱藏檔一起列出
-# 確保 Nginx worker 使用者（通常是 www-data）有讀取權限
-sudo chown -R www-data:www-data /var/www/mysite   # -R 遞迴變更整個目錄的「擁有者:群組」
-sudo chmod -R 755 /var/www/mysite                 # 755 = 擁有者 rwx、群組 r-x、其他 r-x；目錄必須有 x 才能被進入
+# Nginx worker 使用者（通常是 www-data）只需要「讀」，不需要擁有這些檔案
+sudo chown -R root:root /var/www/mysite                          # 擁有者用 root（或部署帳號），worker 不能改網站內容
+sudo find /var/www/mysite -type d -exec chmod 755 {} +           # 目錄 755：其他人有 r-x，目錄必須有 x 才能被進入
+sudo find /var/www/mysite -type f -exec chmod 644 {} +           # 檔案 644：其他人唯讀，不給執行權限
 
 # 2. 確認 index 檔案存在
 ls -la /var/www/mysite/html/index.html   # 目錄存在但沒有 index 檔、又沒開 autoindex 時，也會回 403
 
 # 3. 檢查 Nginx 設定中是否有 deny 規則
-nginx -T | grep -i deny    # -T 印出合併 include 後的完整生效設定；grep -i 不分大小寫搜尋 deny
+sudo nginx -T | grep -i deny    # -T 印出合併 include 後的完整生效設定；grep -i 不分大小寫搜尋 deny
+# 要加 sudo：非 root 執行時 nginx -T 會因開不了 PID 檔而 test failed、什麼都不印，grep 結果是空的，容易誤判成「沒有 deny」
 
 # 4. 檢查 SELinux（CentOS/RHEL）
 getenforce    # 顯示 SELinux 模式：Enforcing（強制）/ Permissive（僅記錄）/ Disabled（關閉）
@@ -98,7 +101,7 @@ sudo restorecon -Rv /var/www/mysite   # 依上面登記的規則實際套用標�
 > - **檔案系統權限不足**：error.log 出現 `open() "..." failed (13: Permission denied)`
 >   - worker 使用者（`user` 指令指定，通常 `www-data`）沿路徑每一層目錄都要有 `x` 權限、檔案要有 `r` 權限。
 > - **設定了 deny 規則**：error.log 出現 `access forbidden by rule`
->   - 用 `nginx -T | grep -B3 deny` 找出是哪個 location 的 `deny` 擋下了請求。
+>   - 用 `sudo nginx -T | grep -B3 deny` 找出是哪個 location 的 `deny` 擋下了請求。
 > - **目錄沒有 index 檔**：error.log 出現 `directory index of "..." is forbidden`
 >   - 請求的是目錄、找不到 `index` 指令列的檔案、又沒開 `autoindex on;` → Nginx 拒絕列目錄，回 403。
 > - **SELinux 標籤不符**（CentOS/RHEL）：檔案權限看起來都對，但仍 403；`ls -laZ` 可看標籤是否為 `httpd_sys_content_t`。
@@ -113,7 +116,7 @@ sudo restorecon -Rv /var/www/mysite   # 依上面登記的規則實際套用標�
 ls -la /var/www/mysite/html/requested-page.html   # 檔案根本不存在，再怎麼調設定都是 404
 
 # 2. 確認 root 或 alias 設定是否正確
-nginx -T | grep -A5 "server_name mysite.com"   # -A5：顯示符合行「之後 5 行」，可一併看到該 server 的 root 設定
+sudo nginx -T | grep -A5 "server_name mysite.com"   # -A5：顯示符合行「之後 5 行」，可一併看到該 server 的 root 設定
 
 # 3. 確認 location 匹配是否正確
 # 使用 debug 日誌確認匹配了哪個 location（開法詳見 10.9 進階排查工具）
@@ -165,13 +168,13 @@ location / {
 # 如果大量出現 499，需要優化後端回應速度
 # 或調整前端逾時時間
 
-# 日誌中 499 不會顯示在 error_log，只在 access_log
+# 499 記在 access_log；error_log 裡對應的訊息是 info 等級，預設看不到
 ```
 
 > 關於 499 的幾個重點（逐條）
 >
 > - `499` 是 **Nginx 自定義**的狀態碼（不在 HTTP RFC 標準中），意思是「客戶端不等了、先掛斷」。
-> - 因為是客戶端主動斷線，對 Nginx 來說不算「錯誤」，所以**只記在 access_log，不會出現在 error_log**——這就是為什麼很多人在 error.log 翻半天找不到線索。
+> - 因為是客戶端主動斷線，對 Nginx 來說不算「錯誤」，error.log 裡對應的 `client prematurely closed connection` 只是 **info 等級**，在預設的 `error` 等級下不會出現——這就是為什麼很多人在 error.log 翻半天找不到線索。要看的話暫時把 `error_log` 調到 `info`，平常以 access_log 的 499 為準。
 > - 排查方向：先統計 499 請求的回應時間與集中的 URL：
 >   ```bash
 >   # 統計 access.log 中 499 最常出現在哪些 URL（$9 是 main 格式的狀態碼欄位）
@@ -184,6 +187,7 @@ location / {
 >   proxy_ignore_client_abort on;   # 客戶端斷線後 Nginx 仍等後端回應完（預設 off）
 >   ```
 >   這樣 access_log 會記到後端真實耗時，方便定位慢的環節；**但它會讓已放棄的請求繼續佔用後端資源，僅建議排查期間短暫使用**。
+>   開啟期間這些請求在 access_log 會改記成後端回的狀態碼（例如 200），不再是 499，上面的 `$9 == 499` 統計也就抓不到它們。
 
 ### 502 Bad Gateway
 
@@ -217,8 +221,12 @@ tail -20 /var/log/nginx/error.log   # -20：只看最後 20 行（最新的錯�
 #
 # "no live upstreams while connecting to upstream"
 #   → 所有 upstream 伺服器都被標記為不可用
+#
+# "connect() to 127.0.0.1:3000 failed (13: Permission denied) while connecting to upstream"
+#   → 連線階段出現 Permission denied，在 CentOS/RHEL 上幾乎都是 SELinux 擋下（見第 4 步）
 
 # 4. CentOS 的 SELinux 問題
+sudo ausearch -m avc -ts recent    # 查最近被 SELinux 拒絕的紀錄（avc: denied { name_connect } ... nginx）
 sudo setsebool -P httpd_can_network_connect 1
 # setsebool：切換 SELinux 開關；httpd_can_network_connect=1 允許 Web 服務（含 Nginx）主動連出去
 # -P：永久生效（寫入策略，重開機仍保留）；不加 -P 重開機就失效
@@ -233,11 +241,16 @@ sudo setsebool -P httpd_can_network_connect 1
 > - `connect() failed (110: Connection timed out)`
 >   - 連線逾時：封包出去了但沒有回音（常見於防火牆 DROP、後端過載、跨網段問題）。
 > - `no live upstreams while connecting to upstream`
->   - upstream 中**所有**伺服器都因連續失敗被被動健康檢查標記為不可用（由 `max_fails` / `fail_timeout` 控制，見 10.8 情境二）；在 `fail_timeout` 視窗內 Nginx 連試都不試，直接回 502。
+>   - upstream 中**所有**伺服器都因連續失敗被被動健康檢查標記為不可用（由 `max_fails` / `fail_timeout` 控制，見 10.8 情境二）；在 `fail_timeout` 視窗內 Nginx 連試都不試，直接回 502。只有一台的 upstream 不會被標記，所以不會因為失敗出現這行。
 > - `upstream prematurely closed connection while reading response header`
 >   - 後端「處理到一半斷線」：常見於後端崩潰、被 OOM Killer 殺掉、或後端自身逾時先斷線 → 去看後端日誌與 `dmesg`。
 > - `upstream sent too big header while reading response header from upstream`
->   - 後端回應**標頭**超過 `proxy_buffer_size` 放不下 → 調大 `proxy_buffer_size`（例如 `8k` 或 `16k`），常見於 Set-Cookie 很多的應用。
+>   - 後端回應**標頭**超過 `proxy_buffer_size` 放不下 → 調大 `proxy_buffer_size`，常見於 Set-Cookie 很多的應用。
+>   - `8k` 可以單獨調；調到 `16k` 時要連 `proxy_buffers` 一起調大，否則 `nginx -t` 會報 `"proxy_busy_buffers_size" must be less than the size of all "proxy_buffers" minus one buffer`：
+>     ```nginx
+>     proxy_buffer_size 16k;
+>     proxy_buffers 8 16k;
+>     ```
 >
 > 修好後驗證：`curl -I http://mysite.com/` 應回 200；持續 `tail -f error.log` 確認不再出現上述訊息。
 
@@ -245,27 +258,28 @@ sudo setsebool -P httpd_can_network_connect 1
 
 ```bash
 # 原因：
-# - 後端所有伺服器都不可用
+# - 後端應用本身回 503（例如正在重啟、過載保護），Nginx 只是照原樣轉給客戶端
 # - Nginx 主動返回（維護模式）
-# - 超過速率限制（如果設定了 limit_req_status 503）
+# - 超過速率限制（limit_req / limit_conn 超限時預設就回 503）
+# 注意：Nginx 找不到任何可用的後端時回的是 502（no live upstreams），不是 503
 
 # 排查步驟
 
-# 1. 檢查 upstream 伺服器狀態
-tail -f /var/log/nginx/error.log | grep upstream
-# tail -f：持續追蹤檔案新增的內容（即時看新日誌）；grep upstream 只留與後端相關的行
+# 1. 確認 503 是不是後端回的
+curl -i http://localhost:3000/health   # 繞過 Nginx 直接打後端；後端本身就回 503 → 問題在應用程式
+# 第九章 main 格式的 access log 裡，us=503 也代表這個 503 來自後端
 
 # 2. 確認是否處於維護模式
-nginx -T | grep "return 503"   # 搜尋設定中是否有人手動回傳 503（維護頁的常見寫法）
+sudo nginx -T | grep "return 503"   # 搜尋設定中是否有人手動回傳 503（維護頁的常見寫法）
 
 # 3. 檢查速率限制設定
-nginx -T | grep limit_req      # 找出速率限制相關設定；limit_req 觸發時「預設就回 503」
+sudo nginx -T | grep limit_req      # 找出速率限制相關設定；limit_req 觸發時「預設就回 503」
 ```
 
 > 503 與 502 怎麼分？三種來源逐條對照：
 >
-> - **後端全數不可用**：error.log 同時會有大量 upstream 連線失敗紀錄 → 依 502 一節的步驟排查後端。
-> - **維護模式**：有人在設定裡寫了 `return 503;`（常搭配維護頁）。上線前忘記移除是經典事故，`nginx -T | grep "return 503"` 一查便知。
+> - **後端應用回 503**：access log 的 upstream 狀態（`us=503`）也是 503，error.log 通常沒有對應的 Nginx 錯誤 → 去看後端日誌。若是 Nginx 連不上任何後端，回的會是 502，請依 502 一節排查。
+> - **維護模式**：有人在設定裡寫了 `return 503;`（常搭配維護頁）。上線前忘記移除是經典事故，`sudo nginx -T | grep "return 503"` 一查便知。
 > - **觸發速率限制**：`limit_req` / `limit_conn` 超限時**預設回 503**，error.log 會出現：
 >   ```text
 >   limiting requests, excess: 5.320 by zone "mylimit"
@@ -357,9 +371,10 @@ sudo openssl x509 -in /path/to/cert.pem -noout -dates
 
 # 5. 檢查 PID 檔案
 cat /var/run/nginx.pid    # 顯示記錄的 master 行程編號（PID 檔的用途見第二章補充說明）
-# 如果行程已死但 PID 檔案還在：
-sudo rm /var/run/nginx.pid    # 移除殘留的 PID 檔，否則 systemd 可能誤判「已在運行」而拒絕啟動
+# 如果行程已死但 PID 檔案還在：直接啟動即可，Nginx 啟動時會覆寫 PID 檔
 sudo systemctl start nginx
+# 殘留 PID 檔真正會擋的是 nginx -s reload / reopen：它們讀到舊 PID，
+# 會報 kill(1234, 1) failed (3: No such process)；重新啟動 Nginx 後就會恢復
 
 # 6. 檢查權限
 ls -la /var/log/nginx/   # 日誌目錄對 Nginx 不可寫 → 啟動直接失敗
@@ -387,13 +402,15 @@ ls -la /var/run/         # PID 檔寫不進去也會啟動失敗
 
 ```bash
 # 1. 分析存取日誌的回應時間
-# 找出回應時間超過 3 秒的請求（前提：log_format 的最後一欄是 $request_time）
-awk '$NF > 3' /var/log/nginx/access.log | tail -20
-# awk '$NF > 3'：$NF 代表「每行的最後一個欄位」；只印出該欄位數值大於 3（秒）的行
+# 找出回應時間超過 3 秒的請求（前提：日誌用下方的 timing 格式，記有 rt=$request_time）
+awk 'match($0, / rt=[0-9.]+/) && substr($0, RSTART+4, RLENGTH-4) + 0 > 3' /var/log/nginx/access.log | tail -20
+# match(...)：在整行找「空白 + rt= + 數字」（前面帶空白，才不會誤抓 urt=）
+# substr(..., RSTART+4, RLENGTH-4)：跳過「 rt=」4 個字元取出秒數；+ 0 > 3 → 當數值比較，大於 3 秒才印
+# 不要寫成 awk '$NF > 3'：最後一欄不是純數字時 awk 會改用字串比較，幾乎每一行都會被印出來
 # tail -20：只看最後 20 筆（最新發生的慢請求）
 
 # 2. 區分是 Nginx 慢還是後端慢
-# 比較 $request_time 和 $upstream_response_time
+# 比較 $request_time 和 $upstream_response_time（前提是 proxy_buffering on，見下方說明）
 # 如果 upstream_response_time 接近 request_time → 後端慢
 # 如果 request_time 遠大於 upstream_response_time → Nginx 或網路問題
 
@@ -406,19 +423,27 @@ cat /proc/net/sockstat      # 核心層 socket 統計（inuse/tw/alloc）：判�
 # 4. 檢查 Nginx worker 連線數
 curl http://localhost/nginx_status   # 需先啟用 stub_status 狀態頁（設定見下方）
 # 如果 Active connections 接近 worker_connections × worker_processes → 需要擴容
+# 反向代理時每個請求還要另佔一條連後端的連線，實際約只能服務一半的客戶端
+# error.log 出現 [alert] 1024 worker_connections are not enough，或 accept4() failed (24: Too many open files)，
+# 也是同一類問題：調高 worker_connections，並用 worker_rlimit_nofile 拉高 worker 的檔案描述符上限（第二章）
 ```
 
 > `$request_time` 和 `$upstream_response_time` 怎麼用？（逐條）
 >
 > - `$request_time`：從 Nginx 收到請求的第一個 byte，到回應**全部送完給客戶端**的總時間（秒，精確到毫秒）。**包含客戶端網速**——手機弱網下載大檔時這個值會很大，但不代表伺服器慢。
-> - `$upstream_response_time`：從 Nginx 連上後端，到收完後端回應的時間。**這才是後端的真實耗時**。
-> - 兩個變數預設不在日誌裡，要先加進 `log_format`（放在 `http` 區塊）：
+> - `$upstream_response_time`：從 Nginx 開始連線後端，到收完後端回應的時間（含建立連線的時間）。**這才是後端的真實耗時**。
+> - `$upstream_header_time`：從開始連線後端，到收到後端回應**標頭**的時間，最接近「後端處理花了多久」。
+> - 這些變數預設不在日誌裡，要先加進 `log_format`（放在 `http` 區塊）：
 >   ```nginx
 >   # 定義含時間欄位的日誌格式，命名為 timing
->   log_format timing '$remote_addr "$request" $status '
->                     'rt=$request_time urt=$upstream_response_time';
+>   # 前段與 combined 相同（$7 仍是 URI、$9 仍是狀態碼），前面的 awk 指令與 GoAccess 的 COMBINED 都能照用
+>   log_format timing '$remote_addr - $remote_user [$time_local] '
+>                     '"$request" $status $body_bytes_sent '
+>                     '"$http_referer" "$http_user_agent" '
+>                     'rt=$request_time urt=$upstream_response_time uht=$upstream_header_time';
 >   access_log /var/log/nginx/access.log timing;   # 套用 timing 格式
 >   ```
+> - 上述判讀的前提是 `proxy_buffering on`（預設）。設成 `off` 時（SSE、串流下載），Nginx 讀後端的速度會被客戶端拖住，客戶端收得慢也會讓 `urt` 跟著變大；這時改看 `uht`。
 > - 實際判讀範例：
 >   - `rt=3.005 urt=2.998` → 時間幾乎都花在後端 → 查後端慢查詢/外部 API。
 >   - `rt=3.005 urt=0.020` → 後端 20ms 就回了，但整體花 3 秒 → 查 Nginx buffering 設定、客戶端網速、或回應內容過大。
@@ -447,7 +472,8 @@ curl http://localhost/nginx_status   # 需先啟用 stub_status 狀態頁（設�
 
 ```bash
 # 1. 確認是 Nginx 還是其他行程
-top -c | head -20    # -c 顯示完整指令列，可分辨吃 CPU 的是 nginx worker、後端應用還是其他行程
+top -bc -n1 | head -20    # -c 顯示完整指令列，可分辨吃 CPU 的是 nginx worker、後端應用還是其他行程
+                          # 接管線時要加 -b（批次模式），否則輸出會夾雜終端控制碼
 
 # 2. 如果是 Nginx worker CPU 高
 # - 檢查是否有大量的正規表示式匹配
@@ -506,8 +532,10 @@ proxy_busy_buffers_size 8k;    # 回應還沒送完給客戶端時，可同時�
 openssl s_client -connect mysite.com:443 -servername mysite.com
 # s_client：模擬一個 TLS 客戶端，印出完整握手過程與伺服器憑證
 # -connect 主機:port：要連線的目標
-# -servername：送出 SNI（Server Name Indication）；同一 IP 掛多個 HTTPS 站台時，
-#              沒帶這個參數會拿到預設站台的憑證，造成「明明設定對卻驗出錯誤憑證」的誤判
+# -servername：送出 SNI（Server Name Indication），指定要哪個站台的憑證
+#              OpenSSL 1.1.1 起，-connect 後面寫主機名稱時會自動用它送 SNI；
+#              但用 IP 連線時不會送，同一 IP 掛多個 HTTPS 站台就會拿到預設站台的憑證，
+#              造成「明明設定對卻驗出錯誤憑證」的誤判——明確寫上 -servername 最保險
 
 # 2. 檢查憑證到期日
 echo | openssl s_client -connect mysite.com:443 -servername mysite.com 2>/dev/null | openssl x509 -noout -dates
@@ -521,12 +549,13 @@ echo | openssl s_client -connect mysite.com:443 -servername mysite.com -showcert
 # 如果只看到一張憑證 → 缺中繼憑證（intermediate）→ 部分手機/舊系統會報「不受信任」
 
 # 4. 常見問題
-# "SSL: error:0B080074:x509 certificate routines:X509_check_private_key:key values mismatch"
+# "SSL_CTX_use_PrivateKey(...) failed (SSL: error:05800074:x509 certificate routines::key values mismatch)"
 #   → 憑證和私鑰不匹配
 #   → 確認使用了正確的 fullchain.pem 和 privkey.pem
 
-# "SSL_CTX_use_certificate:ee key too small"
+# "SSL_CTX_use_certificate(...) failed (SSL: error:0A00018F:SSL routines::ee key too small)"
 #   → 金鑰長度不足，需要至少 2048 位
+# （以上是 Ubuntu 22.04 起 OpenSSL 3 的訊息格式；搜尋時抓 key values mismatch、ee key too small 這段最準）
 
 # 5. 使用線上工具測試
 # https://www.ssllabs.com/ssltest/
@@ -537,7 +566,7 @@ echo | openssl s_client -connect mysite.com:443 -servername mysite.com -showcert
 > - `Verify return code: 0 (ok)` → 憑證鏈完整且可信，一切正常。
 > - `Verify return code: 20 (unable to get local issuer certificate)` 或 `21 (unable to verify the first certificate)`
 >   - 憑證鏈不完整：伺服器只回了站台憑證、沒附中繼憑證 → Nginx 的 `ssl_certificate` 應指向 **fullchain.pem**（站台憑證 + 中繼憑證合併檔），而不是只有 cert.pem。
-> - `Verify return code: 10 (certificate has expired)` → 憑證過期 → `certbot renew` 後記得 reload Nginx（renew 不會自動讓 Nginx 載入新憑證，除非有設定 deploy hook）。
+> - `Verify return code: 10 (certificate has expired)` → 憑證過期 → 執行 `certbot renew`。用 `certbot --nginx` 取得的憑證，續約後 certbot 會自動 reload Nginx；用 `certonly`（webroot / standalone）取得的不會，要加 `--deploy-hook "systemctl reload nginx"`，否則 Nginx 仍在用記憶體裡的舊憑證。
 > - 上面第 4 點的兩個錯誤訊息會出現在 `nginx -t` 或啟動時的 error.log，屬於「設定載入階段」就會擋下的錯誤；verify return code 則是「客戶端視角」的驗證結果，兩邊對照可快速分辨是憑證檔配錯還是鏈不完整。
 >
 > 修好後驗證：
@@ -560,32 +589,34 @@ dig mysite.com        # 查 DNS A 記錄；重點看 ANSWER SECTION 的 IP 是�
 nslookup mysite.com   # 功能類似的查詢工具（Windows 也內建）；兩者擇一即可
 
 # Nginx 內部 DNS 快取問題
-# upstream 中使用域名時，Nginx 預設在啟動時解析一次
-# 如果 IP 會變（如 AWS ELB），需要設定 resolver
+# upstream 或 proxy_pass 直接寫域名時，Nginx 只在啟動（或 reload）時解析一次
+# 如果 IP 會變（如 AWS ELB），要改成用 resolver 在執行期解析
 ```
 
 ```nginx
 resolver 8.8.8.8 valid=30s;   # 指定 Nginx 執行期使用的 DNS 伺服器；valid=30s 強制每 30 秒重新解析（覆蓋 DNS 記錄本身的 TTL）
+                              # 內網環境建議改填內部 DNS（如 VPC 的 DNS IP），別讓內部域名流向公網 DNS
 
-upstream backend {
-    server backend.internal.com:3000 resolve;   # resolve 參數：IP 變動時自動更新，不需 reload
-    # 注意：upstream 內的 resolve 參數需要「開源版 1.27.3+」或商業版 Nginx Plus
+location / {
+    set $backend "backend.internal.com";   # 用變數存域名，迫使 Nginx 延遲到執行期才解析
+    proxy_pass http://$backend:3000;       # 每次依 resolver 的結果連線，IP 變了也能跟上
 }
 ```
 
-> 版本注意與 1.24 可用的替代寫法
+> 這個寫法的重點與限制
 >
 > - 「Nginx 啟動時把域名解析一次就快取住」是 ELB/容器環境 502 的隱形殺手：後端 IP 換了，Nginx 還在連舊 IP。
-> - `server ... resolve;` 在**開源版 1.27.3 之後**才支援（之前是 Nginx Plus 專屬）。若你使用 1.24 開源版，請改用「**變數 + proxy_pass**」寫法——`proxy_pass` 的目標含變數時，Nginx 會改用 `resolver` 在執行期動態解析：
+> - `proxy_pass` 的目標含變數時，Nginx 會改用 `resolver` 在執行期動態解析；忘了設 `resolver`，請求會直接回 502，error.log 出現 `no resolver defined to resolve backend.internal.com`。
+> - 代價一：用變數後，`proxy_pass` 不能使用 upstream 區塊的負載均衡與 keepalive，適合「單一域名指向 LB」的場景。
+> - 代價二：URI 的處理方式不同。變數寫法的 `proxy_pass` 若帶了 URI（例如 `location /api/ { proxy_pass http://$backend:3000/; }`），不會把 `/api/` 前綴換掉，而是**每個請求都被送到 `/`**。要去掉前綴，請改成：
 >   ```nginx
->   resolver 8.8.8.8 valid=30s;            # 內網環境建議改填內部 DNS（如 VPC 的 DNS IP），別讓內部域名流向公網 DNS
->
->   location / {
->       set $backend "backend.internal.com";   # 用變數存域名，迫使 Nginx 延遲到執行期才解析
->       proxy_pass http://$backend:3000;       # 每次依 resolver 的結果連線，IP 變了也能跟上
+>   location /api/ {
+>       set $backend "backend.internal.com";
+>       rewrite ^/api/(.*)$ /$1 break;         # 先把 /api/ 前綴去掉（查詢參數會自動保留）
+>       proxy_pass http://$backend:3000;       # 不帶 URI，送出改寫後的路徑
 >   }
 >   ```
-> - 代價：用變數後，`proxy_pass` 不再支援 upstream 區塊的負載均衡與 keepalive，且 URI 改寫行為略有不同，適合「單一域名指向 LB」的場景。
+> - 版本說明：1.27.3 起，開源版也能在 upstream 裡寫 `server backend.internal.com:3000 resolve;`，保留負載均衡與 keepalive；但這個 upstream 必須有 `zone`（例如 `zone backend 64k;`），否則 `nginx -t` 會報 `resolving names at run time requires upstream ... to be in shared memory`。1.24 沒有這個參數。
 > - 驗證：更換後端 IP 後（或調整 DNS 記錄），30 秒內 `curl` 應該就能打到新後端，不需 reload Nginx。
 
 ### 連線被拒
@@ -627,7 +658,7 @@ sudo ss -tlnp | grep nginx         # 列出 nginx 監聽中的位址與 port（�
 
 網站回傳錯誤頁面
 ├── 502 → 後端服務未運行或地址錯誤
-├── 503 → 所有後端不可用或維護模式
+├── 503 → 後端應用自己回 503、維護模式或觸發速率限制
 ├── 504 → 後端回應逾時
 ├── 403 → 權限問題或存取被拒
 ├── 404 → 路徑設定錯誤或檔案不存在
@@ -677,20 +708,22 @@ df -h          # 磁碟是否滿了：-h 用人類可讀單位（G/M）；看 Us
 top -bn1       # CPU 使用狀況：-b 批次輸出、-n1 取樣一次
 
 # 6. 如果是 OOM（Out of Memory）
-dmesg | grep -i "out of memory"
+sudo dmesg | grep -i "out of memory"
 # dmesg：核心訊息；grep -i 不分大小寫搜尋 → 找 OOM Killer 殺掉行程的紀錄（會寫明殺了誰）
+# Ubuntu 預設限制一般使用者讀核心訊息，要加 sudo（或改用 sudo journalctl -k）
 # 重啟被殺掉的服務
 sudo systemctl restart your-app
 
 # 7. 如果是磁碟滿了
 du -sh /var/log/nginx/*       # 各日誌檔大小：-s 每個項目只顯示總計、-h 人類可讀單位
-> /var/log/nginx/access.log   # 緊急清空：用 shell 的「截斷」把檔案內容清成 0 byte
+sudo truncate -s 0 /var/log/nginx/access.log   # 緊急清空：把檔案內容截斷成 0 byte
+# 不要寫成 sudo > /var/log/nginx/access.log：重導向由目前（非 root）的 shell 執行，會 Permission denied
 ```
 
-> 為什麼清日誌要用 `>` 截斷，而不是 `rm` 刪除？
+> 為什麼清日誌要用截斷，而不是 `rm` 刪除？
 >
 > - Nginx 正開著這個日誌檔的檔案描述符在寫入。`rm` 只移除目錄中的檔名，**行程握著的 fd 還在，磁碟空間不會釋放**，而且 Nginx 會繼續寫進那個「看不見的檔案」。
-> - `> file` 是直接把檔案內容截斷成 0 byte，inode 不變、fd 仍有效，空間立即釋放，Nginx 也能繼續正常寫入。
+> - `truncate -s 0`（或在 root shell 裡用 `> file`）是直接把檔案內容截斷成 0 byte，inode 不變、fd 仍有效，空間立即釋放，Nginx 也能繼續正常寫入。
 > - 如果已經誤刪了，可以這樣找出「被刪除但仍被佔用」的檔案：
 >   ```bash
 >   sudo lsof +L1 | head -20
@@ -710,18 +743,22 @@ sudo systemctl status your-app   # 狀態若是 activating，表示還在啟動�
 # 2. 查看後端日誌
 journalctl -u your-app --no-pager -n 50   # -u 指定服務、--no-pager 直接輸出、-n 50 最後 50 行（找啟動報錯）
 
-# 3. 如果後端需要較長的啟動時間
-# 可以在 upstream 設定中增加 fail_timeout
+# 3. 有多台後端時，調整被動健康檢查的敏感度
+# 只有一台後端時 max_fails / fail_timeout 不起作用（Nginx 不會把唯一的一台標記為不可用），
+# 後端一起來，下一個請求就恢復；有多台時才需要調整：
 upstream backend {
-    server localhost:3000 max_fails=5 fail_timeout=60s;
-    # max_fails=5    ：在 fail_timeout 視窗（60 秒）內失敗滿 5 次，才把這台標記為不可用（預設 1 次，部署期間太敏感）
-    # fail_timeout=60s：被標記不可用後，60 秒內不再嘗試連它；同時也是上面失敗次數的統計視窗（預設 10s）
+    server 127.0.0.1:3000 max_fails=3 fail_timeout=10s;
+    server 127.0.0.1:3001 max_fails=3 fail_timeout=10s;
+    # max_fails=3     ：在 fail_timeout 視窗內失敗滿 3 次，才把這台標記為不可用（預設 1 次，部署期間太敏感）
+    # fail_timeout=10s：被標記不可用後，10 秒內不再嘗試連它；同時也是上面失敗次數的統計視窗（預設 10s）
+    #                   設太長的話，後端好了還要等這麼久才會重新分到流量
 }
 
 # 4. 更好的做法：使用健康檢查腳本
 # 等待後端真正準備好後再重載 Nginx
-while ! curl -s http://localhost:3000/health > /dev/null; do
-    # curl -s：靜默模式（不顯示進度條）；> /dev/null 丟棄回應內容，只取「連不連得上」的結果
+while ! curl -fs http://localhost:3000/health > /dev/null; do
+    # curl -s：靜默模式（不顯示進度條）；> /dev/null 丟棄回應內容
+    # curl -f：HTTP 狀態碼 >= 400 也算失敗；少了 -f，健康檢查回 503「尚未就緒」時 curl 仍回傳成功，迴圈會提早結束
     # while !：只要 curl 失敗（後端還沒就緒）就繼續迴圈
     echo "Waiting for backend..."
     sleep 2    # 每 2 秒重試一次，避免瘋狂輪詢
@@ -733,17 +770,18 @@ sudo nginx -s reload    # 確認後端就緒後才重載 Nginx（reload 是平�
 > 這個情境的因果鏈
 >
 > - 部署重啟後端 → 後端 port 短暫沒人聽 → Nginx 連線被拒（error.log：`111: Connection refused`）→ 回 502。
-> - 若失敗次數超過 `max_fails`，這台會被標記不可用 `fail_timeout` 這麼久——**即使後端已經起來了，這段時間內 Nginx 還是回 502**（單台 upstream 時即 `no live upstreams`）。這就是「後端明明好了，502 卻多持續了一分鐘」的原因。
+> - 只有一台後端時，Nginx 不會把它標記為不可用，後端一起來下一個請求就恢復，也不會出現 `no live upstreams`。
+> - 有多台時，失敗次數達到 `max_fails` 的那台會被暫停 `fail_timeout` 這麼久，請求改送其他台；若所有台都被標記，就會出現 `no live upstreams` 並回 502——**即使後端已經起來了，也要等 `fail_timeout` 過去才恢復**。這就是「後端明明好了，502 卻多持續一段時間」的原因，所以 `fail_timeout` 不宜拉長。
 > - 進階解法：藍綠部署或兩台以上後端輪流重啟，讓任何時刻都有健康的後端可用，使用者完全無感。
 
 ### 情境三：特定頁面很慢但其他頁面正常
 
 ```bash
 # 1. 分析存取日誌，找出慢的 URL
-awk '{print $7, $NF}' /var/log/nginx/access.log | sort -k2 -rn | head -20
-# awk '{print $7, $NF}'：印出第 7 欄與最後一欄
-#   $7  在預設 main 格式中是請求路徑（"$request" 展開後的 GET /path HTTP/1.1 之中間段）
-#   $NF 是每行最後一欄，這裡假設 log_format 行尾已加上 $request_time（加法見 10.4）
+awk 'match($0, / rt=[0-9.]+/) {print $7, substr($0, RSTART+4, RLENGTH-4)}' /var/log/nginx/access.log | sort -k2 -rn | head -20
+# 前提：日誌用 10.4 的 timing 格式（前段同 combined，後面記有 rt=$request_time）
+#   $7  是請求路徑（"$request" 展開後的 GET /path HTTP/1.1 之中間段）
+#   match + substr：找出「 rt=」後面的數字（$request_time，作法同 10.4 步驟 1）
 # sort -k2 -rn：依第 2 欄（回應時間）排序；-n 當數值比較、-r 由大到小
 # head -20：取最慢的前 20 筆
 
@@ -837,9 +875,10 @@ sudo strace -p 12345 -f -e trace=network -s 200
 # -s 200          ：字串內容最多顯示 200 字元（預設 32，常看不到完整的請求內容）
 
 # 3. 常見用途：看 Nginx 開檔時「實際嘗試的路徑」（404/403 對不上設定時特別有用）
-sudo strace -p 12345 -e trace=open,openat,stat 2>&1 | grep "/var/www"
-# trace=open,openat,stat：只看檔案開啟與屬性查詢呼叫
-# 邊 strace 邊用 curl 發一個請求，就能看到 worker 對哪個路徑呼叫了 openat、回了什麼錯誤碼
+sudo strace -p 12345 -e trace=%file 2>&1 | grep "/var/www"
+# trace=%file：只看「參數含檔案路徑」的系統呼叫（openat、newfstatat 等開檔與查屬性的呼叫）
+# 不要只寫 open,openat,stat：新版 glibc 的 stat() 實際走 newfstatat，try_files 檢查檔案的動作會整個漏掉
+# 邊 strace 邊用 curl 發一個請求，就能看到 worker 對哪個路徑呼叫了 openat / newfstatat、回了什麼錯誤碼
 # （ENOENT = 檔案不存在 → 404；EACCES = 權限不足 → 403）
 ```
 

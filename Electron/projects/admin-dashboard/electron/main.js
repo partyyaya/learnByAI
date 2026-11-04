@@ -1,4 +1,5 @@
 const path = require("node:path");
+const { fileURLToPath } = require("node:url");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const { registerApiIpc } = require("./mock/api.ipc");
 
@@ -9,6 +10,7 @@ const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL;
 const IS_DEV = Boolean(DEV_SERVER_URL);
 const IS_MAC = process.platform === "darwin";
 const ALLOWED_EXTERNAL_ORIGINS = new Set(["https://www.electronjs.org", "https://github.com"]);
+const RENDERER_DIR = path.join(__dirname, "../dist-renderer");
 
 // 自己畫的標題列高度。這個值 CSS 那邊也要有一份（global.css 的 --titlebar-h），
 // 因為紅綠燈／系統控制鈕的位置是 main 決定的，版面留白是 renderer 決定的。
@@ -47,7 +49,10 @@ function openExternalIfSafe(rawUrl) {
 function isAllowedAppNavigation(rawUrl) {
   try {
     const url = new URL(rawUrl);
-    return IS_DEV ? rawUrl.startsWith(DEV_SERVER_URL) : url.protocol === "file:";
+    if (IS_DEV) return rawUrl.startsWith(DEV_SERVER_URL);
+    // 只放行 dist-renderer 底下的頁面。只看 protocol === "file:" 的話，導去使用者電腦上
+    // 任何一個 HTML 檔都會過關，而那個頁面一樣會載入 preload、拿到 adminApi。
+    return url.protocol === "file:" && fileURLToPath(url).startsWith(RENDERER_DIR + path.sep);
   } catch {
     return false;
   }
@@ -127,7 +132,7 @@ function registerTitleBarIpc() {
   ipcMain.on("titlebar:theme", (event, theme) => {
     const overlay = TITLEBAR_THEMES[theme];
     const win = BrowserWindow.fromWebContents(event.sender);
-    // macOS 的紅綠燈顏色是系統的，改不動；setTitleBarOverlay 也只有 Windows 有
+    // macOS 的紅綠燈顏色是系統的，改不動；setTitleBarOverlay 也只有 Windows / Linux 有
     if (!overlay || !win || IS_MAC || typeof win.setTitleBarOverlay !== "function") return;
     win.setTitleBarOverlay({ height: TITLEBAR_HEIGHT, ...overlay });
   });

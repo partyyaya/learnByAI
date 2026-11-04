@@ -1,0 +1,44 @@
+# Copy to .github/workflows/nodejs-course-31.yml to enable in your repository.
+name: Node course 31
+on:
+  push:
+    paths: ['nodejs-course/**', '.github/workflows/nodejs-course-31.yml']
+  pull_request:
+    paths: ['nodejs-course/**', '.github/workflows/nodejs-course-31.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: course-31-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: nodejs-course/examples/31
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Validate tests, images, migration, TLS and persistence
+        env:
+          RELEASE_ID: ${{ github.sha }}
+        run: sh ci/check.sh
+      - name: Upload safe evidence
+        if: success()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: course-31-evidence
+          include-hidden-files: true
+          path: |
+            nodejs-course/examples/31/.data/openapi.json
+            nodejs-course/examples/31/.data/runtime-proof.json
+            nodejs-course/examples/31/.data/production-proof.json
+            nodejs-course/examples/31/.data/browser-proof.json
+            nodejs-course/examples/31/.data/operations-proof.json
+            nodejs-course/examples/31/.data/restore-proof.json
+            nodejs-course/examples/31/.data/cache-outage-proof.json
+            nodejs-course/examples/31/.data/queue-proof.json
+          if-no-files-found: error

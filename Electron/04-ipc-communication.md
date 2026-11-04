@@ -151,16 +151,17 @@ systemInfoBtn.addEventListener("click", async () => {
 
 ## 4.6 單向通知：Renderer → Main
 
-`invoke` / `handle` 適合「問一件事、等一個結果」。如果 Renderer 只是要通知 Main，不需要等回覆，就用 `ipcRenderer.send` 搭配 `ipcMain.on`。admin-dashboard 的自訂標題列主題就是這種情境：畫面已經先切主題，順手通知 Main 更新 Windows / Linux 的系統控制鈕底色。
+`invoke` / `handle` 適合「問一件事、等一個結果」。如果 Renderer 只是要通知 Main，不需要等回覆，就用 `ipcRenderer.send` 搭配 `ipcMain.on`。
 
-`src/preload/preload.js`（延續 4.4 的檔案，在最後追加這一段；檔案開頭的 `require` 已經有了，不用重複寫）：
+典型情境是進度回報：工作列（Windows）與 Dock 圖示（macOS）上的進度條只有 Main 能控制，Renderer 只需要一直告訴 Main「現在跑到幾 %」，不必等任何回覆。
+
+`src/preload/preload.js`（延續 4.4 的檔案，在最後追加這一段；檔案開頭已經 `require` 過 `contextBridge` 與 `ipcRenderer`，不要再宣告一次）：
 
 ```javascript
-const { contextBridge, ipcRenderer } = require("electron"); // 4.4 已宣告，此處僅為完整示意
-
+// 本節新增：單向通知 Main 更新進度條，不需要回覆所以用 send
 contextBridge.exposeInMainWorld("appWindow", {
-  setTitleBarTheme(theme) {
-    ipcRenderer.send("titlebar:theme", theme);
+  setProgress(value) {
+    ipcRenderer.send("window:set-progress", value);
   }
 });
 ```
@@ -170,29 +171,63 @@ contextBridge.exposeInMainWorld("appWindow", {
 ```javascript
 const { BrowserWindow, ipcMain } = require("electron");
 
-const IS_MAC = process.platform === "darwin";
-
-const TITLEBAR_THEMES = {
-  dark: { color: "#161b22", symbolColor: "#e6edf3" },
-  light: { color: "#ffffff", symbolColor: "#16202c" }
-};
-
 function registerWindowIpc() {
-  ipcMain.on("titlebar:theme", (event, theme) => {
-    const overlay = TITLEBAR_THEMES[theme];
+  ipcMain.on("window:set-progress", (event, value) => {
+    // 不信任 Renderer：只接受 0～1 的數字，或代表「移除進度條」的 -1
+    const isValid = Number.isFinite(value) && (value === -1 || (value >= 0 && value <= 1));
+    if (!isValid) return;
+
+    // 誰送來的就更新誰的進度條；多視窗之後才不會改錯視窗（第五章 5.4）
     const win = BrowserWindow.fromWebContents(event.sender);
-    // macOS 的紅綠燈按鈕由系統繪製，改不動；setTitleBarOverlay 也只有 Windows / Linux 提供
-    if (!overlay || !win || IS_MAC || typeof win.setTitleBarOverlay !== "function") return;
-    win.setTitleBarOverlay({ height: 32, ...overlay });
+    win?.setProgressBar(value);
   });
 }
 
 module.exports = { registerWindowIpc };
 ```
 
-重點一樣是白名單：Renderer 傳來的 `theme` 不是 CSS 顏色，而是 `dark` / `light` 這種有限字串，Main 端查表後才使用。
+在 4.3 的 `src/main/main.js` 補上註冊：
 
-另外注意 `IS_MAC` 這道防線：`setTitleBarOverlay` 只支援 Windows 與 Linux，macOS 上那三顆紅綠燈是系統畫的、改不了顏色。admin-dashboard 實戰專案就是這樣寫的——**跨平台 API 要先判斷平台再呼叫**，不要只靠 `typeof` 檢查碰運氣。
+```javascript
+const { registerWindowIpc } = require("./ipc/window.ipc"); // 加在其他 require 旁邊
+
+app.whenReady().then(() => {
+  registerSystemIpc();
+  registerWindowIpc(); // 本節新增
+  createWindow();
+  // ...activate 監聽保留不動
+});
+```
+
+`src/renderer/index.html` 新增按鈕：
+
+```html
+<button id="progressBtn">模擬下載進度</button>
+```
+
+`src/renderer/app.js`（加在檔案最後）：
+
+```javascript
+// 本節新增：每 300ms 前進 10%，每一步都單向通知 Main，跑完移除進度條
+const progressBtn = document.getElementById("progressBtn");
+
+progressBtn.addEventListener("click", () => {
+  let step = 0;
+  const timer = setInterval(() => {
+    step += 1;
+    if (step > 10) {
+      clearInterval(timer);
+      window.appWindow.setProgress(-1);
+      return;
+    }
+    window.appWindow.setProgress(step / 10);
+  }, 300);
+});
+```
+
+重點一樣是白名單：Renderer 傳來的值先檢查型別與範圍，Main 才拿去用。
+
+> 跨平台的 API 要先確認平台再呼叫。admin-dashboard 實戰專案用同樣的 `send` / `on` 模式，在切換主題時通知 Main 改變 Windows / Linux 標題列控制鈕的底色（`setTitleBarOverlay`）。那個 API 只有 Windows 與 Linux 有，而且視窗建立時必須開啟 `titleBarOverlay`，所以 Main 端會先判斷平台，並且只接受 `dark` / `light` 這兩個字串、查表後才使用。`setProgressBar` 則三個平台都能呼叫，只是 Linux 上只有 Unity 桌面會顯示。
 
 ---
 
@@ -239,7 +274,7 @@ window.addEventListener("beforeunload", unsubscribe);
 npm run dev
 ```
 
-點擊「讀取系統資訊」後，應看到平台、CPU 核心數與記憶體資訊。
+點擊「讀取系統資訊」後，應看到平台、CPU 核心數與記憶體資訊；點擊「模擬下載進度」後，工作列或 Dock 圖示上應出現跑到 100% 後消失的進度條。
 
 ---
 
@@ -248,8 +283,9 @@ npm run dev
 - 通道名稱要語意化，例如 `system:get-info`
 - 僅在 preload 暴露「必要」功能，不要直接暴露 `ipcRenderer`
 - Main 端對輸入參數做驗證，避免惡意資料
+- 驗證是誰送來的：preload 會載入到視窗裡的每一個頁面，萬一視窗被導去外部網址，那個頁面一樣能呼叫你暴露的 API。重要的 handler 應檢查 `event.senderFrame` 的網址是否為 App 自己的頁面，第九章 9.5 會實作
 - `nodeIntegration` 維持 `false`、`contextIsolation` 維持 `true`
-- IPC 參數與回傳值要能被結構化複製；不要傳 DOM 物件、函式、class 實例或帶複雜 prototype 的物件，否則常會遇到 `An object could not be cloned`
+- IPC 參數與回傳值要能被結構化複製：函式、DOM 物件、Promise 傳過去會直接丟出 `An object could not be cloned`；class 實例雖然不會報錯，但到了另一端只剩欄位，prototype 與方法都會遺失
 - `ipcMain.handle` 裡若直接拋錯，Renderer 端收到的錯誤會被 Electron 包裝，message 可能變成 `Error invoking remote method ...`，自訂欄位也可能遺失；正式 API 可改回 `{ ok, code, data }` 這類信封格式
 
 ---

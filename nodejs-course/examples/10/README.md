@@ -29,4 +29,4 @@ curl -i http://127.0.0.1:3010/api/articles/missing
 
 修改原始碼後重新建置；Docker 主機端口 3010。本機使用固定 Node／npm；信號測試建議透過 Linux Docker。
 
-本次安裝的 npm audit 回報 Jest → deepmerge 開發依賴鏈的低嚴重度問題；未使用會降級 Jest 的 `audit fix --force`。它不屬於 API 的執行期依賴，後續升級測試工具時應重新查核。
+2026-11-02 複查 npm ci 的 audit 回報 19 個受影響套件節點（3 low、16 moderate，無 high／critical），涉及 Jest／glob／minimatch／deepmerge 開發依賴鏈。套件及 lockfile 未改，未執行 audit fix --force；這不是 19 個彼此獨立的漏洞，也不是完整安全稽核。

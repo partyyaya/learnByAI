@@ -160,6 +160,8 @@ HTTP 再查詢能證明外部可見狀態；資料庫是否用了同一交易，
 
 Jest 的 runInBand 讓同一個執行器循序跑測試，但另一個終端機仍可能同時跑一份測試。因此「測試不平行」不足以保護資料。
 
+資料隔離不代表建置產物也已隔離。本章 npm test／test:baseline 會重建 .test-dist，而 test:runtime 會讀取它；這些指令不可在同一範例目錄同時執行。若要從兩個終端機比較不同測試程序，需另外隔離工作目錄與編譯產物，不能只靠隨機資料庫 schema。
+
 本章沿用 [database-fixture.ts](examples/13/test/database-fixture.ts)：
 
 - 只讀 TEST_DATABASE_URL；缺少就失敗，不能回退到開發 DATABASE_URL。
@@ -446,7 +448,7 @@ Nest 的自訂 Provider 可以用值或 factory 等方式供應依賴，Module �
 - [ ] 能區分本章基準與最終專題的認證、留言及稽核需求。
 - [ ] 已列出 Nest 遷移要保留的行為與待處理的依賴問題。
 
-下一章預定為 `14-nest-bootstrap-and-request-lifecycle.md`，從 Nest 啟動與請求生命週期開始，讓新的組裝方式接住既有契約。
+下一章為 [14 — Nest 啟動與請求生命週期](14-nest-bootstrap-and-request-lifecycle.md)，從 Nest 啟動與請求生命週期開始，讓新的組裝方式接住既有契約。
 
 ---
 

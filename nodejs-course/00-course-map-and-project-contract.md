@@ -2,19 +2,19 @@
 
 > 先回答「程式在哪裡執行、誰能做什麼、成功與失敗如何呈現」，再開始選路由與框架。
 
-本章使用 JavaScript 基礎與少量 HTTP 概念。你只需要能執行終端機指令，並有可運作的 Docker；不必先在電腦安裝 Node.js、Express 或 NestJS。
+本章使用 JavaScript 基礎與少量 HTTP 概念。先用 nvm 安裝、切換 Node.js 版本，再直接執行本章的規則練習。後續章節的專案工具與服務仍使用 Docker，不必先安裝 Express 或 NestJS。
 
 完成本章後，你應能：
 
 - 分清 JavaScript、Node.js、Express、NestJS 與 Docker 的角色。
 - 畫出瀏覽器、API 與資料庫的責任與資料流。
-- 用 Docker 執行範例，觀察 Node 與瀏覽器提供的能力。
+- 用 nvm 安裝指定 Node 版本並執行範例，觀察 Node 與瀏覽器提供的能力。
 - 根據文章狀態與使用者身分，判斷操作是否允許。
 - 將需求寫成可驗收的 API 成功與失敗契約。
 
 **本章交付的是專題規格與可執行的規則練習。** 下文的 HTTP 範例是後續實作目標，目前還沒有可呼叫的 API、登入機制或資料庫。第一個 HTTP 服務會在 05 章建立。
 
-閱讀後續成果時，請以 [13 章遷移基準](examples/13/BASELINE.md) 確認已完成範圍：目前作者固定為 u_demo，尚無登入授權；非法狀態代碼為 INVALID_STATE，而本章最終規格預定為 INVALID_ARTICLE_STATE。框架遷移先保留現有契約，名稱與認證要求的變更須另行記錄。
+閱讀各階段成果時，請以該章範例的 README／BASELINE 確認範圍：[13 章遷移基準](examples/13/BASELINE.md)仍固定作者 u_demo、尚無登入授權；[18 章](18-authentication-sessions-and-guards.md)已加入真實 Session 與權限，[20 章](20-persistence-transactions-and-concurrency.md)加入狀態稽核，[21 章](21-api-contracts-pagination-and-openapi.md)加入查詢與 OpenAPI。到第 23 章仍保留 INVALID_STATE，本章最終規格預定的 INVALID_ARTICLE_STATE 尚未改名；留言等功能也仍是後續目標。
 
 ## 00.1 從一個容易漏掉的問題開始
 
@@ -39,7 +39,7 @@
 | TypeScript | 為 JavaScript 加上型別檢查的語言與工具 | 協助開發時檢查；外部輸入仍要在執行期驗證 |
 | Express | HTTP 應用框架 | 看清路由、middleware、錯誤與回應的流程 |
 | NestJS | 提供 Module、Controller、Provider 等結構的應用框架 | 練習依賴注入、模組邊界與正式專案整合 |
-| Docker | 以映像檔建立容器，提供執行環境 | 本章執行 Node；11 章啟動資料庫；26 章練習服務部署 |
+| Docker | 以映像檔建立容器，提供執行環境 | 01 章起提供專案工具環境；11 章啟動資料庫；26 章練習服務部署 |
 | PostgreSQL | 關聯式資料庫 | 保存使用者、文章、留言與 Session 等資料 |
 
 TypeScript 的型別不能阻止使用者送出錯誤 JSON。例如程式將 `title` 宣告為 `string`，外部請求仍可能傳入數字。驗證工作會在 Express 09 章與 NestJS 17 章具體實作。
@@ -99,43 +99,42 @@ Express 也能建立正式服務；本課先用它呈現請求流程，再用 Ne
 
 Express 與 NestJS 都在圖中的 API 位置。把路由改成 Controller，不會讓瀏覽器、API、資料庫的責任自動改變。
 
-## 00.4 先用 Docker 執行第一個練習
+## 00.4 用 nvm 安裝 Node 並執行第一個練習
+
+### 使用 nvm 安裝 Node.js
+
+nvm 是 Node.js 版本管理工具。以下適用 macOS、Linux 或 Windows WSL 的 Bash／zsh；尚未安裝 nvm 的讀者，先執行官方安裝指令。已有可使用的 nvm 時，可略過這一步。[nvm 安裝文件](https://github.com/nvm-sh/nvm#install--update-script)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+```
+
+安裝器會下載 nvm 並嘗試加入 shell 的載入設定。完成後重新開啟終端機，先確認 nvm 可用，再安裝課程指定的 Node：
+
+```bash
+command -v nvm
+nvm --version
+nvm install 24.22.1
+nvm use 24.22.1
+node --version
+npm --version
+```
+
+command -v nvm 應輸出 nvm；它是 shell 函式，不一定是磁碟上的執行檔。預期 Node 為 v24.22.1；npm 版本在第 01 章核對為 11.19.1。nvm install 安裝指定版本，已存在時重用；nvm use 切換目前 shell 使用的版本。[nvm 官方用法](https://github.com/nvm-sh/nvm#usage)
+
+如果新開的終端機找不到 nvm，依[第 01 章的載入方式](01-runtime-tooling-and-project-setup.md#014-先用-nvm-安裝指定版本再用-docker-執行)確認載入設定，再回來執行。
 
 ### 本章的檔案與執行方式
 
 本章只有一個可執行檔：[runtime-and-contract.mjs](examples/00/runtime-and-contract.mjs)。它使用 Node 內建的斷言工具，沒有第三方依賴，也不需要 `npm install`。`.mjs` 表示使用 ECMAScript Module；02 章再深入模組規則。
 
-這裡使用與 01 章相同的固定映像，提供 Node **24.22.1** 與 npm **11.19.1**。`node:24-bookworm-slim` 後面加上 digest，避免可移動的 tag 日後指向不同修補版本。01 章會再解釋版本檔與 lockfile；現在可直接複製指令。
-
-以下指令適用於 Bash／zsh。請先開啟 Docker Desktop 或啟動 Docker Engine，再在**倉庫根目錄 `learnbyai`** 執行：
+確認已執行 nvm use 24.22.1 後，在**倉庫根目錄 learnbyai** 執行：
 
 ```bash
-docker version
-docker compose version
-docker pull node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
+node nodejs-course/examples/00/runtime-and-contract.mjs
 ```
 
-`docker version` 應顯示 Client 與 Server；只有 Client 不代表容器引擎已可使用。01 章開始用 Compose 執行工具容器，11 章再加入資料庫，本章先確認工具存在。
-
-接著執行：
-
-```bash
-docker run --rm --network none \
-  --mount "type=bind,source=${PWD}/nodejs-course/examples/00,target=/work,readonly" \
-  --workdir /work \
-  node:24-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 \
-  node runtime-and-contract.mjs
-```
-
-| 指令片段 | 意義 |
-|----------|------|
-| `--rm` | 程式結束後移除這次的容器；下載的映像檔仍保留 |
-| `--network none` | 範例執行時不使用外部網路；前面的下載仍需要網路 |
-| `--mount ... readonly` | 把本章範例目錄唯讀掛進容器的 `/work` |
-| `--workdir /work` | 在容器的 `/work` 目錄執行指令 |
-| `node runtime-and-contract.mjs` | 使用容器內的 Node 執行程式 |
-
-使用上面的固定映像，成功輸出如下：
+這會使用剛才由 nvm 選定的 Node 執行腳本。成功輸出如下：
 
 ```text
 執行環境： {"node":"v24.22.1","window":"undefined","document":"undefined","fetch":"function","process":"object"}
@@ -158,11 +157,11 @@ PASS：4 項環境檢查、7 項權限案例、6 項狀態轉換案例
 
 一般頁面的 `window`、`document` 是 `object`，`fetch` 是 `function`，`process` 是 `undefined`。若網站自行提供同名變數，結果可能不同；比較時可使用空白頁面。
 
-### 容器與資料的幾個基本觀念
+### 後續章節的 Docker 與資料預覽
 
-- **Image（映像檔）**：建立容器使用的環境，例如本章的 Node 映像檔。
+- **Image（映像檔）**：建立容器使用的環境，例如後續章節的 Node 或 PostgreSQL 映像檔。
 - **Container（容器）**：由映像檔建立的執行實例；停止、移除容器與刪除映像檔是不同操作。
-- **Bind mount**：把主機上的指定目錄掛入容器；本章用它讀取程式碼。
+- **Bind mount**：把指定目錄掛入容器；後續章節用它讀取程式碼。
 - **Volume**：由 Docker 管理的資料儲存空間；之後用來保存資料庫資料。資料可跨容器生命週期保留，但仍需要另外備份。[Docker volumes 文件](https://docs.docker.com/engine/storage/volumes/)
 
 11 章主要以 Compose 同時執行 API 與 PostgreSQL，也提供主機 Node 路線。該章把主機的 `15411` 映射到資料庫容器的 `5432`，連線位置會是：
@@ -200,6 +199,8 @@ PASS：4 項環境檢查、7 項權限案例、6 項狀態轉換案例
 | AuditLog | 操作者、文章、動作、前後狀態與時間，供追查狀態變更 |
 
 此處先定義業務資料，不急著寫 ORM schema。範例中的 `u_alice`、`a_1001` 都是示意 ID；用戶端應把 ID 當作不透明字串，不應從格式推導權限。
+
+AuditLog 是這裡的概念名稱；第 20–23 章實際使用 ArticleStatusAudit，只記成功的 publish／archive 狀態轉換，不是每次編輯、登入或拒絕請求的完整歷史。
 
 ## 00.6 狀態與權限要分開考慮
 
@@ -248,6 +249,8 @@ archived → 不可編輯、重新發佈或再次封存
 | 方法與路徑 | 行為 | 成功狀態 |
 |------------|------|----------|
 | `GET /health/live` | 確認程序可回應；不代表資料庫已就緒 | `200` |
+| `GET /health/ready` | 檢查必要依賴；尚未就緒回 `503` | `200` |
+| `GET /api/auth/csrf` | 取得 CSRF token；必要時建立匿名 Session Cookie | `200` |
 | `POST /api/auth/register` | 註冊會員；不接受自行指定管理員角色 | `201` |
 | `POST /api/auth/login` | 驗證登入資料，建立 Session 與 Cookie | `200` |
 | `POST /api/auth/logout` | 撤銷目前 Session 並清除 Cookie；已無有效 Session 也可完成登出 | `204` |
@@ -267,16 +270,19 @@ archived → 不可編輯、重新發佈或再次封存
 
 公開端點對所有角色都只提供公開資料。即使 Alice 已登入，讀自己的草稿也要走 `/api/me/articles/:id`，讓「公開查詢」的語意一致。
 
-文章寫入端點先確認登入與輸入，再查文章：不存在回 `404`；存在但不是作者或管理員回 `403`；通過授權後才檢查版本與狀態。這是本課刻意選擇的錯誤規則，後續測試應固定它。
+文章寫入端點先通過傳輸解析，再確認登入、CSRF 與欄位輸入，最後查文章：不存在回 `404`；存在但不是作者或管理員回 `403`；通過授權後才檢查版本與狀態。登入檢查不會早於 JSON parser，因此非法 JSON 也可能先回 `400`；合法 JSON 的匿名寫入才是 `401`。這是本課刻意選擇的錯誤規則，後續測試應固定它。
 
 ### 新增文章：請求與成功回應
 
-以下 HTTP 片段是規格示意，不是本章已啟動的服務。已登入的 Alice 送出：
+以下 HTTP 片段是規格示意，不是本章已啟動的服務。第 18 章起先取得匿名 CSRF，再登入並保存輪替後的 Cookie 與 CSRF token；以下以本機第 18 章為例，已登入的 Alice 送出：
 
 ```http
 POST /api/articles HTTP/1.1
+Host: 127.0.0.1:3018
+Origin: http://127.0.0.1:3018
 Content-Type: application/json
-Cookie: session=<有效的 Session 憑證>
+Cookie: course_session=<登入後的 Session 憑證>
+X-CSRF-Token: <登入後的 CSRF token>
 
 {
   "title": "我的第一篇文章",
@@ -309,6 +315,8 @@ Location: /api/me/articles/a_1001
 
 `Location` 指向作者可讀的管理端點，因為新草稿尚未公開。ID、作者、狀態、版本與時間均由伺服器決定；時間以 UTC 格式傳輸，畫面再轉成本地時區。
 
+以上憑證是佔位文字，不可直接使用；完整取得與操作流程見[第 18 章](18-authentication-sessions-and-guards.md#11-docker-啟動與第一次登入)。HTTPS 使用 __Host-course_session，Origin 必須對應實際服務，不能跨章直接沿用 port。
+
 ### 更新與版本衝突
 
 修改文章時，除了至少一個可修改欄位，還要附上讀取時看到的版本：
@@ -320,7 +328,7 @@ Location: /api/me/articles/a_1001
 }
 ```
 
-`expectedVersion` 必須是正整數。成功後 `version` 加一，回傳更新後的文章；發佈與封存同樣要求版本並在成功時加一。當前狀態與版本檢查都通過後，才能寫入資料。
+`expectedVersion` 必須是正安全整數，不接受數字字串。成功後 `version` 加一，回傳更新後的文章；發佈與封存同樣要求版本並在成功時加一。當前狀態與版本檢查都通過後，才能寫入資料。
 
 假設 Alice 開了兩個分頁，都讀到版本 1。第一個儲存成功後變成版本 2，第二個仍傳 1，就應收到 `409 VERSION_CONFLICT`。前端應提示重新載入或合併，而不是默默覆蓋第一個分頁的內容。
 
@@ -328,7 +336,7 @@ Location: /api/me/articles/a_1001
 
 ### 列表回應
 
-列表使用 `page`、`pageSize`，預設分別為 1、20，`pageSize` 上限為 100；必須為範圍內的整數，無效值回 `400`。排序固定為建立時間由新到舊，再以 ID 降冪打破同時間的平手。
+列表使用 `page`、`pageSize`，預設分別為 1、20，page 上限 1000000、pageSize 上限 100；query 要求單一十進位整數字串，無效值回 `400`。預設按建立時間由新到舊，再以 ID 降冪打破同時間的平手。第 21 章起另可用 q 搜尋標題、sort 選 newest／oldest，本人列表可用 status；省略它們仍保留原預設行為。
 
 例如公開列表 `GET /api/articles?page=1&pageSize=20` 在沒有公開文章時回傳：
 
@@ -369,12 +377,14 @@ Location: /api/me/articles/a_1001
 | 狀態碼 | 本課的使用情境 | 錯誤代碼範例 |
 |--------|----------------|--------------|
 | `400` | JSON 格式錯誤、缺少欄位、型別或欄位不合法 | `INVALID_JSON`、`VALIDATION_ERROR` |
-| `401` | 受保護操作缺少有效登入；Session 到期或撤銷 | `UNAUTHENTICATED` |
-| `403` | 已登入，但沒有操作權限 | `FORBIDDEN` |
+| `401` | 受保護操作缺少有效登入；Session 到期、撤銷，或登入帳密錯誤 | `UNAUTHENTICATED`、`INVALID_CREDENTIALS` |
+| `403` | 已登入但沒有操作權限，或 Origin／CSRF 不符；CSRF 拒絕也適用匿名登入前流程 | `FORBIDDEN`、`CSRF_REJECTED` |
 | `404` | 資源不存在，或在該查詢端點不可見 | `NOT_FOUND` |
+| `408`／`413`／`415` | body 讀取逾時、過大、媒體類型／編碼不支援 | `REQUEST_TIMEOUT`、`PAYLOAD_TOO_LARGE`、`UNSUPPORTED_MEDIA_TYPE`／`UNSUPPORTED_ENCODING` |
 | `409` | 文章版本衝突、非法狀態轉換、重複註冊識別 | `VERSION_CONFLICT`、`INVALID_ARTICLE_STATE`、`USER_ALREADY_EXISTS` |
+| `429` | 認證操作超過每來源嘗試上限 | `RATE_LIMITED` |
 | `500` | 未預期的內部錯誤 | `INTERNAL_ERROR` |
-| `503` | 服務因必要依賴不可用而暫時無法處理 | `SERVICE_UNAVAILABLE` |
+| `503` | 必要依賴、容量或關閉狀態，使服務暫時無法接受工作 | `NOT_READY`、`AUTH_BUSY`、`SHUTTING_DOWN` |
 
 成功的單筆資料用 `{ "data": ... }`，列表另附 `meta`；`204` 不帶 response body。錯誤回應不提供堆疊、SQL、密碼或憑證，詳細原因留在適當遮蔽的伺服器日誌。
 
@@ -394,7 +404,7 @@ Location: /api/me/articles/a_1001
 | 管理員以正確版本修改封存文章 | `409 INVALID_ARTICLE_STATE`，文章不變 | 18–20 |
 | 同一篇文章同時收到兩個相同版本的更新 | 一個成功，另一個 `409 VERSION_CONFLICT` | 11–13；20、22 深化 |
 | 狀態變更時，稽核紀錄寫入失敗 | 狀態與版本回滾，不留下半套結果 | 20、22 |
-| Bob 刪除 Alice 的留言 | `403 FORBIDDEN`，留言仍存在 | 18、28 |
+| Bob 刪除 Alice 的留言 | `403 FORBIDDEN`，留言仍存在 | 18 的授權觀念；28 實作留言端點 |
 | 留言作者刪除自己的留言後再次刪除 | 第一次 `204` 且無 body，第二次 `404` | 28 |
 | 登出後拿原本 Session 呼叫 `/api/auth/me` | `401 UNAUTHENTICATED` | 18、22 |
 
@@ -423,11 +433,11 @@ Location: /api/me/articles/a_1001
 
 | 現象或誤解 | 檢查方式或修正方向 |
 |------------|--------------------|
-| Docker 顯示無法連接 daemon 或 socket 權限錯誤 | 確認引擎啟動、目前使用者可存取 Docker；尚未進入 Node 程式 |
-| 找不到映像檔或拉取失敗 | 先確認網路可完成 `docker pull`；範例執行本身才停用網路 |
-| 掛載來源不存在、找不到 `.mjs` | 確認從倉庫根目錄執行，`${PWD}/nodejs-course/examples/00` 必須存在 |
+| 找不到 nvm 指令 | 安裝後重新開啟終端機，確認 shell 已載入 nvm |
+| Node 版本不符 | 先執行 nvm use 24.22.1，再以 node --version 確認 |
+| 找不到 `.mjs` | 確認從倉庫根目錄執行，nodejs-course/examples/00/runtime-and-contract.mjs 必須存在 |
 | 有 `fetch`，所以 Node 應該也能操作網頁 | `fetch` 是 HTTP 能力，DOM 是另一組環境能力 |
-| 容器跑完立刻消失，是否啟動失敗？ | 本章程式執行完即結束，`--rm` 會移除容器；查看輸出與結束狀態 |
+| 程式跑完就回到命令提示字元，是否啟動失敗？ | 本章是一次性的規則練習；看到 PASS 且退出碼為 0 就表示成功 |
 | 管理員可以跳過所有規則 | 管理員有額外資料權限，但仍不能編輯封存文章 |
 | TypeScript 有型別就不需要驗證 JSON | 型別檢查不能約束外部請求，必須有執行期驗證 |
 | 在畫面禁用按鈕就算完成授權 | 伺服器仍需驗證每次操作，並以直接 HTTP 請求測試越權 |
@@ -467,7 +477,7 @@ Location: /api/me/articles/a_1001
 
 ### 練習三：讓規則變得可驗證
 
-打開範例的 `permissionCases`，補上「管理員能修改別人的已發佈文章」案例，預期為 `true`，再執行 Docker 指令。權限案例數應從 7 變為 8。
+打開範例的 `permissionCases`，補上「管理員能修改別人的已發佈文章」案例，預期為 `true`，再執行本章的 node 指令。權限案例數應從 7 變為 8。
 
 接著暫時把這個案例的預期值改成 `false` 再執行，確認會出現 `AssertionError` 並以非零狀態結束。最後恢復正確值。這能確認你的驗證真的會對錯誤結果失敗。
 
@@ -475,7 +485,7 @@ Location: /api/me/articles/a_1001
 
 - [ ] 能解釋為什麼 Node 有 `fetch`，卻沒有 `document`。
 - [ ] 能畫出瀏覽器 → API → 資料庫，並指出授權應在哪裡執行。
-- [ ] 已用 Docker 執行範例，看到環境與規則檢查通過。
+- [ ] 已用 nvm 選定 Node 版本並執行腳本，看到環境與規則檢查通過。
 - [ ] 能區分角色權限、文章狀態與版本衝突。
 - [ ] 能依規格判斷 `400`、`401`、`403`、`404`、`409`。
 - [ ] 知道本章規格與後續實作的差別，沒有把純函式檢查當作 HTTP／資料庫驗收。

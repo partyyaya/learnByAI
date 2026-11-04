@@ -19,11 +19,11 @@ Nginx（發音為「Engine X」）是一款高效能的 HTTP 伺服器、反向�
 
 ```
                 Nginx                           Apache
-架構        事件驅動（非阻塞）              行程/執行緒（阻塞）
-並發能力     極高（數萬連線）               中等（受限於執行緒數）
+架構        事件驅動（非阻塞）              MPM 模組：prefork（行程）/ worker（執行緒）/ event（2.4 起，事件驅動）
+並發能力     極高（數萬連線）               視 MPM 而定（prefork 受限於行程數）
 記憶體使用   低                              較高
 靜態檔案     非常快                          快
-動態內容     需搭配 FastCGI/Proxy            內建模組支援（mod_php）
+動態內容     需搭配 FastCGI/Proxy            可用內建模組（mod_php，需搭配 prefork）或 PHP-FPM
 設定方式     集中式設定檔                    支援 .htaccess 分散式設定
 適用場景     高流量網站、反向代理、API Gateway  傳統網站、需要 .htaccess 的情境
 ```
@@ -41,7 +41,7 @@ sudo apt update
 # 安裝 Nginx
 sudo apt install nginx -y
 
-# 確認安裝版本
+# 確認安裝版本（Ubuntu 24.04 會顯示 nginx version: nginx/1.24.0 (Ubuntu)）
 nginx -v
 
 # 啟動 Nginx
@@ -56,25 +56,27 @@ sudo systemctl status nginx
 
 <sup>名詞說明：**[【1】sudo](#note-1)** | **[【2】systemctl](#note-2)** | **[【3】apt](#note-3)**</sup>
 
-### CentOS / RHEL
+> **備註：apt 裝到的是哪一版？**
+>
+> - 發行版套件庫的 Nginx 版本跟著發行版固定：Ubuntu 24.04 是 1.24.0（本課程的基準），Ubuntu 22.04 是 1.18.0（低於本課程要求）。
+> - 想用更新的版本，可改裝 nginx.org 官方套件庫的 nginx（目前 stable 為 1.30）。它的目錄配置和 Ubuntu 套件不同（見 1.5）。
+
+### RHEL / Rocky Linux / AlmaLinux（8 以上）
 
 ```bash
-# 安裝 EPEL 儲存庫
-sudo yum install epel-release -y
-
-# 安裝 Nginx
-sudo yum install nginx -y
+# 安裝 Nginx（RHEL 8+ 與其相容發行版的官方 AppStream 套件庫已收錄）
+sudo dnf install nginx -y
 
 # 啟動與設定開機自啟
 sudo systemctl start nginx
 sudo systemctl enable nginx
 ```
 
-> **備註：EPEL 是什麼？為什麼要先裝它？**
+> **備註：舊教學常見的 EPEL 是什麼？**
 >
 > - EPEL（Extra Packages for Enterprise Linux）是 Fedora 社群維護的「額外套件庫」。
-> - CentOS 7 / RHEL 7 的官方預設套件庫沒有收錄 Nginx，所以要先安裝 `epel-release` 把這個套件庫加進系統，後面的 `yum install nginx` 才找得到套件。
-> - 較新的 CentOS Stream / RHEL 8+ 已內建 nginx 模組，可直接 `sudo dnf install nginx`，不一定需要 EPEL。
+> - CentOS 7 / RHEL 7 的官方套件庫沒有收錄 Nginx，當年要先 `yum install epel-release` 才裝得到；但 CentOS 7 已在 2024 年 6 月停止支援，不建議再用來架站。
+> - RHEL 8 以上可直接 `dnf install nginx`，不需要 EPEL。
 
 ### macOS（使用 Homebrew）
 
@@ -91,7 +93,7 @@ nginx
 
 > **備註：macOS（Homebrew）版本的兩個差異**
 >
-> - Homebrew 安裝的 Nginx 預設監聽 **8080** port（不是 80），因為非 root 使用者無法綁定 1024 以下的特權 port；驗證時請改用 `http://localhost:8080`。
+> - Homebrew 安裝的 Nginx 預設設定監聽 **8080** port（不是 80），這是 Homebrew 的慣例，方便不用 sudo 就能啟動；驗證時請改用 `http://localhost:8080`。
 > - 設定檔位置也不同：`/opt/homebrew/etc/nginx/nginx.conf`（Apple Silicon）或 `/usr/local/etc/nginx/nginx.conf`（Intel）。
 
 ### Docker
@@ -114,6 +116,8 @@ docker run -d --name my-nginx \
   -v /path/to/nginx.conf:/etc/nginx/nginx.conf:ro \
   -v /path/to/html:/usr/share/nginx/html:ro \
   nginx:stable
+# 注意：只掛單一檔案時，若在主機用「整檔替換」的方式修改（sed -i 與不少編輯器都是），
+# 容器內看到的仍是舊檔（或變成找不到檔案），reload 不會生效；改完請重啟容器，或改成掛載整個目錄（例如 conf.d）
 
 # 停止容器
 docker stop my-nginx
@@ -133,9 +137,9 @@ docker rm -f my-nginx
 # -t: pseudo-terminal，分配虛擬終端機（讓你看到互動式 shell）
 # --name ubuntu-nginx: 指定容器名稱
 # -p 8080:80: 主機 8080 對應容器 80
-# ubuntu:22.04: 使用 Ubuntu 22.04 映像
+# ubuntu:24.04: 使用 Ubuntu 24.04 映像
 # bash: 容器啟動後直接進入 bash shell
-docker run -it --name ubuntu-nginx -p 8080:80 ubuntu:22.04 bash
+docker run -it --name ubuntu-nginx -p 8080:80 ubuntu:24.04 bash
 
 # 2) 在容器內安裝 Nginx
 apt update
@@ -183,8 +187,8 @@ docker start -ai ubuntu-nginx
 可直接使用的 `Dockerfile`（Ubuntu 基底）：
 
 ```dockerfile
-# 基底映像：Ubuntu 22.04 LTS
-FROM ubuntu:22.04
+# 基底映像：Ubuntu 24.04 LTS
+FROM ubuntu:24.04
 
 # 關閉 apt 互動式提示，避免 build 卡住
 ENV DEBIAN_FRONTEND=noninteractive
@@ -193,9 +197,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # -y: 自動回答 yes
 # --no-install-recommends: 不安裝建議套件，減少映像大小
 # rm -rf /var/lib/apt/lists/*: 清除 apt 快取，縮小 image
+# ln -sf ...: 把日誌導到容器的 stdout/stderr，`docker logs` 才看得到（官方映像也是這樣做）；
+#            不導的話日誌只會寫進容器內的檔案，越長越大
 RUN apt-get update \
     && apt-get install -y --no-install-recommends nginx ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /dev/stdout /var/log/nginx/access.log \
+    && ln -sf /dev/stderr /var/log/nginx/error.log
 
 # 宣告容器會使用 80 埠（文件用途，不等於自動對外開放）
 EXPOSE 80
@@ -244,7 +252,7 @@ curl -I http://localhost
 
 ```
 HTTP/1.1 200 OK
-Server: nginx/1.24.0
+Server: nginx/1.24.0 (Ubuntu)
 Date: ...
 Content-Type: text/html
 ...
@@ -309,17 +317,18 @@ nginx -s reopen
 
 ## 1.5 目錄結構
 
-安裝完成後，Nginx 的主要檔案分布如下（以 Ubuntu 為例）：
+安裝完成後的檔案分布，取決於你裝的是哪一種套件。
+
+**Ubuntu / Debian 套件（`apt install nginx`，本課程的基準）：**
 
 ```
 /etc/nginx/                  # 主要設定目錄
-├── nginx.conf               # 主設定檔
-├── conf.d/                  # 額外設定檔目錄
-│   └── default.conf         # 預設站台設定
+├── nginx.conf               # 主設定檔（worker 使用者：www-data）
+├── conf.d/                  # 額外設定檔目錄（預設是空的）
 ├── sites-available/         # 可用的站台設定（Ubuntu/Debian 特有）
-│   └── default
+│   └── default              # 預設站台（listen 80 default_server，root /var/www/html）
 ├── sites-enabled/           # 已啟用的站台設定（符號連結）
-│   └── default -> ../sites-available/default
+│   └── default              # 指向 sites-available/default 的符號連結
 ├── mime.types               # MIME 類型對應表
 ├── fastcgi_params           # FastCGI 參數
 ├── proxy_params             # 代理參數
@@ -329,18 +338,36 @@ nginx -s reopen
 ├── access.log               # 存取日誌
 └── error.log                # 錯誤日誌
 
-/usr/share/nginx/html/       # 預設網站根目錄
-├── index.html               # 預設首頁
-└── 50x.html                 # 錯誤頁面
+/var/www/html/               # 預設站台的網站根目錄
+└── index.nginx-debian.html  # 預設歡迎頁
 
-/var/run/nginx.pid           # PID 檔案
+/run/nginx.pid               # PID 檔案（/var/run 是指向 /run 的連結，兩個路徑指的是同一個檔）
 ```
+
+> `/usr/share/nginx/html/` 在 Ubuntu 上也存在，但預設站台不是從這裡讀檔；要改歡迎頁請改 `/var/www/html/`。
+
+**nginx.org 官方套件與官方 Docker 映像（`nginx:stable` 等）：**
+
+```
+/etc/nginx/
+├── nginx.conf               # 主設定檔（worker 使用者：nginx）
+├── conf.d/
+│   └── default.conf         # 預設站台（root /usr/share/nginx/html）
+├── mime.types
+└── fastcgi_params
+
+/usr/share/nginx/html/       # 預設站台的網站根目錄
+├── index.html
+└── 50x.html
+```
+
+> 這種配置沒有 `sites-available/`、`sites-enabled/`、`snippets/` 與 `proxy_params`；需要時自行建立目錄，並在 `nginx.conf` 的 `http { }` 加上對應的 `include`（見第二章補充說明【3】）。
 
 Docker 補充（若用 `nginx:stable` 容器）：
 
-- 上面這份樹狀結構是「Ubuntu 主機直接安裝」常見路徑；Docker 時是看「容器內」路徑，不是主機本機路徑。
-- 容器內通常會有 `/etc/nginx/nginx.conf`、`/etc/nginx/conf.d/`、`/usr/share/nginx/html/`。
-- `sites-available/`、`sites-enabled/` 在官方映像檔通常不會預設提供（除非你自行建立）。
+- Docker 時看的是「容器內」路徑，不是主機本機路徑。
+- `sites-available/`、`sites-enabled/` 在官方映像檔不會預設提供（除非你自行建立），站台設定放 `conf.d/`。
+- 官方映像把 `access.log`、`error.log` 連結到容器的 stdout/stderr，所以用 `docker logs` 看日誌。
 - 若你有用 `-v` 掛載，主機檔案會映射到容器路徑（例如 `-v /path/to/nginx.conf:/etc/nginx/nginx.conf:ro`）。
 
 ```bash
@@ -371,8 +398,10 @@ sudo ss -tlnp | grep :80
 # Ubuntu (ufw)
 sudo ufw status              # 查看防火牆狀態與現有規則
 sudo ufw allow 'Nginx Full'  # 放行「Nginx Full」規則組（= 同時開放 80 + 443 port）
+# 「Nginx Full」規則組是 Ubuntu 的 nginx 套件附的；若顯示找不到這個 profile，改用：
+sudo ufw allow 80,443/tcp
 
-# CentOS (firewalld)
+# RHEL / Rocky / Alma (firewalld)
 sudo firewall-cmd --permanent --add-service=http   # 永久放行 HTTP（80）；--permanent 表示寫入設定檔、重開機仍有效
 sudo firewall-cmd --permanent --add-service=https  # 永久放行 HTTPS（443）
 sudo firewall-cmd --reload                         # 重新載入防火牆規則，讓上面 --permanent 的變更立即生效
@@ -421,6 +450,7 @@ sudo setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx
 >
 > - 好處：Nginx 不必以 root 啟動也能綁定 80/443，整體權限更低、更安全。
 > - 注意：capability 是綁在「執行檔」上的，升級 Nginx 後新的執行檔需要重新執行一次 `setcap`。
+> - 注意：只做 `setcap` 還不夠。預設設定的 PID 檔（`/run/nginx.pid`）、日誌（`/var/log/nginx/`）與暫存目錄都只有 root 能寫，非 root 啟動會在這裡失敗（例如 `open() "/run/nginx.pid" failed (13: Permission denied)`）；要一併把 `pid`、`error_log`、`access_log` 與 `*_temp_path` 改到該使用者可寫的路徑。
 
 ---
 
@@ -460,9 +490,9 @@ sudo apt install nginx
 
 | 指令 | 需要 sudo？ | 原因 |
 |------|------------|------|
-| `apt install / yum install` | 是 | 安裝軟體需要寫入系統目錄 |
+| `apt install / dnf install` | 是 | 安裝軟體需要寫入系統目錄 |
 | `systemctl start/stop` | 是 | 管理系統服務需要 root 權限 |
-| `nginx -t` | 是 | 讀取 `/etc/nginx/` 下的設定檔 |
+| `nginx -t` | 是 | 設定檔本身一般使用者讀得到，但測試時還要開啟 PID 檔、日誌檔與 SSL 私鑰，這些只有 root 能存取 |
 | `nginx -v` | 否 | 只是查看版本，不需要特殊權限 |
 | `curl http://localhost` | 否 | 只是發送 HTTP 請求 |
 
@@ -541,8 +571,8 @@ sudo systemctl disable nginx
 | 發行版 | 套件管理指令 | 安裝 Nginx 範例 |
 |--------|------------|-----------------|
 | Ubuntu / Debian | `apt` | `sudo apt install nginx` |
-| CentOS 7 / RHEL 7 | `yum` | `sudo yum install nginx` |
-| CentOS 8+ / Fedora | `dnf` | `sudo dnf install nginx` |
+| RHEL / Rocky / Alma 8+、Fedora | `dnf` | `sudo dnf install nginx` |
+| CentOS 7 / RHEL 7（已停止支援） | `yum` | 需先裝 EPEL：`sudo yum install epel-release` |
 | macOS | `brew`（Homebrew） | `brew install nginx` |
 
 常用的 `apt` 指令：

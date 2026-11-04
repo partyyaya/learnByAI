@@ -26,6 +26,13 @@
 2. 用 React DevTools Profiler 觀察重渲染熱點
 3. 再決定是否需要 `memo / useMemo / useCallback`
 
+React DevTools 是瀏覽器擴充套件（Chrome、Firefox、Edge 都有，名稱是 React Developer Tools）。
+裝好後瀏覽器開發者工具會多出 Components 與 Profiler 兩個分頁：在 Profiler 按錄製、操作畫面、停止，就能看到每次 commit 裡哪些元件渲染了、各花多久。
+設定裡勾選「Highlight updates when components render」，畫面上重渲染的元件會閃框，最適合快速找出「不該重渲染卻重渲染」的地方。
+
+> **開發模式的數字只能當相對參考。** `npm run dev` 跑的是未壓縮、帶大量檢查的開發版 React，而且 `StrictMode` 會刻意把元件多渲染一次，
+> 用 `console.log` 數渲染次數會看到兩倍。開發模式拿來找「誰重渲染」；要判斷「到底慢不慢」，用 `npm run build && npm run preview` 跑正式版再體感一次。
+
 ---
 
 ## 2. 三個常見優化工具
@@ -34,6 +41,9 @@
 
 避免 props 沒變時重渲染子元件。
 
+這裡的「沒變」是把每個 prop 逐一用 `Object.is` 比較（淺比較）。數字、字串只要值相同就算沒變；
+但物件、陣列、函式只要是這次 render 新建的，就算內容一模一樣也算「變了」，`memo` 會因此失效——下面兩個工具就是用來穩住這些引用的。
+
 ### `useMemo`
 
 快取昂貴計算結果（例如大量清單篩選）。
@@ -41,6 +51,9 @@
 ### `useCallback`
 
 快取函式引用，避免每次 render 產生新函式導致 memo 失效。
+
+> **補充：React Compiler。** React 官方在 2025 年 10 月發布了 React Compiler 1.0，它在建置階段分析元件，自動加上等同 `memo`／`useMemo`／`useCallback` 的快取。
+> 本課仍以手動寫法為主；即使日後導入 Compiler，理解這三個工具各在解決什麼，才看得懂 Profiler 的結果與 Compiler 沒能處理的情況。
 
 ---
 
@@ -227,7 +240,9 @@ function App() {
 ```
 
 - `lazy()` 讓該頁面變成獨立 chunk，首次進入該路由才下載。
-- `Suspense fallback` 是下載期間顯示的過渡畫面。
+- `lazy()` 要求被載入的模組用 `export default` 匯出元件。頁面若是具名匯出（`export function CoursesPage`），會出現 `Element type is invalid` 之類的錯誤；可改成 `lazy(() => import("./pages/CoursesPage").then((m) => ({ default: m.CoursesPage })))`。
+- `lazy()` 要寫在元件外面（模組頂層）。寫在元件函式裡，每次 render 都會產生新的元件型別，頁面會不斷重新掛載。
+- `Suspense fallback` 是下載期間顯示的過渡畫面。有後台 Layout 時，可以把 `Suspense` 放在 Layout 裡的 `<Outlet />` 外層，換頁時側欄與頁首留著，只有內容區顯示 fallback（admin-demo 的 `src/layouts/AdminLayout.jsx` 就是這樣放，`lazy()` 則寫在 `src/App.jsx`）。
 - 建議以「路由頁面」為切分單位，不要細到每個小元件都 lazy。
 
 執行 `npm run build` 可以在輸出看到多個 chunk 檔案，驗證拆包是否生效。
@@ -273,8 +288,13 @@ class ErrorBoundary extends Component {
 </ErrorBoundary>
 ```
 
-注意：Error Boundary 只攔「渲染期間」的錯誤；  
-事件處理器與 API 錯誤仍要用 `try/catch` 或 Query 的 `isError` 處理。
+注意：Error Boundary 只攔子元件在渲染、生命週期與 Effect 裡拋出的錯誤；  
+事件處理器、`setTimeout`、Promise 裡的錯誤不會被攔，API 錯誤仍要用 `try/catch` 或 Query 的 `isError` 處理。
+
+使用時還有兩件事容易誤會：
+
+- 開發模式下，錯誤即使被 Error Boundary 攔住，主控台仍會印出紅色錯誤訊息，這是 React 刻意保留的提示；判斷有沒有攔到，看畫面是否顯示備用 UI。
+- `hasError` 一旦變成 `true` 就不會自己恢復。若把它包在路由內容區外層，可以給它 `key={location.pathname}`（`location` 來自 `useLocation()`），換頁時 Error Boundary 重新掛載，錯誤畫面才會消失。admin-demo 的 `AdminLayout.jsx` 就是這樣包的，效能實驗室頁尾還有一個按鈕能故意觸發渲染錯誤，方便你親眼看它運作。
 
 ---
 
@@ -477,7 +497,7 @@ li {
 
 ### 範例解釋
 
-1. `expensiveFilter` 模擬高成本計算，`useMemo` 只在 `keyword/level` 改變時重算。
+1. `expensiveFilter` 模擬高成本計算，`useMemo` 只在 `keyword/level` 改變時重算。20 萬次的迴圈在一般電腦上不到 1 毫秒，做練習時體感不到差異是正常的；想明顯比較，可以暫時把 `200000` 調到 `100_000_000`，或在 Chrome DevTools 的 Performance 分頁把 CPU 降速，比完再調回來。
 2. `LessonList` 用 `React.memo` 包起來，避免父層無關狀態（如 theme）變更時重渲染。
 3. `handleBookmark` 用 `useCallback` 固定引用，避免函式變動造成 memo 失效。
 4. 篩選結果只渲染前 120 筆，示範「計算優化 + DOM 數量控制」雙管齊下。

@@ -116,8 +116,12 @@ docker compose version
 ### Ubuntu / Debian
 
 ```bash
-# 移除舊版本（避免與官方套件衝突；首次安裝可能顯示「找不到套件」屬正常）
-sudo apt remove docker docker-engine docker.io containerd runc
+# 移除舊版本（避免與官方套件衝突）
+# 逐一移除：若把套件名稱寫在同一行，只要其中一個找不到，apt 就整行放棄，其他已安裝的也不會被移除
+# 首次安裝會看到幾行「Unable to locate package」或「not installed」，屬正常
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do
+  sudo apt remove -y $pkg
+done
 
 # 安裝必要套件
 sudo apt update
@@ -159,27 +163,28 @@ docker --version
 docker compose version
 ```
 
-### CentOS / RHEL
+> ⚠️ 加入 `docker` 群組的使用者，等同擁有這台主機的 root 權限：能執行 docker 指令，就能啟動一個掛載主機根目錄的容器（`docker run -v /:/host ...`）去改任何檔案。只把信任的帳號加進這個群組；共用伺服器上若不能接受，可改用 Docker 的 rootless 模式。
+
+### CentOS Stream / RHEL / Rocky Linux（8、9 版）
 
 ```bash
-# 移除舊版本
-sudo yum remove docker docker-client docker-client-latest docker-common \
-  docker-latest docker-latest-logrotate docker-logrotate docker-engine
+# 移除舊版本（沒裝過時會顯示「No match」，屬正常）
+sudo dnf remove -y docker docker-client docker-client-latest docker-common \
+  docker-latest docker-latest-logrotate docker-logrotate docker-engine podman runc
 
-# 安裝必要套件
-sudo yum install -y yum-utils
+# 安裝 dnf 的 config-manager 外掛（用來新增套件庫）
+sudo dnf install -y dnf-plugins-core
 
 # 新增 Docker 套件庫
-sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
 
 # 安裝 Docker Engine
-sudo yum install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin -y
+sudo dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 
-# 啟動與設定開機自啟
-sudo systemctl start docker
-sudo systemctl enable docker
+# 啟動並設定開機自啟（--now：enable 的同時立刻 start）
+sudo systemctl enable --now docker
 
-# 讓當前使用者不需要 sudo
+# 讓當前使用者不需要 sudo（重新登入後生效；安全性注意事項同上）
 sudo usermod -aG docker $USER
 ```
 
@@ -194,10 +199,13 @@ wsl --install
 
 # 3. 在 Docker Desktop 設定中啟用 WSL2 整合
 # Settings → General → Use the WSL 2 based engine ✓
+# Settings → Resources → WSL Integration → 勾選你使用的發行版（例如 Ubuntu）
 
 # 4. 在 WSL2 終端中驗證
 docker --version
 ```
+
+> 建議把練習專案放在 WSL2 的檔案系統裡（例如 `~/docker-practice`），不要放在 `/mnt/c/...`。放在 Windows 磁碟上時，掛載進容器的檔案讀寫很慢，存檔後容器內也常收不到檔案變動通知（第六章的 hot reload 會失效）。
 
 ---
 
@@ -206,9 +214,9 @@ docker --version
 ```bash
 # 查看 Docker 版本資訊
 docker --version
-# Docker version 27.x.x, build xxxxxxx
+# Docker version 29.x.x, build xxxxxxx
 
-# 查看詳細版本資訊
+# 查看詳細版本資訊（輸出分成 Client 與 Server 兩段）
 docker version
 
 # 查看 Docker 系統資訊
@@ -230,6 +238,39 @@ To generate this message, Docker took the following steps:
  3. The Docker daemon created a new container from that image...
  ...
 ```
+
+### `docker` 指令其實是在跟誰說話？
+
+`docker version` 分成 Client 與 Server 兩段，因為 Docker 是「用戶端 + 常駐服務」的架構：
+
+```
+docker CLI（Client）
+   │  透過 /var/run/docker.sock 呼叫 REST API
+   ▼
+dockerd（Docker daemon，Server）── 管理映像、網路、volume、建構
+   │
+   ▼
+containerd ── 管理容器生命週期
+   │
+   ▼
+runc ── 實際呼叫 Linux 核心的 namespace / cgroup 把行程隔離起來
+```
+
+- 你打的每個 `docker ...` 都只是送 API 請求給 dockerd，真正建立容器的是 daemon。所以 daemon 沒啟動時，所有指令都會出現 `Cannot connect to the Docker daemon`。
+- 容器本質上是「被 namespace 隔離、被 cgroup 限制資源的 Linux 行程」，所以需要 Linux 核心。
+- macOS / Windows 沒有 Linux 核心，Docker Desktop 其實在背景跑了一台輕量 Linux VM，dockerd 與所有容器都在這台 VM 裡。之後遇到「掛載目錄比較慢」「`--network host` 用不了」「Docker 吃掉固定的記憶體」，原因都是這台 VM。
+
+### 建立練習目錄
+
+之後各章「跟著做」的檔案都放在同一個練習目錄底下，每個練習一個子目錄：
+
+```bash
+# 建立練習根目錄並進入
+mkdir -p ~/docker-practice
+cd ~/docker-practice
+```
+
+> macOS 的 Docker Desktop 預設只允許掛載 `/Users`、`/Volumes`、`/private`、`/tmp`、`/var/folders` 底下的路徑（Settings → Resources → File sharing）。練習目錄放在家目錄底下就不會遇到「mounts denied」的錯誤。
 
 ---
 
@@ -300,11 +341,17 @@ processors=2
 swap=2GB
 ```
 
-### 情境三：docker pull 速度極慢
+### 情境三：docker pull 速度極慢或被拒絕
 
-**問題**：從 Docker Hub 拉取映像檔速度非常慢
+**問題**：從 Docker Hub 拉取映像檔速度非常慢，或出現 `toomanyrequests: You have reached your pull rate limit`
 
 ```bash
+# 原因一：Docker Hub 對拉取次數有限制，未登入（匿名）的額度最低，且以對外 IP 計算
+#        公司或學校共用同一個對外 IP 時，很容易一起被擋
+# 解決方案：登入後再拉取（免費帳號的額度比匿名高）
+docker login
+
+# 原因二：網路到 Docker Hub 慢
 # 解決方案：設定鏡像加速器
 
 # Linux：編輯 daemon.json
@@ -340,11 +387,17 @@ docker system df
 # Local Volumes  10       3         2.3GB     1.8GB (78%)
 # Build Cache    45       0         3.5GB     3.5GB (100%)
 
-# 清理所有未使用的資源（映像、容器、網路、快取）
+# 清理未使用的資源：已停止的容器、沒被容器使用的網路與映像、建構快取
+# -a：連「有名字但沒有容器在用」的映像也刪（沒有 -a 只刪 <none> 的懸空映像）
+# 預設不會刪 volume，資料庫資料不會因此消失
 docker system prune -a
 
-# 僅清理未使用的 volume
+# 清理沒有被任何容器掛載的「匿名」volume
 docker volume prune
+
+# 連「具名」volume 也清掉（例如 pgdata）
+# ⚠️ 已停止、但之後還要用的專案（例如 compose down 後的資料庫）的資料也會被刪，執行前先 docker volume ls 看清楚
+docker volume prune -a
 
 # 僅清理建構快取
 docker builder prune

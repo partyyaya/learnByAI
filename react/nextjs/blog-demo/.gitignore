@@ -12,7 +12,8 @@
 /prisma/dev.db
 /prisma/dev.db-journal
 
-# 額外環境變數（密鑰放這裡，別提交）
+# 本機覆寫用的環境變數（別提交）。注意 Prisma CLI 不讀 .env.local：
+# 換成有密碼的雲端資料庫時，DATABASE_URL 要放 .env，並把 .env 也加進這裡（第 14 章）
 .env.local
 
 # misc

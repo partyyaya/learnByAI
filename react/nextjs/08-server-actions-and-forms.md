@@ -30,7 +30,11 @@ export async function createTodo(formData) {
 }
 ```
 
-> 和 Route Handler 的差別：Server Action 不需要你設計 URL、方法、回傳格式。它就是「一個可以從前端安全呼叫的伺服器函式」，最適合表單與資料異動。
+檔案最上面寫了 `"use server"`，這個檔案 export 的東西就全都會被當成 Server Action，所以**只能 export async 函式**；想共用的常數、一般函式請放在別的檔案（像最後範例把資料操作放在 `store.js`）。
+
+> 和 Route Handler 的差別：Server Action 不需要你設計 URL、方法、回傳格式。它就是「一個可以從前端直接呼叫的伺服器函式」，最適合表單與資料異動。
+
+> **安全提醒**：「只在伺服器執行」不等於「只有你的頁面能呼叫」。Next.js 會把每個 Server Action 變成一個公開的 POST 端點（用一組 ID 辨識），任何人都能自己組請求呼叫它、塞進任意的 FormData。所以每個 action 都要在自己裡面重新驗證輸入（第 4 節）與身分（第 10 章），不能因為按鈕只出現在後台頁面就當作安全。
 
 ---
 
@@ -66,10 +70,12 @@ import { revalidatePath } from "next/cache";
 
 export async function createTodo(formData) {
   const text = formData.get("text");
-  await db.todo.create({ text }); // 假設有資料庫（第 9 章）
-  revalidatePath("/todos");        // /todos 頁重新抓資料
+  await prisma.todo.create({ data: { text } }); // 假設有資料庫（第 9 章的 Prisma）
+  revalidatePath("/todos");                      // /todos 頁重新抓資料
 }
 ```
+
+在 Server Action 裡呼叫時，Next.js 會在這次 action 的回應裡順便帶回重新渲染後的畫面，所以使用者不必重新整理就看得到新資料。
 
 - `revalidatePath("/todos")`：讓某條路徑重新驗證。
 - `revalidateTag("todos")`：讓所有標了該 tag 的 fetch 重新驗證（第 12 章）。
@@ -111,6 +117,10 @@ export async function createTodo(prevState, formData) {
   return { success: true };
 }
 ```
+
+注意兩種簽名不同：直接給 `<form action>` 的 action 只收 `(formData)`；交給 `useActionState` 的 action 是 `(prevState, formData)`，多了第一個參數。寫錯的話參數會錯位：例如把只收 `(formData)` 的 action 交給 `useActionState`，`formData` 其實拿到的是 prevState，就會出現 `formData.get is not a function`。
+
+`useActionState` 還有第三個回傳值 `isPending`（`const [state, formAction, isPending] = useActionState(...)`），可以直接拿來讓按鈕顯示「送出中」；blog-demo 的登入頁就是這樣寫。
 
 ---
 
@@ -169,6 +179,8 @@ function TodoList({ todos, addAction }) {
 }
 ```
 
+`useOptimistic(todos, 更新函式)` 回傳的是「暫時的」清單：action 還在跑時，畫面顯示多了那一筆的版本；action 結束、父元件傳進新的 `todos`（伺服器 `revalidatePath` 後的真資料）之後，就自動換回真正的清單，暫時那筆不必自己刪。`addOptimistic` 要在 action（像這裡的 `<form action={handle}>`）裡呼叫才有效。
+
 ---
 
 ## 7. 本章小練習
@@ -225,7 +237,7 @@ export async function createTodoAction(prevState, formData) {
 
 // 刪除：直接綁在表單 action，用 formData 夾帶 id
 export async function deleteTodoAction(formData) {
-  const id = Number(formData.get("id"));
+  const id = Number(formData.get("id")); // FormData 的值都是字串，要轉成數字才比對得到
   removeTodo(id);
   revalidatePath("/todos");
 }

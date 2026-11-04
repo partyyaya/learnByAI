@@ -3,6 +3,8 @@
 > 這不是一門「Vite 使用教學」,而是「現代前端建構工具原理 + Vite 內核」。
 > 我們會從「為什麼需要建構工具」開始,一路拆到 Vite 的 dev server、依賴預打包、HMR 的實作機制,
 > 最後親手寫一個 mini-vite 把所有原理串起來。重點是建立可遷移的心智模型,而不是背 API。
+>
+> 版本基準:**Vite 8**(2026 年 3 月發布,底層改用 Rolldown + Oxc)。Vite 7 以前的 esbuild + Rollup 架構,在第 00、10 章當作演進史說明。
 
 ---
 
@@ -18,7 +20,7 @@
 | 05 | [05-hmr-internals.md](./05-hmr-internals.md) | HMR 熱更新原理 |
 | 06 | [06-plugin-system-rollup-hooks.md](./06-plugin-system-rollup-hooks.md) | Plugin 系統(上):Rollup 相容 hook |
 | 07 | [07-plugin-system-vite-specific.md](./07-plugin-system-vite-specific.md) | Plugin 系統(下):Vite 專屬能力 |
-| 08 | [08-production-build-rollup.md](./08-production-build-rollup.md) | 生產建構與 Rollup |
+| 08 | [08-production-build-rollup.md](./08-production-build-rollup.md) | 生產建構(Rolldown / Rollup) |
 | 09 | [09-advanced-ssr-library-mpa.md](./09-advanced-ssr-library-mpa.md) | 進階場景:SSR / Library Mode / 多頁 / Monorepo |
 | 10 | [10-engine-internals-rolldown.md](./10-engine-internals-rolldown.md) | 引擎內幕與 Rolldown 遷移 |
 | 11 | [11-capstone-mini-vite.md](./11-capstone-mini-vite.md) | Capstone:手寫一個 mini-vite |

@@ -40,6 +40,9 @@ git config --global init.defaultBranch main
 git config --global core.autocrlf true
 # macOS / Linux 建議
 git config --global core.autocrlf input
+
+# git pull 遇到本地與遠端分岔時，用 merge 整合（其他選項見第 5 節）
+git config --global pull.rebase false
 ```
 
 ---
@@ -58,6 +61,9 @@ git clone https://github.com/user/repo.git my-project
 
 # 只複製最新一次 commit（節省空間與時間）
 git clone --depth 1 https://github.com/user/repo.git
+
+# 之後需要完整歷史時再補抓
+git fetch --unshallow
 ```
 
 ---
@@ -80,11 +86,16 @@ git status -s
 # 加入單一檔案
 git add index.html
 
-# 加入所有變更
+# 加入目前目錄（含子目錄）的所有變更
 git add .
 
-# 加入特定類型檔案
-git add *.js
+# 加入整個倉庫的所有變更（含刪除），不受目前所在目錄影響
+git add -A
+
+# 加入特定類型檔案（含子目錄）
+git add '*.js'
+# 要加引號：不加的話 shell 會先展開 *.js，只抓到目前目錄的檔案；
+# zsh 找不到符合的檔案時還會直接報錯 no matches found
 
 # 互動式加入（可選擇部分修改）
 git add -p
@@ -106,6 +117,41 @@ git commit --amend -m "fix: 修正首頁排版與字體問題"
 git add forgot-file.js
 git commit --amend --no-edit
 ```
+
+`--amend` 不是修改原本的 commit，而是產生一個新的 commit 取代它（hash 會改變）。還沒 push 的 commit 可以放心 amend；已經 push 的 commit 被 amend 後，一般的 `git push` 會被拒絕，必須強制推送，所以多人共用的分支不要這樣做（原因見第 6 節的黃金法則）。
+
+### 忽略檔案：.gitignore
+
+在專案根目錄建立 `.gitignore`，列出不要納入版本控制的檔案：
+
+```gitignore
+# 忽略資料夾
+node_modules/
+dist/
+
+# 忽略特定副檔名
+*.log
+
+# 忽略環境變數檔，但保留範本
+.env
+.env.*
+!.env.example
+
+# 開頭加 / 只忽略根目錄的 config.json，子目錄的不受影響
+/config.json
+```
+
+```bash
+# 查詢某個檔案被哪一條規則忽略
+git check-ignore -v .env.local
+# 輸出：.gitignore:10:.env.*	.env.local（第 10 行的 .env.* 規則忽略了它）
+
+# 設定全域忽略清單（例如 macOS 的 .DS_Store），所有倉庫都適用
+git config --global core.excludesFile ~/.gitignore_global
+echo ".DS_Store" >> ~/.gitignore_global
+```
+
+`.gitignore` 只對還沒被追蹤的檔案有效。已經 commit 過的檔案，加進 `.gitignore` 也不會停止追蹤，處理方式見第 13 節情境 5。
 
 ---
 
@@ -161,7 +207,7 @@ git branch -D feature/login
 # 刪除遠端分支
 git push origin --delete feature/login
 
-# 清理本地已被遠端刪除的分支追蹤紀錄
+# 清理已在遠端刪除的 origin/* 追蹤分支（本地分支不會被刪除，要自己用 git branch -d）
 git fetch --prune
 ```
 
@@ -229,12 +275,51 @@ git fetch origin
 git merge origin/main    # 手動決定何時合併
 ```
 
+### 本地與遠端分岔時的 git pull
+
+你在本地 commit 了、別人也 push 了新的 commit，兩邊的歷史就分岔了。這時 `git pull` 要知道用哪種方式整合，如果沒有設定過，會直接停下來：
+
+```
+hint: You have divergent branches and need to specify how to reconcile them.
+...
+fatal: Need to specify how to reconcile divergent branches.
+```
+
+選一種設成預設值即可：
+
+```bash
+# 用 merge 整合：產生一個 merge commit（第 1 節的設定）
+git config --global pull.rebase false
+
+# 用 rebase 整合：把本地 commit 接到遠端最新 commit 之後，歷史保持線性
+git config --global pull.rebase true
+
+# 只允許 fast-forward：分岔時一律停下來，由你自己決定 merge 或 rebase
+git config --global pull.ff only
+```
+
+單次也可以直接指定：`git pull --rebase`、`git pull --no-rebase`、`git pull --ff-only`。
+
+### 連線驗證：HTTPS 與 SSH
+
+GitHub 從 2021 年 8 月起不接受用帳號密碼推送。用 HTTPS 網址時，`git push` 要求輸入密碼的地方要貼 Personal Access Token（建議用 Fine-grained token，只授權需要的 repo），或改用下面任一種方式：
+
+- 安裝 [GitHub CLI](https://cli.github.com/) 後執行 `gh auth login`，它會幫你設定好 Git 的憑證。
+- Git for Windows 內建 Git Credential Manager，第一次 push 時會開瀏覽器讓你登入。
+- 改用 SSH：產生金鑰並加到 GitHub（步驟見 [CI/CD 教學的 SSH Key 設定](./ci-cd.md#步驟三設定-ssh-key如果尚未設定)），remote 網址改成 `git@github.com:` 開頭。
+
+```bash
+# 已經用 HTTPS clone 的倉庫，改成 SSH
+git remote set-url origin git@github.com:user/repo.git
+```
+
 ### 情境：本地倉庫首次推上 GitHub
 
 ```bash
 # 1. 在 GitHub 建立空的 repo（不要勾選 README）
 # 2. 在本地執行：
 git init
+# 先建立 .gitignore（見第 3 節），避免把 node_modules、.env 一起提交
 git add .
 git commit -m "init: 初始化專案"
 git remote add origin https://github.com/user/my-project.git
@@ -256,18 +341,20 @@ git checkout main
 git merge feature/login
 ```
 
-合併後的歷史看起來像這樣：
+合併後的歷史看起來像這樣（feature/login 從 F 分出去之後，main 又多了 H）：
 
 ```
           A---B---C  feature/login
          /         \
-D---E---F-----------G  main（G 為 merge commit）
+D---E---F---H-------M  main（M 為 merge commit）
 ```
+
+如果 feature/login 分出去之後 main 沒有任何新 commit，Git 會直接 fast-forward：把 main 指標往前移到 C，不產生 merge commit。想在這種情況也保留分支結構，用 `git merge --no-ff feature/login`。
 
 **適用時機：**
 - 多人協作的公共分支
 - 需要保留完整開發歷史
-- Pull Request / Merge Request 的預設方式
+- GitHub PR 的「Create a merge commit」按鈕（三種合併按鈕的差異見 [GitHub 協作指南 2.6](./github-collaboration.md#26-github-的三種合併方式)）
 
 ### Git Rebase
 
@@ -286,24 +373,26 @@ git merge feature/login
 Rebase 後的歷史看起來像這樣：
 
 ```
-原本：
+原本（feature/login 從 F 分出去之後，main 又多了 G、H）：
           A---B---C  feature/login
          /
-D---E---F  main
+D---E---F---G---H  main
 
 rebase 後：
-                    A'--B'--C'  feature/login
-                   /
-D---E---F  main
+                  A'--B'--C'  feature/login
+                 /
+D---E---F---G---H  main
 
-merge 後：
-D---E---F---A'--B'--C'  main（線性歷史）
+merge 後（fast-forward）：
+D---E---F---G---H---A'--B'--C'  main（線性歷史）
 ```
+
+A'、B'、C' 的修改內容和 A、B、C 相同，但接在不同的 parent 上，所以是新的 commit，hash 也不同。
 
 **適用時機：**
 - 個人開發的 feature 分支
 - 想保持 commit 歷史乾淨、線性
-- 尚未推送到遠端的本地分支
+- 尚未推送，或只有你自己在用的分支
 
 ### Merge vs Rebase 比較表
 
@@ -318,9 +407,19 @@ D---E---F---A'--B'--C'  main（線性歷史）
 
 ### 黃金法則
 
-> **永遠不要對已經推送到公共遠端的分支進行 rebase！**
+> **永遠不要 rebase 別人也在使用的分支（例如 main、develop）！**
 >
 > Rebase 會改寫 commit hash，如果別人已經基於這些 commit 開發，會造成歷史混亂。
+
+只有你自己在用的分支（例如送 PR 的 feature 分支）可以 rebase。但如果它已經推上遠端，rebase 後本地和遠端的 commit 不同，一般的 `git push` 會被拒絕，要改用：
+
+```bash
+git fetch origin
+git rebase origin/main
+git push --force-with-lease
+```
+
+`--force-with-lease` 只在遠端分支沒有你不知道的新 commit 時才覆蓋，比 `--force` 安全。PR 頁面會自動更新；如果 reviewer 正在看，先說一聲。
 
 ### Interactive Rebase（整理 commit）
 
@@ -329,7 +428,7 @@ D---E---F---A'--B'--C'  main（線性歷史）
 git rebase -i HEAD~3
 ```
 
-在編輯器中可以：
+編輯器裡的清單是**由舊到新**排列（最上面是最舊的 commit），和 `git log` 的順序相反。每一行前面的指令可以改成：
 - `pick`：保留 commit
 - `reword`：修改 commit 訊息
 - `squash`：合併到前一個 commit（保留訊息）
@@ -344,9 +443,9 @@ git rebase -i HEAD~4
 
 # 編輯器中：
 pick a1b2c3d feat: 新增登入頁面
-squash d4e5f6g 修正 typo
-squash h7i8j9k 調整樣式
-squash l0m1n2o 補上驗證邏輯
+squash d4e5f6a 修正 typo
+squash b7c8d9e 調整樣式
+squash f0a1b2c 補上驗證邏輯
 
 # 儲存後會讓你編輯合併後的 commit 訊息
 ```
@@ -364,17 +463,47 @@ git merge feature/login
 
 # 查看衝突檔案
 git status
+```
 
-# 手動編輯衝突檔案，衝突標記如下：
+打開衝突檔案，會看到這樣的標記：
+
+```
 <<<<<<< HEAD
 console.log("main 分支的程式碼");
 =======
 console.log("feature 分支的程式碼");
 >>>>>>> feature/login
+```
 
-# 解決衝突後（刪除標記，保留正確程式碼）
+上半段（`HEAD`）是目前所在分支 main 的內容，下半段是要合併進來的 feature/login。刪除標記、留下正確的程式碼後：
+
+```bash
 git add src/app.js
 git commit -m "merge: 解決 app.js 衝突，合併 feature/login"
+```
+
+### Rebase 時的衝突
+
+```bash
+git rebase main
+# 輸出：CONFLICT (content): Merge conflict in src/app.js
+
+# 解決衝突後加入暫存，然後繼續 rebase（不要執行 git commit）
+git add src/app.js
+git rebase --continue
+
+# 如果這個 commit 的修改已經不需要了，可以跳過它
+git rebase --skip
+```
+
+Rebase 是把你的 commit 一個一個重新套用到 main 上，所以衝突標記的方向和 merge 相反：上半段 `HEAD` 是 main 的內容，下半段才是你正在套用的 commit。
+
+### 整個檔案採用其中一邊
+
+```bash
+git checkout --ours src/app.js     # merge 時是目前分支；rebase 時是 main
+git checkout --theirs src/app.js   # merge 時是被合併的分支；rebase 時是你的 commit
+git add src/app.js
 ```
 
 ### 取消合併
@@ -407,7 +536,7 @@ git mergetool
 git stash
 
 # 暫存並附帶說明
-git stash save "開發到一半的登入功能"
+git stash push -m "開發到一半的登入功能"
 
 # 也暫存未追蹤的新檔案
 git stash -u
@@ -426,6 +555,8 @@ git stash apply
 
 # 恢復特定的 stash
 git stash apply stash@{1}
+# 也可以只寫編號：git stash apply 1
+# PowerShell 會把 @{ } 當成語法，要寫成 git stash apply 'stash@{1}' 或只寫編號
 
 # 刪除特定 stash
 git stash drop stash@{0}
@@ -463,8 +594,30 @@ git log --grep="login"
 # 查看某段時間內的 commit
 git log --after="2025-01-01" --before="2025-02-01"
 
-# 查看兩個分支的差異 commit
+# 查看 feature/login 有、main 沒有的 commit
 git log main..feature/login
+
+# 查看每個 commit 改了哪些內容
+git log -p -- src/app.js
+
+# 找出新增或刪除某段字串的 commit（例如某個函式是什麼時候被刪掉的）
+git log -S "validateToken"
+```
+
+### 查看單一 commit 與逐行追蹤
+
+```bash
+# 查看某個 commit 的訊息與修改內容
+git show abc1234
+
+# 查看某個 commit 當時的檔案內容
+git show abc1234:src/app.js
+
+# 逐行查看最後是誰、在哪個 commit 修改的
+git blame src/app.js
+
+# 只看第 10～20 行
+git blame -L 10,20 src/app.js
 ```
 
 ### 查看差異（Diff）
@@ -476,8 +629,11 @@ git diff
 # 查看暫存區與上次 commit 的差異
 git diff --staged
 
-# 查看兩個分支的差異
+# 比較兩個分支目前的內容（等同 git diff main feature/login）
 git diff main..feature/login
+
+# 只看 feature/login 從分岔點之後改了什麼（review PR 時看這個）
+git diff main...feature/login
 
 # 查看特定檔案的差異
 git diff -- src/app.js
@@ -485,6 +641,8 @@ git diff -- src/app.js
 # 只看檔案名稱（哪些檔案被修改）
 git diff --name-only
 ```
+
+兩點、三點在 log 和 diff 的意思不一樣：`git log main..feature/login` 是「feature/login 多出來的 commit」，對應的內容差異是 `git diff main...feature/login`（三點）。兩點的 `git diff main..feature/login` 會連 main 後來的新修改都算進去，看起來像 feature 把那些修改刪掉了。
 
 ---
 
@@ -501,6 +659,16 @@ git restore src/app.js
 
 # 捨棄所有檔案的修改
 git restore .
+```
+
+`restore` 只處理已追蹤的檔案。新增、還沒加入過 Git 的檔案要用 `clean` 刪除：
+
+```bash
+# 先預覽會刪除哪些檔案
+git clean -n
+
+# 刪除未追蹤的檔案與資料夾（被 .gitignore 忽略的不會刪）
+git clean -fd
 ```
 
 ### 取消暫存（Unstage）
@@ -529,6 +697,8 @@ git reset --hard HEAD~1
 git reset --hard abc1234
 ```
 
+`--hard` 會把工作區還沒 commit 的修改一起丟掉，這部分連 reflog 都救不回來，執行前先用 `git status` 確認。被 reset 掉的 commit 則還找得回來（見第 13 節情境 6）。
+
 ### 安全回退：Revert
 
 ```bash
@@ -542,6 +712,17 @@ git revert HEAD
 # 反轉多個 commit（不自動 commit，最後一次提交）
 git revert --no-commit HEAD~3..HEAD
 git commit -m "revert: 回退最近三次變更"
+
+# 反轉 merge commit 要用 -m 指定以哪一邊為主
+# -m 1 代表保留合併時所在的分支（通常是 main），撤掉被合併進來的修改
+git revert -m 1 abc1234
+```
+
+merge commit 有兩個 parent，Git 不知道要退回哪一邊，沒加 `-m` 會直接報錯：
+
+```
+error: commit abc1234 is a merge but no -m option was given.
+fatal: revert failed
 ```
 
 ### Reset vs Revert
@@ -617,7 +798,7 @@ git checkout hotfix/fix-crash
 git commit -m "fix: 修正應用程式閃退問題"
 # 假設此 commit 為 abc1234
 
-# 切到 main 合併
+# 切到 main 套用
 git checkout main
 git cherry-pick abc1234
 
@@ -633,19 +814,30 @@ git cherry-pick abc1234
 ### 情境 1：不小心 commit 到錯誤的分支
 
 ```bash
-# 假設不小心在 main 上 commit 了，想移到 feature 分支
+# 假設不小心在 main 上 commit 了（還沒 push），想移到 feature 分支
 
 # 1. 記住 commit hash
 git log -1
 # 假設為 abc1234
 
-# 2. 在 main 上回退
+# 2. 確認沒有其他未 commit 的修改，再回退 main（--hard 會丟掉未 commit 的修改）
+git status
 git reset --hard HEAD~1
 
 # 3. 切到正確的分支，cherry-pick 過去
 git checkout feature/my-feature
 git cherry-pick abc1234
 ```
+
+如果要放的分支還不存在，直接在目前位置開分支更簡單，commit 會留在新分支上：
+
+```bash
+git branch feature/my-feature   # 在目前的 commit 建立分支
+git reset --hard HEAD~1         # main 退回前一個 commit
+git switch feature/my-feature
+```
+
+如果已經 push 到遠端的 main，就不要 reset，改用 `git revert` 產生反轉 commit（見第 10 節），再到正確的分支重新 commit。
 
 ### 情境 2：想把遠端分支拉到本地
 
@@ -670,6 +862,14 @@ git commit -m "feat: 完成登入功能"
 
 # 這樣 feature 分支上的所有 commit 會被壓縮成一個
 ```
+
+Squash merge 產生的是一個全新的 commit，Git 不會記錄 feature/login 已經合併。之後 `git branch -d feature/login` 會拒絕刪除：
+
+```
+error: The branch 'feature/login' is not fully merged.
+```
+
+確認內容已經在 main 上之後，改用 `git branch -D feature/login`。GitHub 的 Squash and merge、Rebase and merge 也是一樣的情況。
 
 ### 情境 4：找出是哪個 commit 引入了 bug
 
@@ -700,6 +900,15 @@ git commit -m "chore: 移除敏感設定檔的追蹤"
 git rm -r --cached node_modules/
 ```
 
+`git rm --cached` 只讓之後的 commit 不再包含這個檔案，**舊的 commit 裡還是有**，任何能存取倉庫的人都能從歷史中看到。如果含有密碼、金鑰的檔案已經推上遠端：
+
+1. 先到對應的服務撤銷這組密鑰並換一組新的。這一步最重要，因為你無法確定有沒有人已經拿到。
+2. 需要從歷史中徹底移除時，用 [git filter-repo](https://github.com/newren/git-filter-repo) 改寫歷史，然後強制推送，並請所有協作者重新 clone：
+
+```bash
+git filter-repo --path config/secrets.json --invert-paths
+```
+
 ### 情境 6：回復已刪除的分支
 
 ```bash
@@ -709,6 +918,8 @@ git reflog
 # 從 reflog 中的 commit hash 重建分支
 git checkout -b recovered-branch abc1234
 ```
+
+剛用 `git branch -D` 刪掉的話，輸出的 `Deleted branch feature/login (was abc1234).` 括號裡就是要找的 hash。reflog 只存在本機，而且會過期（不屬於任何分支的紀錄預設保留 30 天），要盡早處理。
 
 ### 情境 7：同步 Fork 的上游倉庫
 
@@ -731,14 +942,16 @@ git push origin main
 
 ```bash
 # 切換到特定 commit（進入 detached HEAD 狀態）
-git checkout abc1234
+git switch --detach abc1234     # 或 git checkout abc1234
+
+# 想從這個 commit 開新分支，要在回到 main 之前執行
+git switch -c new-branch-from-old-commit
 
 # 查看完後回到分支
-git checkout main
-
-# 如果想從這個 commit 建立新分支
-git checkout -b new-branch-from-old-commit
+git switch main
 ```
+
+不需要先切換過去，也可以直接從指定的 commit 開分支：`git switch -c new-branch-from-old-commit abc1234`。
 
 ---
 
@@ -764,9 +977,11 @@ git checkout -b new-branch-from-old-commit
 | `style` | 程式碼風格（不影響邏輯） |
 | `refactor` | 重構（非新功能、非修 Bug） |
 | `test` | 測試相關 |
-| `chore` | 建構工具、輔助工具變動 |
+| `build` | 建置系統或外部依賴（例如 vite 設定、升級 npm 套件） |
+| `chore` | 不影響程式碼與測試的雜項（例如更新 .gitignore） |
 | `perf` | 效能優化 |
 | `ci` | CI/CD 設定變更 |
+| `revert` | 回退先前的 commit |
 
 範例：
 
@@ -778,6 +993,16 @@ feat(auth): 新增 Google OAuth 登入功能
 - 建立使用者 session
 
 Closes #42
+```
+
+`Closes #42` 寫在 commit 或 PR 描述裡，合併到預設分支後 GitHub 會自動關閉 #42 這個 Issue。
+
+不相容的變更（使用者升級後要跟著改），在 type 後面加 `!`，並在 footer 說明：
+
+```
+feat(api)!: 移除 v1 登入 API
+
+BREAKING CHANGE: /api/v1/login 已移除，請改用 /api/v2/login
 ```
 
 ---

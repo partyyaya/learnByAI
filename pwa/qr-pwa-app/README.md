@@ -23,9 +23,11 @@
 - `vite-plugin-pwa` 產生 Service Worker 與快取
 - `virtual:pwa-register` 監聽更新並顯示更新彈窗
 
+設定逐項說明見課程 [第十一章：vite-plugin-pwa 與 Workbox](../11-vite-plugin-pwa-and-workbox.md)。
+
 ## 開發環境
 
-- Node.js 20+（專案附 `.nvmrc`）
+- Node.js 22.12+（專案附 `.nvmrc`）
 - npm 10+
 
 ### 使用 nvm
@@ -37,8 +39,8 @@ nvm use
 若尚未安裝對應版本，可先執行：
 
 ```bash
-nvm install 20.19.5
-nvm use 20.19.5
+nvm install 22
+nvm use 22
 ```
 
 ## 本機啟動
@@ -61,6 +63,13 @@ npm run preview
 2. 用 Chrome DevTools -> Network 切成 `Offline`
 3. 重新開啟/重新整理 App
 4. 測試是否仍可進入掃碼頁並掃描 QR Code
+
+## 用手機測試
+
+相機與 Service Worker 都需要安全環境，手機直接連 `http://192.168.x.x:4173` 不算安全環境，掃碼與離線都不會動。可擇一：
+
+- Android：USB 連接電腦，在電腦 Chrome 開 `chrome://inspect` → Port forwarding，把手機的 `localhost:4173` 轉到電腦
+- 任何手機：用 ngrok 之類的 HTTPS 通道（`vite.config.js` 已允許 ngrok 網域）
 
 ## 版本迭代重點（請看這裡）
 

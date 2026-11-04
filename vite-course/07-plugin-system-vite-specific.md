@@ -19,8 +19,9 @@
 |----------------|-----------|----------------|
 | `config` / `configResolved` | 修改、讀取最終設定 | Rollup 設定模型不同 |
 | `configureServer` | 操作 dev server(加中介層) | Rollup 沒有 dev server |
+| `configurePreviewServer` | 操作 `vite preview` 的伺服器(用法同上) | Rollup 沒有 preview |
 | `transformIndexHtml` | 處理 HTML 入口 | Rollup 入口是 JS,不管 HTML |
-| `handleHotUpdate` | 自訂 HMR 行為 | Rollup 沒有 HMR |
+| `handleHotUpdate`(Vite 6 起另有 `hotUpdate`) | 自訂 HMR 行為 | Rollup 沒有 HMR |
 
 > **心智模型**:第 06 章的 hook 管「**模組**」,第 07 章的 hook 管「**Vite 這個工具本身的環境**」(設定、伺服器、網頁、熱更新)。兩者合起來,才是完整的 Vite plugin。
 
@@ -33,6 +34,8 @@
 `config` hook 讓 plugin 有機會**修改使用者的 vite.config**。這常用於「一個 plugin 想順便幫你補上某些設定」。
 
 ```js
+import path from 'node:path'
+
 function autoAliasPlugin() {
   return {
     name: 'auto-alias',
@@ -41,11 +44,13 @@ function autoAliasPlugin() {
       // env:{ command: 'serve' | 'build', mode: 'development' | ... }
       //
       // 回傳一個「部分設定物件」,Vite 會把它「深層合併」進最終設定。
-      // 這裡示範:自動幫使用者加一個 @ 指向 /src 的別名。
+      // 這裡示範:自動幫使用者加一個 @ 指向專案 src 目錄的別名
+      // (別名的值要是檔案系統的絕對路徑,第 01 章)。
+      const root = path.resolve(userConfig.root ?? process.cwd())
       return {
         resolve: {
           alias: {
-            '@': '/src',
+            '@': path.join(root, 'src'),
           },
         },
       }
@@ -119,7 +124,7 @@ function mockApiPlugin() {
 **幾個關鍵理解**:
 
 - **中介層是什麼?** 它是一個函式 `(req, res, next) => {}`,夾在「請求進來」和「Vite 處理」之間。你可以決定:① 自己回應(`res.end`),或 ② 放行交給下一個(`next()`)。
-- **`return () => {}` 的進階用法**:`configureServer` 可以回傳一個函式,那個函式會在「Vite 自己的中介層都裝好之後」才執行。差別在於你的中介層要排在 Vite 前面還是後面:
+- **`return () => {}` 的進階用法**:`configureServer` 可以回傳一個函式,那個函式會在「Vite 大部分內建中介層裝好之後」才執行。差別在於你的中介層要排在 Vite 前面還是後面:
 
 ```js
 configureServer(server) {
@@ -127,15 +132,28 @@ configureServer(server) {
   server.middlewares.use(myMiddlewareA)
 
   return () => {
-    // 寫在這裡(回傳的函式內):裝在「Vite 內建中介層之後」
+    // 寫在這裡(回傳的函式內):裝在模組轉換、靜態檔、SPA fallback「之後」,
+    // 但在「送出 index.html」之前(下面細講)
     server.middlewares.use(myMiddlewareB)
   }
 }
 ```
 
-> **什麼時候用前 / 後?** 如果你的中介層要「攔截掉某些請求、不讓 Vite 處理」(像 mock API),放前面(直接寫);如果你要「處理 Vite 沒接住的請求」(像自訂 fallback),放後面(回傳函式內)。
+> **什麼時候用前 / 後?** 如果你的中介層要「攔截掉某些請求、不讓 Vite 處理」(像 mock API),放前面(直接寫);如果你要「只處理 Vite 的模組與靜態檔都沒接住的請求」(例如某些頁面網址改回自訂 HTML),放後面(回傳函式內)。
 
-中介層是一條排隊的水管,**誰先掛上去誰先看到請求**。而 Vite 自己也有一堆內建中介層(處理模組轉換、serve 檔案、SPA fallback 等)。你排在 Vite 前面還後面,結果差很多。看兩個對照的例子:
+中介層是一條排隊的水管,**誰先掛上去誰先看到請求**。而 Vite 自己也有一堆內建中介層。以預設的 SPA 專案為例,完整的排隊順序是:
+
+```
+請求進來
+  → ① 你直接寫的中介層(前)
+  → ② Vite:模組轉換(/src/main.ts、.vue…)、靜態檔(public/)
+  → ③ Vite:SPA fallback —— 「看起來像頁面」的網址,一律把 req.url 改寫成 /index.html
+  → ④ 你在回傳函式裡寫的中介層(後)
+  → ⑤ Vite:送出(轉換過的)index.html
+  → ⑥ Vite:都沒人處理 → 404
+```
+
+注意 ④ 排在 ⑤ **前面**:放在後面的中介層,會看到**所有頁面請求,包括首頁本身**。你排在 Vite 前面還後面,結果差很多。看兩個對照的例子:
 
 **放前面 → 攔截**:我先看到,處理掉就不給 Vite。
 
@@ -150,32 +168,38 @@ configureServer(server) {
 }
 ```
 
-為什麼放前面?因為 `/api/user` 這種路徑若讓 Vite 先看到,它會當成「找不到的檔案」。你要在 Vite 出手前就攔下來自己回假資料——這就是 **mock API**:搶在 Vite 前面把請求吃掉。
+為什麼放前面?因為 `/api/user` 這種路徑若讓 Vite 先看到,③ 的 SPA fallback 會把它當成前端路由,回給你一份 `index.html`——你的 `fetch` 拿到的是 HTML 而不是 JSON。你要在 Vite 出手前就攔下來自己回假資料——這就是 **mock API**:搶在 Vite 前面把請求吃掉。
 
-**放後面 → 兜底**:Vite 處理不了的,才輪到我。
+**放後面 → 處理「頁面」請求**:模組和靜態檔 Vite 都處理完了,剩下的頁面請求才輪到我。
 
 ```js
 configureServer(server) {
   return () => {
-    // 寫在回傳的函式內 → 排在 Vite 內建中介層「之後」
+    // 寫在回傳的函式內 → 排在 ②③ 之後、⑤ 之前
     server.middlewares.use((req, res, next) => {
-      // 能跑到這裡,代表 Vite 前面的中介層都 next() 放行了
-      // 也就是「Vite 沒接住這個請求」
-      res.statusCode = 404
-      res.end('這個頁面不存在(自訂 fallback)')
+      // 能跑到這裡:這是一個「頁面」請求,而且 ③ 已經把 req.url 改成 /index.html,
+      // 使用者原本要的網址在 req.originalUrl
+      if (req.originalUrl.startsWith('/legacy/')) {
+        res.setHeader('Content-Type', 'text/html')
+        res.end('<h1>舊版頁面已下線</h1>')
+        return
+      }
+      next()   // ⚠️ 其他請求一定要放行,讓 ⑤ 送出 index.html
     })
   }
 }
 ```
 
-為什麼放後面?因為你想做的是「兜底」——只處理那些 **Vite 已經看過、但決定不管** 的請求。如果放前面,它會攔截到**每一個**請求(包含 `/src/main.js`、`.vue` 檔等),把 Vite 該做的事全搶走,dev server 就壞了。所以自訂 fallback 一定要放最後,等 Vite 挑剩的才輪到你。
+為什麼放後面?因為你只想處理「頁面」,不想碰 `/src/main.ts`、`.vue` 這些模組請求——那些在 ② 就被 Vite 處理掉了,根本不會流到你這裡。如果放前面,它會看到**每一個**請求,稍有不慎就把 Vite 該做的事搶走。
+
+> ⚠️ **常見陷阱:在後面無條件回 404**。直覺上會以為「跑到後面 = Vite 沒接住 = 該回 404」,於是寫 `res.statusCode = 404; res.end(...)` 卻不呼叫 `next()`。但首頁 `/` 在 ③ 也被改寫成 `/index.html`、同樣流到 ④,結果**連首頁都變成 404,整個 app 打不開**。後面的中介層處理不了的請求,一定要 `next()`。
 
 | 目的 | 位置 | 心態 |
 |------|------|------|
 | 攔截、搶請求(mock API) | 前(直接寫) | 「這個我要,Vite 別碰」 |
-| 兜底、撿漏(自訂 fallback) | 後(回傳函式內) | 「Vite 挑剩的才給我」 |
+| 改寫頁面回應(自訂 HTML) | 後(回傳函式內) | 「模組交給 Vite,頁面我先看一眼,不是我的就 next()」 |
 
-判斷法則:**「我要跟 Vite 搶」→ 放前面;「我等 Vite 挑剩的」→ 放後面。**
+判斷法則:**「我要跟 Vite 搶」→ 放前面;「我只管頁面請求」→ 放後面,而且不是自己要處理的就 `next()`。**
 
 > **實務價值**:`configureServer` 是「前端先行開發」的利器。後端 API 還沒做好?用它 mock。要在 dev 加個健康檢查端點、加個特殊的 header、記錄請求 log?都在這裡。很多知名 plugin(mock、SSR 中介層)都靠它。
 
@@ -229,7 +253,7 @@ transformIndexHtml(html) {
 
 ## 7.5 `handleHotUpdate`:自訂 HMR 行為(接回第 05 章)
 
-第 05 章講了 HMR 的完整機制。`handleHotUpdate` 就是讓 plugin **介入「檔案變動 → 算更新」這個過程**的 hook。框架 plugin(plugin-vue/react)就是用它來實現「改 .vue 檔時做框架專屬的熱更新」。
+第 05 章講了 HMR 的完整機制。`handleHotUpdate` 就是讓 plugin **介入「檔案變動 → 算更新」這個過程**的 hook。`@vitejs/plugin-vue` 就是用它來實現「改 .vue 檔時做框架專屬的熱更新」。(plugin-react 走的是另一條路:在 `transform` 裡注入 React Refresh 的程式碼,第 05 章。)
 
 ```js
 function customHmrPlugin() {
@@ -257,9 +281,31 @@ function customHmrPlugin() {
 
 - **改變更新範圍**:回傳一個「要更新的 module 陣列」,縮小或擴大第 05 章講的「受影響模組」。
 - **強制整頁重載**:用 `ctx.server.ws.send({ type: 'full-reload' })`——這就是第 05 章「找不到邊界就整頁重載」的手動版,你可以主動觸發。
-- **發送自訂 HMR 事件**:配合前端的 `import.meta.hot.on('自訂事件', cb)`,做完全客製的熱更新(例如某 plugin 想在資料變動時通知前端重抓,而不重載)。
+- **發送自訂 HMR 事件**:配合前端的 `import.meta.hot.on('自訂事件', cb)`,做完全客製的熱更新(例如某 plugin 想在資料變動時通知前端重抓,而不重載):
+
+```js
+handleHotUpdate(ctx) {
+  if (ctx.file.endsWith('.mock.json')) {
+    // type: 'custom' + event 名稱,前端用 import.meta.hot.on('mock:changed', ...) 接收
+    ctx.server.ws.send({ type: 'custom', event: 'mock:changed', data: { file: ctx.file } })
+    return []
+  }
+}
+```
 
 > **回扣第 05 章**:你現在懂了「為什麼 .vue 檔改了能做到框架感知的精準熱更新」——因為 `@vitejs/plugin-vue` 在 `handleHotUpdate` 裡判斷「這次改的是 template 還是 script?是 style 嗎?」,然後決定要走哪種更新、發什麼訊息給前端。HMR 的「框架智慧」就藏在這個 hook 裡。
+
+> **Vite 6 起的新寫法 `hotUpdate`**:Vite 6 引入 Environment API,把 dev server 拆成多個「環境」(瀏覽器端 `client`、伺服器端 `ssr`…),每個環境各有自己的 module graph。新的 `hotUpdate` hook 會**對每個環境各呼叫一次**,用 `this.environment` 知道現在是哪個環境、用 `this.environment.hot.send(...)` 發訊息,參數另外多了 `type`(`'create'` / `'update'` / `'delete'`)可以分辨新增、修改、刪除檔案。`handleHotUpdate` 仍然可用,官方預計未來淘汰它;新寫的 plugin 建議用 `hotUpdate`:
+>
+> ```js
+> hotUpdate({ file }) {
+>   if (this.environment.name !== 'client') return   // 只處理瀏覽器端
+>   if (file.endsWith('.config.json')) {
+>     this.environment.hot.send({ type: 'full-reload' })
+>     return []
+>   }
+> }
+> ```
 
 ---
 
@@ -277,24 +323,46 @@ function myPlugin() {
 }
 ```
 
-執行順序的規則是分三批:
+Vite 會把所有 plugin(你的 + 它自己內建的)排成下面這個固定順序,同一層裡再照 `plugins` 陣列的順序:
 
 ```
-① enforce: 'pre' 的 plugin（最先跑）
+① Alias(resolve.alias 的處理)
         ↓
-② 沒寫 enforce 的 plugin + Vite 核心 plugin（中間,按陣列順序）
+② 你的 plugin,enforce: 'pre'
         ↓
-③ enforce: 'post' 的 plugin（最後跑）
+③ Vite 核心 plugin(解析、CSS、TS/JSX 轉譯、JSON、靜態資源…)
+        ↓
+④ 你的 plugin,沒寫 enforce
+        ↓
+⑤ Vite 的 build plugin(只在 build 時)
+        ↓
+⑥ 你的 plugin,enforce: 'post'
+        ↓
+⑦ Vite 的 post build plugin(壓縮、manifest、輸出報告)
 ```
+
+注意 ③ 在 ④ **前面**:沒寫 `enforce` 的 plugin 拿到 `.ts` 檔時,型別**已經被剝掉了**,拿到的是 JS。
 
 **怎麼選?用「我想在轉換前還是轉換後動手」來判斷**:
 
-- **`enforce: 'pre'`**:你想**搶在別人(尤其 Vite 內建轉換、框架 plugin)之前**處理原始碼。例如:你寫一個 plugin 要在 TS 被剝型別「之前」對原始 TS 做點手腳,就用 `pre`。
-- **不寫(預設)**:大多數情況,你的 plugin 跟一般轉換一起跑就好。
+- **`enforce: 'pre'`**:你想**搶在 Vite 內建轉換之前**處理原始碼。例如:你寫一個 plugin 要在 TS 被剝型別「之前」對原始 TS 做點手腳,就用 `pre`。
+- **不寫(預設)**:大多數情況,你的 plugin 拿到「Vite 已經轉成 JS」的內容再加工就好。
 - **`enforce: 'post'`**:你想**等所有轉換都做完、拿到最終結果**再處理。例如:你要分析/檢查最終產出的 JS,就用 `post`。
 
-> **常見錯誤**:plugin 順序錯導致「我想處理的語法,在輪到我之前已經被別的 plugin 轉掉了」。例如你想處理 JSX,但 React plugin 已經先把 JSX 轉成 JS 了,你拿到的根本沒有 JSX。解法就是 `enforce: 'pre'` 搶在它前面。
+> **常見錯誤**:plugin 順序錯導致「我想處理的語法,在輪到我之前已經被別的 plugin 轉掉了」。例如你想處理 JSX,但它在 ③ 就被轉成 JS 了,你在 ④ 拿到的根本沒有 JSX。解法就是 `enforce: 'pre'` 搶在它前面。
 > **遇到「我的 transform 拿到的內容不是我預期的原始樣子」,先想 enforce 順序。**
+
+`enforce` 是整個 plugin 一起調順序。如果只想調**某一個 hook** 的順序,可以把 hook 寫成物件,加上 `order`(值也是 `'pre'` / `'post'`):
+
+```js
+{
+  name: 'my-plugin',
+  transform: {
+    order: 'pre',                 // 只有 transform 提前,其他 hook 照原本的位置
+    handler(code, id) { /* ... */ },
+  },
+}
+```
 
 ---
 
@@ -334,7 +402,7 @@ apply(config, { command }) {
 **為什麼需要 `apply`?**
 
 1. **效能 / 正確性**:把只在 dev 有用的 plugin 排除在 build 之外,避免它在 build 時做無意義甚至有害的事。
-2. **避免衝突**:第 06 章說過「dev 是 Vite plugin container 跑、build 是 Rollup 跑」。有些 plugin 的邏輯在某一邊會出問題,用 `apply` 限定它只在能正常運作的階段啟用,就能避開(又一次回扣第 00 章雙引擎)。
+2. **避免衝突**:第 06 章說過「dev 是 Vite plugin container 跑、build 是 bundler 跑」。有些 plugin 的邏輯在某一邊會出問題,用 `apply` 限定它只在能正常運作的階段啟用,就能避開(又一次回扣第 00 章的雙路徑)。
 
 > **`enforce` 和 `apply` 的關係**:`enforce` 管「**順序**」(同一階段裡誰先誰後),`apply` 管「**要不要在這個階段出現**」。兩者正交,可以同時用。
 
@@ -375,7 +443,7 @@ function fullPlugin(options) {
     handleHotUpdate(ctx) { /* 自訂熱更新 */ },
 
     // ── 收尾(Rollup 相容) ──
-    closeBundle() { /* build 全部結束 */ },
+    closeBundle() { /* build 全部結束;dev 則是在 server 關閉時 */ },
   }
 }
 ```
@@ -456,7 +524,7 @@ function mockPlugin(mocks = {}) {
       // mocks 例如:{ '/api/user': {...}, '/api/todos': [...] }
       for (const [path, data] of Object.entries(mocks)) {
         // 每條路徑掛一個中介層。直接寫在這裡 → 排在 Vite 內建中介層「之前」(7.3),
-        // 這樣才能搶在 Vite 把 /api/... 當成「找不到的檔案」之前先回假資料。
+        // 這樣才能搶在 SPA fallback 把 /api/... 回成 index.html 之前先回假資料。
         server.middlewares.use(path, (req, res) => {
           res.setHeader('Content-Type', 'application/json')
           res.end(JSON.stringify(data))
@@ -507,7 +575,7 @@ function miniMarkdownPlugin() {
       // 回傳一個 JS 模組:預設匯出這段 HTML 字串
       return {
         code: `export default ${JSON.stringify(html)}`,
-        map: null,          // 沒做 source map,誠實回 null
+        map: { mappings: '' },   // 整段都是新生成的,沒有可對應的位置 → 明確表示「不提供 source map」(第 06 章)
       }
     },
 
@@ -542,12 +610,12 @@ document.querySelector('#app').innerHTML = readme
 
 - **為何需要專屬 hook**:Rollup 只管模組/打包,不懂 dev server、HTML、HMR,所以 Vite 額外加了一組。
 - **`config` / `configResolved`**:前者「定案前修改設定」,後者「定案後讀取最終設定」。
-- **`configureServer`**:操作 dev server 加中介層,**做 mock API**、自訂端點;`return () => {}` 控制排在 Vite 中介層前或後。
+- **`configureServer`**:操作 dev server 加中介層,**做 mock API**、自訂端點;`return () => {}` 控制排在 Vite 中介層前或後(後面的中介層會看到所有頁面請求,處理不了一定要 `next()`)。
 - **`transformIndexHtml`**:改 HTML 入口(注入腳本、meta),因為 Rollup 不管 HTML。
-- **`handleHotUpdate`**:自訂 HMR 行為,揭曉第 05 章「框架感知熱更新」的實作位置。
-- **`enforce`(順序)**:`pre` 搶在前、`post` 殿後;解決「我的 transform 拿到的不是預期內容」。
-- **`apply`(階段)**:限定 plugin 只在 `serve` 或 `build` 啟用,避免無謂運作與雙引擎衝突。
+- **`handleHotUpdate` / `hotUpdate`**:自訂 HMR 行為,揭曉第 05 章「框架感知熱更新」的實作位置;Vite 6 起建議用依環境呼叫的 `hotUpdate`。
+- **`enforce`(順序)**:`pre` 在 Vite 核心轉換之前、不寫在核心之後、`post` 殿後;只想調單一 hook 就用 `order`。
+- **`apply`(階段)**:限定 plugin 只在 `serve` 或 `build` 啟用,避免無謂運作與 dev / build 兩條路徑的衝突。
 
-**下一章(08)**,我們離開 dev,正式進入**生產建構與 Rollup**:`vite build` 到底做了什麼?tree shaking 怎麼砍掉沒用到的程式碼?code splitting 怎麼自動拆出 chunk、`import()` 動態載入怎麼運作?那些 hash 檔名(第 01、04 章一直提到的)的完整故事?以及怎麼分析、優化你的產物體積。這是讓你的應用「上線跑得快」的關鍵一章。
+**下一章(08)**,我們離開 dev,正式進入**生產建構**:`vite build` 到底做了什麼?tree shaking 怎麼砍掉沒用到的程式碼?code splitting 怎麼自動拆出 chunk、`import()` 動態載入怎麼運作?那些 hash 檔名(第 01、04 章一直提到的)的完整故事?以及怎麼分析、優化你的產物體積。這是讓你的應用「上線跑得快」的關鍵一章。
 
 > 💡 **動手作業**:① 用 `configureServer` 在你的專案做一個 `/api/hello` 的 mock,前端 `fetch` 它拿到假資料,體會「前端先行」。② 寫兩個都有 `transform` 的 plugin,一個 `enforce: 'pre'`、一個不寫,在 transform 裡 `console.log` 出 id,觀察執行順序,印證 7.6 的規則。

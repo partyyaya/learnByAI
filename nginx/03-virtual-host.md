@@ -29,17 +29,16 @@
 sudo mkdir -p /var/www/mysite.com/html
 sudo mkdir -p /var/www/api.mysite.com/html
 
-# 設定權限
-sudo chown -R www-data:www-data /var/www/mysite.com
-sudo chown -R www-data:www-data /var/www/api.mysite.com
-sudo chmod -R 755 /var/www
+# 設定權限：目錄 755、檔案 644（之後新增或上傳檔案後可再執行一次）
+sudo find /var/www/mysite.com /var/www/api.mysite.com -type d -exec chmod 755 {} +
+sudo find /var/www/mysite.com /var/www/api.mysite.com -type f -exec chmod 644 {} +
 ```
 
 > **備註：這段指令在做什麼？（逐條）**
 > - `mkdir -p`：建立多層目錄；`-p` 代表父層目錄不存在時一併建立、目錄已存在也不報錯。
-> - `chown -R www-data:www-data ...`：把目錄擁有者改為 `www-data`（格式為 `使用者:群組`）；`-R` 遞迴套用到所有子目錄與檔案。Nginx 的 worker 以 `www-data` 身分運行（見第二章補充說明【5】），若對網站目錄沒有讀取權限會回 403 Forbidden。
-> - `chmod -R 755 /var/www`：權限三位數依序是「擁有者 / 群組 / 其他人」——`7` = 讀+寫+執行、`5` = 讀+執行。目錄必須有「執行（x）」權限才能被進入與列出，所以網站目錄常用 755。
-> - CentOS / RHEL 請把 `www-data` 換成 `nginx`（各發行版的預設使用者見第二章對照表）。
+> - 擁有者維持 `root`（或你的部署帳號）即可：Nginx 的 worker（Ubuntu 是 `www-data`，見第二章補充說明【5】）只需要「讀」，靠的是「其他人」那一位的權限。不要把網站目錄 `chown` 給 `www-data`，否則 worker 一旦被入侵，網站檔案也能被改寫。
+> - 權限三位數依序是「擁有者 / 群組 / 其他人」——`7` = 讀+寫+執行、`5` = 讀+執行、`4` = 唯讀。目錄需要「執行（x）」才能被進入（列出內容則要「讀（r）」），而且路徑上**每一層**目錄都要有 x，否則會回 403 Forbidden；一般檔案只需要讀，用 644。
+> - `find ... -type d` / `-type f`：分別挑出目錄與檔案各自設定；不用 `chmod -R 755`，是為了避免把所有檔案都設成可執行。
 
 ### 步驟二：建立測試頁面
 
@@ -54,7 +53,7 @@ echo '<h1>API Server - api.mysite.com</h1>' | sudo tee /var/www/api.mysite.com/h
 > **備註：這兩行指令在做什麼？**
 > - `echo '...'`：產生一段 HTML 文字（首頁內容）。
 > - `|`（pipe）：把 `echo` 的輸出傳給後面的 `tee`。
-> - `sudo tee /path/index.html`：用 root 權限把內容寫入檔案（通常網站目錄需要較高權限）。
+> - `sudo tee /path/index.html`：用 root 權限把內容寫入檔案（網站目錄的擁有者是 root）；建立出來的檔案預設就是 644，worker 讀得到。
 > - 為何不用 `>`：`sudo echo ... > 檔案` 常因重導向權限失敗；`tee` 可正確以 sudo 權限寫入。
 
 ### 步驟三：建立 Server Block 設定檔
@@ -63,21 +62,22 @@ echo '<h1>API Server - api.mysite.com</h1>' | sudo tee /var/www/api.mysite.com/h
 # 在 sites-available 建立設定檔（Ubuntu/Debian）
 sudo nano /etc/nginx/sites-available/mysite.com
 
-# 或在 conf.d 建立（CentOS/通用）
+# 或在 conf.d 建立（RHEL 系、nginx.org 官方套件／通用）
 sudo nano /etc/nginx/conf.d/mysite.com.conf
 ```
 
 > **備註：這段指令在做什麼？**
 > - `sudo nano ...`：用 root 權限開啟編輯器，建立或編輯 Nginx 站台設定檔（Server Block）。
 > - `/etc/nginx/sites-available/`：Ubuntu/Debian 常見做法，先放設定檔，再用符號連結啟用到 `sites-enabled`。
-> - `/etc/nginx/conf.d/`：許多發行版（含 CentOS 常見配置）會直接載入此目錄下的 `*.conf` 檔案。
+> - `/etc/nginx/conf.d/`：許多發行版（含 RHEL 系與 nginx.org 官方套件）會直接載入此目錄下的 `*.conf` 檔案。
 > - 兩種方式擇一使用即可，依你系統的 Nginx 預設目錄結構決定。
 
 ### 步驟四：啟用站台
 
 ```bash
-# Ubuntu/Debian：建立符號連結
+# Ubuntu/Debian：建立符號連結（3.3 的兩個站台都要各建一個）
 sudo ln -s /etc/nginx/sites-available/mysite.com /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/api.mysite.com /etc/nginx/sites-enabled/
 
 # 測試並重載
 sudo nginx -t && sudo nginx -s reload
@@ -195,6 +195,23 @@ server {
 > - `$request_uri` 是客戶端「原始請求 URI」（路徑 + 查詢字串）。
 > - 例如請求 `/docs/page?id=10`，`$request_uri` 就是 `/docs/page?id=10`。
 > - 所以 `return 301 https://mysite.com$request_uri;` 會導到 `https://mysite.com/docs/page?id=10`。
+>
+> **備註：在 Ubuntu 上要放在哪裡？**
+> - 同一個 `IP:port` 只能有一個 `default_server`。Ubuntu 原廠的 `/etc/nginx/sites-enabled/default` 已經宣告了 `listen 80 default_server;`，另外再建一個檔放上面的區塊，`nginx -t` 會報 `a duplicate default server for 0.0.0.0:80`。
+> - 做法二選一：直接用上面的內容取代 `/etc/nginx/sites-available/default`；或先 `sudo rm /etc/nginx/sites-enabled/default`，再另建檔案並啟用。
+>
+> **備註：HTTPS（443）也需要預設站台**
+> - 照抄成 `listen 443 ssl default_server;` 加 `return 444;` 會因為沒有憑證而讓 `nginx -t` 失敗；不設的話，未知網域或直接用 IP 連 443 的請求會由第一個 HTTPS 站台接手，還會拿到它的憑證（洩漏你有哪些網域）。
+> - 可改用 `ssl_reject_handshake on;`（1.19.4 起），直接拒絕未知網域的 TLS 握手，不需要準備憑證：
+>
+> ```nginx
+> server {
+>     listen 443 ssl default_server;
+>     listen [::]:443 ssl default_server;
+>     server_name _;
+>     ssl_reject_handshake on;
+> }
+> ```
 
 ---
 
@@ -293,6 +310,8 @@ server {
 > - `301 Moved Permanently`：永久重導向。瀏覽器會快取這個結果，搜尋引擎也會把舊網址的權重轉移到新網址——所以 www / 非 www 的「正式統一」要用 301。
 > - 若只是暫時切換（例如活動頁、維護期間），請改用 `302`（暫時重導向），瀏覽器不會長期記住。
 > - `$request_uri` 會保留原本的路徑與查詢字串（見 3.4 備註），確保 `www.mysite.com/docs?id=1` 轉到 `mysite.com/docs?id=1`，而不是被丟回首頁。
+>
+> **注意**：3.3 的主站設定 `server_name` 同時寫了 `www.mysite.com`，加上這個轉址區塊時，要把 `www.mysite.com` 從主站的 `server_name` 拿掉（如上面第二個 block）。同一個名稱出現在同一個 port 的兩個 server 裡，`nginx -t` 只會出現 `[warn] conflicting server name "www.mysite.com" ... ignored` 並照樣通過，但後讀到的那個會被忽略，轉址就不會生效。
 
 ### 將非 www 重導向到 www
 
@@ -320,9 +339,8 @@ server {
 ```
 /etc/nginx/
 ├── nginx.conf                    # 主設定檔（盡量不動）
-├── conf.d/
-│   ├── ssl-params.conf           # 共用的 SSL 參數
-│   └── gzip.conf                 # 共用的 Gzip 設定
+├── conf.d/                       # http 層級的共用設定（和 nginx.conf 的 http 區塊同一層，指令不能重複）
+│   └── gzip.conf                 # 共用的 Gzip 設定（先註解掉 Ubuntu nginx.conf 原有的 gzip on;，見第二章補充說明【2】）
 ├── sites-available/              # 所有站台設定
 │   ├── default
 │   ├── mysite.com
@@ -332,10 +350,11 @@ server {
 │   ├── default -> ../sites-available/default
 │   ├── mysite.com -> ../sites-available/mysite.com
 │   └── api.mysite.com -> ../sites-available/api.mysite.com
-└── snippets/                     # 可重用的設定片段
-    ├── ssl-certificate.conf
-    ├── security-headers.conf
-    └── proxy-params.conf
+└── snippets/                     # 可重用的設定片段（在 server / location 內 include）
+    ├── ssl-params.conf           # 共用的 SSL 參數（第六章建立）
+    ├── security-headers.conf     # 共用的安全標頭
+    ├── proxy-params.conf         # 共用的反向代理參數
+    └── static-cache.conf         # 靜態資源快取規則
 ```
 
 ### 使用 snippets 減少重複
@@ -344,7 +363,6 @@ server {
 # /etc/nginx/snippets/security-headers.conf
 add_header X-Frame-Options "SAMEORIGIN" always;
 add_header X-Content-Type-Options "nosniff" always;
-add_header X-XSS-Protection "1; mode=block" always;
 add_header Referrer-Policy "strict-origin-when-cross-origin" always;
 
 # 在 server block 中引入
@@ -359,16 +377,8 @@ server {
 > **備註：這段在做什麼？**
 > - `snippets/*.conf` 是「可重用設定片段」，把共用規則抽出來，避免每個站台重複貼同樣內容。
 > - `include snippets/security-headers.conf;` 代表把該檔案內容直接插入目前 `server` 區塊。
-> - 好處是維護集中：要調整安全標頭，只改一個 snippet，所有引用它的站台一起生效。
->
-> **常見 snippets 內容範例**
-> ```nginx
-> # /etc/nginx/snippets/security-headers.conf
-> add_header X-Frame-Options "SAMEORIGIN" always;
-> add_header X-Content-Type-Options "nosniff" always;
-> add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-> add_header Content-Security-Policy "default-src 'self';" always;
-> ```
+> - 好處是維護集中：要調整安全標頭，只改一個 snippet，所有引用它的站台一起生效（第六章會在這個檔加上 HSTS，第八章補成完整版）。
+> - **繼承陷阱**：某個 `location` 裡只要自己寫了任何一行 `add_header`，就不會再繼承 `server` 層的 `add_header`，這個片段的標頭在那個 location 會全部消失；所以有自己 `add_header` 的 location，要在裡面再 `include snippets/security-headers.conf;` 一次（見下方 `static-cache.conf`）。1.29.3 起也可以在該 location 寫 `add_header_inherit merge;`，1.24 沒有這個指令。詳見第八章。
 >
 > **`add_header` 各欄位與這段內容代表意思**
 > - 基本語法：`add_header <Header-Name> <Header-Value> [always];`
@@ -377,11 +387,13 @@ server {
 > - `always`：即使是 4xx/5xx 回應，也一併附帶這個 header。
 > - `X-Frame-Options "SAMEORIGIN"`：只允許同網域 iframe 載入，降低 clickjacking 風險。
 > - `X-Content-Type-Options "nosniff"`：禁止瀏覽器 MIME 猜測，避免把非腳本檔誤當腳本執行。
-> - `X-XSS-Protection "1; mode=block"`：舊版瀏覽器的 XSS 過濾機制（現代瀏覽器多已弱化/不使用）。
 > - `Referrer-Policy "strict-origin-when-cross-origin"`：同源保留完整 Referer，跨站只送來源網域，減少 URL/參數洩漏。
+> - 舊教學常見的 `X-XSS-Protection` 已棄用：現代瀏覽器不支援，舊瀏覽器的過濾器本身還可能造成漏洞，不要設（要明確關閉可設 `"0"`）。
+> - `Content-Security-Policy`（CSP）不放進這個共用檔：像 `default-src 'self'` 這種嚴格政策會擋掉 inline script/style 與外部 CDN，套到所有站台很容易讓網站壞掉。要導入時，先針對單一站台用 `Content-Security-Policy-Report-Only`（只回報違規、不實際阻擋，瀏覽器主控台會列出被擋的資源）觀察一段時間，確認沒問題再改成正式的 `Content-Security-Policy`。
 >
 > ```nginx
 > # /etc/nginx/snippets/proxy-params.conf
+> proxy_http_version 1.1;
 > proxy_set_header Host $host;
 > proxy_set_header X-Real-IP $remote_addr;
 > proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -391,30 +403,31 @@ server {
 > ```
 >
 > **反向代理參數說明**
+> - `proxy_http_version 1.1`：1.24 對後端預設用 HTTP/1.0；改成 1.1 是 WebSocket 與後端連線重用（第五章的 upstream keepalive）的前提。1.29.7 起預設就是 1.1。
 > - `proxy_set_header Host $host`：將客戶端請求的原始域名傳給後端，讓後端知道使用者存取的是哪個網站。
 > - `proxy_set_header X-Real-IP $remote_addr`：將客戶端的真實 IP 傳給後端（否則後端只會看到 Nginx 的 IP）。
 > - `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`：記錄請求經過的所有代理 IP 鏈，用於追蹤原始來源（支援多層代理）。
 > - `proxy_set_header X-Forwarded-Proto $scheme`：告訴後端原始請求使用的是 `http` 還是 `https`，讓後端正確處理重導向和連結產生。
-> - `proxy_connect_timeout 5s`：Nginx 與後端建立連線的超時時間為 5 秒，超過則回傳 502。
-> - `proxy_read_timeout 60s`：等待後端回應的超時時間為 60 秒，適用於處理較久的 API 請求。
+> - `proxy_connect_timeout 5s`：Nginx 與後端建立連線的超時時間為 5 秒，超過則回傳 504（後端直接拒絕連線才是 502）。
+> - `proxy_read_timeout 60s`：從後端讀取回應時，「兩次讀取之間」最多等 60 秒（不是整個回應的總時間）；60 秒也是預設值，處理較久的 API 可再調大。
 >
 > ```nginx
 > # /etc/nginx/snippets/static-cache.conf
 > location ~* \.(css|js|png|jpg|jpeg|gif|svg|woff2?)$ {
->     expires 7d;
->     add_header Cache-Control "public, max-age=604800, immutable";
+>     add_header Cache-Control "public, max-age=604800";
+>     include snippets/security-headers.conf;   # 這個 location 有自己的 add_header，安全標頭要重新引入
 >     access_log off;
 > }
 > ```
 >
 > **靜態資源快取設定說明**
-> - `expires 7d`：設定 `Expires` 標頭，告訴瀏覽器該資源 7 天內有效，不需要重新請求。
-> - `add_header Cache-Control "public, max-age=604800, immutable"`：
+> - `add_header Cache-Control "public, max-age=604800"`：
 >   - `public`：任何人（瀏覽器、CDN、Proxy）都可以快取。
->   - `max-age=604800`：快取有效期 604800 秒（= 7 天，與 `expires 7d` 對應）。
->   - `immutable`：告訴瀏覽器資源不會改變，即使按重新整理也不重新驗證。
+>   - `max-age=604800`：快取有效期 604800 秒（= 7 天），期間內瀏覽器不必重新請求。
+>   - 檔名帶內容雜湊（例如 `app.3f9a1c.js`，內容一改檔名就變）時，可再加上 `immutable`，連使用者按重新整理都不重新驗證；檔名固定的檔案（例如 `style.css`）不要加，否則更新後 7 天內使用者都拿不到新版。
+> - `include snippets/security-headers.conf;`：因為這個 location 自己寫了 `add_header`，不再繼承 server 層的安全標頭，所以要重新引入（見上方「繼承陷阱」）。
 > - `access_log off`：關閉靜態資源的存取日誌，避免大量請求造成日誌膨脹與 I/O 負擔。
-> - `expires` 和 `Cache-Control max-age` 功能重疊，同時寫是為了相容性 — 現代瀏覽器優先看 `Cache-Control`，較舊的客戶端則看 `Expires`。
+> - 不要再同時寫 `expires 7d;`：`expires` 本身就會送出 `Expires` 與 `Cache-Control: max-age=...` 兩個標頭，再加上面的 `add_header Cache-Control`，回應裡會出現兩個 `Cache-Control`。二選一即可：只需要設定有效期限時用 `expires`，需要 `public`、`immutable` 等選項時用 `add_header Cache-Control`。
 
 
 ---
@@ -462,6 +475,8 @@ server {
     }
 }
 ```
+
+> **注意**：在 Ubuntu 上把網站根目錄放在家目錄底下（如 `/home/user/projects/...`）通常會得到 403，error log 是 `(13: Permission denied)`：Ubuntu 21.04 起新建的家目錄權限是 750，worker（`www-data`）進不去。可以把專案放到 `/var/www/` 底下，或替家目錄開放進入權限（`chmod o+x /home/user`，路徑上每一層都要有 x）；用 `namei -l /home/user/projects/mysite/public/index.html` 可以一次看出是哪一層擋住。
 
 ### 情境二：停用某個站台但不刪除設定
 

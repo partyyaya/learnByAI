@@ -36,7 +36,7 @@
 
 這是理解整個 plugin 系統的關鍵歷史背景,務必搞懂。
 
-回憶第 00 章:Vite 的**生產建構用 Rollup**。Rollup 本身有一套非常成熟、設計優良的 plugin 系統,生態裡已經有上千個現成的 Rollup plugin。
+回憶第 00 章:Vite 2～7 的**生產建構用 Rollup**。Rollup 本身有一套非常成熟、設計優良的 plugin 系統,生態裡已經有上千個現成的 Rollup plugin。
 
 當 Vite 團隊要設計自己的 plugin 系統時,他們做了一個聰明的決定:
 
@@ -45,13 +45,13 @@
 這帶來兩個巨大好處:
 
 1. **直接繼承 Rollup 的整個 plugin 生態**:很多 Rollup plugin 不用改就能在 Vite 用。
-2. **dev 和 build 用「同一套 plugin 介面」**:你寫一個 plugin,dev(Vite 自己跑這套 hook)和 build(Rollup 跑這套 hook)都能用,不用寫兩份。
+2. **dev 和 build 用「同一套 plugin 介面」**:你寫一個 plugin,dev(Vite 自己跑這套 hook)和 build(bundler 跑這套 hook)都能用,不用寫兩份。
 
-於是 Vite 的 plugin 介面 = **Rollup hook(這一章)+ Vite 專屬 hook(第 07 章)**。
+於是 Vite 的 plugin 介面 = **Rollup hook(這一章)+ Vite 專屬 hook(第 07 章)**。這個決定也讓 Vite 8 換引擎換得很順:Rolldown 實作了同一套 Rollup 相容的 plugin API,所以大部分 plugin 不用改就能繼續用(只有少數冷門 hook 不支援)。
 
 > **一個重要的認知校正**:dev 階段其實是 **Vite 自己實作了一個「Rollup 相容的 plugin 容器(plugin container)」** 在按需轉譯每個模組時去跑這些 hook;
-> build 階段才是真正的 Rollup 在跑這些 hook。所以**同一個 plugin,在 dev 和 build 跑的「執行者」不同**
-> 但「介面」一樣。這也是某些 plugin「dev 正常、build 出錯」的根源(又回扣第 00 章雙引擎主題)。
+> build 階段才是真正的 bundler(Vite 8 是 Rolldown,Vite 7 以前是 Rollup)在跑這些 hook。所以**同一個 plugin,在 dev 和 build 跑的「執行者」不同**
+> 但「介面」一樣。這也是某些 plugin「dev 正常、build 出錯」的根源(又回扣第 00 章雙路徑主題)。
 
 ---
 
@@ -144,7 +144,7 @@ transform(code, id) {
     const transformed = doSomething(code)
     return {
       code: transformed,
-      map: null,        // source map(沒有就 null,有的話放這裡讓除錯能對回原始碼)
+      map: null,        // source map:讓除錯工具能從轉換後的碼對回原始碼(6.5 會講怎麼給)
     }
   }
   return null           // null = 不改它,原樣放行
@@ -153,7 +153,7 @@ transform(code, id) {
 
 **重點理解**:
 
-- 第 04 章講的「esbuild 把 TS 剝型別」「CSS 包成 JS 注入」——這些**本質上都是 `transform` hook 在做的事**(由 Vite 內建 plugin 實作)。你現在看到了它們的底層長相。
+- 第 04 章講的「Oxc 把 TS 剝型別」「CSS 包成 JS 注入」——這些**本質上都是 `transform` hook 在做的事**(由 Vite 內建 plugin 實作)。你現在看到了它們的底層長相。
 - `transform` 可以被多個 plugin **串接**:plugin A 轉一手、把結果交給 plugin B 再轉一手(順序由第 07 章的 `enforce` 與 plugin 排列決定)。
 
 ### 三個 hook 的完整流程圖
@@ -250,6 +250,7 @@ console.log(`版本 ${version},建構於 ${builtAt}`)
 - **沒有任何 `virtual:build-info` 的檔案存在**,但你能 `import` 它——因為 `resolveId` 認領了這個 id,`load` 提供了它的內容。
 - **`\0`(null byte)前綴的慣例**:Rollup 生態約定,虛擬模組解析後的 id 加一個 `\0`。為什麼?因為其他 plugin(或 Vite 內建邏輯)可能會「對所有 id 嘗試讀檔/處理副檔名」,`\0` 是個明確信號:「這不是真實路徑,別對它做檔案系統操作」。這能避免一堆詭異的衝突。
 - **`virtual:` 前綴的慣例**:讓使用者一眼看出「這是虛擬模組,不是真檔案」,也避免跟真實路徑撞名。
+- **dev 時在 Network 面板長什麼樣**:`\0` 不能出現在網址裡,所以 Vite 會把它編碼成 `/@id/__x00__virtual:build-info`。在 Network 看到 `/@id/__x00__` 開頭的請求,就知道那是某個 plugin 造出來的虛擬模組。
 
 > **心智模型**:`resolveId` 是「我認領這個名字」,`load` 是「這個名字的內容由我憑空提供」。兩者一搭,你就能把任何「程式算出來的東西」偽裝成一個可以被 `import` 的模組。這是 plugin 最有威力的模式之一。
 
@@ -261,23 +262,27 @@ console.log(`版本 ${version},建構於 ${builtAt}`)
 
 ```js
 // plugins/replace-build-date.js
+// magic-string:專門做「字串局部修改 + 產生 source map」的小工具(npm i -D magic-string)
+import MagicString from 'magic-string'
+
 function replaceBuildDate(dateString) {
   return {
     name: 'replace-build-date',     // 必填:出問題時的識別名
 
     transform(code, id) {
-      // 只處理 JS/TS 檔,跳過 node_modules(別去動第三方套件)
-      if (!/\.(js|ts)$/.test(id)) return null
+      // 只處理 JS/TS 檔(.js .mjs .cjs .ts .mts .jsx .tsx…),跳過 node_modules(別去動第三方套件)
+      if (!/\.[cm]?[jt]sx?$/.test(id)) return null
       if (id.includes('node_modules')) return null
 
       // 程式碼裡沒有這個關鍵字就不動,省效能
       if (!code.includes('__BUILD_DATE__')) return null
 
-      // 做替換
-      const transformed = code.replaceAll('__BUILD_DATE__', JSON.stringify(dateString))
+      // 做替換:用 MagicString 改,它會記住「哪裡被改成什麼」
+      const s = new MagicString(code)
+      s.replaceAll('__BUILD_DATE__', JSON.stringify(dateString))
 
-      // 回傳新 code(map: null 表示不提供 source map)
-      return { code: transformed, map: null }
+      // 回傳新 code + 對應的 source map,除錯時才對得回原始碼的位置
+      return { code: s.toString(), map: s.generateMap({ hires: true }) }
     },
   }
 }
@@ -308,19 +313,66 @@ console.log('這個版本建構於:' + __BUILD_DATE__)
 1. `transform` 是「攔截每個模組的內容,動手改它」的地方。
 2. **務必加守衛條件**(副檔名、`node_modules`、關鍵字檢查)——`transform` 對**每個模組**都會被呼叫,不加守衛會白白拖慢建構,還可能誤改不該改的檔。
 3. plugin 本質是「一個回傳物件的函式」,物件裡是一堆 hook。包成函式是為了能傳參數(像這裡的 `dateString`)。
+4. **改了程式碼就要負責 source map**。`map: null` 的意思是「我沒有移動任何程式碼位置,沿用上一手的 map」;像這裡把 14 個字元換成 12 個字元,位置已經偏了,就該用 magic-string 產生新的 map。整段內容都是新生成、沒有對應位置時,則回 `map: { mappings: '' }`。
 
 > **常見錯誤**:在 `transform` 裡不分青紅皂白處理所有模組(包含 `node_modules` 裡成千上萬的檔),導致建構變慢、或意外改壞第三方套件。**第一件事永遠是用 `id` 做過濾。**
 
+> **實務上這件事不用自己寫**:Vite 內建的 `define` 選項(第 04 章)就是做「編譯期常數替換」,而且會避開字串和註解裡的同名文字:`define: { __BUILD_DATE__: JSON.stringify('2026-06-22') }`。這裡自己寫一遍,是為了看懂 `transform` 的運作。TypeScript 專案記得宣告型別:`declare const __BUILD_DATE__: string`。
+
+### 進一步:用 hook filter 把過濾交給引擎
+
+上面的守衛寫在 `transform` 函式裡,代表**每個模組還是會先呼叫一次你的函式**,進來才發現不關你的事。Vite 6.3 起(以及 Rolldown、Rollup 4.38 起)可以把過濾條件宣告在 hook 外面:
+
+```js
+function replaceBuildDate(dateString) {
+  return {
+    name: 'replace-build-date',
+    transform: {
+      // 引擎先用這些條件篩選,不符合的模組根本不會呼叫 handler
+      filter: {
+        id: { include: /\.[cm]?[jt]sx?$/, exclude: /node_modules/ },
+        code: '__BUILD_DATE__',        // 內容要包含這段文字才處理
+      },
+      handler(code, id) {
+        const s = new MagicString(code)
+        s.replaceAll('__BUILD_DATE__', JSON.stringify(dateString))
+        return { code: s.toString(), map: s.generateMap({ hires: true }) }
+      },
+    },
+  }
+}
+```
+
+**為什麼這在 Vite 8 特別重要?** Rolldown 是 Rust 寫的,每呼叫一次 JS 寫的 hook,都要在 Rust 與 JS 之間來回傳資料。宣告了 filter,Rolldown 在 Rust 端就能先篩掉不相干的模組,省下大量跨語言呼叫。新寫的 plugin 建議都用這種寫法;`resolveId`、`load` 也支援 `filter`。
+
 ---
 
-## 6.6 hook 的兩種型別:同步資料 vs 副作用
+## 6.6 hook 的兩大類,以及它們在 dev 跑不跑
 
 Rollup/Vite 的 hook 大致分兩類,理解這個分類有助於你讀懂各種 plugin:
 
 | 類型 | 代表 hook | 它在做什麼 |
 |------|-----------|-----------|
-| **解析/載入/轉換**(本章) | `resolveId` / `load` / `transform` | 影響「模組內容」,有回傳值、會串接 |
+| **解析/載入/轉換**(本章) | `resolveId` / `load` / `transform` | 影響「模組內容」,有回傳值 |
 | **建構生命週期** | `buildStart` / `buildEnd` / `closeBundle` 等 | 在建構的某個時間點做事(印 log、清理、產生額外檔案),通常無回傳值或不影響模組內容 |
+
+同樣叫「依序執行」,不同 hook 的串接方式也不一樣,這也是 6.3 流程圖裡「有人回傳就用它」和「可串接多手」的差別:
+
+| 執行方式 | 代表 hook | 規則 |
+|----------|-----------|------|
+| **first** | `resolveId`、`load` | 依序問,**第一個**回傳非 null 的 plugin 勝出,後面的不再問 |
+| **sequential** | `transform` | 依序跑,前一個的輸出是後一個的輸入 |
+| **parallel** | `buildStart`、`buildEnd` | 大家各做各的,互不影響(Rollup 會同時跑;Vite 8 的 Rolldown 改成一個接一個跑) |
+
+還有一點常讓人困惑:**dev 階段只會跑一部分 hook**。
+
+| 時機 | dev 會呼叫的 hook |
+|------|------------------|
+| dev server 啟動時 | `options`、`buildStart` |
+| 每個模組被請求時 | `resolveId`、`load`、`transform` |
+| dev server 關閉時 | `buildEnd`、`closeBundle` |
+
+產生輸出檔案那一段的 hook(例如 `renderChunk`、`generateBundle`)**只有 build 才會跑**,因為 dev 根本不產生 bundle。如果你的 plugin 只寫了 `generateBundle`,dev 時看不到效果是正常的。
 
 例如:
 
@@ -347,11 +399,11 @@ Rollup/Vite 的 hook 大致分兩類,理解這個分類有助於你讀懂各種 
 這一章打好了 plugin 的地基:
 
 - **認知校正**:Vite 核心很小,框架支援、CSS 處理全是 plugin;學 plugin = 學會擴充 Vite。
-- **歷史背景**:Vite plugin 相容 Rollup 介面,所以能繼承整個 Rollup 生態,且 dev/build 共用一套介面(但執行者不同——dev 是 Vite 的 plugin container,build 是 Rollup)。
+- **歷史背景**:Vite plugin 相容 Rollup 介面,所以能繼承整個 Rollup 生態,且 dev/build 共用一套介面(但執行者不同——dev 是 Vite 的 plugin container,build 是 Rolldown;Vite 7 以前是 Rollup)。
 - **三個核心 hook**:`resolveId`(id 對應到哪)→ `load`(原始內容是什麼)→ `transform`(怎麼加工),這就是第 04 章轉換管線的底層。
 - **虛擬模組**:用 `resolveId` + `load` 憑空造一個可被 import 的模組,`virtual:` 與 `\0` 前綴的慣例。
-- **動手寫了 plugin**,學到「一定要用 id 過濾」的鐵則。
-- **hook 兩大類**:改內容的(resolveId/load/transform)vs 管生命週期的(buildStart 等)。
+- **動手寫了 plugin**,學到「一定要用 id 過濾」的鐵則、source map 要用 magic-string 產生,以及把過濾交給引擎的 hook filter。
+- **hook 兩大類**:改內容的(resolveId/load/transform)vs 管生命週期的(buildStart 等);dev 只跑其中一部分。
 
 **下一章(07)**,進入 Plugin 系統的另一半——**Vite 專屬能力**:
 - `config`(改設定)
