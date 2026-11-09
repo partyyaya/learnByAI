@@ -65,32 +65,43 @@ ctx.arc(px, py, 3, 0, Math.PI * 2);
 ctx.fill();
 ctx.fillText('(120, 80)', px + 12, py - 4);` },
 
-{ id:'buffer-vs-css', label:'1.3 緩衝區尺寸 ≠ CSS 顯示尺寸', code:`// 小緩衝區的圖被拉大顯示 → 糊(小照片硬撐進大相框)
+{ id:'buffer-vs-css', label:'1.3 緩衝區尺寸 ≠ CSS 顯示尺寸', code:`// 小緩衝區的圖被拉大顯示 → 糊;長寬比不同 → 還會變形(小照片硬撐進不同比例的相框)
 ctx.fillStyle = '#0f172a';
 ctx.fillRect(0, 0, W, H);
 
-const boxW = 170, boxH = 116;
+const boxW = Math.round(Math.min(170, (W - 60) / 2));   // 兩個框並排,依畫布寬度縮放
+const boxH = Math.round(boxW * 0.7);
 
-// 左:先把圖縮進很小的緩衝區(60x40),再撐大顯示 → 糊
+function paint(g, w, h) {                  // 在 w x h 的緩衝區上畫:底圖 + 正中央一個正圓
+  g.drawImage(sampleImage, 0, 0, w, h);
+  g.strokeStyle = '#fff';
+  g.lineWidth = 2;
+  g.beginPath();
+  g.arc(w / 2, h / 2, h * 0.3, 0, Math.PI * 2);
+  g.stroke();
+}
+
+// 左:緩衝區只有 60x30(2:1),再撐進約 1.4:1 的框 → 糊 + 圓被拉成橢圓
 const small = document.createElement('canvas');
-small.width = 60; small.height = 40;
-small.getContext('2d').drawImage(sampleImage, 0, 0, 60, 40);
+small.width = 60; small.height = 30;
+paint(small.getContext('2d'), 60, 30);
 ctx.drawImage(small, 20, 60, boxW, boxH);
 
-// 右:緩衝區尺寸 = 顯示尺寸 → 清晰
+// 右:緩衝區尺寸 = 顯示尺寸 → 清晰,圓還是圓
 const ok = document.createElement('canvas');
 ok.width = boxW; ok.height = boxH;
-ok.getContext('2d').drawImage(sampleImage, 0, 0, boxW, boxH);
+paint(ok.getContext('2d'), boxW, boxH);
 ctx.drawImage(ok, W - boxW - 20, 60, boxW, boxH);
 
 ctx.textBaseline = 'top';
 ctx.font = '13px sans-serif';
 ctx.fillStyle = '#f87171';
-ctx.fillText('60x40 緩衝區被拉大 → 糊', 20, 30);
+ctx.fillText('左:60x30 緩衝區撐大 → 糊 + 變形', 20, 12);
 ctx.fillStyle = '#4ade80';
-ctx.fillText('尺寸匹配 → 清晰', W - boxW - 20, 30);` },
+ctx.fillText('右:緩衝區 = 顯示尺寸 → 清晰', 20, 32);` },
 
 { id:'hidpi-sharp-vs-blurry', label:'1.4 HiDPI:清晰 vs 模糊對比', code:`// 主畫布設成 HiDPI,再比較 1:1 緩衝區 vs 放大 DPR 倍的緩衝區
+// 一般螢幕(DPR=1)兩邊會一樣:用瀏覽器縮放到 200% 再看(縮放會改變 DPR,畫面會自動重跑)
 const dpr = window.devicePixelRatio || 1;
 canvas.width = Math.round(W * dpr);        // 緩衝區 = 邏輯尺寸 x DPR
 canvas.height = Math.round(H * dpr);
@@ -117,13 +128,13 @@ function paint(c, w, h) {
   c.stroke();
 }
 
-const bw = 170, bh = 110;
+const bw = Math.round(Math.min(170, (W - 60) / 2)), bh = 110;   // 兩個框並排,寬度依畫布縮放
 
 // 糊:離屏緩衝區 = 邏輯尺寸(1:1),drawImage 時被 DPR 放大 → 糊
 const blur = document.createElement('canvas');
 blur.width = bw; blur.height = bh;
 paint(blur.getContext('2d'), bw, bh);
-ctx.drawImage(blur, 20, 50, bw, bh);
+ctx.drawImage(blur, 20, 56, bw, bh);
 
 // 清晰:離屏緩衝區 = 邏輯尺寸 x DPR,先 scale 再畫,drawImage 縮回顯示 → 銳利
 const sharp = document.createElement('canvas');
@@ -132,14 +143,14 @@ sharp.height = Math.round(bh * dpr);
 const sc = sharp.getContext('2d');
 sc.scale(dpr, dpr);
 paint(sc, bw, bh);
-ctx.drawImage(sharp, W - bw - 20, 50, bw, bh);
+ctx.drawImage(sharp, W - bw - 20, 56, bw, bh);
 
 ctx.textBaseline = 'top';
 ctx.font = '13px sans-serif';
 ctx.fillStyle = '#f87171';
-ctx.fillText('1:1 緩衝區 → 糊', 20, 22);
+ctx.fillText('左:1:1 緩衝區 → 糊', 20, 12);
 ctx.fillStyle = '#4ade80';
-ctx.fillText('x' + dpr + ' 緩衝區 → 清晰', W - bw - 20, 22);` },
+ctx.fillText('右:x' + dpr + ' 緩衝區 → 清晰', 20, 32);` },
 
 { id:'raf-bouncing-ball', label:'1.5 requestAnimationFrame:反彈的球', code:`// 動畫:一顆球四面反彈,每幀先 clearRect 清掉再重畫
 const ball = { x: 80, y: 90, r: 18, vx: 3.2, vy: 2.4 };
@@ -148,8 +159,11 @@ function frame() {
   ctx.clearRect(0, 0, W, H);           // 1. 清:擦掉上一幀(不然殘留疊加)
   ball.x += ball.vx;                   // 2. 算:更新自己維護的位置資料
   ball.y += ball.vy;
-  if (ball.x - ball.r < 0 || ball.x + ball.r > W) ball.vx *= -1;   // 撞左右牆
-  if (ball.y - ball.r < 0 || ball.y + ball.r > H) ball.vy *= -1;   // 撞上下牆
+  // 撞牆反彈:先推回牆內,再依撞到哪面牆決定速度方向(撞左牆 → 往右,依此類推)
+  if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = Math.abs(ball.vx); }
+  else if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -Math.abs(ball.vx); }
+  if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = Math.abs(ball.vy); }
+  else if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -Math.abs(ball.vy); }
   ctx.fillStyle = '#e63946';           // 3. 畫:照新位置重畫
   ctx.beginPath();                     // 開新路徑,避免和上一幀相連
   ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
@@ -219,7 +233,44 @@ function frame() {
   ctx.font = '13px sans-serif';
   ctx.fillText('半透明覆蓋(非徹底清)→ 殘留成拖尾', 12, 12);
   ctx.fillText('要乾淨畫面:改用 clearRect(0,0,W,H) 每幀清空', 12, 32);
+  // 細看會發現拖尾永遠淡不乾淨:每次只蓋 8%,像素是 0~255 的整數,差距小到一個程度就捨入不動了
 
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);` },
+
+{ id:'width-reset', label:'1.6 陷阱:canvas.width 重設會洗掉 scale', code:`// 動畫:每 1.5 秒切換一次清空方式,對比 clearRect 與 canvas.width = canvas.width(核彈)
+const dpr = Math.max(2, window.devicePixelRatio || 1);   // 至少用 2 倍,一般螢幕也看得出差別
+canvas.width = Math.round(W * dpr);                      // 1.4 的 HiDPI 設定:緩衝區 = 邏輯尺寸 x DPR
+canvas.height = Math.round(H * dpr);
+canvas.style.width = W + 'px';                           // CSS 顯示維持邏輯尺寸
+canvas.style.height = H + 'px';
+
+function drawScene(color, msg) {                         // 用「邏輯座標」畫一個應該填滿整塊畫布的場景
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#fff';
+  ctx.textBaseline = 'top';
+  ctx.font = '14px sans-serif';
+  ctx.fillText(msg, 12, 12);
+}
+
+let lastSwitch = null, nuke = true;
+function frame(t) {
+  if (lastSwitch === null || t - lastSwitch > 1500) { lastSwitch = t; nuke = !nuke; }
+  if (nuke) {
+    canvas.width = canvas.width;                         // 核彈:清像素 + 所有狀態歸零,scale(dpr) 也沒了
+    drawScene('#e11d48', 'canvas.width 重設');           // 同一段邏輯座標程式 → 只畫到左上 1/dpr
+    // 說明文字:現在座標單位是「緩衝區像素」,位置和字級都要自己乘 dpr 才看得清
+    ctx.fillStyle = '#e11d48';
+    ctx.font = 13 * dpr + 'px sans-serif';
+    ctx.fillText('scale 被洗掉 → 縮在左上 1/' + dpr, 12 * dpr, H + 12 * dpr);
+  } else {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);              // 縮放設回 dpr 倍(等同重設後再 scale)
+    ctx.clearRect(0, 0, W, H);                           // 一般做法:只清像素,縮放保留
+    drawScene('#2563eb', 'clearRect → 填滿整塊');
+  }
   requestAnimationFrame(frame);
 }
 
@@ -227,18 +278,21 @@ requestAnimationFrame(frame);` },
 { id:'homework', label:'💡 動手作業:五顆彈跳球', code:
 `// 第 01 章作業:5 顆顏色/大小/速度都不同的球,用一個陣列 + 迴圈管理
 // (playground 已提供 ctx/canvas/W/H;正式頁面要自己做 1.4 的 HiDPI 設定)
-const balls = [
-  { x: 60,  y: 60,  r: 14, vx: 2.6, vy: 1.8,  color: '#e63946' },
-  { x: 180, y: 150, r: 9,  vx: -2,  vy: 3,    color: '#457b9d' },
-  { x: 300, y: 90,  r: 20, vx: 1.4, vy: -1.6, color: '#2a9d8f' },
-  { x: 340, y: 200, r: 11, vx: -3,  vy: -2.4, color: '#f4a261' },
-  { x: 120, y: 210, r: 17, vx: 2,   vy: -3,   color: '#9b5de5' },
+const balls = [                           // 初始位置用 W/H 的比例,畫布多大都從框內出發
+  { x: W * 0.15, y: H * 0.25, r: 14, vx: 2.6, vy: 1.8,  color: '#e63946' },
+  { x: W * 0.45, y: H * 0.6,  r: 9,  vx: -2,  vy: 3,    color: '#457b9d' },
+  { x: W * 0.75, y: H * 0.35, r: 20, vx: 1.4, vy: -1.6, color: '#2a9d8f' },
+  { x: W * 0.85, y: H * 0.75, r: 11, vx: -3,  vy: -2.4, color: '#f4a261' },
+  { x: W * 0.3,  y: H * 0.8,  r: 17, vx: 2,   vy: -3,   color: '#9b5de5' },
 ];
 function update() {                       // 作業要求:在 update 用迴圈逐顆更新
   for (const b of balls) {
     b.x += b.vx; b.y += b.vy;
-    if (b.x - b.r < 0 || b.x + b.r > W) b.vx *= -1;   // 撞左右牆:x 方向反向
-    if (b.y - b.r < 0 || b.y + b.r > H) b.vy *= -1;   // 撞上下牆:y 方向反向
+    // 撞牆反彈(1.5 的寫法):先推回牆內,再依撞到哪面牆決定速度方向
+    if (b.x - b.r < 0) { b.x = b.r; b.vx = Math.abs(b.vx); }
+    else if (b.x + b.r > W) { b.x = W - b.r; b.vx = -Math.abs(b.vx); }
+    if (b.y - b.r < 0) { b.y = b.r; b.vy = Math.abs(b.vy); }
+    else if (b.y + b.r > H) { b.y = H - b.r; b.vy = -Math.abs(b.vy); }
   }
 }
 function render() {                       // 作業要求:在 render 也用迴圈,照各自資料畫

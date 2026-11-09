@@ -1152,7 +1152,7 @@ public class ReferenceTypes {
 
         System.out.println("""
 
-                ⚠️ finalize() 已在 Java 18 標記為棄用，Java 21 預設停用！
+                ⚠️ finalization 已在 Java 18 標記為待移除，Java 21 仍預設啟用；可用 --finalization=disabled 關閉。
                    它的問題：
                      - 執行時機完全不確定（可能永遠不執行）
                      - 讓物件「復活」，破壞 GC 假設
@@ -2337,7 +2337,7 @@ public class ContainerPitfalls {
 | 6 | 遇到 OOM 就加大 `-Xmx` | 先判斷是洩漏還是真的需要（看 Full GC 後的谷底） |
 | 7 | 遇到 GC 問題就換收集器 | 先找洩漏。換收集器治不好洩漏 |
 | 8 | 呼叫 `System.gc()` | 它只是「建議」，而且會觸發 Full GC（STW）。正式程式碼不該有 |
-| 9 | 用 `finalize()` 釋放資源 | Java 21 已預設停用。用 try-with-resources + `Cleaner` |
+| 9 | 用 `finalize()` 釋放資源 | Java 21 仍預設啟用，但已待移除。用 try-with-resources + `Cleaner` |
 | 10 | 用 `SoftReference` 做快取 | 用 Caffeine（有上限、TTL、統計） |
 | 11 | `WeakHashMap` 的 key 用字串常值 | 常值在常量池，永遠是 GC Root |
 | 12 | `-Xss` 調大來解決 `StackOverflowError` | 改成迭代演算法 |
@@ -2753,7 +2753,7 @@ A:42
 Holder 初始化
 B:7
 C:true
-D:0
+D:1
 E:10
 F:false
 ```
@@ -2768,31 +2768,16 @@ F:false
 `mutable` 不是編譯期常量 → 必須真的存取 `Holder` 類別 → 觸發 `<clinit>` →
 static 區塊先執行，才讀到 `mutable`。
 
-**③ `C:true`**
-`new Object()` 只有 `WeakReference` 指著它（沒有強引用）→ GC 就回收 → `get()` 回 null。
-⚠️ 這裡有個細節：`new java.lang.ref.WeakReference<>(new Object())` 這個寫法讓 `new Object()`
-沒有任何強引用，所以一定會被回收。如果寫成 `Object o = new Object(); var weak = new WeakReference<>(o);`
-就不會（`o` 是 GC Root 可達的區域變數）。
+**③ `C:true`（常見結果，不保證）**
+`new Object()` 只由弱引用指向，所以符合回收條件；但 `System.gc()` 只是請求，
+`Thread.sleep(100)` 也不保證 GC 已完成，因此這一行仍可能印 `C:false`。
+若要保證物件在某段操作期間仍可達，需保留強引用並在操作後使用 `Reference.reachabilityFence(o)`；
+只宣告一個後續不再使用的區域變數，不能當成存活保證。
 
-**④ `D:0`**
-
-⚠️ **這題和 9.8 節的說明不同，值得仔細看。**
-
-9.8 節說「`WeakHashMap` 的 key 是字串常值會永遠不被清」。但這裡 `size()` 是 0——為什麼？
-
-因為 `WeakHashMap` 的**弱引用是指向 key 物件本身**，而字串常值 `"literal"`
-確實在常量池裡、確實是 GC Root 可達的。**所以 entry 不該被清除。**
-
-但 `map.size()` 回傳 0 的原因是**這段程式碼被 JIT 最佳化了**：
-`map` 在 `put` 之後、`size()` 之前沒有其他用途，JVM 的逃逸分析可能判定
-整個 `map` 都不可達（`size()` 的結果雖然被印出來，但 map 本身可以被視為死的）。
-
-**實際上這題的輸出「不確定」**——取決於 JIT 是否啟動、是否做了純量替換。
-在 `-Xint`（純解譯模式）下跑會得到 `D:1`。
-
-**這正好是本章的一個重要教訓：`System.gc()` 的行為不是規格保證的，
-用它來「驗證 GC 行為」的測試本身就不可靠。** 要精確驗證，
-應該用 `-XX:+UseSerialGC -Xint` 或直接分析 heap dump。
+**④ `D:1`**
+本例的 `"literal"` 仍由執行中類別的常量池持有，key 沒有變成弱可達，entry 不會因此被清除。
+普通模式與 `-Xint` 都應保留這筆資料。JIT 的逃逸分析不能把仍會被 `size()` 觀察的非空 Map 變成空 Map。
+若改用 `new String("literal")` 作 key 並放掉強引用，才會成為另一個「可能被回收」的實驗。
 
 **⑤ `E:10`**
 `substring` 在 **Java 7 之後會複製字元**，所以 `sub` 不持有原始的 1MB `byte[]`。
@@ -2808,7 +2793,7 @@ static 區塊先執行，才讀到 `mutable`。
 
 **這題最該記住的兩點：**
 1. `static final` 的編譯期常量會被內聯，不觸發類別初始化。
-2. **不要用 `System.gc()` 寫測試**——它的行為不保證，而且 JIT 最佳化會讓結果不可預測。
+2. **不要用 `System.gc()` + sleep 當作回收已完成的斷言**；但這不代表 JIT 能任意改變可觀察的程式語意。
 
 </details>
 
@@ -2878,7 +2863,7 @@ Too many open files           lsof -p <pid>                          資源沒 c
 - [ ] 我知道堆積超過 32GB 會關閉指標壓縮。
 - [ ] 我能說出 GC Roots 有哪些，並解釋為什麼 Java 沒有循環引用問題。
 - [ ] 我知道四種引用型別，也知道 `WeakHashMap` 的兩種誤用。
-- [ ] 我知道 `finalize()` 已被停用，該用 try-with-resources + `Cleaner`。
+- [ ] 我知道 finalization 已待移除、JDK 21 仍預設啟用，應用 try-with-resources + `Cleaner` 取代。
 - [ ] 我能在 Serial / Parallel / G1 / ZGC 之間做出有理由的選擇。
 - [ ] 我認得六種 `OutOfMemoryError` 並知道各自的診斷方向。
 - [ ] **我能用「Full GC 後的谷底是否升高」判斷是洩漏還是用量不足。**

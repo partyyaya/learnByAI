@@ -9,7 +9,7 @@ useSeoMeta({ title: '文章管理' })
 
 const { user } = useUserSession()
 
-// 後台要看全部（含草稿），帶 ?all=true（server 端會再驗登入）
+// 後台要看「已發佈 + 自己的草稿」，帶 ?all=true（server 端會再驗登入，別人的草稿不會回來）
 const { data: posts, refresh } = await useFetch('/api/posts', {
   query: { all: 'true' },
   key: 'admin-posts',
@@ -37,7 +37,7 @@ async function add() {
     published.value = true
     await refresh()
   } catch (e) {
-    err.value = e.data?.statusMessage || '新增失敗'
+    err.value = e.data?.message || '新增失敗'
   }
 }
 
@@ -49,7 +49,7 @@ async function remove(id) {
     await $fetch(`/api/posts/${id}`, { method: 'DELETE' })
   } catch (e) {
     posts.value = backup
-    alert(e.data?.statusMessage || '刪除失敗')
+    alert(e.data?.message || '刪除失敗')
   }
 }
 </script>
@@ -71,7 +71,7 @@ async function remove(id) {
       </div>
     </form>
 
-    <h2 style="font-size:18px">所有文章</h2>
+    <h2 style="font-size:18px">已發佈文章與你的草稿</h2>
     <article v-for="p in posts" :key="p.id" class="card post-card">
       <div>
         <h2>
@@ -82,8 +82,9 @@ async function remove(id) {
         </h2>
         <p class="meta">作者：{{ p.author?.name || '站長' }}</p>
       </div>
-      <!-- 只有自己的文章才顯示刪除鈕（示範文章 authorId 為 null，不顯示） -->
-      <button v-if="p.authorId === user.id" class="btn danger" @click="remove(p.id)">
+      <!-- 只有自己的文章才顯示刪除鈕（示範文章 authorId 為 null，不顯示）。
+           用 user?.id：登出時 session 先被清空，頁面在導走前還會重繪一次 -->
+      <button v-if="p.authorId === user?.id" class="btn danger" @click="remove(p.id)">
         刪除
       </button>
     </article>

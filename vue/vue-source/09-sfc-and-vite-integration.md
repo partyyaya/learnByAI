@@ -19,11 +19,13 @@
 
 ```text
 瀏覽器請求 /src/App.vue
-  -> plugin-vue 先回傳主模組（含 script + import template/style）
-  -> 再請求 /src/App.vue?vue&type=template...
-  -> 再請求 /src/App.vue?vue&type=style...
-  -> 組裝成完整 component
+  -> plugin-vue 回傳主模組：script（compileScript）＋ template 編出的 render（直接內嵌）
+     ＋ import 各個 style 子模組
+  -> 再請求 /src/App.vue?vue&type=style&index=0&scoped=xxxx&lang.css
+  -> 主模組用 _export_sfc 把 render、__scopeId 等掛到 component 上（見 9.5）
 ```
+
+一般的 HTML template 不會另外發請求；只有 template 帶 `lang`（例如 pug）或 `src` 時，才會多一個 template 子請求：帶 `lang` 時是 `/src/App.vue?vue&type=template...`，帶 `src` 時則直接請求那個外部檔（例如 `/src/App.html?import&vue&type=template&src=...`）。
 
 ---
 
@@ -46,10 +48,10 @@
 
 | 宏 | 版本 | 編譯後做什麼 |
 |----|------|------|
-| `defineProps` | 3.0 | 收集 props 宣告，改寫成 component 的 `props` 選項 |
-| `defineEmits` | 3.0 | 改寫成 `emits` 選項 |
-| `defineExpose` | 3.0 | 產生 `expose({...})` 呼叫，控制實例對外暴露的東西 |
-| `withDefaults` | 3.0 | 為以型別宣告的 props 補預設值（展開成 runtime 預設） |
+| `defineProps` | 3.2 | 收集 props 宣告，改寫成 component 的 `props` 選項 |
+| `defineEmits` | 3.2 | 改寫成 `emits` 選項 |
+| `defineExpose` | 3.2 | 產生 `expose({...})` 呼叫，控制實例對外暴露的東西 |
+| `withDefaults` | 3.2 | 為以型別宣告的 props 補預設值（展開成 runtime 預設） |
 | **`defineModel`** | **3.4 穩定** | 宣告一個雙向綁定用的 model；展開成 `modelValue` prop + `update:modelValue` emit，並回傳一個「寫回會自動 emit」的 ref。**這是最該掌握的新宏**（元件版 `v-model` 的官方寫法） |
 | `defineOptions` | 3.3 | 在 `<script setup>` 內宣告 `name` / `inheritAttrs` 等原本要寫在一般 `<script>` 的選項 |
 | `defineSlots` | 3.3 | 純型別宏，為 slots 提供 TS 型別（無 runtime 產物） |
@@ -62,14 +64,74 @@
 
 ## 9.5 template 編譯與 render 綁定
 
-`compileTemplate` 會輸出 render function 程式碼，並在主模組中掛上：
+`compileTemplate` 會輸出 render function 程式碼。開發模式下，plugin-vue 把它改名為 `_sfc_render` 內嵌在主模組，最後用 `_export_sfc` 掛到 component 上。
 
-```ts
-script.render = render
-export default script
+以下面這個 `App.vue` 為例：
+
+```vue
+<script setup>
+import { ref } from 'vue'
+const count = ref(0)
+</script>
+
+<template>
+  <button @click="count++">{{ count }}</button>
+</template>
+
+<style scoped>
+button { color: red; }
+</style>
 ```
 
-實務上你常看到 plugin-vue 產生的中介碼（transformed code）正是這種組裝邏輯。
+plugin-vue 產生的主模組（Vue 3.5.41、`@vitejs/plugin-vue` 6.0.8 實際輸出，省略從 `vue` 匯入的幾行與 HMR 程式碼、路徑精簡）：
+
+```js
+const _sfc_main = {
+  __name: 'App',
+  setup(__props, { expose: __expose }) {
+  __expose();
+
+const count = ref(0)
+
+const __returned__ = { count, ref }
+Object.defineProperty(__returned__, '__isScriptSetup', { enumerable: false, value: true })
+return __returned__
+}
+
+}
+
+function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
+  return (_openBlock(), _createElementBlock("button", {
+    onClick: _cache[0] || (_cache[0] = $event => ($setup.count++))
+  }, _toDisplayString($setup.count), 1 /* TEXT */))
+}
+
+import "/src/App.vue?vue&type=style&index=0&scoped=7a7a37b1&lang.css"
+
+import _export_sfc from '\0plugin-vue:export-helper'
+export default /*#__PURE__*/_export_sfc(_sfc_main, [['render',_sfc_render],['__scopeId',"data-v-7a7a37b1"],['__file',"/src/App.vue"]])
+```
+
+production build 遇到 `<script setup>` 時會改用 `inlineTemplate`：template 直接編進 `setup()`，`setup()` 回傳的就是 render 函式，元件上不再有 `render` 選項（`compileScript(descriptor, { inlineTemplate: true })` 的輸出）：
+
+```js
+export default {
+  __name: 'App',
+  setup(__props) {
+
+const count = ref(0)
+
+return (_ctx, _cache) => {
+  return (_openBlock(), _createElementBlock("button", {
+    onClick: _cache[0] || (_cache[0] = $event => (count.value++))
+  }, _toDisplayString(count.value), 1 /* TEXT */))
+}
+}
+
+}
+```
+
+追「template 編譯結果」時，先確認你看的是 dev（`_sfc_render`，透過 `$setup` 存取）還是 production（內嵌在 `setup()`，直接存取區域變數）。
 
 ---
 
@@ -141,7 +203,7 @@ export default script
 
 建議順序：
 
-1. 了解 plugin-vue 如何拆請求（主模組 + template/style 子模組）
+1. 了解 plugin-vue 如何拆請求（主模組內嵌 template 的 render + style 子模組；template 帶 `lang`／`src` 時才另成子模組）
 2. 看 descriptor 建立與快取
 3. 看 `compileScript` / `compileTemplate` / `compileStyle` 呼叫點
 4. 追 HMR 分支如何決定局部更新或重載
@@ -153,13 +215,13 @@ export default script
 ### 必做
 
 - 對一個 `.vue` 檔記錄：
-  - 主模組轉換結果
-  - template 子請求輸出
+  - 主模組轉換結果（含內嵌的 `_sfc_render`）
   - style 子請求輸出
 - 修改 script/template/style 各一次，記錄 HMR 行為差異
 
 ### 加分
 
+- 把 template 改成 `<template src="./App.html">` 引入外部檔案，觀察多出來的 template 子請求
 - 寫一份「SFC 故障排查決策樹」（至少 10 個節點）
 - 製作一個含 `<script setup> + scoped + CSS vars` 的綜合示例
 
@@ -173,5 +235,5 @@ export default script
 
 ## 9.13 下一章預告
 
-下一章是整門課收束：  
-你會用一套可落地工作流，從真實 issue 的重現、定位、修補到驗證，完成一次「真正的源碼實戰」。
+下一章把前面各章的能力整合成一套源碼閱讀工作流：  
+你會用這套可落地的流程，從真實 issue 的重現、定位、修補到驗證，完成一次「真正的源碼實戰」。

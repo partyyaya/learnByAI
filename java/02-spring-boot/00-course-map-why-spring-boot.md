@@ -43,7 +43,8 @@
 這一站的定位很特別：**它不教你「怎麼寫業務功能」，它教你「你寫的東西為什麼會被執行」。**
 
 後面 04～10 站會大量出現 `@RestController`、`@Service`、`@Transactional`、`@Cacheable`、`@PreAuthorize`。
-這些註解沒有一個是 Java 語言的功能——它們全部是**由 Spring 容器在啟動時掃描、在執行時用代理攔截**才生效的。
+這些註解不是 Java 語言直接提供的功能，而是由 Spring 的不同機制處理：
+MVC 註冊 Controller 路由；交易、快取與方法授權等則通常使用執行期 AOP 代理。
 你如果不知道這個機制，就會遇到經典的鬼故事：
 
 | 症狀 | 真正原因 | 在本站哪一章 |
@@ -1165,7 +1166,7 @@ DEBUG o.s.web.servlet.DispatcherServlet  : Completed 200 OK
 | 主題 | 在哪學 |
 |---|---|
 | **這條鏈長什麼樣**（本節） | 本章 |
-| 為什麼你的 Controller 物件是**代理** | 本站第 01 章、第 04 章 |
+| Controller 在什麼情況下會成為**代理** | 本站第 01 章、第 04 章 |
 | 切面怎麼插進「呼叫你的方法」那一格 | 本站第 04 章 |
 | 參數綁定、`@Valid`、`@RestControllerAdvice` 怎麼寫 | **04-controller** |
 | Filter / Interceptor 實作 | **04-controller** |
@@ -1556,7 +1557,8 @@ AuditLogger auditLogger() { return new AuditLogger(); }
 
 **計時在 ⑨ 就停了，Runner 在 ⑪ 才跑。**
 
-但是——**`process running for Y` 這個數字會變大**（它是到 `run()` 完全結束為止），
+**同一行的 `process running for Y` 也不包含其後 Runner 的 sleep**：
+它是在印出該行日誌時讀取的 JVM 存活時間。要量到 Runner，請量測 `ApplicationReadyEvent.getTimeTaken()`，
 而且**在 Runner 跑完之前，`ApplicationReadyEvent` 不會發出**。
 
 實務啟示：如果你在 Runner 裡做很重的初始化（預熱快取、載入字典檔），

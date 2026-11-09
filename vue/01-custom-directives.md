@@ -75,7 +75,7 @@ Vue 3 把指令的 hook 改成「對齊元件生命週期」的命名，更直�
 |-------|-------|------|
 | `bind` | `created` / `beforeMount` | Vue 2 的 `bind` 大致對應 Vue 3 的 `beforeMount`；若要更早可用 `created` |
 | `inserted` | `mounted` | 元素插入父節點後 |
-| `update` | （移除）| Vue 3 不再有對應 hook，改用 `beforeUpdate` |
+| `update` | （移除）| 與 `updated` 幾乎重複，Vue 3 直接移除，改用 `updated` |
 | `componentUpdated` | `updated` | 元素與子節點更新後 |
 | `unbind` | `unmounted` | 卸載後清理 |
 | （無）| `beforeUpdate` | Vue 3 新增：更新前 |
@@ -274,6 +274,9 @@ const open = ref(false);
 
 > 把 handler 存在 `el.__clickOutside__`，是為了讓 `unmounted` 能拿到「同一個函式參考」來移除。
 > 直接 `addEventListener('click', fn)` 但 `removeEventListener` 傳入不同 fn，是無法移除的常見錯誤。
+>
+> 這是最小版本：handler 在閉包裡讀的是 `mounted` 當下的 `binding.value`。若傳入的 callback 會隨渲染換成另一個函式
+> （例如 `v-click-outside="editing ? save : close"`），指令仍會呼叫舊的那個。原因見第 14 節，補上 `updated` 的完整版見第 14.3 節。
 
 ---
 
@@ -285,8 +288,13 @@ const open = ref(false);
 // directives/lazy.js
 export const lazy = {
   mounted(el, binding) {
+    // 待載入的網址存在 el 上，updated 時覆寫；載入時一律從 el 讀最新值
+    el.__lazySrc__ = binding.value;
+    el.__lazyLoaded__ = false;
+
     const loadImage = () => {
-      el.src = binding.value;
+      el.src = el.__lazySrc__;
+      el.__lazyLoaded__ = true;
     };
 
     // 建立一個 IntersectionObserver，用來偵測元素是否進入視窗範圍。
@@ -309,8 +317,11 @@ export const lazy = {
   },
 
   updated(el, binding) {
-    // value 改變才更新，避免不必要的賦值
-    if (binding.value !== binding.oldValue) {
+    // value 沒變就不做事
+    if (binding.value === binding.oldValue) return;
+    el.__lazySrc__ = binding.value;
+    // 已經載入過才直接換圖；還沒進入視窗就只記下新網址，等 observer 觸發時再載入
+    if (el.__lazyLoaded__) {
       el.src = binding.value;
     }
   },
@@ -320,6 +331,8 @@ export const lazy = {
       el.__observer__.disconnect();
       delete el.__observer__;
     }
+    delete el.__lazySrc__;
+    delete el.__lazyLoaded__;
   },
 };
 ```
@@ -327,6 +340,10 @@ export const lazy = {
 ```html
 <img v-lazy="imageUrl" alt="lazy loaded" />
 ```
+
+> 網址存在 `el.__lazySrc__`，而不是讓 `loadImage` 在閉包裡讀 `binding.value`：`mounted` 收到的 `binding` 是那一次渲染的物件，
+> 圖片還沒進入視窗前 `imageUrl` 若改了，閉包讀到的仍是舊網址，捲進視窗時會把舊圖載回來。
+> `updated` 也只在「已經載入過」時才直接換圖，否則提早設定 `src` 等於取消了延遲載入。
 
 ---
 
@@ -409,7 +426,8 @@ app.directive("color", (el, binding) => {
 指令用在「元件」而非原生元素上時，會嘗試套用到元件的**根節點**。
 
 - 若元件有多個根節點（Fragment），指令無法決定套用對象，會發出警告且被忽略
-- 解法：讓元件單根、或在元件內部用 `v-bind="$attrs"` / 明確處理
+- 和透傳屬性不同，指令**不在 `$attrs` 裡**：`v-bind="$attrs"` 沒辦法把指令轉到元件內部的其他元素上
+- 解法：讓元件單根；若要套到元件內部某個元素，就在子元件內部直接對那個元素使用指令（或改用 prop 控制）。官方也不建議把自訂指令用在元件上
 
 ### 11.4 命名規則
 
@@ -420,13 +438,14 @@ app.directive("color", (el, binding) => {
 
 伺服器端渲染（SSR）時，server 上沒有真實 DOM，所以指令的**生命週期 hook 一個都不會在 server 執行**——
 `created`、`beforeMount`、`mounted`、`updated`、`beforeUnmount`、`unmounted` 全部都是 client-only。
-它們只會在瀏覽器端 hydration 之後才第一次被呼叫。
+它們只會在瀏覽器端執行：`created`、`beforeMount`、`mounted` 在 hydration 過程中依序呼叫，之後的更新與卸載才輪到其他 hook。
 
 因此：
 
 - 這些 hook 裡可以安全使用 `window` / `document`（因為它們本來就只在 client 跑），不需要 `typeof window` 防護。
-- 但要注意：只靠 `mounted` 去改 DOM，會讓 server 端輸出的 HTML **不含**這個效果，直到 client hydration 後才補上——
-  若這個效果會改變版面（例如加/移除節點、改屬性），可能造成 hydration mismatch 或畫面閃動。
+- 但要注意：只靠 `mounted` 去改 DOM，會讓 server 端輸出的 HTML **不含**這個效果，直到 client hydration 時才補上——
+  `mounted` 在 hydration 比對完之後才執行，所以不會觸發 hydration mismatch 警告；實際的問題是畫面閃動：
+  使用者會先看到沒有效果的 HTML，JS 載入、hydration 完才變成正確的樣子。
 - 若你需要「server 端輸出的 HTML 就帶上指令的效果」，要用下一節的 `getSSRProps`。
 
 ### 11.6 `getSSRProps`：讓指令在 server 端也能輸出屬性
@@ -494,7 +513,7 @@ app.use(directives);
 
 ## 13. 練習作業
 
-1. 寫一個 `v-longpress`：長按 800ms 後觸發 callback，支援 `.duration` 透過 `arg` 自訂時間
+1. 寫一個 `v-longpress`：長按 800ms 後觸發 callback，支援用 `arg` 自訂時間（`v-longpress:1500`）
 2. 寫一個 `v-tooltip`：`mounted` 建立提示框、`updated` 同步文字、`unmounted` 移除節點與事件
 3. 為 `v-click-outside` 加上 `.exclude` modifier，可排除特定元素不視為「外部」
 
@@ -513,7 +532,7 @@ unmounted → 把 mounted 建立的東西全部收乾淨
 ```
 
 「把東西存在 `el` 上」不只是為了 `unmounted` 取得同一個參考（第 7 節已經講過），
-還有第二個理由：**`mounted` 收到的 `binding` 是那一次渲染的舊物件**。
+還有第二個理由（第 8 節的 `v-lazy` 已經用到）：**`mounted` 收到的 `binding` 是那一次渲染的舊物件**。
 如果 handler 用閉包直接抓 `binding.value`，元件更新後指令仍然呼叫舊的 callback。
 所以下面三題都改成：狀態放 `el`，`updated` 時覆寫，事件處理器一律從 `el` 讀最新值。
 
@@ -526,7 +545,7 @@ unmounted → 把 mounted 建立的東西全部收乾淨
 const DEFAULT_DURATION = 800;
 
 function resolveDuration(binding) {
-  // arg 一定是字串（v-longpress:1200 → arg === "1200"），要自己轉數字並檢查
+  // 靜態 arg 是字串（v-longpress:1200 → arg === "1200"），動態 arg（:[ms]）是原值；一律轉數字並檢查
   const ms = Number(binding.arg);
   return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_DURATION;
 }
@@ -638,8 +657,8 @@ const ms = ref(1200);
 
 幾個容易漏掉的點：
 
-- **`arg` 永遠是字串**：`v-longpress:1500` 拿到的是 `"1500"`，要自己 `Number()` 並檢查，
-  否則寫錯成 `v-longpress:abc` 會變成 `setTimeout(fn, NaN)`（等同 0ms，一按就觸發）。
+- **靜態 `arg` 是字串**：`v-longpress:1500` 拿到的是 `"1500"`；動態的 `v-longpress:[ms]` 則拿到 `ms` 的原值（這裡是數字 `1200`）。
+  一律 `Number()` 並檢查，否則寫錯成 `v-longpress:abc` 會變成 `setTimeout(fn, NaN)`（等同 0ms，一按就觸發）。
 - **用 pointer 事件而不是 `mousedown` + `touchstart`**：後者在手機上會同時觸發，callback 跑兩次。
 - **一定要處理取消**：`pointerup`（放開）、`pointerleave`（滑走）、`pointercancel`（系統中斷，例如來電或捲動接管）三種都要清計時器。
 - **長按之後還會補一個 `click`**：如果同一顆按鈕又綁了 `@click`，短按長按都會觸發它。
@@ -787,7 +806,7 @@ function resolveNodes(item) {
   // 字串當 CSS selector 查；每次點擊都重查，才抓得到之後才出現的節點
   if (typeof item === "string") return Array.from(document.querySelectorAll(item));
   // 先判 Node！<button>/<input> 自己就有 .value 屬性，
-  // 若先看 .value 會把按鈕誤判成 ref 而拿到空字串（實測踩過的坑）
+  // 若先看 .value 會把按鈕誤判成 ref 而拿到空字串
   if (item instanceof Node) return [item];
   // 元件 ref 拿到的是元件實例，真正的節點在 $el
   if (item.$el instanceof Node) return [item.$el];
@@ -869,8 +888,8 @@ const triggerRef = useTemplateRef("trigger"); // Vue 3.5+
 - **selector 要在「每次點擊時」才查**，不能在 `mounted` 先查好存起來——
   排除目標可能是之後才被 `v-if` 渲染出來的節點。
 - **判斷 template ref 時要先 `instanceof Node`**：`<button>`、`<input>`、`<option>` 這些元素**自己就有 `.value` 屬性**，
-  若先用 `item.value ?? item` 解包，按鈕會被誤認成 ref 而拿到空字串，排除就默默失效。
-  這一條是實測時真的踩到的坑：測試裡排除的目標剛好是 `<button>`，排除完全沒作用。
+  若先用 `item.value ?? item` 解包，按鈕會被誤認成 ref 而拿到空字串，排除就默默失效——
+  而最常被排除的目標（觸發鈕）偏偏就是 `<button>`。
 - **模板裡的 ref 會被自動解包，陣列裡的不會**：`exclude: [triggerRef]` 寫在 template 中拿到的是 DOM 元素，
   但如果這個設定物件是在 `<script setup>` 裡組好再傳出來，指令收到的是 `{ value: el }`。兩種都要支援。
 - **`updated` 只換 state，不要重綁監聽**：每次更新都 `removeEventListener` + `addEventListener` 沒有必要，

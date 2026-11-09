@@ -456,14 +456,19 @@ class TestB { }
 @SpringBootTest(webEnvironment = WebEnvironment.NONE)          // context 3
 ```
 
-#### ⑤ `@DynamicPropertySource` 每次值都不同
+#### ⑤ 不同的 `@DynamicPropertySource` 方法；共用方法但資源改變則有相反風險
 
 ```java
 @DynamicPropertySource
 static void props(DynamicPropertyRegistry registry) {
-    registry.add("shop.random", () -> UUID.randomUUID().toString());   // ⚠️ 每次都不一樣
+    registry.add("shop.random", () -> UUID.randomUUID().toString());   // 每次解析可不同，但值不會加入快取 key
 }
 ```
+
+快取辨識的是宣告的動態屬性**方法**等設定，不會先求值再把結果加入 key。
+不同類別各自宣告的方法可造成不同 context；繼承同一個方法則可能仍共用 context。
+若 supplier 背後的容器端點改變，既有 DataSource 可能仍保留舊端點，不能假設會自動重建。
+請穩定共用資源的生命週期；確實需要不同資源時，才明確使用 `@DirtiesContext` 或不同設定隔離。
 
 #### ⑥ 巢狀的 `@TestConfiguration`
 
@@ -804,7 +809,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 而且不再是 Spring Boot 專屬——純 Spring 專案也能用。
 
 > **遷移注意**：`@MockitoBean` 的 `reset` 預設值與 `@MockBean` 相同（`AFTER` 每個測試方法後重置），
-> 所以行為一致，可以直接替換。第 09 章會列進遷移清單。
+> 但覆寫策略及 spy 必須已有符合條件的 Bean 等限制仍要檢查，不能只靠更名保證行為一致。第 09 章會列進遷移清單。
 
 ### `MockMvcTester`：AssertJ 風格【Boot 3.4+】
 
@@ -1032,14 +1037,14 @@ class OrderRepositoryTest {
 ```
 ✅ 只載入 JPA 相關的 Bean（Entity、Repository、EntityManager、DataSource）
 ✅ 自動套用 @Transactional，測試結束後 rollback
-✅ 自動用內嵌資料庫（如果 classpath 上有 H2 / HSQLDB / Derby）
+✅ 預設依 NON_TEST 規則替換非測試 DataSource；需要內嵌資料庫時 classpath 須有 H2 / HSQLDB / Derby
 ✅ 開啟 SQL 日誌（spring.jpa.show-sql=true）
 ❌ 不載入 @Service / @Component / @Controller
 ```
 
 ### ★ 為什麼「用 H2 測試會騙你」★
 
-`@DataJpaTest` 預設會找內嵌資料庫。如果你的 classpath 上有 H2，它就用 H2。
+沒有可保留的測試 DataSource、且未停用替換時，`@DataJpaTest` 會尋找 classpath 上的內嵌資料庫，例如 H2。
 **但正式環境是 MySQL。**
 
 | 差異 | H2 | MySQL 8 | 後果 |
@@ -1162,9 +1167,10 @@ class OrderRepositoryMySqlTest {
 }
 ```
 
-> **`@AutoConfigureTestDatabase(replace = NONE)` 不能忘。**
-> `@DataJpaTest` 預設會「用內嵌資料庫替換掉你的 DataSource」，
-> 即使你設了 Testcontainers 也會被覆蓋。
+> **版本差異**：Boot 3.4+ 的預設是 `Replace.NON_TEST`。
+> 以 `@ServiceConnection`、`@DynamicPropertySource` 提供 URL 等可辨識的測試資料庫會被保留；
+> 因此本課 Boot 3.5 的此例不必靠 `NONE` 才能保住容器資料庫。明寫 `NONE` 可表達不替換的意圖，
+> 但 Boot 3.3 以前或無法辨識為測試資料庫的自訂 DataSource，仍要另行確認替換規則。
 
 ### 讓 Testcontainers 快起來：容器重複使用
 
@@ -2398,9 +2404,9 @@ void 測試程式碼變得極易讀() {
 
 測到的是 Hibernate 一級快取，不是真的資料庫查詢。
 
-### ⑤ `@DataJpaTest` + Testcontainers 忘了 `replace = NONE`
+### ⑤ 沒依 Boot 版本確認測試 DataSource 的替換規則
 
-DataSource 被換成內嵌資料庫，Testcontainers 白啟動了。
+Boot 3.4+ 的 `NON_TEST` 會保留可辨識的測試資料庫；舊版或無法辨識的自訂來源，必要時設 `NONE`。
 
 ### ⑥ `RANDOM_PORT` 測試以為 `@Transactional` 會 rollback
 
@@ -3010,7 +3016,7 @@ void context種類不應超過三種() {
 - [ ] 我會用 `@JsonTest`、`@RestClientTest` 做更輕量的切片測試。
 - [ ] **我能說出至少五項 H2 與 MySQL 的行為差異，以及各自造成什麼線上問題。**
 - [ ] 我會用 Testcontainers + `@ServiceConnection` 跑真實資料庫。
-- [ ] 我知道 `@DataJpaTest` + Testcontainers 一定要加 `@AutoConfigureTestDatabase(replace = NONE)`。
+- [ ] 我知道 Boot 3.4+ 的 `Replace.NON_TEST` 會保留可辨識的容器測試資料庫，並能依版本決定是否明寫 `NONE`。
 - [ ] 我知道 `@DataJpaTest` 裡要 `flush()` + `clear()` 才是真的測資料庫。
 - [ ] 我會用 `static` 容器 + `withReuse(true)` 讓 Testcontainers 快起來。
 - [ ] 我知道 `withReuse` 在 CI 上不該開，且資料會殘留。

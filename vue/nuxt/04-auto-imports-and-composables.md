@@ -192,6 +192,8 @@ if (import.meta.client) {
 ```
 
 > 判斷準則：**只是「這段 UI 只在前端顯示」** → 用 `<ClientOnly>`；**「這段邏輯只在某一端執行」** → 用 `import.meta.client` / `import.meta.server`。碰到 `window`、`document`、`localStorage`、隨機值、當下時間，先想到這兩招。
+>
+> ⚠️ 但 `import.meta.client` 只能避免伺服器報錯，**不能避免 hydration mismatch**：如果讀到的值會影響畫面（例如依 `localStorage` 決定顯示「已登入」、顯示隨機值或時間），伺服器產出的 HTML 跟瀏覽器第一次渲染的結果還是對不起來。這種值要在 `onMounted` 裡才設定，或整塊包進 `<ClientOnly>`；若需要兩端一致的隨機值，用 `useState('k', () => Math.random())` 讓伺服器算一次、隨 payload 帶到前端。
 
 ---
 
@@ -200,7 +202,7 @@ if (import.meta.client) {
 1. 把第 3 章的頁首抽成 `app/components/TheHeader.vue`，在 `default.vue` 直接用 `<TheHeader />`（不 import）。
 2. 寫一個 `app/composables/useToggle.js`（回傳 `state` 與 `toggle`），在兩個元件用它，確認彼此獨立。
 3. 把 `useToggle` 改用 `useState` 共享，觀察兩個元件變成連動。
-4. 做一個顯示「目前時間」的區塊，先不包 `<ClientOnly>` 看 console 的 hydration 警告，再包起來看警告消失。
+4. 做一個顯示「目前時間」的區塊：先在 `<script setup>` 直接用 `new Date().toLocaleTimeString()` 渲染、不包 `<ClientOnly>`，看 console 的 hydration 警告；再包進 `<ClientOnly>`（或改在 `onMounted` 裡設定時間），看警告消失。
 
 ---
 
@@ -249,7 +251,8 @@ const props = defineProps({ label: String })
 
 ```vue
 <script setup>
-// 目前時間在 server / client 一定不同 → 只能在瀏覽器算，否則 hydration mismatch
+// 目前時間在 server / client 一定不同 → 只在 onMounted（瀏覽器）裡算。
+// SSR 與 hydration 當下 now 都是空字串，兩邊一致，所以不會 hydration mismatch
 const now = ref('')
 let timer
 
@@ -288,7 +291,7 @@ const showChart = ref(false)
     <CounterButton label="按鈕 B" />
 
     <h2>2. ClientOnly 即時時鐘</h2>
-    <p>時間只能在瀏覽器算，用 ClientOnly 包起來避免 hydration 錯誤：</p>
+    <p>時間只能在瀏覽器算：LiveClock 在 onMounted 才填時間，外層 ClientOnly 讓伺服器先輸出 fallback：</p>
     <ClientOnly>
       <LiveClock />
       <template #fallback><span>時鐘載入中…</span></template>
@@ -327,7 +330,7 @@ h2 { margin-top: 28px; font-size: 18px; }
 跑起來後：
 
 - 點「按鈕 A」再點「按鈕 B」→ 兩顆數字**同步增加**，證明 `useState` 共享成功。
-- 時鐘每秒跳動，且 console **沒有** hydration 警告（因為包在 `<ClientOnly>`）。
+- 時鐘每秒跳動，且 console **沒有** hydration 警告（時間只在 `onMounted` 裡設定；`<ClientOnly>` 則讓 SSR 先顯示「時鐘載入中…」）。
 - 打開 Network 面板，點「展開」時才會看到 `DemoPanel` 的 JS 被下載，證明 `Lazy` 生效。
 - 全程沒有寫任何 `import`（元件、composable、`ref`、`onMounted` 都是自動匯入）。
 

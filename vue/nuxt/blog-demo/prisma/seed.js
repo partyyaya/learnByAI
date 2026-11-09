@@ -7,8 +7,9 @@ import { PrismaClient } from '@prisma/client'
 const prisma = new PrismaClient()
 
 async function main() {
-  // 先清空文章，讓重複執行 seed 不會一直疊加
-  await prisma.post.deleteMany()
+  // 先刪掉舊的示範文章（authorId 為 null 的那些），讓重複執行 seed 不會一直疊加；
+  // 你自己註冊帳號後發的文章不會被刪
+  await prisma.post.deleteMany({ where: { authorId: null } })
 
   await prisma.post.createMany({
     data: [
@@ -32,14 +33,15 @@ async function main() {
       },
       {
         title: '（草稿）尚未發佈的文章',
-        content: '這篇 published=false，只會出現在後台，不會出現在首頁。用來示範發佈狀態。',
+        content:
+          '這篇 published=false，而且不屬於任何帳號：首頁看不到，任何人的後台也看不到（草稿只有作者本人看得到）。用來驗證公開列表確實濾掉了草稿。',
         published: false,
       },
     ],
   })
 
-  const count = await prisma.post.count()
-  console.log(`Seed 完成，共 ${count} 篇文章。`)
+  const count = await prisma.post.count({ where: { authorId: null } })
+  console.log(`Seed 完成，共 ${count} 篇示範文章。`)
 }
 
 main()

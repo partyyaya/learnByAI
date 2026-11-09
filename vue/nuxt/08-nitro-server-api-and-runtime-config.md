@@ -115,19 +115,21 @@ export default defineEventHandler((event) => {
 ```js
 export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, 'id'))
-  const post = findPost(id)
+  const post = db.find(id) // db 是下一節 server/utils/db.js 的假資料庫
 
   if (!post) {
     throw createError({
-      statusCode: 404,
-      statusMessage: 'Post not found',
+      status: 404,
+      message: '找不到文章', // 給人看的說明放 message，中文也沒問題
     })
   }
   return post
 })
 ```
 
-前端用 `useFetch`/`$fetch` 打這支 API 時，這個 404 會變成 `error`，你可以再 `throw createError` 導到 `error.vue`（第 3、6 章）。
+前端用 `useFetch`/`$fetch` 打這支 API 時，這個 404 會變成 `error`，你可以再 `throw createError` 導到 `error.vue`（第 3、6 章）。用 `$fetch` 時，在 `catch (e)` 裡讀 `e.data?.message` 就拿得到上面那段說明文字。
+
+> 寫法跟第 3 章頁面端一樣用 `status` / `message`（`statusCode` / `statusMessage` 是舊名；`statusMessage` 會被當成 HTTP 狀態列文字，中文放進去會觸發 h3 警告）。伺服器端的錯誤**不要**加 `fatal`——那會讓正式環境把 `message` 換成通用的 `"Server Error"`。
 
 > 想設狀態碼但不算錯誤（例如新增成功回 201）：用 `setResponseStatus(event, 201)`。
 
@@ -222,7 +224,7 @@ export default defineEventHandler((event) => {
 })
 ```
 
-啟動後打開 `http://localhost:3000/robots.txt`，會看到純文字內容——網址沒有 `/api`、回應也不是 JSON。
+先刪掉 `create nuxt` 範本附的 `public/robots.txt`——`public/` 的靜態檔會比 `server/routes` 優先送出，不刪的話你看到的會是那份靜態檔。接著打開 `http://localhost:3000/robots.txt`，會看到純文字內容——網址沒有 `/api`、回應也不是 JSON。
 
 > 判斷：**給前端/程式吃的 JSON 資料 API** → `server/api/`（有 `/api` 前綴、回 JSON）；**要放在特定根路徑、或非 JSON 的端點**（`robots.txt`、`sitemap.xml`、webhook）→ `server/routes/`。（第 12 章的 `@nuxtjs/seo` 會自動幫你產 `robots.txt` / `sitemap.xml`，這裡是讓你理解底層是怎麼運作的。）
 
@@ -251,7 +253,7 @@ export default defineNuxtConfig({
 
 規則：
 
-- `runtimeConfig` 頂層的鍵 → **只有伺服器讀得到**（放金鑰、DB 連線字串）。
+- `runtimeConfig` 頂層的鍵 → **只有伺服器端讀得到**（放金鑰、DB 連線字串）；只在 `server/` 裡使用，見下方「讀取」的提醒。
 - `runtimeConfig.public` 的鍵 → **前後端都讀得到**（放非機密設定）。
 
 ### 用 `.env` 覆蓋
@@ -272,7 +274,7 @@ NUXT_PUBLIC_API_BASE=https://api.example.com
 // 伺服器端（server/api/*）：讀得到全部，含私密。傳入 event 較佳
 export default defineEventHandler((event) => {
   const config = useRuntimeConfig(event)
-  const secret = config.apiSecret        // ✅ 私密，只有這裡讀得到
+  const secret = config.apiSecret        // ✅ 私密鍵只在 server/ 裡使用
   const base = config.public.apiBase
   return { base }
 })
@@ -280,12 +282,14 @@ export default defineEventHandler((event) => {
 
 ```vue
 <script setup>
-// 前端（元件）：只讀得到 public
+// 元件：只該讀 public
 const config = useRuntimeConfig()
-console.log(config.public.siteName) // ✅
-console.log(config.apiSecret)       // ❌ undefined（不會外洩到瀏覽器）
+console.log(config.public.siteName) // ✅ 伺服器、瀏覽器都讀得到
+console.log(config.apiSecret)       // ⚠️ SSR 時印出真值（在伺服器 log），瀏覽器端是 undefined
 </script>
 ```
+
+> ⚠️ 元件在 SSR 階段是跑在伺服器上，這時 `useRuntimeConfig()` 拿到的是**含私密鍵的完整設定**；只有送到瀏覽器的 payload 才只含 `public`。所以只要把 `config.apiSecret` 寫進模板，SSR 就會把金鑰直接印進 HTML。**私密鍵只能在 `server/` 裡用，元件與模板一律只讀 `public`。**
 
 > 經典用途：**用 server API 當代理去打第三方服務，金鑰藏在 `apiSecret`**，瀏覽器完全看不到。這是 Nuxt 相對純前端最重要的安全優勢之一。
 
@@ -308,20 +312,28 @@ console.log(config.apiSecret)       // ❌ undefined（不會外洩到瀏覽器�
 2. 用 `server/utils/db.js` 做假資料庫，實作 `GET /api/posts`、`GET /api/posts/[id]`（查無回 404）、`POST /api/posts`。
 3. 頁面用 `useFetch` 顯示列表，做一個表單用 `$fetch` 新增後 `refresh`。
 4. 加一支 `server/middleware/logger.js` 印出每個請求，觀察 terminal。
-5. 在 `runtimeConfig.public` 放 `siteName`，在頁首顯示；在私密區放一個假 `apiSecret`，確認前端讀不到。
+5. 在 `runtimeConfig.public` 放 `siteName`，在頁首顯示；在私密區放一個假 `apiSecret`，只在 `server/api` 裡讀它；再在元件的 `onMounted` 裡印出 `useRuntimeConfig()` 拿到的 `apiSecret`，確認瀏覽器 console 是 `undefined`。
 
 ---
 
 ## 最後範例：自架文章 API + 前端串接 + Runtime Config
 
-> 用 Nitro 做出一個記憶體版文章 API（列表/單篇/新增/刪除），前端完整串接，並用 runtimeConfig 顯示站名。原樣建立以下檔案即可跑（不需資料庫）。
+> 用 Nitro 做出一個記憶體版文章 API（列表/單篇/新增/刪除），前端完整串接，並用 runtimeConfig 顯示站名。`nuxt.config.ts` 是在既有設定裡**加入** `runtimeConfig`，其餘檔案原樣建立即可跑（不需資料庫）。
 
-### `nuxt.config.ts`
+### `nuxt.config.ts`（加入 runtimeConfig）
+
+別整份覆蓋：第 7 章 `app.vue` 的購物車還在用 Pinia，拿掉 `@pinia/nuxt` 整站就會壞。加完後的完整內容如下：
 
 ```ts
 export default defineNuxtConfig({
+  compatibilityDate: '2025-07-01',
+  devtools: { enabled: true },
+  modules: ['@pinia/nuxt'], // 第 7 章加的，保留（有裝持久化模組也一起留著）
+  // routeRules: { ... },   // 第 5 章的 routeRules 若還在，照舊保留
+
+  // 本章新增
   runtimeConfig: {
-    apiSecret: 'demo-secret', // 只有伺服器讀得到
+    apiSecret: 'demo-secret', // 私密鍵：只在 server/ 裡使用
     public: {
       siteName: 'Nitro Blog',
     },
@@ -366,7 +378,7 @@ export default defineEventHandler(() => {
 export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   if (!body?.title) {
-    throw createError({ statusCode: 400, statusMessage: '標題必填' })
+    throw createError({ status: 400, message: '標題必填' })
   }
   setResponseStatus(event, 201)
   return db.create({ title: body.title, content: body.content ?? '' })
@@ -379,7 +391,7 @@ export default defineEventHandler(async (event) => {
 export default defineEventHandler((event) => {
   const post = db.find(getRouterParam(event, 'id'))
   if (!post) {
-    throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+    throw createError({ status: 404, message: '找不到文章' })
   }
   return post
 })

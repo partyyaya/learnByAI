@@ -1347,7 +1347,8 @@ public class BasicCollectors {
 
 > **`toMap` 的三個坑：重複 key 丟例外、value 不能是 null、預設回傳 `HashMap`（無序）。**
 > 從資料庫查出來的資料做 `toMap(Entity::getCode, ...)`，只要有兩筆同 code 就爆——
-> 這是實務上很常見的線上錯誤。**永遠提供合併函式。**
+> **先決定重複 key 的語意**：資料契約要求唯一時，兩參數 `toMap` 的例外能揭露髒資料；
+> 若允許重複，才提供明確的合併策略，或用 `groupingBy` 保留全部值。不要為了避免例外就靜默丟掉資料。
 
 ### `groupingBy`：本節重點
 
@@ -2535,6 +2536,16 @@ public class WhenNotToUseStream {
 
 把第 05 章的 `TodoStatistics` 重寫。
 
+這次 `topTags` 的回傳型別從 `List<Map.Entry<String, Integer>>` 改為 `Map<String, Long>`。
+若保留第 05 章的 `CollectionsDemo.java`，請將熱門標籤輸出同步改成 Map 的雙參數 `forEach`：
+
+```java
+stats.topTags(3).forEach((tag, count) ->
+        System.out.printf("  %-6s %d 次%n", tag, count));
+```
+
+`countByPriority`、`countByDate` 的計數也從 `Integer` 改為 `Long`；有明寫型別的呼叫端需一起更新。
+
 ### `TodoStatistics.java`
 
 ```java
@@ -2795,7 +2806,7 @@ countByPriority().forEach((p, c) -> sb.append(...rates.get(p)));
 | 2 | `optional.isPresent()` + `get()` | `map().orElse()` |
 | 3 | `Optional` 當欄位 / 參數 | 只當回傳型別 |
 | 4 | `Optional.of(可能是 null)` | `Optional.ofNullable(...)` |
-| 5 | `toMap` 沒給合併函式 | 加第三個參數 |
+| 5 | 允許重複 key，卻用兩參數 `toMap` | 明確合併或 `groupingBy`；要求唯一時保留例外 |
 | 6 | `groupingBy` 後假設有順序 | 指定 `TreeMap::new` / `LinkedHashMap::new` |
 | 7 | `sorted()` 後 `toMap` 用預設 HashMap | 指定 `LinkedHashMap::new` |
 | 8 | `reduce("", String::concat)` | `Collectors.joining()` |
@@ -3693,7 +3704,7 @@ value
 **這題最該記住的三點：**
 1. `takeWhile`（遇到不符就停）≠ `filter`（檢查全部）
 2. `orElse`（總是求值）≠ `orElseGet`（延遲求值）
-3. `toMap` 的合併函式不是可選的，是必要的
+3. `toMap` 的合併函式取決於資料契約：本題要加總所以需要；要求 key 唯一時可用兩參數版拒絕重複
 
 </details>
 
@@ -3786,7 +3797,7 @@ static List<String> flattenIterative(Category root) {
 - [ ] 我知道 `takeWhile` 遇到不符就停、`filter` 會檢查全部。
 - [ ] 我知道空 Stream 的 `allMatch` 回傳 `true`。
 - [ ] 我用 `groupingBy` + downstream 寫多層統計，且會指定 `TreeMap::new` 保證順序。
-- [ ] 我知道 `toMap` 必須提供合併函式，也知道它的 value 不可為 null。
+- [ ] 我會依資料契約決定 `toMap` 遇到重複 key 要拒絕或合併，也知道它的 value 不可為 null。
 - [ ] 我知道 `sorted()` 後接 `toMap` 要指定 `LinkedHashMap::new`。
 - [ ] 我能說出 `orElse` 與 `orElseGet` 的差別，並知道什麼時候用哪個。
 - [ ] 我只把 `Optional` 用在回傳型別，不用在欄位、參數、集合元素。

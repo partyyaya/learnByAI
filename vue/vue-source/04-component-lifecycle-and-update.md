@@ -104,8 +104,8 @@ instance.scope.off();
 // 3) 兩個 runner：update 強制跑、job 只在 dirty 時才跑
 const update = (instance.update = effect.run.bind(effect));
 const job = (instance.job = effect.runIfDirty.bind(effect)); // runIfDirty：dirty 才重跑
-job.i = instance;   // 3.5：把 instance 掛在 job 上，方便 scheduler 排序/找父子
-job.id = instance.uid;
+job.i = instance;   // 3.5：把 instance 掛在 job 上，回報錯誤與遞迴上限時取得元件資訊
+job.id = instance.uid; // scheduler 依 id 排序：父元件先建立、uid 較小 → 先更新
 
 // 4) 資料變動不是同步 patch，而是把 job 丟進 queue（見 3.8 scheduler）
 effect.scheduler = () => queueJob(job);
@@ -115,7 +115,7 @@ effect.scheduler = () => queueJob(job);
 
 - **不是 `effect(fn, scheduler)`**：Vue 用的是底層類別 `ReactiveEffect`（見 01 章），`new ReactiveEffect(componentUpdateFn)` 建立後，再把 `effect.scheduler` 設成 `() => queueJob(job)`；所以資料變動時走的是「排程」而非同步重繪。
 - **`instance.update` vs `instance.job`**：`update` 是 `effect.run`（強制重跑）；`job` 是 `effect.runIfDirty`——**只有 dirty 才重跑**，避免無謂 render。真正被 scheduler 入列的是 `job`。
-- **3.5 的 `job.i = instance`**：把元件實例掛在 job 上，scheduler 才能依 `instance.uid` 做父子排序、去重與尋找 parent，確保「父先於子」更新。
+- **`job.id` 與 `job.i`**：「父先於子」靠 `job.id = instance.uid` 排序，去重靠 `QUEUED` 旗標（見 02 章 2.6）。3.5 的 `job.i = instance` 則讓 scheduler 在回報錯誤（`callWithErrorHandling` 帶入 instance 與 `COMPONENT_UPDATE` 錯誤碼）與「Maximum recursive updates」警告時能取得元件資訊。
 - **綁在 `instance.scope`（EffectScope）**：effect 是在 `instance.scope.on()` / `off()` 之間建立的，也就是註冊進該元件的 `EffectScope`（見 01 章 effectScope）。元件卸載時只要 `instance.scope.stop()`，這個 render effect 連同 `setup` 裡建立的所有 `watch` / `computed` 會被**整包 stop**，不會外洩。
 
 ---
@@ -142,9 +142,11 @@ effect.scheduler = () => queueJob(job);
 2. 若不更新，只同步 vnode 引用（避免無效重渲染）
 3. 若更新：
    - 記錄 `instance.next = n2`
-   - 觸發 `instance.update`（通常透過 scheduler 入列）
+   - **同步呼叫** `instance.update()`（即 `effect.run`，不經 scheduler）——子元件更新就發生在父元件這次 patch 的過程中
    - 在 update effect 中 `updateComponentPreRender` 同步新 props/slots
    - 執行 render 並 patch `subTree`
+
+若子元件因為自身狀態變動，job 早已在佇列裡，flush 輪到它時 `runIfDirty` 會判定已不 dirty 而略過，不會重複 render。
 
 ---
 
@@ -183,14 +185,14 @@ Vue 幾乎不「裸呼叫」使用者提供的函式（render、生命週期 hoo
 - `callWithErrorHandling(fn, instance, type, args)`：同步呼叫 `fn`，`try/catch` 後把錯誤交給 `handleError`。
 - `callWithAsyncErrorHandling(fn, instance, type, args)`：同上，但額外處理「回傳 Promise」的情況——`.catch` 到的 rejection 也會進 `handleError`（否則 async 錯誤會漏接）。
 
-`type` 是 `ErrorCodes`（例如 `SETUP_FUNCTION`、`RENDER_FUNCTION`、`WATCH_CALLBACK`），警告訊息會告訴你錯在哪個階段。
+`type` 是錯誤類型：runtime-core 的 `ErrorCodes`（例如 `SETUP_FUNCTION`、`RENDER_FUNCTION`）、生命週期 hook 代號，或 3.5 起隨 watch 核心移到 `@vue/reactivity` 的 `WatchErrorCodes`（例如 `WATCH_CALLBACK`）。警告訊息會告訴你錯在哪個階段。
 
 ### 4.10.2 錯誤怎麼冒泡：`onErrorCaptured`
 
 `handleError` 會**沿著 `instance.parent` 往上走**，依序呼叫每一層註冊的 `onErrorCaptured(err, instance, info)`：
 
 - 任一層的 `onErrorCaptured` 回傳 `false`，就**停止繼續往上冒泡**（視為已處理）。
-- 都沒攔截（或都沒回傳 `false`），最後落到全域 `app.config.errorHandler`；再沒有就 `console.error`。
+- 都沒攔截（或都沒回傳 `false`），最後落到全域 `app.config.errorHandler`；再沒有時，dev 會先 `warn`（`Unhandled error during execution of …`）再把錯誤**重新拋出**，production 才是 `console.error`（3.5 可用 `app.config.throwUnhandledErrorInProduction` 改成在 production 也拋出）。
 
 ```ts
 // 父元件當「錯誤邊界」

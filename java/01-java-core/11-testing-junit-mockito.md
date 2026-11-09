@@ -304,7 +304,9 @@ JUnit 5 的新測試、和 ArchUnit 的架構測試**——它們是三個不同
 <properties>
   <junit.version>5.11.0</junit.version>
   <assertj.version>3.26.3</assertj.version>
-  <mockito.version>5.13.0</mockito.version>
+  <mockito.version>5.17.0</mockito.version>
+  <byte-buddy.version>1.15.11</byte-buddy.version>
+  <argLine></argLine> <!-- JaCoCo 未啟用時，Surefire 延遲求值仍有空的預設值 -->
   <awaitility.version>4.2.2</awaitility.version>
   <archunit.version>1.3.0</archunit.version>
   <jacoco.version>0.8.12</jacoco.version>
@@ -318,6 +320,17 @@ JUnit 5 的新測試、和 ArchUnit 的架構測試**——它們是三個不同
       <version>${junit.version}</version>
       <type>pom</type>
       <scope>import</scope>
+    </dependency>
+    <!-- Mockito 與 AssertJ 都依賴 Byte Buddy；統一版本以通過 dependencyConvergence -->
+    <dependency>
+      <groupId>net.bytebuddy</groupId>
+      <artifactId>byte-buddy</artifactId>
+      <version>${byte-buddy.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>net.bytebuddy</groupId>
+      <artifactId>byte-buddy-agent</artifactId>
+      <version>${byte-buddy.version}</version>
     </dependency>
   </dependencies>
 </dependencyManagement>
@@ -370,6 +383,9 @@ JUnit 5 的新測試、和 ArchUnit 的架構測試**——它們是三個不同
 </dependencies>
 ```
 
+> Mockito 5.17.0 使用 Byte Buddy 1.15.11，而 AssertJ 3.26.3 帶入較早版本；
+> 上面的管理值統一兩條路徑，讓第 10 章的 `dependencyConvergence` 能通過。
+>
 > ⚠️ **所有測試依賴一律 `<scope>test</scope>`。**
 > 第 10 章 10.7 節講過忘記寫的後果：有人在產品程式碼 `import` 了
 > `org.junit.jupiter.api.Assertions.assertNotNull`，上線後 `NoClassDefFoundError`
@@ -423,12 +439,14 @@ surefire 的設定（第 10 章 10.10 節，這裡補上 Mockito 的 agent 設�
 > 未來版本會**預設禁止**。所以你會看到：
 >
 > ```
-> WARNING: A Java agent has been loaded dynamically (mockito-core-5.13.0.jar)
+> WARNING: A Java agent has been loaded dynamically (byte-buddy-agent-1.15.4.jar)
 > WARNING: If a serviceability tool is in use, please run with -XX:+EnableDynamicAgentLoading
 > WARNING: Dynamic loading of agents will be disallowed by default in a future release.
 > ```
 >
-> 用 `-javaagent:` 明確掛載就沒有這個問題，而且是未來唯一可行的方式。
+> 本課統一使用 **Mockito 5.17.0**，其 `mockito-core` jar 已有 `Premain-Class`，可用上面的方式掛載。
+> **不要將此設定套在 Mockito 5.13.0**：該 jar 沒有 agent 入口，會使測試 JVM 啟動失敗。
+> `-javaagent:` 是此處明確提供 instrumentation 的方式；未來升級仍要依 Mockito 與 JDK 文件確認。
 > `${org.mockito:mockito-core:jar}` 這個 property 由 `dependency:properties` 產生，
 > 指向本機倉庫裡那個 jar 的絕對路徑——不用自己組路徑。
 
@@ -949,7 +967,7 @@ class TodoTest {
     void rejectsBlankTitle() {
         assertThatThrownBy(() -> new Todo(1L, "   ", Priority.LOW, NOW))
                 .isInstanceOf(InvalidTodoException.class)
-                .hasMessageContaining("標題不可為空白");
+                .hasMessageContaining("標題不可為空");
     }
 }
 ```
@@ -1448,7 +1466,7 @@ assertThat(repository.findById(1L)).hasValueSatisfying(
 // 寫法 1：最常用
 assertThatThrownBy(() -> service.markDone(999L))
         .isInstanceOf(TodoNotFoundException.class)
-        .hasMessageContaining("999")
+        .hasMessageContaining("找不到")
         .extracting(e -> ((TodoException) e).errorCode())
         .isEqualTo(ErrorCode.TODO_NOT_FOUND);
 
@@ -1476,7 +1494,7 @@ assertThatThrownBy(() -> store.save(todos))
 > .hasMessage("找不到 id 為 999 的待辦事項")
 >
 > // ✅ 斷言「關鍵資訊有出現」
-> .hasMessageContaining("999")
+> .hasMessageContaining("找不到")
 >
 > // ✅✅ 更好：斷言結構化的錯誤碼，訊息怎麼改都不影響
 > .extracting(e -> ((TodoException) e).errorCode()).isEqualTo(ErrorCode.TODO_NOT_FOUND)
@@ -1931,7 +1949,7 @@ class TodoServiceTest {
 
             assertThatThrownBy(() -> service.markDone(999L))
                     .isInstanceOf(TodoNotFoundException.class)
-                    .hasMessageContaining("999");
+                    .hasMessageContaining("找不到");
 
             verify(notifier, never()).notifyDone(any());
         }
@@ -2028,7 +2046,7 @@ class WithThreePendingTodos {
 void rejectsBlankTitle(String title) {
     assertThatThrownBy(() -> new Todo(1L, title, Priority.LOW, NOW))
             .isInstanceOf(InvalidTodoException.class)
-            .hasMessageContaining("標題不可為空白");
+            .hasMessageContaining("標題不可為空");
 }
 ```
 
@@ -2417,7 +2435,7 @@ assertThatThrownBy(() -> service.markDone(999L))
 // 層次 2：訊息含有關鍵資訊（讓使用者能自救）
 assertThatThrownBy(() -> service.markDone(999L))
         .isInstanceOf(TodoNotFoundException.class)
-        .hasMessageContaining("999");           // id 要出現在訊息裡
+        .hasMessageContaining("找不到");           // 確認有查無資料的說明；id 由下一段 context 斷言
 
 // 層次 3：結構化資訊正確（給程式用的契約）
 assertThatThrownBy(() -> service.markDone(999L))
@@ -2747,6 +2765,7 @@ public class FakeTodoRepository implements TodoRepository {
     @Override
     public Todo save(Todo todo) {
         store.put(todo.id(), todo);
+        sequence.accumulateAndGet(todo.id(), Math::max);
         return todo;
     }
 
@@ -3245,9 +3264,9 @@ void usesRealLogicExceptForOneMethod() {
 > 那段邏輯應該被抽成一個**獨立的協作者**，然後正常地 mock 它。
 >
 > Spy 受測類別會讓測試變得極難理解（「哪些方法是真的？」），
-> 而且第 03 章 3.13 節的問題會浮現：**self-invocation 不會經過 spy**，
-> 所以 `this.findAll()` 呼叫的是真實方法，你的 stub 完全沒效果。
-> 這種 bug 可以耗掉一整個下午。
+> Mockito spy 對可攔截方法的 `this.findAll()` 呼叫仍能套用 stub，
+> **不能把 Spring「委派給另一個 target」的代理自呼叫限制套用過來**。
+> 慎用 partial mock 的理由是測試難以理解、綁定內部實作，而不是 self-invocation 必定失效。
 
 ---
 ## 11.12 Mockito 的六個誤用
@@ -4755,13 +4774,10 @@ class ConcurrentTodoImporterTest {
                     new StaticSource("C", rows("C1"))));
 
             assertThat(result.imported()).isEqualTo(3);
-            assertThat(result.failed()).isEqualTo(1);
-            assertThat(result.errors())
-                    .hasSize(1)
-                    .allSatisfy(e -> {
-                        assertThat(e.source()).isEqualTo("B");
-                        assertThat(e.reason()).contains("連線逾時");
-                    });
+            assertThat(result.failed()).isZero(); // 來源失敗不等於一筆已讀取的壞列
+            assertThat(result.errors()).isEmpty();
+            assertThat(result.bySource().get("B").sourceFailed()).isTrue();
+            assertThat(result.bySource().get("B").errorMessage()).contains("連線逾時");
             assertThat(repository.findAll()).hasSize(3);
         }
     }
@@ -4825,6 +4841,33 @@ class ConcurrentTodoImporterTest {
         }
     }
 
+    @Test
+    @DisplayName("單一超長標題被隔離，其他有效列仍可匯入")
+    void invalidLongTitleDoesNotAbortBatch() {
+        var importer = new ConcurrentTodoImporter(repository, clock, 2, TIMEOUT);
+        var result = importer.importFrom(List.of(
+                new StaticSource("A", rows("正常一", "x".repeat(101), "正常二"))));
+        assertThat(result.imported()).isEqualTo(2);
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(result.totalRows()).isEqualTo(3);
+        assertThat(repository.findAll()).extracting(Todo::title)
+                .containsExactlyInAnyOrder("正常一", "正常二");
+    }
+
+    @Test
+    @Timeout(5)
+    @DisplayName("來源超過時間預算就取消，不會匯入逾期資料")
+    void sourceReadHasDeadline() {
+        var importer = new ConcurrentTodoImporter(repository, clock, 1, Duration.ofMillis(100));
+        long start = System.nanoTime();
+        var result = importer.importFrom(List.of(
+                new SlowSource("slow", Duration.ofSeconds(3), rows("不該匯入"))));
+        assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofSeconds(1));
+        assertThat(result.imported()).isZero();
+        assertThat(result.bySource().get("slow").errorMessage()).contains("逾時");
+        assertThat(repository.findAll()).isEmpty();
+    }
+
     private static List<String[]> rows(String... titles) {
         return java.util.Arrays.stream(titles)
                 .map(t -> new String[]{t, "MEDIUM"})
@@ -4843,6 +4886,58 @@ class ConcurrentTodoImporterTest {
    `isLessThan(700ms)` 這個上限很寬鬆——它不是在測效能，
    而是在區分「200 ms（併發）」和「1000 ms（循序）」這兩個數量級。
    **時間斷言只能用來區分數量級，絕不能用來測「必須小於 210 ms」這種精確值。**
+
+### CSV 來源的解析與大小上限
+
+把此測試放在 `todo-importer/src/test/java/com/example/todo/importer/FileSourceTest.java`。
+它驗證實際檔案，不 mock CSV parser：
+
+```java
+package com.example.todo.importer;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import static org.assertj.core.api.Assertions.*;
+
+class FileSourceTest {
+    @TempDir Path dir;
+
+    @Test
+    void parsesBomQuotedCommasQuotesAndMultilineFields() throws Exception {
+        Path csv = dir.resolve("todos.csv");
+        Files.writeString(csv, "\uFEFFtitle,priority,tags\n"
+                + "\"hello, world\",HIGH,work\n"
+                + "\"say \"\"hi\"\"\",LOW,\n"
+                + "\"first\nsecond\",MEDIUM,home\n");
+        var rows = new FileSource(csv).read();
+        assertThat(rows).hasSize(3);
+        assertThat(rows.get(0)).containsExactly("hello, world", "HIGH", "work");
+        assertThat(rows.get(1)).containsExactly("say \"hi\"", "LOW", "");
+        assertThat(rows.get(2)).containsExactly("first\nsecond", "MEDIUM", "home");
+    }
+
+    @Test
+    void rejectsTooManyRows() throws Exception {
+        Path csv = dir.resolve("too-many.csv");
+        Files.writeString(csv, "title,priority,tags\n" + "task,HIGH,work\n".repeat(1001));
+        assertThatThrownBy(() -> new FileSource(csv).read())
+                .isInstanceOf(IOException.class).hasMessageContaining("1000");
+    }
+
+    @Test
+    void rejectsOneOversizedQuotedField() throws Exception {
+        Path csv = dir.resolve("huge-field.csv");
+        Files.writeString(csv, "\"" + "x".repeat(1_000_001) + "\",HIGH,work\n");
+        assertThatThrownBy(() -> new FileSource(csv).read())
+                .isInstanceOfAny(IOException.class, UncheckedIOException.class, IllegalStateException.class)
+                .hasStackTraceContaining("CSV 超過字元上限");
+    }
+}
+```
 
 ### 併發測試的檢查清單
 
@@ -5749,7 +5844,8 @@ todo/
 │   │   ├── FakeTodoRepositoryTest.java          ← extends 契約
 │   │   ├── InMemoryTodoRepositoryTest.java      ← extends 契約
 │   │   ├── JsonFileTodoRepositoryContractTest.java  ← extends 契約
-│   │   └── JsonFileTodoRepositoryTest.java      ← 檔案專屬行為（@TempDir）
+│   │   ├── JsonFileTodoRepositoryTest.java      ← 檔案專屬行為（@TempDir）
+│   │   └── JsonFileTodoRepositoryFailureTest.java ← 失敗不得發布狀態
 │   ├── service/
 │   │   ├── TodoServiceTest.java                 ← Mockito + 固定時鐘
 │   │   └── TodoServiceWithFakeTest.java         ← fake + 狀態驗證
@@ -5758,7 +5854,8 @@ todo/
 │       └── JsonTest.java                        ← 序列化往返
 │
 ├── todo-importer/src/test/java/com/example/todo/importer/
-│   └── ConcurrentTodoImporterTest.java          ← 併發（11.15 節）
+│   ├── ConcurrentTodoImporterTest.java          ← 併發（11.15 節）
+│   └── FileSourceTest.java                      ← CSV 解析與大小上限（11.15 節）
 │
 └── todo-cli/src/test/java/com/example/todo/
     ├── AppTest.java               ← 參數解析、離開碼（用 fake service）
@@ -5773,6 +5870,70 @@ todo/
 2. **`TodoServiceTest`（mock）和 `TodoServiceWithFakeTest`（fake）並存。**
    前者驗證互動（有沒有通知），後者驗證狀態（存完查得到）。
    11.10 節說過：兩者用途不同，不是二選一。
+
+### 跨模組重用測試工具：附加 test-jar
+
+`src/test/java` 不會進一般的 main jar。`todo-importer` 即使依賴 `todo-core`，
+也看不到 core 的 `FakeTodoRepository`；CLI 同樣看不到上游的 `TodoBuilder`。
+本課保留四個模組，使用附加的 test-jar 提供測試工具：
+
+把以下設定加到 **todo-model 與 todo-core 各自**的 `<build><plugins>`，不要放到所有模組共用的根 `<plugins>`：
+
+```xml
+<plugin>
+  <groupId>org.apache.maven.plugins</groupId>
+  <artifactId>maven-jar-plugin</artifactId>
+  <version>3.4.2</version>
+  <executions>
+    <execution>
+      <id>attach-test-fixtures</id>
+      <!-- 綁在此階段，mvn test 時下游也拿得到；不必先 package/install -->
+      <phase>process-test-classes</phase>
+      <goals><goal>test-jar</goal></goals>
+      <configuration>
+        <includes>
+          <include>**/TodoBuilder*.class</include>
+          <include>**/TodoAssert*.class</include>
+          <include>**/FakeTodoRepository*.class</include>
+          <include>**/MutableClock*.class</include>
+        </includes>
+      </configuration>
+    </execution>
+  </executions>
+</plugin>
+```
+
+`todo-core` 的 `<dependencies>` 加入 model 的測試工具：
+
+```xml
+<dependency>
+  <groupId>com.example</groupId>
+  <artifactId>todo-model</artifactId>
+  <version>${project.version}</version>
+  <type>test-jar</type>
+  <classifier>tests</classifier>
+  <scope>test</scope>
+</dependency>
+```
+
+`todo-importer` 與 `todo-cli` 都加入**上面 model 的依賴，以及下面 core 的依賴**：
+
+```xml
+<dependency>
+  <groupId>com.example</groupId>
+  <artifactId>todo-core</artifactId>
+  <version>${project.version}</version>
+  <type>test-jar</type>
+  <classifier>tests</classifier>
+  <scope>test</scope>
+</dependency>
+```
+
+`tests` classifier 有自己的座標，這裡明寫版本；不要以為一般 jar 的版本管理會自動套用。
+只打包四類工具，不把上游的測試類別一起交給下游執行。
+test-jar 不傳遞上游的 test scope 依賴，JUnit、AssertJ 等仍由根 pom 的共用測試依賴提供。
+從根目錄執行 `./mvnw -T 1C test` 可讓 reactor 依順序建立工具；只選下游時記得加 `-am`。
+完整原理見 [Maven test-jar 文件](https://maven.apache.org/plugins/maven-jar-plugin/examples/create-test-jar.html)。
 
 ### `PriorityTest`：用 `@EnumSource` 鎖住不變條件
 
@@ -5838,6 +5999,9 @@ class PriorityTest {
 ```java
 package com.example.todo.model;
 
+import com.example.todo.exception.TodoException;
+import com.example.todo.exception.ErrorCode;
+
 import com.example.todo.exception.InvalidTodoException;
 import com.example.todo.exception.TodoAlreadyDoneException;
 import org.junit.jupiter.api.DisplayName;
@@ -5879,7 +6043,11 @@ class TodoTest {
         void rejectsNonPositiveId(long id) {
             assertThatThrownBy(() -> new Todo(id, "買牛奶", Priority.LOW, NOW))
                     .isInstanceOf(InvalidTodoException.class)
-                    .hasMessageContaining("正整數");
+                    .satisfies(e -> {
+                        TodoException error = (TodoException) e;
+                        assertThat(error.errorCode()).isEqualTo(ErrorCode.INVALID_INPUT);
+                        assertThat(error.context()).containsEntry("field", "id").containsEntry("value", id);
+                    });
         }
 
         @Test
@@ -5903,7 +6071,7 @@ class TodoTest {
         void rejectsBlank(String title) {
             assertThatThrownBy(() -> new Todo(1L, title, Priority.LOW, NOW))
                     .isInstanceOf(InvalidTodoException.class)
-                    .hasMessageContaining("標題不可為空白");
+                    .hasMessageContaining("標題不可為空");
         }
 
         @Test
@@ -5931,14 +6099,14 @@ class TodoTest {
         }
 
         @Test
-        @DisplayName("emoji 依 char 計算長度（第 07 章 7.5 節的已知行為）")
-        void emojiCountsAsCodeUnits() {
-            // 🥛 是輔助平面字元，佔 2 個 char。50 個就是 100 char
-            String title = "🥛".repeat(50);
+        @DisplayName("emoji 依碼點計算長度（第 07 章 7.4 節）")
+        void emojiCountsAsCodePoints() {
+            String title = "🥛".repeat(100);
+            String actual = aTodo().title(title).build().title();
+            assertThat(actual.codePointCount(0, actual.length())).isEqualTo(100);
+            assertThat(actual.length()).isEqualTo(200); // UTF-16 碼元數是另一件事
 
-            assertThat(aTodo().title(title).build().title()).hasSize(100);
-
-            assertThatThrownBy(() -> aTodo().title("🥛".repeat(51)).build())
+            assertThatThrownBy(() -> aTodo().title("🥛".repeat(101)).build())
                     .isInstanceOf(InvalidTodoException.class);
         }
     }
@@ -5968,7 +6136,7 @@ class TodoTest {
 
             assertThatThrownBy(() -> todo.markDone(NOW.plusSeconds(1)))
                     .isInstanceOf(TodoAlreadyDoneException.class)
-                    .hasMessageContaining("7");
+                    .satisfies(e -> assertThat(((TodoException) e).context()).containsEntry("id", 7L));
         }
 
         @Test
@@ -6219,6 +6387,89 @@ class TodoServiceWithFakeTest {
 > **`sortsCorrectly` 這個測試 mock 版寫不出來**——因為 mock 版必須
 > stub `repository.findAll()` 回傳固定清單，而那正是要驗證的東西（11.12 節誤用 2）。
 
+### 儲存失敗時不得發布新狀態
+
+將以下測試放在 `todo-core/src/test/java/com/example/todo/repository/JsonFileTodoRepositoryFailureTest.java`。
+`FailingStore` 只模擬儲存邊界失敗；一般讀寫與原子搬移仍由既有的 `@TempDir` 整合測試驗證。
+
+```java
+package com.example.todo.repository;
+
+import com.example.todo.model.Priority;
+import com.example.todo.model.Todo;
+import com.example.todo.support.TodoFileStore;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.List;
+import static org.assertj.core.api.Assertions.*;
+
+class JsonFileTodoRepositoryFailureTest {
+    @TempDir Path dir;
+    static final Instant NOW = Instant.parse("2026-08-17T10:00:00Z");
+    FailingStore store;
+    JsonFileTodoRepository repository;
+
+    static final class FailingStore extends TodoFileStore {
+        boolean fail;
+        List<Todo> disk = List.of();
+        FailingStore(Path path) { super(path, Clock.fixed(NOW, ZoneOffset.UTC)); }
+        @Override public List<Todo> load() { return disk; }
+        @Override public void save(List<Todo> todos) {
+            if (fail) throw new IllegalStateException("模擬磁碟寫入失敗");
+            disk = List.copyOf(todos);
+        }
+    }
+
+    @BeforeEach
+    void setUp() {
+        store = new FailingStore(dir.resolve("todos.json"));
+        repository = new JsonFileTodoRepository(store);
+    }
+
+    @Test
+    void failedInsertIsNotVisibleOrPersistedByNextSave() {
+        store.fail = true;
+        assertThatThrownBy(() -> repository.save(new Todo(1, "失敗", Priority.HIGH, NOW)))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(repository.findById(1)).isEmpty();
+        store.fail = false;
+        repository.save(new Todo(2, "成功", Priority.LOW, NOW));
+        assertThat(store.disk).extracting(Todo::id).containsExactly(2L);
+    }
+
+    @Test
+    void failedUpdateAndDeletePreserveCommittedState() {
+        repository.save(new Todo(1, "原本", Priority.HIGH, NOW));
+        Todo edited = repository.findById(1).orElseThrow();
+        edited.markDone(NOW.plusSeconds(1));
+        store.fail = true;
+        assertThatThrownBy(() -> repository.save(edited)).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> repository.deleteById(1)).isInstanceOf(IllegalStateException.class);
+        assertThat(repository.findById(1).orElseThrow().isDone()).isFalse();
+        assertThat(store.disk.getFirst().isDone()).isFalse();
+    }
+
+    @Test
+    void callerCannotMutateCommittedObjectsWithoutSave() {
+        Todo input = new Todo(1, "原本", Priority.HIGH, NOW);
+        Todo returned = repository.save(input);
+        input.setTitle("修改輸入");
+        returned.setTitle("修改回傳");
+        repository.findAll().getFirst().setTitle("修改查詢");
+        assertThat(repository.findById(1).orElseThrow().title()).isEqualTo("原本");
+        assertThat(store.disk.getFirst().title()).isEqualTo("原本");
+    }
+}
+```
+
+第 12 章改用不可變 Todo 後，把測試的 `edited.markDone(...)` 改為接回新物件，
+並以 `withTitle` 驗證「產生新值但不 save，不影響已提交狀態」。契約本身不變。
+
 ### `ArchitectureTest`：把第 10 章的模組邊界變成測試
 
 第 10 章 10.12 節說「拆模組讓編譯器守住架構邊界」。
@@ -6397,6 +6648,10 @@ flaky:                      ## 隨機順序跑 10 次，找出測試之間的污
 
 ### 執行與驗收
 
+以下 Maven reactor、覆蓋率與 PIT 輸出是**報告格式示意**，不代表本 repo 已提供並執行完整專案。
+目前以本章列出的產品程式、TodoBuilder 與最終 TodoTest 在 JDK 21／JUnit 5.11.0 上驗證模型契約；
+實際案例數、執行時間、覆蓋率與突變分數，必須由你建立的多模組專案產生。
+
 ```bash
 # 1. 單元測試（開發時的快速回饋）
 ./mvnw -T 1C test
@@ -6490,7 +6745,7 @@ to contain exactly (and in same order):
 
 | 能力 | 靠什麼 |
 |---|---|
-| 改程式碼時，10 秒內知道有沒有改壞 | 9 秒跑完的 83 個單元測試 |
+| 改程式碼時快速知道有沒有改壞 | 可重複執行的單元測試；速度以自己的專案量測 |
 | 新人讀測試報告就懂需求 | `@Nested` + 中文 `@DisplayName`（11.7 節） |
 | 邊界條件不會漏 | 參數化測試 + `@EnumSource`（11.8 節） |
 | fake 和真實實作不會偷偷分歧 | 契約測試（11.14 節） |

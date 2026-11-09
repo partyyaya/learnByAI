@@ -25,22 +25,31 @@ Nuxt 的錯誤處理有三種粒度，對應不同情境：
 ### `createError`：丟出錯誤
 
 ```js
-// 非致命（例如在 API handler 裡）：前端收到後可自行處理
-throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+// 伺服器端（server/api 的 handler）：回一個錯誤回應，前端從 e.data?.message 讀訊息
+throw createError({ status: 404, message: '找不到文章' })
 
-// 致命（fatal: true）：直接跳到全站錯誤頁 error.vue
-throw createError({ statusCode: 500, statusMessage: '系統錯誤', fatal: true })
+// 頁面／元件／中介層裡（fatal: true）：跳到全站錯誤頁 error.vue
+throw createError({ status: 404, message: '找不到文章', fatal: true })
 ```
 
-在 `<script setup>` 頂層 `throw createError({ statusCode: 404 })`（如第 3、6、12 章）就會走 `error.vue`。
+欄位怎麼放：`status` 放狀態碼、`message` 放給人看的訊息（中文放這裡）。另有 `statusText` 可放狀態文字，但它會進 HTTP 狀態列，只能用英文短語（例如 `'Forbidden'`），非 ASCII 字元會被濾掉。舊寫法 `statusCode`／`statusMessage` 仍能用，但在 Nuxt 4 已標為 deprecated。
+
+在頁面 `<script setup>` 頂層 throw `createError`，伺服器端與站內切頁的行為不一樣：
+
+| 情境 | 沒加 `fatal` | 加 `fatal: true` |
+|---|---|---|
+| 首次載入（伺服器渲染） | 走 `error.vue` | 走 `error.vue` |
+| 站內 `<NuxtLink>` 切頁 | **不會**顯示 `error.vue`，只是一個非致命錯誤（console 看得到），要自己處理 | 走 `error.vue` |
+
+所以頁面裡要顯示錯誤頁，一律加 `fatal: true`（如第 12 章的文章詳情頁）。模板讀資料時也習慣用 `v-if="post"` 這類條件保護：像第 3 章那樣在 setup 裡同步丟錯的頁面，站內切頁時 Vue 仍會渲染這一頁的模板，`post` 是 `null` 時直接讀 `post.title` 會先丟 TypeError，`error.vue` 就出不來。
 
 ### `showError` / `clearError` / `useError`
 
 ```js
-showError({ statusCode: 500, statusMessage: '出事了' }) // 程式化觸發錯誤頁
+showError({ status: 500, message: '出事了' }) // 程式化觸發錯誤頁
 ```
 
-在 `error.vue` 裡除了 `error` prop，也能用 `useError()` 讀目前錯誤；用 `clearError({ redirect: '/' })` 清除並導頁（第 3 章）。
+在 `error.vue` 裡除了 `error` prop（顯示 `error.status` 與 `error.message`），也能用 `useError()` 讀目前錯誤；用 `clearError({ redirect: '/' })` 清除並導頁（第 3 章）。
 
 ---
 
@@ -97,7 +106,8 @@ export default defineNuxtPlugin(() => {
   return {
     provide: {
       // 注入一個格式化日期的函式，全站可用 $formatDate
-      formatDate: (d) => new Date(d).toLocaleDateString('zh-TW'),
+      // 語系與時區都寫死，伺服器與瀏覽器才會算出同一個字串（原因見最後範例）
+      formatDate: (d) => new Date(d).toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' }),
     },
   }
 })
@@ -183,7 +193,7 @@ npx nuxi module add <模組名>
 
 它會自動裝套件並加進 `nuxt.config.ts` 的 `modules` 陣列。之後就能用該模組提供的元件/composable（多半也是自動匯入）。
 
-> 本課用到的模組彙整：狀態 `@pinia/nuxt`、認證 `nuxt-auth-utils`、SEO `@nuxtjs/seo`、樣式 `@nuxtjs/tailwindcss`、圖片 `@nuxt/image`、字型 `@nuxt/fonts`、測試 `@nuxt/test-utils`（後面章節會用到）。
+> 本課用到的模組彙整：狀態 `@pinia/nuxt`、認證 `nuxt-auth-utils`、SEO `@nuxtjs/seo`、圖片 `@nuxt/image`、字型 `@nuxt/fonts`、測試 `@nuxt/test-utils`（後面章節會用到）。Tailwind CSS v4 則是以 Vite plugin（`@tailwindcss/vite`）接進來，不是 Nuxt 模組（第 14 章）。
 >
 > 本課沒用到、但值得先記住名字的一個：**`@nuxtjs/i18n`**——官方的多語系（國際化）方案，幫你管翻譯訊息並自動生成多語系路由（`/en/about`、`/zh/about` 這類 URL 與語系切換）。要做網站國際化時再深入即可，這裡點到為止。
 
@@ -238,7 +248,7 @@ export default defineNuxtPlugin(() => {
 > 三種解法，看需求挑：
 >
 > 1. **釘死時區**（上面的做法）：所有人都看同一個時區的時間。適合「活動開始時間」這類有官方時區的場景。
-> 2. **只輸出不受時區影響的格式**：例如只顯示日期 `YYYY-MM-DD`（自己組字串，不用 `toLocale*`）。
+> 2. **只輸出不受時區影響的格式**：例如直接取 ISO 字串的前 10 碼當日期（`'2026-01-15T09:30:00.000Z'.slice(0, 10)`，不用 `toLocale*`）。兩端算出來一定相同，但顯示的是 UTC 的日期：台灣早上 8 點前建立的資料會顯示成前一天。
 > 3. **想顯示「使用者當地時間」**：那它本質上就是 client-only，用 `<ClientOnly>` 包起來（跟下面的「現在時間」一樣處理）。
 >
 > 同理，`toLocaleString` 的**語系**也建議明寫（`'zh-TW'`），別依賴環境預設。
@@ -247,15 +257,19 @@ export default defineNuxtPlugin(() => {
 
 ```vue
 <script setup>
-// 用來示範錯誤邊界：勾一下就丟錯
+// 用來示範錯誤邊界：勾一下就在渲染時丟錯
 const props = defineProps({ broken: Boolean })
-if (props.broken) {
-  throw new Error('這個小工具壞掉了')
-}
+
+// 判斷要放在 computed 裡：setup 只在元件建立時跑一次，
+// 寫在頂層的 if 不會因為 props 改變而重跑；computed 則會在 props.broken 變 true 時重算、在渲染時丟錯
+const status = computed(() => {
+  if (props.broken) throw new Error('這個小工具壞掉了')
+  return '✅ 小工具正常運作中'
+})
 </script>
 
 <template>
-  <div class="widget">✅ 小工具正常運作中</div>
+  <div class="widget">{{ status }}</div>
 </template>
 
 <style scoped>

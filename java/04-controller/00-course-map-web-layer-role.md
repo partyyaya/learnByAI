@@ -1579,6 +1579,18 @@ shop-service/
   </properties>
 
   <dependencies>
+    <dependency>
+      <groupId>org.springframework.security</groupId>
+      <artifactId>spring-security-messaging</artifactId>
+    </dependency>
+
+    <!-- ImageIO 標準 reader 不含 WebP；05 章的白名單與重編碼依賴此插件。 -->
+    <dependency>
+      <groupId>com.twelvemonkeys.imageio</groupId>
+      <artifactId>imageio-webp</artifactId>
+      <version>3.10.1</version>
+    </dependency>
+
     <!-- Web 層本體：Spring MVC + 內嵌 Tomcat + Jackson -->
     <dependency>
       <groupId>org.springframework.boot</groupId>

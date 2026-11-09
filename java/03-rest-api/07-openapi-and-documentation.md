@@ -393,7 +393,7 @@ api/
 
 ```bash
 # 用 redocly CLI 打包成單一檔案
-npx @redocly/cli bundle api/orders-api.yaml -o dist/orders-api.bundled.yaml
+npx --yes @redocly/cli@1.34.23 bundle api/orders-api.yaml -o dist/orders-api.bundled.yaml
 ```
 
 **shop-service 的規則**：
@@ -642,7 +642,8 @@ components:
         **不透明的**分頁游標。請直接使用回應中 `page.nextCursor`
         或 `links.next` 的值，**不要解析或自行建構**。
 
-        - 與 `page` 互斥（同時提供回 `400`）
+        - 首頁必須帶 `cursor=`；空字串不解碼。未提供 cursor 時仍為 offset
+        - 與 `page` 互斥（即使 cursor 是空字串，同時提供仍回 `400`）
         - 與 `q` 互斥（搜尋結果不支援 cursor 分頁）
         - 變更 `sort` 或任何篩選條件後**不可**沿用舊 cursor
           （會回 `400` + `code: CURSOR_QUERY_MISMATCH`）
@@ -651,7 +652,7 @@ components:
       schema:
         type: string
         maxLength: 512
-        pattern: '^[A-Za-z0-9_-]+$'
+        pattern: '^[A-Za-z0-9_-]*$'        # 空字串明確選擇 cursor 第一頁
 
     Limit:
       name: limit
@@ -1436,6 +1437,7 @@ paths:
         | offset | `page` + `size` | 需要跳頁、顯示總頁數的表格 UI |
         | cursor | `cursor` + `limit` | App 無限滾動、批次同步（**大量資料請用此模式**） |
 
+        `cursor=` 明確選擇 cursor 第一頁；未提供 cursor（即使帶 limit）仍為 offset。
         `page` 與 `cursor` 互斥。offset 模式的深分頁上限為 `page × size <= 10000`。
 
         ## 效能建議
@@ -1477,11 +1479,13 @@ paths:
         - name: updatedFrom
           in: query
           description: |
-            更新時間下界（含）。**增量同步請使用此參數搭配 cursor 模式**：
-            `?updatedFrom=<上次的 safeWatermark>&sort=updatedAt,asc&limit=500`
+            更新時間下界（含）。可搭配 cursor 查詢變更資料：
+            `?cursor=&updatedFrom=<時間點>&sort=updatedAt,asc&limit=100`。
 
-            ⚠️ 本端點的同步語意為 **at-least-once**（訂單被更新時會重複出現），
-            消費端必須以 `orderId` 做 upsert。
+            一般列表游標只定位，不自行提供「增量同步不漏」的保證。
+            廠商需要持續同步時，使用第 05 章練習 3 的 `/vendor/orders` 契約
+            （limit 上限 500）：固定本輪 safeWatermark，所有 SQL 與 SyncCursor.u
+            沿用同一界線，完成整輪才推進進度；消費端以 orderId upsert。
           schema: { type: string, format: date-time }
         - name: amountFrom
           in: query
@@ -2556,7 +2560,7 @@ extends: ["spectral:oas"]        # OpenAPI 的官方規則集
 # .spectral.yaml
 extends: ["spectral:oas"]
 
-functions: [pathCasing, noVerbInPath]
+functions: [noVerbInPath, collectionPagination, noNullableArray]
 functionsDir: "./spectral-functions"
 
 rules:
@@ -2669,7 +2673,7 @@ rules:
     then:
       function: pattern
       functionOptions:
-        notMatch: "(?i)(password|passwordHash|pwd|secret|salt|privateKey|idNumber|ssn|creditCard|cvv|internalCost|marginRate|riskScore)"
+        notMatch: "/(password|passwordHash|pwd|secret|salt|privateKey|idNumber|ssn|creditCard|cvv|internalCost|marginRate|riskScore)/i"
 
   money-must-be-string:
     description: 金額欄位必須是字串（第 03 章 3.5.3）
@@ -2699,12 +2703,11 @@ rules:
       functionOptions: { match: "^date-time$" }
 
   array-must-not-be-nullable:
-    description: 陣列不可為 null（第 03 章 3.7.2）
+    description: 陣列不可為 null（涵蓋 3.1 type union 與組合 schema）
     severity: error
-    given: "$.components.schemas..properties[?(@.type === 'array')]"
+    given: "$.components.schemas..properties[*]"
     then:
-      field: nullable
-      function: falsy
+      function: noNullableArray
 
   # ── 第 04 章：錯誤設計 ──────────────────────────
   error-must-use-problem-json:
@@ -2725,20 +2728,11 @@ rules:
 
   # ── 第 05 章：分頁 ──────────────────────────────
   list-must-have-pagination:
-    description: 回傳集合的端點必須有分頁參數（第 05 章 5.2）
+    description: 集合 GET 必須有 page 或 cursor query 參數（含 path-level 參數）
     severity: error
-    given: "$.paths[?(!@property.match(/\\{/))]get"
+    given: "$.paths[*]"
     then:
-      function: schema
-      functionOptions:
-        schema:
-          properties:
-            parameters:
-              type: array
-              contains:
-                anyOf:
-                  - properties: { $ref: { const: "#/components/parameters/Page" } }
-                  - properties: { $ref: { const: "#/components/parameters/Cursor" } }
+      function: collectionPagination
 
   size-must-have-maximum:
     description: size / limit 參數必須有 maximum（第 05 章 5.2.3）
@@ -2760,7 +2754,7 @@ rules:
         function: truthy
       - field: description
         function: pattern
-        functionOptions: { match: "(?i)(未知|unknown|default|extensible)" }
+        functionOptions: { match: "/(未知|unknown|default|extensible)/i" }
 
   deprecated-must-have-sunset-info:
     description: 標記 deprecated 的項目必須在 description 說明 Sunset 日期與替代方案
@@ -2769,7 +2763,7 @@ rules:
     then:
       field: description
       function: pattern
-      functionOptions: { match: "(?i)(sunset|替代|請改用)" }
+      functionOptions: { match: "/(sunset|替代|請改用)/i" }
 
   # ── 通用品質 ────────────────────────────────────
   operation-must-have-operation-id:
@@ -2824,6 +2818,65 @@ export default function noVerbInPath(path) {
 }
 ```
 
+**另外兩個自訂函式**（同樣放入 `spectral-functions/`）：
+
+```javascript
+// spectral-functions/collectionPagination.js
+export default function collectionPagination(pathItem, _opts, ctx) {
+  const operation = pathItem.get;
+  const path = ctx.path[1];
+  if (!operation || path.includes('{') || operation['x-singleton'] === true) return;
+  // Spectral 預設 resolved: true，因此此處收到解析後的 parameter，不比對 $ref 字串
+  const params = [...(pathItem.parameters ?? []), ...(operation.parameters ?? [])];
+  if (!params.some(p => p.in === 'query' && ['page', 'cursor'].includes(p.name))) {
+    return [{ message: '集合 GET 必須宣告 page 或 cursor query 參數。',
+      path: [...ctx.path, 'get'] }];
+  }
+}
+```
+
+此規則依本站路由慣例，把不含路徑參數的 GET 視為集合。`/me`、health 等單一資源
+需明確標註 `x-singleton: true` 並在 review 檢查用途；有路徑參數的子集合另由端點清單檢查。
+規則同時接受 operation-level 與 path-level 的參數。
+
+```javascript
+// spectral-functions/noNullableArray.js
+export default function noNullableArray(schema) {
+  const kind = value => value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value;
+  function allows(s, type, ancestors = new Set()) {
+    if (s === false) return false;
+    if (s === true || s == null) return true;
+    if (ancestors.has(s)) return true; // 遞迴 schema 保守判斷；不無限遞迴
+    const seen = new Set(ancestors).add(s);
+    const types = Array.isArray(s.type) ? s.type : s.type ? [s.type] : null;
+    if (types && !types.includes(type) && !(type === 'null' && s.nullable === true)) return false;
+    if (Object.hasOwn(s, 'const') && kind(s.const) !== type) return false;
+    if (s.enum && !s.enum.some(v => kind(v) === type)) return false;
+    if (s.allOf && !s.allOf.every(child => allows(child, type, seen))) return false;
+    if (s.anyOf && !s.anyOf.some(child => allows(child, type, seen))) return false;
+    if (s.oneOf && !s.oneOf.some(child => allows(child, type, seen))) return false;
+    return true;
+  }
+  if (allows(schema, 'array') && allows(schema, 'null')) {
+    return [{ message: '陣列欄位不可接受 null；請回傳 []。' }];
+  }
+}
+```
+
+這個檢查對 type、enum、const、anyOf／oneOf／allOf 與解析後的 $ref 做保守判斷，
+不是完整 JSON Schema 可滿足性證明；not、if/then/else、遞迴限制等進階寫法需人工 review
+及實際驗證器測試，不能宣稱此 lint 已證明所有可能的值。
+
+**至少加入下列正反 fixtures，確認規則有執行**：
+
+| 情境 | 預期 |
+|---|---|
+| GET /orders 無 parameters，或只有 q | pagination error |
+| page／cursor 以 inline、內部 $ref 或 path-level 宣告 | 通過 pagination |
+| 字串欄位 passwordHash、大小寫變體 | 敏感欄位 error，不能讓規則本身 crash |
+| type: [array, "null"]，或 anyOf／oneOf 的 array + null | nullable array error |
+| type: array，或 allOf 限縮為非空陣列型別 | 通過 nullable array 檢查 |
+
 **這 25 條規則把「六章的 style guide」變成 CI 可執行的檢查。**
 
 **⚠️ 導入時要漸進**（第 05 章 5.8.6 的同一個原則）：
@@ -2844,7 +2897,14 @@ name: API 契約檢查
 
 on:
   pull_request:
-    paths: ['api/**', 'src/main/java/**/api/**', 'src/main/java/**/web/**']
+    paths: ['api/**', 'src/main/java/**/api/**', 'src/main/java/**/web/**', '.spectral*', 'spectral-functions/**', 'scripts/**', '.github/workflows/api-contract.yml']
+  push:
+    branches: [main]
+    paths: ['api/**', 'src/main/java/**/api/**', 'src/main/java/**/web/**', '.spectral*', 'spectral-functions/**', 'scripts/**', '.github/workflows/api-contract.yml']
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   lint:
@@ -2856,10 +2916,10 @@ jobs:
         with: { node-version: '20' }
 
       - name: 打包契約（解析 $ref）
-        run: npx @redocly/cli bundle api/orders-api.yaml -o /tmp/bundled.yaml
+        run: npx --yes @redocly/cli@1.34.23 bundle api/orders-api.yaml -o /tmp/bundled.yaml
 
       - name: Spectral lint
-        run: npx @stoplight/spectral-cli lint /tmp/bundled.yaml
+        run: npx --yes @stoplight/spectral-cli@6.17.0 lint /tmp/bundled.yaml
                 --ruleset .spectral.yaml
                 --fail-severity error
                 --format github-actions
@@ -2869,35 +2929,46 @@ jobs:
 
   breaking-change:
     name: 破壞性變更檢查
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      - name: 取出 base 契約
-        run: |
-          git show origin/${{ github.base_ref }}:api/orders-api.yaml > /tmp/base-raw.yaml
-          npx @redocly/cli bundle /tmp/base-raw.yaml -o /tmp/base.yaml
-          npx @redocly/cli bundle api/orders-api.yaml -o /tmp/head.yaml
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
 
-      - name: 檢查破壞性變更
+      - name: 取出並打包 base 版本的完整契約
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          ALLOW=$(yq -r '.allowed[] | select(.expiresAt > (now | strftime("%Y-%m-%d"))) | .change' \
-                  api/breaking-changes-allowlist.yaml | paste -sd, -)
-          docker run --rm -v /tmp:/specs tufin/oasdiff breaking \
-            /specs/base.yaml /specs/head.yaml \
-            --fail-on ERR ${ALLOW:+--exclude-elements "$ALLOW"}
+          set -euo pipefail
+          base_dir=$(mktemp -d "$RUNNER_TEMP/api-base.XXXXXX")
+          git archive "$BASE_SHA" api | tar -x -C "$base_dir"
+          npx --yes @redocly/cli@1.34.23 bundle "$base_dir/api/orders-api.yaml" -o /tmp/base.yaml
+
+      - name: 打包 head 契約
+        run: npx --yes @redocly/cli@1.34.23 bundle api/orders-api.yaml -o /tmp/head.yaml
+
+      - name: 檢查破壞性變更（含有期限的核准例外）
+        run: |
+          python3 scripts/build-oasdiff-ignore.py api/breaking-changes-allowlist.json /tmp
+          docker run --rm -v /tmp:/specs:ro tufin/oasdiff:v1.35.0 breaking \
+            /specs/base.yaml /specs/head.yaml --fail-on ERR \
+            --err-ignore /specs/oasdiff-err-ignore.txt --warn-ignore /specs/oasdiff-warn-ignore.txt
 
       - name: 產生變更報告並貼到 PR
         if: always()
         run: |
-          docker run --rm -v /tmp:/specs tufin/oasdiff changelog \
+          [ -s /tmp/base.yaml ] && [ -s /tmp/head.yaml ] || exit 0
+          docker run --rm -v /tmp:/specs:ro tufin/oasdiff:v1.35.0 changelog \
             /specs/base.yaml /specs/head.yaml --format markdown > /tmp/changelog.md
           if [ -s /tmp/changelog.md ]; then
-            gh pr comment ${{ github.event.number }} \
-              --body "## 📋 API 契約變更$(cat /tmp/changelog.md)"
+            gh pr comment "$PR_NUMBER" --body-file /tmp/changelog.md
           fi
-        env: { GH_TOKEN: '${{ secrets.GITHUB_TOKEN }}' }
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
 
   drift:
     name: 契約與實作一致性
@@ -2917,28 +2988,32 @@ jobs:
       - uses: actions/checkout@v4
       - name: 起 Prism 並驗證所有範例可用
         run: |
-          npx @redocly/cli bundle api/orders-api.yaml -o /tmp/bundled.yaml
-          npx @stoplight/prism-cli mock /tmp/bundled.yaml --port 4010 --errors &
+          npx --yes @redocly/cli@1.34.23 bundle api/orders-api.yaml -o /tmp/bundled.yaml
+          npx --yes @stoplight/prism-cli@5.16.0 mock /tmp/bundled.yaml --port 4010 --errors &
           sleep 8
           # ★ 驗證每個端點的每個範例都能正常回應
           node scripts/smoke-test-mock.mjs http://localhost:4010
 
   publish:
     name: 發布文件與 mock
-    if: github.ref == 'refs/heads/main'
-    needs: [lint, breaking-change, drift, mock-smoke]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint, drift, mock-smoke]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: 打包並產生靜態文件
         run: |
-          npx @redocly/cli bundle api/orders-api.yaml -o dist/orders-api.yaml
-          npx @redocly/cli build-docs dist/orders-api.yaml -o dist/index.html
+          npx --yes @redocly/cli@1.34.23 bundle api/orders-api.yaml -o dist/orders-api.yaml
+          npx --yes @redocly/cli@1.34.23 build-docs dist/orders-api.yaml -o dist/index.html
       - name: 部署到文件站
         run: ./scripts/deploy-docs.sh dist/
       - name: 部署 mock server
         run: ./scripts/deploy-mock.sh dist/orders-api.yaml
 ```
+
+相容性 job 只在 PR 執行；main push 重跑 lint／drift／mock 後發布。
+main 必須設分支保護，要求 PR 的 breaking-change 通過；publish 不依賴 push 時被 skip 的 job，
+避免整條發布鏈也被跳過。第 06 章 6.9.2 提供 ignore 產生器，這些 scripts 需先依教材建立。
 
 **五個 job 各自守住一個方向**：
 
@@ -3114,7 +3189,7 @@ parameters:
 
 ```bash
 # 外部版本：移除內部端點與內部欄位
-npx @redocly/cli bundle api/orders-api.yaml \
+npx --yes @redocly/cli@1.34.23 bundle api/orders-api.yaml \
   --remove-unused-components \
   -o dist/orders-api.public.yaml
 

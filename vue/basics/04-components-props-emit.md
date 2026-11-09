@@ -153,10 +153,10 @@ const props = defineProps({
 <MyButton disabled />              <!-- 只寫屬性名 → disabled 是 true（不是空字串） -->
 <MyButton :disabled="true" />      <!-- true -->
 <MyButton />                       <!-- 沒寫 → 走 default，false -->
-<MyButton disabled="false" />      <!-- ⚠️ 陷阱：這是字串 "false"，轉型後是 true！ -->
+<MyButton disabled="false" />      <!-- ⚠️ 陷阱：這是字串 "false"，不會被轉成布林！ -->
 ```
 
-最後一行是經典坑：**想傳 `false` 一定要加冒號**（`:disabled="false"`），沒冒號的 `disabled="false"` 是一個非空字串，結果會是 `true`。這跟 §2.1 「傳數字要加冒號」是同一個道理。
+最後一行是經典坑：**想傳 `false` 一定要加冒號**（`:disabled="false"`）。Boolean 轉型只會把「只寫屬性名」（空字串）或 `disabled="disabled"` 轉成 `true`；沒冒號的 `disabled="false"` 會原樣傳進字串 `"false"`，開發模式會出現 `Invalid prop: type check failed` 警告，而且非空字串是真值，拿去 `v-if` 或綁到原生 `:disabled` 時表現得就像 `true`。這跟 §2.1 「傳數字要加冒號」是同一個道理。
 
 ### 2.3 props 是唯讀的
 
@@ -242,8 +242,9 @@ const { title, minutes = 0, level = 'Beginner' } = defineProps<{
   const { minutes } = defineProps(['minutes'])
 
   watch(() => minutes, handler)   // ✅ 用 getter 包起來
-  watch(minutes, handler)         // ❌ 傳的是當下的數字，不會觸發
+  watch(minutes, handler)         // ❌ 編譯器直接報錯：解構出來的 prop 不能直接傳給 watch()
   useSomething(() => minutes)     // ✅ 傳 getter 給 composable
+  useSomething(minutes)           // ❌ 不會報錯，但傳進去的只是當下的值，響應式悄悄斷掉
   ```
 
 - **需要 Vue 3.5 以上**。舊專案（3.4 以前）解構 props 仍會失去響應式，別把這個寫法帶回去。
@@ -356,10 +357,10 @@ const model = defineModel({ type: String, default: '' })
 
 ### 4.2 它其實是 props + emit 的語法糖
 
-理解 `defineModel` 最好的方式，是看它「展開」後等價於什麼。下面這個舊寫法和上面的 `defineModel()` **完全等價**：
+理解 `defineModel` 最好的方式，是看它「展開」後等價於什麼。下面這個舊寫法和上面的 `defineModel()` **基本等價**：
 
 ```vue
-<!-- 舊寫法：與 4.1 的 MyInput 等價 -->
+<!-- 舊寫法：與 4.1 的 MyInput 基本等價 -->
 <script setup>
 // v-model 預設對應名為 modelValue 的 prop，與 update:modelValue 事件
 const props = defineProps(['modelValue'])
@@ -373,6 +374,8 @@ const emit = defineEmits(['update:modelValue'])
   />
 </template>
 ```
+
+差別只有兩點：`defineModel()` 還會一併宣告 `modelModifiers` prop（給 `v-model.trim` 這類修飾符用）；父層沒有綁 `v-model` 時，它會改用元件內部的本地值，子元件自己改值仍然有效，手寫版則只會發出事件，`props.modelValue` 不會改變。
 
 也就是說，父層的 `v-model="name"` 其實是這段語法糖：
 
@@ -634,13 +637,13 @@ defineOptions({ inheritAttrs: false })
 
 ## 常見陷阱
 
-1. **傳數字 / 布林忘了加 `:`**：`minutes="30"` 傳的是字串 `"30"`；要傳數字得 `:minutes="30"`。布林更陰險——`disabled="false"` 是非空字串，轉型後變成 **`true`**（見 §2.2.1）。
+1. **傳數字 / 布林忘了加 `:`**：`minutes="30"` 傳的是字串 `"30"`；要傳數字得 `:minutes="30"`。布林更陰險——`disabled="false"` 傳進去的是字串 `"false"`（不會轉成布林），非空字串是真值，用起來就像 **`true`**（見 §2.2.1）。
 2. **直接改 prop**：props 唯讀。要改請 emit 請父層改，或複製到本地狀態 / 用 computed 衍生。
 3. **物件 / 陣列 prop 的 `default` 沒用工廠函式**：`default: []` 會讓所有實例共用同一份，必須 `default: () => []`。
-4. **`v-model` 新舊寫法混用**：新專案用 `defineModel()`；別再手寫 `modelValue` + `update:modelValue`（除非維護舊碼）。兩者是同一回事。
+4. **`v-model` 新舊寫法混用**：新專案用 `defineModel()`；別再手寫 `modelValue` + `update:modelValue`（除非維護舊碼）。兩者底層是同一套 prop + 事件機制。
 5. **provide 可寫 ref 卻到處被改**：用 `readonly` 包住狀態，另外 provide 修改函式，把「誰能改」收斂回提供者。
 6. **inject 沒給預設值**：沒人 provide 時會拿到 `undefined`。第二參數給預設值。
-7. **多根元件卻期待自動透傳**：元件有多個根節點時 `$attrs` 不會自動套，需 `inheritAttrs: false` + `v-bind="$attrs"` 手動指定。
+7. **多根元件卻期待自動透傳**：元件有多個根節點時 `$attrs` 不會自動套，需用 `v-bind="$attrs"` 指定要落在哪個根節點。
 
 ---
 
@@ -658,7 +661,7 @@ defineOptions({ inheritAttrs: false })
 
 ## 銜接下一章與源碼 / 全端課
 
-到這裡，你已經掌握 Vue 的四大核心：**響應式（第 2 章）、模板與指令（第 3 章）、元件與溝通（本章）**。這正是進入本 repo 進階課程的入場券：
+到這裡，你已經掌握 Vue 的三大核心：**響應式（第 2 章）、模板與指令（第 3 章）、元件與溝通（本章）**。這正是進入本 repo 進階課程的入場券：
 
 - 想知道 `ref`、`v-model`、slots 這些「背後怎麼實作」——接 [Vue 源碼解析課](../vue-source/README.md)。
 - 想把這些元件能力用在「可上線的全端框架」——接 [Nuxt 全端課](../nuxt/README.md)（Nuxt 完全沿用本章的 `<script setup>` 元件寫法）。

@@ -27,18 +27,23 @@
 ## 2. 安裝與初始化 Prisma
 
 ```bash
-npm install -D prisma          # CLI（開發用）
-npm install @prisma/client     # 執行時用的 client
+npm install -D prisma@6          # CLI（開發用）
+npm install @prisma/client@6     # 執行時用的 client
 npx prisma init --datasource-provider sqlite
 ```
+
+> 本課以 Prisma 6 為準（blog-demo 也鎖 `^6`）；Prisma 7 起 schema 與 client 寫法不同（連線網址改寫在 `prisma.config.ts`、client 要搭配 driver adapter），所以安裝時要寫明 `@6`。
 
 `prisma init` 會產生：
 
 ```text
 prisma/
-└─ schema.prisma      ← 資料模型定義
-.env                  ← 內含 DATABASE_URL（Prisma 預設讀這裡）
+└─ schema.prisma      ← 資料模型定義（下一節會整份換掉）
+prisma.config.ts      ← Prisma 的設定檔（本課用不到，刪掉）
+.env                  ← 內含 DATABASE_URL
 ```
+
+`prisma.config.ts` 是給新版寫法用的：有它的時候，Prisma 不會自動讀 `.env`，要靠它開頭的 `import "dotenv/config"`。本課沿用 Prisma 6 的傳統做法（blog-demo 也一樣），**直接把 `prisma.config.ts` 刪掉**，Prisma 就會自己讀 `.env`；`.env` 開頭那段說「NOT automatically loaded」的英文註解是寫給保留設定檔的情況，可以一併刪掉。
 
 打開 `.env` 確認（SQLite 用單檔）：
 
@@ -53,7 +58,7 @@ DATABASE_URL="file:./dev.db"
 
 ## 3. 定義資料模型
 
-編輯 `prisma/schema.prisma`，加一個 `Post` 模型：
+把 `prisma/schema.prisma` **整份換成**下面這樣。`init` 產生的 generator 是新的 `prisma-client`（輸出到 `generated/prisma`），本課用的是從 `@prisma/client` 匯入的 `prisma-client-js`，所以 generator 也要一起換、不要留 `output`：
 
 ```prisma
 generator client {
@@ -128,7 +133,7 @@ export default defineEventHandler(async () => {
 export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   if (!body?.title) {
-    throw createError({ statusCode: 400, statusMessage: '標題必填' })
+    throw createError({ status: 400, message: '標題必填' })
   }
   setResponseStatus(event, 201)
   return await prisma.post.create({
@@ -148,34 +153,42 @@ export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, 'id'))
   // 先驗證 id：/api/posts/abc → Number('abc') 是 NaN，直接丟給 Prisma 會拋錯變成 500
   if (!Number.isInteger(id)) {
-    throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+    throw createError({ status: 404, message: '找不到文章' })
   }
   const post = await prisma.post.findUnique({ where: { id } })
   if (!post) {
-    throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+    throw createError({ status: 404, message: '找不到文章' })
   }
   return post
 })
 ```
 
-> ⚠️ **這支是公開端點，目前不會過濾 `published`**——連草稿都讀得到。列表端點應該 `where: { published: true }`；而詳情端點的「草稿只有作者能看」授權，要等第 11 章加上認證（`authorId` / session）後才補得上。**「前端把草稿藏起來」不算安全，公開端點自己一定要擋**（第 11 章會完整處理）。上線前務必補完。
+> 伺服器端的 `createError` 用 `status` 放狀態碼、`message` 放給人看的訊息；前端 `$fetch` 失敗時從 `e.data?.message` 讀到它。
+
+> ⚠️ **這支是公開端點，目前不會過濾 `published`**——連草稿都讀得到。列表端點應該 `where: { published: true }`；而詳情端點的「草稿只有作者能看」授權，要等第 11 章加上認證（`authorId` / session）後才補得上。**「前端把草稿藏起來」不算安全，公開端點自己一定要擋**（第 11 章第 7 節會把列表與詳情一起補上）。
 
 ### `server/api/posts/[id].put.js`（更新）
 
 ```js
 export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, 'id'))
-  const body = await readBody(event)
-  try {
-    return await prisma.post.update({
-      where: { id },
-      data: body, // { title?, content?, published? }
-    })
-  } catch {
-    throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  const post = Number.isInteger(id) ? await prisma.post.findUnique({ where: { id } }) : null
+  if (!post) {
+    throw createError({ status: 404, message: '找不到文章' })
   }
+
+  // 欄位白名單：只更新允許改的欄位，型別不對的直接忽略
+  const body = await readBody(event)
+  const data = {}
+  if (typeof body?.title === 'string') data.title = body.title
+  if (typeof body?.content === 'string') data.content = body.content
+  if (typeof body?.published === 'boolean') data.published = body.published
+
+  return await prisma.post.update({ where: { id }, data })
 })
 ```
+
+> ⚠️ 不要寫成 `data: body`：Prisma 會照單全收，請求者就能順手改掉 `id`、`createdAt`——第 11 章加上 `authorId` 之後，甚至能把別人的文章「過戶」給自己。也不要用一個 `try/catch` 把所有錯誤都回成 404，欄位錯誤會被誤報成「找不到文章」。先 `findUnique` 確認存在，再用白名單更新。第 11 章還會再補上「要登入、只能改自己的」。
 
 ### `server/api/posts/[id].delete.js`（刪除）
 
@@ -294,7 +307,7 @@ export default defineEventHandler(async () => {
 export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   if (!body?.title) {
-    throw createError({ statusCode: 400, statusMessage: '標題必填' })
+    throw createError({ status: 400, message: '標題必填' })
   }
   setResponseStatus(event, 201)
   return await prisma.post.create({
@@ -308,8 +321,9 @@ export default defineEventHandler(async (event) => {
 ```js
 export default defineEventHandler(async (event) => {
   const id = Number(getRouterParam(event, 'id'))
+  if (!Number.isInteger(id)) throw createError({ status: 404, message: '找不到文章' })
   const post = await prisma.post.findUnique({ where: { id } })
-  if (!post) throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  if (!post) throw createError({ status: 404, message: '找不到文章' })
   return post
 })
 ```
@@ -369,7 +383,8 @@ async function remove(id) {
       <div>
         <strong>{{ p.title }}</strong>
         <p>{{ p.content }}</p>
-        <small>{{ new Date(p.createdAt).toLocaleString() }}</small>
+        <!-- 寫死語系與時區，伺服器與瀏覽器才會算出同一個字串（不然會 hydration mismatch，第 13 章詳解） -->
+        <small>{{ new Date(p.createdAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) }}</small>
       </div>
       <button class="del" @click="remove(p.id)">刪除</button>
     </article>

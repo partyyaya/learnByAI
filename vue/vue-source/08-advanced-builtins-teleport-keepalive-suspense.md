@@ -110,7 +110,7 @@ mount pending branch
 
 | 名稱 | 作用 |
 |------|------|
-| `timeout` | 從 pending 切到顯示 fallback 前的等待毫秒數；設 `0` 表示立即顯示 fallback |
+| `timeout` | 只在內容被替換、重新進入 pending 時生效：新內容超過這個毫秒數仍未就緒才切到 fallback，設 `0` 表示立即切換；**不設時重新 pending 會一直保留舊內容、不顯示 fallback**。首次掛載只要有未完成的 async 依賴就立刻顯示 fallback，不受 `timeout` 影響 |
 | `suspensible` | 讓「巢狀的 Suspense」把自己的 async 依賴**上交給外層 Suspense** 協調，而不是自己各管各的（父層才顯示一個統一的 fallback） |
 | `@pending` | 進入 pending 狀態時觸發 |
 | `@resolve` | content branch 的所有 async 依賴 resolve、切換完成時觸發 |
@@ -172,10 +172,10 @@ mount pending branch
 
 ## 8.9 常見誤區
 
-### 誤區一：以為 Teleport 會改變事件冒泡邏輯
+### 誤區一：以為 Teleport 內的原生事件仍會冒泡到邏輯父元件
 
-在框架層級上它仍屬於原本組件樹語義，  
-但 DOM 位置改變會影響你對實際事件路徑的直覺，需特別驗證。
+provide/inject、元件 `emit`、父子關係仍依原本的元件樹；但原生 DOM 事件是沿**傳送後的實際 DOM 位置**冒泡的。  
+例如 `<div @click="onWrapper"><Teleport to="#modal-root"><button>…</button></Teleport></div>`，點按鈕時 click 冒泡到 `#modal-root`、`body`，外層 `div` 的 `@click` 收不到。需要處理這類事件時，直接綁在 Teleport 內容上。
 
 ### 誤區二：KeepAlive = 永不釋放
 

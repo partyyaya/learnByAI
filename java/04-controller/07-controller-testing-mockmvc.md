@@ -1339,7 +1339,7 @@ package example.shop.test;
 import example.shop.common.upload.MalwareScanner;
 import example.shop.common.web.ratelimit.InMemoryRateLimiter;
 import example.shop.common.web.ratelimit.RateLimiter;
-import example.shop.order.service.IdempotencyStore;
+import example.shop.common.web.idempotency.IdempotencyStore;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
@@ -8237,13 +8237,21 @@ void 每個測試類別都有tag() {
         </configuration>
     </plugin>
 
-    <!-- ② Failsafe：慢的整合測試（*IT.java 或 tag）-->
+    <!-- ② Failsafe：先用 includes 找到類別，再用 tag 篩選 -->
     <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
         <version>3.2.5</version>
         <configuration>
             <groups>integration,infra,security</groups>
+            <includes>
+                <include>**/*Test.java</include>
+                <include>**/*Tests.java</include>
+                <include>**/IT*.java</include>
+                <include>**/*IT.java</include>
+                <include>**/*ITCase.java</include>
+            </includes>
+            <failIfNoTests>true</failIfNoTests>
             <forkCount>1</forkCount>       <!-- ★ Testcontainers 不要多 fork -->
             <reuseForks>true</reuseForks>
         </configuration>
@@ -8296,41 +8304,26 @@ void 每個測試類別都有tag() {
 </plugins>
 </build>
 
-<profiles>
-    <!-- ★ 兩個 Boot 版本的相容 profile（7.6.1 的修正）-->
-    <profile>
-        <id>boot-3.2</id>
-        <activation><activeByDefault>true</activeByDefault></activation>
-        <properties>
-            <spring-boot.version>3.2.5</spring-boot.version>
-        </properties>
-        <build><plugins><plugin>
-            <artifactId>maven-compiler-plugin</artifactId>
-            <configuration>
-                <!-- ★ @MockitoBean 不存在 → 排除用到它的測試支援類別，
-                     改用 @MockBean 的版本 -->
-                <testExcludes>
-                    <testExclude>**/mockito62/**</testExclude>
-                </testExcludes>
-            </configuration>
-        </plugin></plugins></build>
-    </profile>
-    <profile>
-        <id>boot-3.4</id>
-        <properties>
-            <spring-boot.version>3.4.0</spring-boot.version>
-        </properties>
-        <build><plugins><plugin>
-            <artifactId>maven-compiler-plugin</artifactId>
-            <configuration>
-                <testExcludes>
-                    <testExclude>**/mockito61/**</testExclude>
-                </testExcludes>
-            </configuration>
-        </plugin></plugins></build>
-    </profile>
-</profiles>
+
 ```
+
+**版本矩陣要真的切換 parent，不能只加未使用的 property。**
+00 章以 `spring-boot-starter-parent:3.2.5` 為基準。驗證 3.4 時，在獨立的
+POM／checkout 把 parent 的 `<version>` 改為 `3.4.0`，再統一切換對應的 mock 註解，
+並依相容矩陣檢查第三方 starter。本次附帶的驗證專案只驗證 3.2.5，沒有宣告 3.4 相容。
+child profile 設 `spring-boot.version` 不會改掉寫死的 parent，也不會自動換 import。
+
+```bash
+# 每一份版本專案各跑一次，確認實際 parent 與 Spring Test 版本。
+mvn help:evaluate -Dexpression=project.parent.version -q -DforceStdout
+mvn dependency:tree -Dincludes=org.springframework:spring-test
+mvn verify
+```
+
+**Tag 與類名是兩道獨立篩選。** 上面的 Failsafe includes 涵蓋教材的 `*Test`。
+Surefire 跑 unit/slice/contract，Failsafe 跑 integration/infra/security；每個類別應只屬於其中一群，
+避免重複執行。CI 另查各 tag 的測試報告數量，不能把「綠燈但零測試」當成功。
+`failIfNoTests` 守住整個階段，不能取代逐類別的發現檢查。
 
 ⚠️ **`@{argLine}` 那個寫法很重要。**
 Jacoco 的 `prepare-agent` 會把 agent 參數放進一個叫 `argLine` 的 property，
@@ -9369,55 +9362,84 @@ public final class ValidBodies {
 ```java
 package example.shop.test;
 
-import example.shop.order.service.IdempotencyStore;
+import example.shop.common.web.idempotency.IdempotencyStore;
+import java.time.*;
+import java.util.*;
 
-import java.time.Clock;
-import java.time.Duration;
-import java.time.Instant;
-import java.util.Map;
-import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-
-/**
- * 04 章 4.9 的 IdempotencyStore 的記憶體實作。
- *
- * <p>★ 為什麼是「真的實作」而不是 mock（7.6.1）：
- *    冪等的行為是「第二次送同樣的請求要回同一個結果」——
- *    那需要真的記住狀態。mock 做不到。
- */
+/** 與 04 章同一介面；以 monitor 原子化多步驟操作，只供單 JVM 測試。 */
 public class InMemoryIdempotencyStore implements IdempotencyStore {
-
-    private record Entry(String fingerprint, String responseBody,
-                         int status, Instant expiresAt) {}
-
-    private final Map<String, Entry> store = new ConcurrentHashMap<>();
+    private record Scope(String key, String actor) {}
+    private record Entry(Record record, long ttlSeconds) {}
+    private final Map<Scope, Entry> records = new HashMap<>();
     private final Clock clock;
-
     public InMemoryIdempotencyStore(Clock clock) { this.clock = clock; }
 
     @Override
-    public Optional<StoredResponse> find(String key, String fingerprint) {
-        Entry entry = store.get(key);
-        if (entry == null) return Optional.empty();
-        if (entry.expiresAt().isBefore(clock.instant())) {
-            store.remove(key);
-            return Optional.empty();
+    public synchronized ClaimResult claim(String key, String actor, String fingerprint,
+                                         long ttlSeconds, long leaseSeconds) {
+        if (ttlSeconds <= 0 || leaseSeconds <= 0) throw new IllegalArgumentException("invalid TTL");
+        var scope = new Scope(key, actor);
+        Entry entry = records.get(scope);
+        Instant now = clock.instant();
+        if (entry != null && entry.record().state() == State.COMPLETED
+                && !entry.record().expiresAt().isAfter(now)) {
+            records.remove(scope); entry = null;
         }
-        if (!entry.fingerprint().equals(fingerprint)) {
-            // ★ 同一個 key、不同的請求內容 → 409（04 章 4.9.4）
-            throw new example.shop.common.web.IdempotencyKeyReusedException(key);
+        if (entry == null) {
+            String owner = UUID.randomUUID().toString();
+            records.put(scope, new Entry(new Record(key, actor, fingerprint, owner,
+                    State.IN_PROGRESS, null, now.plusSeconds(leaseSeconds), null, Map.of(), null), ttlSeconds));
+            return new ClaimResult.Acquired(owner);
         }
-        return Optional.of(new StoredResponse(entry.status(), entry.responseBody()));
+        Record r = entry.record();
+        if (!r.fingerprint().equals(fingerprint))
+            return new ClaimResult.FingerprintMismatch(r.fingerprint());
+        if (r.state() == State.COMPLETED) return new ClaimResult.Replay(copy(r));
+        if (r.state() == State.IN_PROGRESS && !r.leaseExpiresAt().isAfter(now))
+            markUnknownOwned(key, actor, r.ownerToken());
+        return new ClaimResult.InProgress(now.plusSeconds(30)); // UNKNOWN 不重新取得執行權
     }
-
     @Override
-    public void save(String key, String fingerprint, int status, String body) {
-        store.put(key, new Entry(fingerprint, body, status,
-                clock.instant().plus(Duration.ofHours(24))));
+    public synchronized void completeOwned(String key, String actor, String owner, int status,
+                                           Map<String, String> headers, byte[] body) {
+        var scope = new Scope(key, actor);
+        Entry e = owned(scope, owner);
+        if (e == null) return;
+        Record r = e.record();
+        records.put(scope, new Entry(new Record(key, actor, r.fingerprint(), owner,
+                State.COMPLETED, clock.instant().plusSeconds(e.ttlSeconds()), r.leaseExpiresAt(),
+                status, Map.copyOf(headers), body == null ? null : body.clone()), e.ttlSeconds()));
     }
-
-    /** ⚠️ 測試專用 —— 不在正式介面上。 */
-    public void clear() { store.clear(); }
+    @Override
+    public synchronized void markUnknownOwned(String key, String actor, String owner) {
+        var scope = new Scope(key, actor);
+        Entry e = owned(scope, owner);
+        if (e == null) return;
+        Record r = e.record();
+        records.put(scope, new Entry(new Record(key, actor, r.fingerprint(), owner,
+                State.UNKNOWN, null, r.leaseExpiresAt(), null, Map.of(), null), e.ttlSeconds()));
+    }
+    @Override
+    public synchronized void releaseOwned(String key, String actor, String owner) {
+        var scope = new Scope(key, actor);
+        if (owned(scope, owner) != null) records.remove(scope);
+    }
+    private Entry owned(Scope scope, String owner) {
+        Entry e = records.get(scope);
+        return e != null && e.record().state() != State.COMPLETED
+                && e.record().ownerToken().equals(owner) ? e : null;
+    }
+    @Override
+    public synchronized Optional<Record> find(String key, String actor) {
+        Entry e = records.get(new Scope(key, actor));
+        return e == null ? Optional.empty() : Optional.of(copy(e.record()));
+    }
+    private Record copy(Record r) {
+        return new Record(r.key(), r.actorId(), r.fingerprint(), r.ownerToken(), r.state(),
+                r.expiresAt(), r.leaseExpiresAt(), r.responseStatus(), Map.copyOf(r.responseHeaders()),
+                r.responseBody() == null ? null : r.responseBody().clone());
+    }
+    public synchronized void clear() { records.clear(); }
 }
 ```
 
@@ -9458,7 +9480,10 @@ public class RecordingAuditRepository implements AuditRepository {
     public List<AuditEvent> findAll() { return List.copyOf(events); }
 
     public List<AuditEvent> findByResourceId(String resourceId) {
-        return events.stream().filter(e -> resourceId.equals(e.resourceId())).toList();
+        // Web 稽核依 requestUri 的完整路徑片段查詢，不假設 AuditEvent 有 resourceId accessor。
+        // 業務稽核若需獨立 resourceId，應由 Service 定義另一份事件契約。
+        return events.stream().filter(e -> e.requestUri() != null
+                && java.util.Arrays.asList(e.requestUri().split("/")).contains(resourceId)).toList();
     }
 
     public void clear() { events.clear(); }

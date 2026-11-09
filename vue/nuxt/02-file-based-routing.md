@@ -135,7 +135,7 @@ const id = route.params.id
 </template>
 ```
 
-> `route.params` 的值永遠是字串。要當數字用記得自己轉：`Number(route.params.id)`。
+> 單一動態參數（像 `[id]`）的值是字串。要當數字用記得自己轉：`Number(route.params.id)`。
 
 ---
 
@@ -164,7 +164,7 @@ const path = route.params.slug
 
 同理，把 `app/pages/[...slug].vue` 放在最外層，可以當作**自訂 404 相符頁**（沒有其他路由接住時的兜底）。
 
-> ⚠️ 但有個 SEO 陷阱：頂層 catch-all **有相符到路由，所以預設回的是 HTTP 200，不是真正的 404**。對搜尋引擎來說「這個亂打的網址是一個正常存在的頁面」，會被收錄、稀釋權重。要成為真正的 404，得在頁面裡主動丟：`throw createError({ statusCode: 404, statusMessage: '找不到頁面' })`。或者**乾脆不做這個兜底頁**——沒有任何路由相符時，Nuxt 本來就會回真正的 404 並顯示 `app/error.vue`（第 3 章），這通常才是處理 404 最省事又正確的做法。
+> ⚠️ 但有個 SEO 陷阱：頂層 catch-all **有相符到路由，所以預設回的是 HTTP 200，不是真正的 404**。對搜尋引擎來說「這個亂打的網址是一個正常存在的頁面」，會被收錄、稀釋權重。要成為真正的 404，得在頁面裡主動丟：`throw createError({ status: 404, message: '找不到頁面', fatal: true })`（`fatal: true` 讓站內切頁時也會顯示錯誤頁，第 3 章細講）。或者**乾脆不做這個兜底頁**——沒有任何路由相符時，Nuxt 本來就會回真正的 404 並顯示 `app/error.vue`（第 3 章），這通常才是處理 404 最省事又正確的做法。
 
 ---
 

@@ -2827,7 +2827,7 @@ public record Todo(
     /** 驗證 + 正規化 + 防禦性複製，全部在這裡（12.6 節） */
     public Todo {
         if (id <= 0) {
-            throw new InvalidTodoException("id 必須是正整數，收到：" + id);
+            throw new InvalidTodoException("id", id, "id 必須大於 0");
         }
         Objects.requireNonNull(priority, "priority 不可為 null");
         Objects.requireNonNull(createdAt, "createdAt 不可為 null");
@@ -2835,13 +2835,19 @@ public record Todo(
 
         title = title == null ? "" : title.strip();
         if (title.isEmpty()) {
-            throw new InvalidTodoException("標題不可為空白");
+            throw new InvalidTodoException("title", title, "標題不可為空");
         }
-        if (title.length() > MAX_TITLE_LENGTH) {
-            throw new InvalidTodoException(
-                    "標題不可超過 %d 字，收到 %d 字".formatted(MAX_TITLE_LENGTH, title.length()));
+        int titleLength = title.codePointCount(0, title.length());
+        if (titleLength > MAX_TITLE_LENGTH) {
+            throw new InvalidTodoException("title", titleLength,
+                    "標題長度不可超過 " + MAX_TITLE_LENGTH + " 字");
         }
 
+        completion.finishedAt().ifPresent(at -> {
+            if (at.isBefore(createdAt)) {
+                throw new InvalidTodoException("結束時間不可早於建立時間");
+            }
+        });
         tags = normalizeTags(tags);
     }
 
@@ -2940,7 +2946,7 @@ public boolean equals(Object o) {
 
 改成 record 之後，`equals` **比較所有元件**。這是**行為改變**，不是重構。
 
-而且——**第 11 章的測試立刻抓到了：**
+而且——**使用第 11 章的 id 相等契約時，會得到下列斷言差異（格式示意）：**
 
 ```
 [ERROR] TodoTest$Equality.equalsById:412
@@ -3388,62 +3394,46 @@ public sealed interface Completion {
 | 執行緒安全 | `Todo` 可變，跨執行緒要小心（第 08 章） | **不可變，可自由共享** | |
 | 「改了但忘記 save」的 bug | 可能發生 | **不可能**（改動不存回去就消失） | |
 
-### 驗收：跑第 11 章的測試
+### 驗收：先解決編譯錯誤，再驗證行為
 
 ```bash
-./mvnw -T 1C clean verify
+./mvnw -T 1C clean test
+./mvnw -T 1C verify
 ```
 
-```
-[ERROR] Tests run: 83, Failures: 4, Errors: 0, Skipped: 0
-[ERROR] TodoTest$Equality.equalsById:412 »  id 相同但內容不同，現在不相等了
-[ERROR] TodoTest$Equality.worksInHashSet:437 » 期望 1 個，實際 2 個
-[ERROR] TodoTest$MarkDone.marksDone:301 » markDone 現在回傳新物件，原物件不變
-[ERROR] TodoServiceWithFakeTest.markDonePersists:142 » completedAt() 方法不存在了
-```
+先依下表完成編譯遷移；找不到 `completedAt()` 是 **testCompile 的編譯錯誤**，
+不會變成「JUnit 已執行但失敗」的報告。編譯成功後，再處理下列刻意改變的行為：
 
-**四個失敗，全部都是「刻意的行為改變」——這正是我們要的。**
-
-第 11 章 11.2 節說過：測試的價值在於**它讓你知道自己改了什麼**。
-如果這次重構一個測試都沒紅，那反而可疑（表示那些行為根本沒被測到）。
-
-逐一處理：
-
-| 失敗的測試 | 處理方式 |
+| 測試 / 契約 | 處理方式 |
 |---|---|
-| `equalsById` | 改寫成 `sameIdDifferentContentIsNotEqual`（上面已寫） |
-| `worksInHashSet` | 改寫成 `deduplicateById`（明確用 id 當 key） |
-| `marksDone` | 改成斷言「回傳的新物件已完成，原物件不變」 |
-| `markDonePersists` | `completedAt()` → `completion().finishedAt()` |
+| `equalsById` | 改成所有元件的值語意比較 |
+| `worksInHashSet` | 依需求改為值去重或明確依 id 去重 |
+| `marksDone` | 斷言回傳的新物件已完成、原物件未變 |
+| 完成時間 | `completedAt()` 改為 `completion().finishedAt()`，斷言 Optional |
+| 100 個 emoji 的長度上限 | 保留原契約，重構後仍須接受 100 碼點、拒絕 101 碼點 |
+| 結束時間不可早於建立時間 | 保留驗證，完成、取消與 JSON 建構都不可繞過 |
 
-改完之後：
+第 11 章完整測試、覆蓋率與突變測試的數量，應以你的實際專案報告為準。
+不能只因處理了幾個預期失敗，就宣稱其餘測試都未受影響。
 
-```
-[INFO] Tests run: 85, Failures: 0, Errors: 0, Skipped: 0
-[INFO] --- jacoco:0.8.12:check (check) @ todo-core ---
-[INFO] All coverage checks have been met.
-[INFO] BUILD SUCCESS
-```
-
-**其他 79 個測試一行都沒改就通過了**——這證明重構沒有意外的副作用。
-
-### 除了測試，還有四個檔案要跟著改
+### 除了測試，其他呼叫端也要跟著改
 
 `Todo` 從可變類別變成 record，**編譯器會直接把所有需要改的地方指出來**。
-完整清單只有四處，而且每一處的修法都是同一個模式：
+以下列出主要遷移位置；實際仍以編譯器與測試結果逐一檢查：
 **「就地修改」變成「產生新物件」，「可能是 null」變成「問 `completion`」。**
 
 | 檔案 | 編譯錯誤 | 修法 |
 |---|---|---|
-| `ConcurrentTodoImporter`（第 08 章） | `addTag(String)` 找不到 | `todo.addTag(t)` → `todo = todo.withTag(t)`（回傳值要接住！） |
+| `ConcurrentTodoImporter`（第 08 章） | `addTag(String)` 找不到 | 批次建模改成 `todo = todo.withTag(tag)`；`parseRow` 的驗證也改成 `validated = validated.withTag(tag)` |
+| `JsonFileTodoRepository`（第 07、08 章） | `copy` 使用舊的七參數建構子與 `completedAt()` | Todo 已不可變，`copy(Todo todo)` 直接 `return todo` 即可；不再需要防禦性複製物件 |
 | `TodoBuilder`（第 11 章） | `tags.forEach(todo::addTag)` 不是合法方法參考 | `for (String t : tags) todo = todo.withTag(t);` |
 | `TodoAssert`（第 11 章） | `completedAt()` 找不到 | `actual.completion().finishedAt()`（回傳 `Optional<Instant>`） |
 | `TodoServiceTest` / `TodoServiceWithFakeTest`（第 11 章） | 同上 | 同上 |
 
-> 🔑 **注意這四個都是編譯錯誤，不是執行期錯誤。**
+> 🔑 **注意上述 API 不相容會先造成編譯錯誤，不是執行期錯誤。**
 > 這就是 12.12 節那句話的實際兌現：**把「可能忘記」變成「編不過」。**
 > 如果 `Todo` 還是可變的、`completedAt` 還是可能為 null，
-> 這四處會安靜地繼續編譯 —— 然後在某個沒有測到的路徑上回傳 `null`。
+> 這些呼叫端會安靜地繼續編譯 —— 然後在某個沒有測到的路徑上回傳 `null`。
 
 > 🔑 **這一節真正想示範的不是「怎麼用 record」，
 > 是「怎麼在有安全網的情況下做行為改變」：**
@@ -4500,8 +4490,8 @@ public sealed interface OrderState {
         };
     }
 
-    /** 只有已付款的訂單才有付款編號——型別上就說清楚了 */
-    default Optional<String> paymentId() {
+    /** 已付款與已出貨狀態帶付款編號；名稱避開 record 的 String paymentId() 存取子 */
+    default Optional<String> paymentIdOptional() {
         return switch (this) {
             case Paid(String id, var at) -> Optional.of(id);
             case Shipped(String id, var paidAt, var tn, var sa) -> Optional.of(id);
@@ -4534,7 +4524,7 @@ public sealed interface OrderState {
 > case Draft(), Cancelled(var r, var a) -> Optional.empty();   // ❌
 > ```
 >
-> 兩個分支結果相同時，就老實寫兩行（像上面的 `paymentId()`）。
+> 兩個分支結果相同時，就老實寫兩行（像上面的 `paymentIdOptional()`）。
 > 或者，如果不需要解構，用一個共同的父型別：
 >
 > ```java

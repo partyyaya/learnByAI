@@ -3981,13 +3981,35 @@ public class ConcurrencyDiagnostics {
 > **`scheduleAtFixedRate` 的例外會讓排程永久停止**，這是實務上非常常見且難察覺的問題：
 > 「為什麼我的定時清理任務三個月前就不跑了？」——因為某天它丟了一次 NPE。
 >
-> Spring 的 `@Scheduled` 有一樣的行為。**排程任務的第一行就該是 `try {`。**
+> Spring 預設排程器對重複的 `@Scheduled` 任務通常會記錄並抑制例外，讓後續執行繼續；
+> 自訂 `ErrorHandler` 若重新拋出，才可能停止後續排程。請區分 JDK 原生排程與 Spring 的錯誤處理設定。
+> 參見 [Spring TaskUtils](https://docs.spring.io/spring-framework/docs/current/javadoc-api/org/springframework/scheduling/support/TaskUtils.html)。
 
 ---
 
 ## 8.18 練習專案：併發匯入待辦事項
 
 延續第 07 章的專案，加入「從多個來源併發匯入」的功能。
+
+這一版以**受大小限制的小批次**教併發，並非可處理無限資料的串流管線：
+每個檔案最多 1,000,000 個 UTF-16 碼元、1,000 筆資料列，其他來源也必須自行限制回傳量。
+`TodoSource.read()` 回傳 List，解析結果與最終批次同樣佔用記憶體；大型匯入需改成有界批次、背壓與分批提交。
+
+CSV 使用 Apache Commons CSV 1.11.0。單模組時加到 `demo/pom.xml` 的 `<dependencies>`，
+第 10 章拆模組後放在 `todo-importer/pom.xml`：
+
+```xml
+<dependency>
+  <groupId>org.apache.commons</groupId>
+  <artifactId>commons-csv</artifactId>
+  <version>1.11.0</version>
+</dependency>
+```
+
+`perSourceTimeout` 是這批來源從提交起算的時間預算，**包含等待 Semaphore 配額、讀取與解析**。
+到期的 Future 會被取消，結果不會進入儲存階段。取消是協作式的：來源要回應中斷，
+真實 HTTP/DB 客戶端仍要設定自己的 I/O 逾時；此處不等待不合作的來源無限執行完畢。
+來源整體失敗記在 `bySource`；`failed` 與 `errors` 只統計已讀取但驗證失敗的資料列。
 
 ```
 demo/src/main/java/com/example/todo/
@@ -4019,7 +4041,7 @@ public interface TodoSource {
     String name();
 
     /**
-     * 讀取原始資料列。
+     * 讀取有大小限制的原始資料列；阻塞操作須回應中斷並設定 I/O 逾時。
      * @throws Exception 允許丟 checked 例外（Callable 語意）
      */
     List<String[]> read() throws Exception;
@@ -4108,23 +4130,17 @@ import com.example.todo.repository.TodoRepository;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.LongAdder;
 
 /**
- * 併發匯入器。
- *
- * 設計要點：
- *   ① 用虛擬執行緒 —— 來源是 IO 密集（讀檔、HTTP），數量可能很多
- *   ② 用 Semaphore 限制「同時對外連線數」—— 不要把下游打爆
- *   ③ 一個來源失敗不影響其他來源（第 03 章 3.8 節模板方法的原則）
- *   ④ 一列失敗不影響其他列，並記錄原因
- *   ⑤ 所有解析在併發階段完成，「寫入 repository」集中在單執行緒 —— 避免併發寫檔
+ * 小批次匯入：來源併發讀取與驗證，最後由呼叫執行緒寫入。
+ * 每來源的時間預算包含等待配額、讀取與解析；所有來源在同一批提交。
+ * 這不是無限資料的串流管線，來源必須限制資料量。
  */
 public class ConcurrentTodoImporter {
 
@@ -4138,174 +4154,133 @@ public class ConcurrentTodoImporter {
         this.repository = Objects.requireNonNull(repository, "repository 不可為 null");
         this.clock = Objects.requireNonNull(clock, "clock 不可為 null");
         if (maxConcurrentSources < 1) {
-            throw new IllegalArgumentException(
-                    "maxConcurrentSources 必須 >= 1，收到: " + maxConcurrentSources);
+            throw new IllegalArgumentException("maxConcurrentSources 必須 >= 1");
         }
         this.maxConcurrentSources = maxConcurrentSources;
         this.perSourceTimeout = Objects.requireNonNull(perSourceTimeout, "timeout 不可為 null");
+        if (perSourceTimeout.isZero() || perSourceTimeout.isNegative()) {
+            throw new IllegalArgumentException("timeout 必須大於 0");
+        }
     }
 
-    /** 併發從所有來源讀取並解析，最後單執行緒寫入 */
     public ImportResult importFrom(List<TodoSource> sources) {
-        Objects.requireNonNull(sources, "sources 不可為 null");
-        long startNanos = System.nanoTime();
-
-        // 限制同時對外的來源數（避免把下游 API 打爆）
+        List<TodoSource> inputs = List.copyOf(sources);
+        var names = new HashSet<String>();
+        for (TodoSource source : inputs) {
+            if (!names.add(Objects.requireNonNull(source.name(), "來源名稱"))) {
+                throw new IllegalArgumentException("來源名稱不可重複: " + source.name());
+            }
+        }
+        long start = System.nanoTime();
         Semaphore gate = new Semaphore(maxConcurrentSources);
+        List<Callable<SourceBatch>> tasks = inputs.stream()
+                .<Callable<SourceBatch>>map(source -> () -> processSource(source, gate))
+                .toList();
 
-        // 併發階段的共用狀態：全部用執行緒安全的結構
-        Map<String, ImportResult.SourceResult> bySource = new ConcurrentHashMap<>();
-        List<ImportResult.RowError> errors = Collections.synchronizedList(new ArrayList<>());
-        LongAdder totalRows = new LongAdder();
+        // 任務只產生自己的結果，不接觸 Repository，也不修改呼叫端的統計集合。
+        // invokeAll 在預算用完時取消未完成的 Future；過期結果不會流入寫入階段。
+        List<Future<SourceBatch>> futures;
+        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
+        try {
+            futures = executor.invokeAll(tasks, perSourceTimeout.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new TodoException(com.example.todo.exception.ErrorCode.INTERNAL_ERROR,
+                    "匯入被中斷", e);
+        } finally {
+            // close() 會等待任務結束。此處只取消，避免不理會中斷的來源拖住呼叫端。
+            // 來源仍須配合中斷，真實 HTTP/DB 客戶端也要設定自己的連線與讀取逾時。
+            executor.shutdownNow();
+        }
 
-        // 解析出來的 Todo 暫存在併發佇列，之後單執行緒寫入
-        ConcurrentLinkedQueue<ParsedTodo> parsed = new ConcurrentLinkedQueue<>();
-        // ConcurrentLinkedQueue.size() 是 O(n)，所以自己維護計數（8.16 節）
-        AtomicInteger parsedCount = new AtomicInteger();
-
-        // ===== 階段 1：併發讀取 + 解析 =====
-        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Future<?>> futures = new ArrayList<>(sources.size());
-
-            for (TodoSource source : sources) {
-                futures.add(executor.submit(() -> {
-                    processSource(source, gate, bySource, errors, totalRows, parsed, parsedCount);
-                    return null;
-                }));
-            }
-
-            // ✅ 一定要檢查每個 Future，否則例外會被吞掉（8.17 節）
-            for (Future<?> f : futures) {
-                try {
-                    f.get();
-                } catch (ExecutionException e) {
-                    // processSource 內部已經處理了所有預期的失敗，
-                    // 走到這裡代表是預期外的 bug —— 要讓它顯眼
-                    System.err.println("[ERROR] 匯入任務發生預期外的例外");
-                    e.getCause().printStackTrace();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new TodoException(
-                            com.example.todo.exception.ErrorCode.INTERNAL_ERROR, "匯入被中斷", e);
+        Map<String, ImportResult.SourceResult> bySource = new LinkedHashMap<>();
+        List<ImportResult.RowError> errors = new ArrayList<>();
+        List<Todo> toSave = new ArrayList<>();
+        int totalRows = 0;
+        for (int i = 0; i < futures.size(); i++) {
+            TodoSource source = inputs.get(i);
+            try {
+                SourceBatch batch = futures.get(i).get(); // 已完成或已取消，不再無限等待
+                bySource.put(source.name(), batch.result());
+                totalRows += batch.result().rows();
+                errors.addAll(batch.errors());
+                for (ParsedTodo p : batch.todos()) {
+                    Todo todo = new Todo(repository.nextId(), p.title(), p.priority(), clock.instant());
+                    for (String tag : p.tags()) todo.addTag(tag);
+                    toSave.add(todo);
                 }
+            } catch (CancellationException e) {
+                recordSourceFailure(source, "來源逾時（包含等待配額）",
+                        Duration.ofNanos(System.nanoTime() - start), bySource);
+            } catch (ExecutionException e) {
+                recordSourceFailure(source, "來源失敗: " + e.getCause(),
+                        Duration.ofNanos(System.nanoTime() - start), bySource);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TodoException(com.example.todo.exception.ErrorCode.INTERNAL_ERROR,
+                        "匯入被中斷", e);
             }
         }
 
-        // ===== 階段 2：單執行緒批次寫入 =====
-        // 為什麼不併發寫？因為 repository 背後是「一個檔案」，
-        // 併發寫會互相覆蓋。而且批次寫一次比寫 N 次快得多（第 07 章 7.18 節）
-        List<Todo> toSave = new ArrayList<>(parsedCount.get());
-        for (ParsedTodo p : parsed) {
-            Todo todo = new Todo(repository.nextId(), p.title(), p.priority(), clock.instant());
-            for (String tag : p.tags()) {
-                try {
-                    todo.addTag(tag);
-                } catch (RuntimeException e) {
-                    // 標籤超過上限之類的問題不該讓整筆失敗
-                    errors.add(new ImportResult.RowError(
-                            p.source(), p.rowIndex(), p.title(), "標籤忽略: " + e.getMessage()));
-                }
-            }
-            toSave.add(todo);
-        }
-
+        // 儲存失敗讓呼叫端處理；不把「沒有存成功」的整批資料回報為匯入成功。
         if (repository instanceof com.example.todo.repository.JsonFileTodoRepository jsonRepo) {
-            jsonRepo.saveAll(toSave);              // 只寫一次檔
+            jsonRepo.saveAll(toSave);
         } else {
             toSave.forEach(repository::save);
         }
-
-        return new ImportResult(
-                (int) totalRows.sum(),
-                toSave.size(),
-                errors.size(),
-                Duration.ofNanos(System.nanoTime() - startNanos),
-                bySource,
-                errors);
+        return new ImportResult(totalRows, toSave.size(), errors.size(),
+                Duration.ofNanos(System.nanoTime() - start), bySource, errors);
     }
 
-    /** 處理單一來源。所有預期的失敗都在這裡被吸收，不往外拋 */
-    private void processSource(TodoSource source,
-                               Semaphore gate,
-                               Map<String, ImportResult.SourceResult> bySource,
-                               List<ImportResult.RowError> errors,
-                               LongAdder totalRows,
-                               ConcurrentLinkedQueue<ParsedTodo> parsed,
-                               AtomicInteger parsedCount) {
-        long sourceStart = System.nanoTime();
-        int rows = 0, imported = 0, failed = 0;
+    private static void recordSourceFailure(TodoSource source, String message, Duration elapsed,
+                                            Map<String, ImportResult.SourceResult> bySource) {
+        // 來源整體失敗沒有可計算的資料列，獨立放在 bySource；failed 只計已讀取的壞列。
+        bySource.put(source.name(), new ImportResult.SourceResult(
+                source.name(), 0, 0, 0, elapsed, message));
+    }
 
-        boolean acquired = false;
+    private SourceBatch processSource(TodoSource source, Semaphore gate) throws Exception {
+        long start = System.nanoTime();
+        gate.acquire();
         try {
-            // 限制併發 + 超時
-            acquired = gate.tryAcquire(perSourceTimeout.toMillis(), TimeUnit.MILLISECONDS);
-            if (!acquired) {
-                bySource.put(source.name(), new ImportResult.SourceResult(
-                        source.name(), 0, 0, 0,
-                        Duration.ofNanos(System.nanoTime() - sourceStart),
-                        "等待併發配額超時"));
-                return;
-            }
-
-            List<String[]> rawRows = source.read();
-            rows = rawRows.size();
-            totalRows.add(rows);
-
-            for (int i = 0; i < rawRows.size(); i++) {
-                String[] row = rawRows.get(i);
+            List<String[]> rows = source.read();
+            List<ParsedTodo> parsed = new ArrayList<>();
+            List<ImportResult.RowError> errors = new ArrayList<>();
+            for (int i = 0; i < rows.size(); i++) {
+                if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+                String[] row = rows.get(i);
                 try {
-                    parsed.add(parseRow(source.name(), i, row));
-                    parsedCount.incrementAndGet();
-                    imported++;
+                    parsed.add(parseRow(row));
                 } catch (RuntimeException e) {
-                    failed++;
-                    errors.add(new ImportResult.RowError(
-                            source.name(), i, String.join(",", row), e.getMessage()));
+                    errors.add(new ImportResult.RowError(source.name(), i,
+                            java.util.Arrays.toString(row), e.getMessage()));
                 }
             }
-
-            bySource.put(source.name(), new ImportResult.SourceResult(
-                    source.name(), rows, imported, failed,
-                    Duration.ofNanos(System.nanoTime() - sourceStart), null));
-
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();       // 恢復旗標（第 04 章反模式 6）
-            bySource.put(source.name(), new ImportResult.SourceResult(
-                    source.name(), rows, imported, failed,
-                    Duration.ofNanos(System.nanoTime() - sourceStart), "被中斷"));
-
-        } catch (Exception e) {
-            // ✅ 來源整體失敗（檔案不存在、HTTP 500…）：記錄下來，不影響其他來源
-            bySource.put(source.name(), new ImportResult.SourceResult(
-                    source.name(), rows, imported, failed,
-                    Duration.ofNanos(System.nanoTime() - sourceStart),
-                    e.getClass().getSimpleName() + ": " + e.getMessage()));
-
+            return new SourceBatch(new ImportResult.SourceResult(source.name(), rows.size(),
+                    parsed.size(), errors.size(), Duration.ofNanos(System.nanoTime() - start), null),
+                    List.copyOf(parsed), List.copyOf(errors));
         } finally {
-            if (acquired) gate.release();             // ⚠️ 一定要在 finally
+            gate.release();
         }
     }
 
-    /** 解析一列：`標題,優先度,標籤1|標籤2` */
-    private ParsedTodo parseRow(String source, int index, String[] row) {
-        if (row.length < 1 || row[0] == null || row[0].isBlank()) {
-            throw new IllegalArgumentException("標題不可為空");
+    private ParsedTodo parseRow(String[] row) {
+        if (row == null || row.length < 1) {
+            throw new IllegalArgumentException("缺少標題欄位");
         }
-        String title = row[0].strip();
-
-        Priority priority = row.length >= 2 && !row[1].isBlank()
-                ? Priority.parse(row[1])              // 無效值會丟 InvalidTodoException
-                : Priority.MEDIUM;
-
-        List<String> tags = row.length >= 3 && !row[2].isBlank()
-                ? List.of(row[2].split("\\|"))        // 記得跳脫 |（第 01 章 1.9 節）
-                : List.of();
-
-        return new ParsedTodo(source, index, title, priority, tags);
+        Priority priority = row.length >= 2 ? Priority.parse(row[1]) : Priority.MEDIUM;
+        // 暫用合法 id 做純模型驗證，不在併發階段消耗 Repository 的序號。
+        // 標題長度、空白與標籤規則都交給 Todo，避免兩份驗證邏輯不同步。
+        Todo validated = new Todo(1L, row[0], priority, clock.instant());
+        if (row.length >= 3 && row[2] != null && !row[2].isBlank()) {
+            for (String tag : row[2].split("\\|", -1)) validated.addTag(tag);
+        }
+        return new ParsedTodo(validated.title(), validated.priority(), List.copyOf(validated.tags()));
     }
 
-    private record ParsedTodo(String source, int rowIndex, String title,
-                              Priority priority, List<String> tags) { }
+    private record ParsedTodo(String title, Priority priority, List<String> tags) { }
+    private record SourceBatch(ImportResult.SourceResult result, List<ParsedTodo> todos,
+                               List<ImportResult.RowError> errors) { }
 }
 ```
 
@@ -4314,16 +4289,25 @@ public class ConcurrentTodoImporter {
 ```java
 package com.example.todo.importer;
 
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVRecord;
+
+import java.io.FilterReader;
 import java.io.IOException;
+import java.io.InterruptedIOException;
+import java.io.PushbackReader;
+import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
-/** 從 CSV 檔讀取。用 BufferedReader 逐行處理，大檔也不吃記憶體（第 07 章 7.7 節）*/
+/** 小檔案 CSV 來源：最多 1,000,000 個 UTF-16 碼元、1,000 筆資料列。 */
 public class FileSource implements TodoSource {
 
+    private static final long MAX_CHARS = 1_000_000;
+    private static final int MAX_ROWS = 1_000;
     private final Path file;
 
     public FileSource(Path file) {
@@ -4331,26 +4315,54 @@ public class FileSource implements TodoSource {
     }
 
     @Override
-    public String name() { return "file:" + file.getFileName(); }
+    public String name() { return "file:" + file.toAbsolutePath().normalize(); }
 
     @Override
     public List<String[]> read() throws IOException {
         List<String[]> rows = new ArrayList<>();
-        try (var reader = Files.newBufferedReader(file)) {
-            String line;
-            boolean first = true;
-            while ((line = reader.readLine()) != null) {
-                if (first) {
-                    first = false;
-                    // 去掉 BOM（第 07 章 7.10 節）
-                    if (line.startsWith("﻿")) line = line.substring(1);
-                    if (line.toLowerCase().startsWith("title")) continue;   // 跳過標頭
+        try (var reader = new PushbackReader(new LimitedReader(Files.newBufferedReader(file)), 1)) {
+            int first = reader.read();
+            if (first != -1 && first != '\uFEFF') reader.unread(first);
+            // 使用 CSV parser 處理引號內的逗號、雙引號與換行；不以實體文字行當資料列。
+            var format = CSVFormat.RFC4180.builder().setIgnoreEmptyLines(true).build();
+            try (var parser = format.parse(reader)) {
+                boolean firstRecord = true;
+                for (CSVRecord record : parser) {
+                    if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("讀取被中斷");
+                    if (firstRecord) {
+                        firstRecord = false;
+                        if (record.size() >= 2 && "title".equalsIgnoreCase(record.get(0))
+                                && "priority".equalsIgnoreCase(record.get(1))) continue;
+                    }
+                    if (rows.size() >= MAX_ROWS) throw new IOException("CSV 最多 " + MAX_ROWS + " 筆資料");
+                    if (record.size() < 1 || record.size() > 3) throw new IOException("CSV 欄位數須為 1～3");
+                    List<String> fields = new ArrayList<>();
+                    record.forEach(fields::add);
+                    rows.add(fields.toArray(String[]::new));
                 }
-                if (line.isBlank()) continue;
-                rows.add(line.split(",", -1));         // limit=-1 保留尾端空欄位
             }
         }
         return rows;
+    }
+
+    /** 限制解析器實際讀到的資料量；即使只有一個巨型引號欄位也會被擋下。 */
+    private static final class LimitedReader extends FilterReader {
+        private long count;
+        LimitedReader(Reader source) { super(source); }
+        private void account(int n) throws IOException {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("讀取被中斷");
+            if (n > 0 && (count += n) > MAX_CHARS) throw new IOException("CSV 超過字元上限 " + MAX_CHARS);
+        }
+        @Override public int read() throws IOException {
+            int c = super.read();
+            account(c == -1 ? 0 : 1);
+            return c;
+        }
+        @Override public int read(char[] buffer, int off, int len) throws IOException {
+            int n = super.read(buffer, off, len);
+            account(n);
+            return n;
+        }
     }
 }
 ```
@@ -4397,7 +4409,7 @@ public class HttpSource implements TodoSource {
             String priority = switch (i % 4) {
                 case 0 -> "HIGH";
                 case 1 -> "HIGH";
-                case 2 -> "NORMAL";
+                case 2 -> "MEDIUM";
                 default -> "LOW";
             };
             // 故意讓每 20 筆有一筆壞資料，測試「一列失敗不影響其他列」
@@ -4431,20 +4443,15 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
- * 第 07 章版本 + 執行緒安全。
- *
- * 用 ReadWriteLock 而非 synchronized：讀取（findById / findAll）遠多於寫入，
- * 而且寫入牽涉檔案 IO（慢），值得讓多個讀取者並行（8.9 節）。
+ * 小資料量、單程序的檔案儲存庫。
+ * 私有快取擁有自己的 Todo 複本；候選快照成功寫檔後才取代快取。
  */
 public class JsonFileTodoRepository implements TodoRepository {
 
     private final TodoFileStore store;
     private final Map<Long, Todo> cache = new LinkedHashMap<>();
-    private final AtomicLong sequence = new AtomicLong(0);
-
+    private final AtomicLong sequence = new AtomicLong();
     private final ReentrantReadWriteLock rw = new ReentrantReadWriteLock();
-    private final ReentrantReadWriteLock.ReadLock read = rw.readLock();
-    private final ReentrantReadWriteLock.WriteLock write = rw.writeLock();
 
     public JsonFileTodoRepository(TodoFileStore store) {
         this.store = Objects.requireNonNull(store, "store 不可為 null");
@@ -4452,89 +4459,111 @@ public class JsonFileTodoRepository implements TodoRepository {
     }
 
     public final void reload() {
-        write.lock();
+        rw.writeLock().lock();
         try {
-            cache.clear();
+            Map<Long, Todo> loaded = new LinkedHashMap<>();
             long max = 0;
             for (Todo todo : store.load()) {
-                cache.put(todo.id(), todo);
+                loaded.put(todo.id(), copy(todo));
                 max = Math.max(max, todo.id());
             }
-            sequence.set(max);
+            // load 失敗時不清除舊快取；reload 也不把已發出的序號倒退。
+            cache.clear();
+            cache.putAll(loaded);
+            sequence.accumulateAndGet(max, Math::max);
         } finally {
-            write.unlock();
+            rw.writeLock().unlock();
         }
     }
 
     @Override
     public Todo save(Todo todo) {
-        Objects.requireNonNull(todo, "todo 不可為 null");
-        write.lock();
+        rw.writeLock().lock();
         try {
-            cache.put(todo.id(), todo);
-            flushLocked();
-            return todo;
+            Objects.requireNonNull(todo, "todo 不可為 null");
+            Map<Long, Todo> candidate = new LinkedHashMap<>(cache);
+            Todo snapshot = copy(todo);
+            candidate.put(snapshot.id(), snapshot);
+            persistAndPublish(candidate);
+            return copy(snapshot);
         } finally {
-            write.unlock();
+            rw.writeLock().unlock();
         }
     }
 
-    /** ✅ 批次寫入：N 筆只寫檔一次。匯入時務必用這個 */
     public void saveAll(List<Todo> todos) {
-        Objects.requireNonNull(todos, "todos 不可為 null");
-        if (todos.isEmpty()) return;
-        write.lock();
+        rw.writeLock().lock();
         try {
+            Objects.requireNonNull(todos, "todos 不可為 null");
+            if (todos.isEmpty()) return;
+            Map<Long, Todo> candidate = new LinkedHashMap<>(cache);
             for (Todo todo : todos) {
-                cache.put(todo.id(), todo);
+                candidate.put(todo.id(), copy(todo));
             }
-            flushLocked();
+            persistAndPublish(candidate);
         } finally {
-            write.unlock();
+            rw.writeLock().unlock();
         }
     }
 
     @Override
     public Optional<Todo> findById(long id) {
-        read.lock();
+        rw.readLock().lock();
         try {
-            return Optional.ofNullable(cache.get(id));
+            return Optional.ofNullable(cache.get(id)).map(JsonFileTodoRepository::copy);
         } finally {
-            read.unlock();
+            rw.readLock().unlock();
         }
     }
 
     @Override
     public List<Todo> findAll() {
-        read.lock();
+        rw.readLock().lock();
         try {
-            return List.copyOf(cache.values());      // 拷貝後才離開鎖（第 05 章 5.8 節）
+            return cache.values().stream().map(JsonFileTodoRepository::copy).toList();
         } finally {
-            read.unlock();
+            rw.readLock().unlock();
         }
     }
 
     @Override
     public boolean deleteById(long id) {
-        write.lock();
+        rw.writeLock().lock();
         try {
-            boolean removed = cache.remove(id) != null;
-            if (removed) flushLocked();
-            return removed;
+            if (!cache.containsKey(id)) return false;
+            Map<Long, Todo> candidate = new LinkedHashMap<>(cache);
+            candidate.remove(id);
+            persistAndPublish(candidate);
+            return true;
         } finally {
-            write.unlock();
+            rw.writeLock().unlock();
         }
     }
 
-    /** ✅ AtomicLong 保證併發下不會撞號 */
     @Override
     public long nextId() {
-        return sequence.incrementAndGet();
+        // 與 save/reload 的序號對齊互斥，並允許多個發號者透過 AtomicLong 併發。
+        rw.readLock().lock();
+        try {
+            return sequence.incrementAndGet();
+        } finally {
+            rw.readLock().unlock();
+        }
     }
 
-    /** 呼叫者必須已持有寫鎖 */
-    private void flushLocked() {
-        store.save(List.copyOf(cache.values()));
+    /** 第 08 章的呼叫者必須持有寫鎖；失敗時不發布 candidate。 */
+    private void persistAndPublish(Map<Long, Todo> candidate) {
+        store.save(List.copyOf(candidate.values()));
+        cache.clear();
+        cache.putAll(candidate);
+        long max = candidate.keySet().stream().mapToLong(Long::longValue).max().orElse(0L);
+        sequence.accumulateAndGet(max, Math::max);
+    }
+
+    /** 集合的淺拷貝不夠：Todo 在第 07～11 章仍是可變物件。 */
+    private static Todo copy(Todo todo) {
+        return new Todo(todo.id(), todo.title(), todo.priority(), todo.createdAt(),
+                todo.isDone(), todo.completedAt(), todo.tags());
     }
 }
 ```
@@ -4680,20 +4709,17 @@ Repository 現有筆數: 222
 
 | 技術 | 用在哪 | 為什麼 |
 |---|---|---|
-| 虛擬執行緒 | `importFrom` 的 executor | 來源是 IO 密集，數量不定（8.14 節） |
-| `Semaphore` | 限制 `maxConcurrentSources` | 不要把下游 API 打爆（8.14 節注意事項 ①） |
-| `tryAcquire(timeout)` | 等配額 | 避免無限等待（8.9 節） |
-| `ConcurrentHashMap` | `bySource` 統計 | 多執行緒寫入（8.16 節） |
-| `LongAdder` | `totalRows` | 純計數，高併發下比 `AtomicLong` 快（8.7 節） |
-| `ConcurrentLinkedQueue` + `AtomicInteger` | 暫存解析結果 | `size()` 是 O(n)，所以自己計數（8.16 節） |
-| `Collections.synchronizedList` | `errors` | 錯誤數不多，簡單同步就夠 |
-| 檢查每個 `Future.get()` | 階段 1 結尾 | 否則預期外的例外會被吞掉（8.17 節） |
-| `ReadWriteLock` | `JsonFileTodoRepository` | 讀多寫少，寫入牽涉檔案 IO（8.9 節） |
-| `AtomicLong` 產生 id | `nextId()` | 併發下不撞號（8.7 節） |
-| **單執行緒寫入** | 階段 2 | 背後是一個檔案，併發寫會互相覆蓋 |
-| 批次 `saveAll` | 階段 2 | 222 筆只寫檔一次，不是 222 次 |
-| `Thread.currentThread().interrupt()` | catch `InterruptedException` | 恢復旗標（第 04 章反模式 6） |
-| `finally { gate.release(); }` | `processSource` | 忘記就永久少一個配額 |
+| 虛擬執行緒 | 來源讀取與驗證 | IO 等待不必佔住平台執行緒 |
+| `Semaphore` | `processSource` | 限制同時讀取的來源數 |
+| `invokeAll(..., timeout, unit)` | 來源時間預算 | 到期取消未完成 Future，包含等配額時間 |
+| 任務自己的 `SourceBatch` | 解析與錯誤清單 | 不共用可變集合；逾期結果不發布給呼叫端 |
+| `Future.get()` | 合併已完成結果 | 區分成功、取消與來源例外 |
+| Commons CSV + 讀取上限 | `FileSource` | 正確處理引號、逗號與換行，限制小批次的記憶體用量 |
+| `ReadWriteLock` | 檔案 Repository | 讀取快照與寫入提交互斥 |
+| 候選快照與 Todo 複本 | `save` / `saveAll` / 查詢 | 寫檔成功才發布，呼叫方不能偷改已提交資料 |
+| `AtomicLong` | `nextId()` | 併發下產生不同 id |
+| 單執行緒批次提交 | 階段 2 | 檔案 Repository 一批只寫一次 |
+| `finally { gate.release(); }` | 來源任務結尾 | 成功、失敗與中斷都歸還配額 |
 
 > **注意「加速比只有 1.6x」而不是 8x。** 因為 `maxConcurrentSources = 4`，而且最慢的來源
 > （team-d，800ms）決定了下限。這是併發的現實：**加速比受限於最慢的那條路徑（Amdahl 定律）**。
@@ -5737,7 +5763,7 @@ G:11,10
 | 4 | **虛擬執行緒 + `Semaphore(20)`** | 匯入任務數量大（IO 密集）→ 虛擬執行緒；但下游只能承受 20 → 用 `Semaphore` 而不是「20 條執行緒的池」（8.14 節）。⚠️ 實務上更該用**批次 INSERT**（`rewriteBatchedStatements=true`），把 100 萬筆變成 1000 次批次 |
 | 5 | **依需求分兩種** | 單機、可接受不連續 → `AtomicLong.incrementAndGet()`。分散式 → 雪花演算法（Snowflake）或資料庫序列。⚠️ 訂單號通常還要含日期與商戶碼，不能只是遞增數字（也不該讓人猜到「昨天有幾筆訂單」） |
 | 6 | **`volatile` 欄位存不可變物件** | `private volatile Config config;` + reload 時整份替換（8.6 節）。**不要用 `ConcurrentHashMap`**——它是為併發寫入設計的，這裡幾乎不寫。讀取零成本 |
-| 7 | **`ScheduledExecutorService.scheduleAtFixedRate`** | ⚠️ **任務內部一定要包 try-catch**，否則一次例外就永久停止排程（8.17 節）。實務上用 Spring 的 `@Scheduled`（一樣要包 try-catch），或 Caffeine 的自動過期（根本不需要清理執行緒） |
+| 7 | **`ScheduledExecutorService.scheduleAtFixedRate`** | ⚠️ **任務內部一定要包 try-catch**，否則一次例外就永久停止排程（8.17 節）。實務上用 Spring 的 `@Scheduled`（重複任務預設記錄並抑制例外；自訂 ErrorHandler 可改變策略），或 Caffeine 的自動過期（根本不需要清理執行緒） |
 | 8 | **`ThreadLocal` + try-finally remove()**（Java 21）／ **`ScopedValue`**（Java 25） | 就是 SLF4J 的 `MDC`（8.13 節）。⚠️ 非同步任務裡拿不到——要用 `TaskDecorator` 複製上下文 |
 | 9 | **平台執行緒池，大小 = CPU 核心數** | 影像處理是 CPU 密集，虛擬執行緒沒有幫助（8.14 節）。⚠️ 還要限制「同時處理的圖片數」，否則 5 張大圖同時解碼會 OOM |
 | 10 | **Redis 的 `INCR` + `EXPIRE`** | **不能用單機限流器**——多台伺服器各自算，實際會變成「N 台 × 3 筆」。這是分散式限流，必須有共用狀態（第 05 站會實作）。單機版只適合「保護自己不要打爆下游」 |

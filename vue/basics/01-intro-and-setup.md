@@ -50,13 +50,13 @@ Vue 是「宣告式（declarative）」的：
 | 撰寫單位 | 函式元件 + JSX（`.jsx`） | 單檔元件 SFC（`.vue`，template/script/style 三段） |
 | 畫面語法 | JSX（在 JS 裡寫 HTML） | Template（在 HTML 裡寫指令 `v-if`、`v-for`） |
 | 狀態宣告 | `useState` | `ref` / `reactive` |
-| 更新方式 | 呼叫 `setState`，整個元件函式重跑 | 直接改 `.value` 或物件屬性，**只重跑用到它的部分** |
-| 副作用/依賴 | `useEffect` + **手動依賴陣列** | `watch` / `watchEffect`，**自動追蹤依賴** |
+| 更新方式 | 呼叫 `setState`，整個元件函式重跑 | 直接改 `.value` 或物件屬性；`setup` 只跑一次，**只有依賴這份狀態的元件**重新 render |
+| 副作用/依賴 | `useEffect` + **手動依賴陣列** | `watchEffect` **自動追蹤依賴**；`watch` 指定要監看誰即可，兩者都**不用依賴陣列** |
 | 樣式 | 自己選方案（CSS Modules、styled…） | SFC 內建 `<style scoped>` |
 
 一句話總結差異：
 
-> **React 每次狀態變都「重跑整個元件函式」，靠你手動列依賴；Vue 靠響應式系統「自動知道誰依賴誰」，只更新該更新的地方。**
+> **React 每次狀態變都「重跑整個元件函式」，靠你手動列依賴；Vue 靠響應式系統「自動知道誰依賴誰」：`setup` 只跑一次，狀態變了只有依賴它的元件重新執行 render，不相干的子元件不會跟著重跑。**
 
 這不是說誰比較好，而是心態要切換：在 Vue，你**直接改資料**（`count.value++`、`user.name = 'x'`），不需要 `setState` 那種「回傳新物件」的思維。這點在第 2 章會反覆練到。
 
@@ -79,7 +79,7 @@ nvm use 22
 node -v   # 例如 v22.21.1
 ```
 
-> Node 20 目前**還跑得動**，但 `npm create vue@latest` 會噴一段 `npm warn EBADENGINE Unsupported engine` 警告，而且未來版本隨時可能改成硬性擋下來。看到這個警告就是該升級了。
+> Node 20（20.19 以上）目前**還跑得動**，但 `npm create vue@latest` 會噴一段 `npm warn EBADENGINE Unsupported engine` 警告，而且未來版本隨時可能改成硬性擋下來。看到這個警告就是該升級了。
 
 ---
 
@@ -89,33 +89,40 @@ node -v   # 例如 v22.21.1
 
 ### 4.1 推薦：`npm create vue@latest`（官方腳手架）
 
-這是 Vue 官方的專案產生器，底層也是 Vite，但會多問「要不要 Router、Pinia、TypeScript…」，很適合當學習起點。
+這是 Vue 官方的專案產生器，底層也是 Vite，但可以順便加上 Router、Pinia、TypeScript、ESLint 等功能，很適合當學習起點。本課直接用旗標指定要的功能，一行建好、不用回答任何問題：
 
 ```bash
-npm create vue@latest my-vue-course
+npm create vue@latest my-vue-course -- --eslint --prettier
 ```
 
-它會先問套件管理器，接著跳出**一份可多選的功能清單**（用方向鍵移動、空白鍵勾選、Enter 確認）：
+- `--eslint`：加上 Linter（ESLint，`create-vue` 會一併配好 Oxlint），幫你抓錯。
+- `--prettier`：加上 Prettier，自動排版。
+- 中間那個 `--` 不能省：它告訴 npm「後面的旗標交給 `create-vue`」。
+- 只要帶了任何功能旗標，`create-vue` 就會跳過所有提問；沒寫到的功能（TypeScript、Router、Pinia、Vitest…）一律不裝。
+
+也就是說：**本課的專案是 JavaScript，只加 Linter 與 Prettier，其他全部不裝。**
+
+#### 想用互動模式建也可以
+
+不帶旗標執行 `npm create vue@latest my-vue-course`，會依序問下面幾題（以 `create-vue` 3.24 為例；系統語系是繁體中文時題目會顯示中文）：
 
 ```text
-◆  Select features to include in your project:
-│  ◻ TypeScript              ← 不勾（先用 JS，把觀念學穩再上 TS）
-│  ◻ JSX Support             ← 不勾（Vue 主用 template）
-│  ◻ Router (SPA development)← 不勾（第 7 章才學）
-│  ◻ Pinia                   ← 不勾（第 7 章才學）
-│  ◻ Vitest                  ← 不勾（第 8 章才學；先勾也行，只是現在用不到）
-│  ◻ End-to-End Testing      ← 不勾
-│  ◼ ESLint                  ← 勾（幫你抓錯，建議裝）
-│  ◼ Prettier                ← 勾（自動排版，建議裝）
+◆  Use TypeScript?                        ← 選 No（預設是 Yes，直接按 Enter 會建成 TS 專案）
+◆  Select features to include in your project:（方向鍵移動、空白鍵勾選、Enter 確認）
+│  ◻ JSX Support                          ← 不勾（Vue 主用 template）
+│  ◻ Router (SPA development)             ← 不勾（第 7 章才學）
+│  ◻ Pinia (state management)             ← 不勾（第 7 章才學）
+│  ◻ Vitest (unit testing)                ← 不勾（第 8 章才學；先勾也行，只是現在用不到）
+│  ◻ End-to-End Testing                   ← 不勾
+│  ◼ Linter (error prevention)            ← 勾（ESLint + Oxlint，幫你抓錯）
+│  ◼ Prettier (code formatting)           ← 勾（自動排版）
+◆  Select experimental features to include in your project:  ← 全部不勾，直接 Enter
+◆  Skip all example code and start with a blank Vue project? ← No（保留範例，第 5、6 節的結構以它為準）
 ```
 
-也就是說：**本課只勾 ESLint 與 Prettier，其他全部留空。**
+這樣選出來的結果和上面那行旗標指令相同。`create-vue` 改版時題目文字可能略有出入，原則不變：**TypeScript 選 No、功能只勾 Linter 與 Prettier、實驗功能不勾。**
 
-> 舊教學（與本課早期版本）會寫成「`Add TypeScript? › No`」一題一題問——那是舊版 `create-vue` 的介面，現在已經合併成上面這份多選清單。選項名稱大同小異，勾法照上表即可。
->
-> 想跳過互動直接產專案，也可以用旗標：`npm create vue@latest my-vue-course -- --eslint --prettier`。
-
-> 為什麼先都不裝 Router / Pinia / TS？因為前 6 章要專心把「響應式、模板、元件」這些**核心**練熟。等第 7 章要做路由與狀態管理、第 8 章要寫測試時再裝，你會更清楚它們各自補了什麼。
+> 為什麼先都不裝 Router / Pinia / TS？因為第 1～4 章要專心把「響應式、模板、元件」這些**核心**練熟，第 5、6 章也還用不到它們。等第 7 章要做路由與狀態管理、第 8 章要寫測試時再裝，你會更清楚它們各自補了什麼。
 
 ### 4.2 替代：`npm create vite@latest`（更精簡）
 

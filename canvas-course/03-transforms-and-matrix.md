@@ -17,10 +17,10 @@
 function drawCarAt(x, y) {
   ctx.fillRect(x, y, 60, 20);              // 車身
   ctx.beginPath();
-  ctx.arc(x + 15, y + 20, 8, 0, 7);        // 左輪:要手動 +15、+20
+  ctx.arc(x + 15, y + 20, 8, 0, Math.PI * 2);   // 左輪:要手動 +15、+20
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(x + 45, y + 20, 8, 0, 7);        // 右輪:又要手動算偏移
+  ctx.arc(x + 45, y + 20, 8, 0, Math.PI * 2);   // 右輪:又要手動算偏移
   ctx.fill();
 }
 ```
@@ -32,7 +32,7 @@ function drawCarAt(x, y) {
 ## 3.2 三個基本變換:`translate` / `rotate` / `scale`
 
 ```js
-ctx.translate(dx, dy);   // 平移:把座標系原點移到 (dx, dy)
+ctx.translate(dx, dy);   // 平移:把座標系原點沿「目前的」x/y 軸移動 (dx, dy)
 ctx.rotate(angle);       // 旋轉:把座標系繞「目前原點」旋轉 angle 弧度
 ctx.scale(sx, sy);       // 縮放:把座標系在 x/y 方向各放大 sx/sy 倍
 ```
@@ -54,8 +54,8 @@ ctx.fillRect(0, 0, 60, 20);      // 在「新原點」畫,等於畫在畫面的 
 // ✅ 用變換:car 永遠「以自己為原點」畫,不用算絕對座標
 function drawCar() {
   ctx.fillRect(0, 0, 60, 20);          // 車身(相對座標)
-  ctx.beginPath(); ctx.arc(15, 20, 8, 0, 7); ctx.fill();   // 左輪
-  ctx.beginPath(); ctx.arc(45, 20, 8, 0, 7); ctx.fill();   // 右輪
+  ctx.beginPath(); ctx.arc(15, 20, 8, 0, Math.PI * 2); ctx.fill();   // 左輪
+  ctx.beginPath(); ctx.arc(45, 20, 8, 0, Math.PI * 2); ctx.fill();   // 右輪
 }
 
 function placeCar(x, y, angle) {
@@ -70,7 +70,7 @@ placeCar(100, 100, 0);
 placeCar(300, 150, Math.PI / 6);   // 這輛轉了 30 度,drawCar 完全不用改
 ```
 
-看到 `save`/`restore` 了嗎?**變換是畫筆狀態的一部分(第 02 章那張表的最後一列)**,所以它跟 `save`/`restore` 是天作之合:每個物件畫之前 `save` + 設定變換,畫完 `restore`,變換就被乾淨地隔離。
+看到 `save`/`restore` 了嗎?**變換是畫筆狀態的一部分(第 02 章狀態表的「變換」那一列)**,所以它跟 `save`/`restore` 是天作之合:每個物件畫之前 `save` + 設定變換,畫完 `restore`,變換就被乾淨地隔離。
 
 ---
 
@@ -105,6 +105,8 @@ ctx.fillRect(0, 0, 50, 50);     // 方塊跑到完全不同的地方
 
 > **心智模型**:把每個變換想成「對那張紙的操作」,**後面的操作是在「前面操作完的紙」上進行的**。先轉紙再推紙,「推」的方向會沿著轉過的紙;先推紙再轉紙,是繞著推到的新位置轉。順序一變,結果天差地遠。
 
+另一種等價讀法(CSS、WebGL 教材多用):**從「點」的角度由下往上讀——後寫的先作用**。寫法 A 對方塊上的點是先 `rotate`、再 `translate`。讀程式碼用「紙」,推公式、求逆運算(3.6)用「點」才不會弄反。
+
 ### 繞「自己中心」旋轉的標準套路
 
 最常見的需求:讓一個圖形繞**它自己的中心**旋轉(而不是繞畫布左上角)。套路是「**平移到中心 → 旋轉 → 以中心為原點畫**」:
@@ -120,6 +122,8 @@ function drawRotatedRect(cx, cy, w, h, angle) {
 ```
 
 > **記死這個套路**:`translate(中心) → rotate → 畫在 (-w/2,-h/2)`。旋轉圖示、指針、子彈朝向、Capstone 白板的物件旋轉手把,全都是它。
+
+**跟 DOM 對比**:CSS `transform` 的組合語意跟 Canvas 相同,但 CSS 有 `transform-origin`(預設在元素中心);Canvas 沒有,才需要這個套路。
 
 ---
 
@@ -165,11 +169,15 @@ y' = b·x + d·y + f
 → y' = sin θ·x + cos θ·y   ← 這就是課本上的旋轉公式
 ```
 
-所以整理成:
+注意方向:課本的 y 軸朝上,這是逆時針;Canvas 的 y 軸朝下,同一組公式在螢幕上是**正角度 = 順時針**(和第 02 章 `arc` 同理)。
 
-- **`a, d`**:x / y 方向的縮放(`scale` 改這裡)。
-- **`b, c`**:讓 x、y 互相混合的交叉項,負責旋轉/傾斜(`rotate` 改這裡)。
-- **`e, f`**:無條件的固定位移,負責平移(`translate` 改這裡)。
+只做一件事時,可以簡化成 `a, d` ≈ 縮放、`b, c` ≈ 旋轉、`e, f` ≈ 平移;但一疊加就不成立——`rotate` 本身就改了 `a, d`,先 `scale(2, 2)` 再 `translate(10, 0)` 得到的 `e` 是 20 而不是 10。通用的讀法是看成三個欄:
+
+- **`(a, b)`**:新座標系的 **x 軸**(長度 1 那段)落在畫面的方向與長度。
+- **`(c, d)`**:新座標系的 **y 軸**。
+- **`(e, f)`**:新座標系的**原點**落在畫面哪裡。
+
+這就是「移動的是紙」的數學版:六個數字描述「紙現在怎麼擺」。所以要從矩陣讀縮放倍率,得量 x 軸長度 `Math.hypot(a, b)`,不能直接拿 `a`。
 
 #### 為什麼要寫成一個 3×3 矩陣?
 
@@ -187,7 +195,7 @@ y' = b·x + d·y + f
 
 > **這一步是整套變換系統的關鍵**:補上那個 `1` 之後,平移、旋轉、縮放**全部**都變成「乘一個矩陣」。統一成同一種運算,才有下面兩個天大的好處——
 
-- **可以無限累積、效能不變**:`translate`、`rotate`、`scale` 不管怎麼組合、疊幾層,底層都只是「把新矩陣乘進舊矩陣」,結果永遠壓縮成這**六個數字**。畫一個簡單方塊和畫一個歷經十層變換的方塊,Canvas 付出的成本一模一樣。
+- **可以無限累積、效能不變**:`translate`、`rotate`、`scale` 不管怎麼組合、疊幾層,底層都只是「把新矩陣乘進舊矩陣」,結果永遠壓縮成這**六個數字**,疊十層也一樣便宜(但旋轉、非整數縮放的「繪製」本身仍比軸對齊慢、邊緣較糊)。
 - **順序會影響結果**:矩陣乘法不可交換(A×B ≠ B×A),這正是 3.3 「先轉再移」和「先移再轉」結果不同的數學根源。
 
 你不用會手算矩陣乘法,但只要記住:**任何複雜的變換組合,最後都被 Canvas 濃縮成這六個數 `a b c d e f`。**
@@ -196,12 +204,12 @@ y' = b·x + d·y + f
 
 | 方法 | 作用 |
 |------|------|
-| `setTransform(a,b,c,d,e,f)` | **直接設定**整個矩陣(覆蓋,不累積)——重設變換的利器 |
-| `transform(a,b,c,d,e,f)` | 把一個矩陣**乘進**目前的矩陣(累積) |
-| `getTransform()` | 取得目前的矩陣(回傳 `DOMMatrix` 物件) |
+| `setTransform(a,b,c,d,e,f)` | **直接設定**整個矩陣(覆蓋,不累積)——重設變換的利器;也可傳一個 `DOMMatrix` |
+| `transform(a,b,c,d,e,f)` | 把一個矩陣**右乘**進目前的矩陣(累積),跟 `translate`/`rotate`/`scale` 同語意:`translate(x,y)` 就是 `transform(1,0,0,1,x,y)` |
+| `getTransform()` | 取得目前矩陣的**複本**(`DOMMatrix`,改它不影響 context) |
 | `resetTransform()` | 重設成單位矩陣(等於 `setTransform(1,0,0,1,0,0)`) |
 
-`setTransform` 在動畫迴圈裡特別有用——**每幀開頭用它把變換重設到已知狀態,避免累積誤差**(取代 3.3 那個「越積越歪」的問題):
+`setTransform` 在動畫迴圈裡特別有用——**每幀開頭用它把變換重設到已知狀態,避免變換一路疊加**(取代 3.3 那個「越積越歪」的問題):
 
 ```js
 // 每幀開頭:重設變換(同時保留 HiDPI 縮放,見第 01 章)
@@ -210,6 +218,27 @@ ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // 重設,但保留 dpr 縮放
 ctx.clearRect(0, 0, W, H);
 // ...接著套用相機、畫場景...
 ```
+
+### 變換何時生效、對誰生效
+
+變換不是「`fill`/`stroke` 那一刻才一起套用」。每樣東西吃矩陣的時機不同,有些完全不吃:
+
+| 東西 | 何時套用當下的矩陣 |
+|------|-------------------|
+| 目前路徑的點(`moveTo`/`lineTo`/`arc`/`rect`…) | **加入路徑那一刻**就轉換固定,之後改變換也不會動 |
+| `lineWidth`、虛線 | `stroke()` 那一刻 |
+| 漸層、pattern 的座標 | `fill`/`stroke` 那一刻(會跟著圖形移動、旋轉) |
+| `Path2D` 物件 | 傳給 `fill`/`stroke`/`isPointInPath` 那一刻 |
+| `fillRect`/`clearRect`/`fillText`/`drawImage` | 呼叫那一刻 |
+| `shadowOffsetX/Y`、`shadowBlur` | **不受影響**(單位是緩衝區像素) |
+| `getImageData`/`putImageData` | **不受影響**(座標是緩衝區像素,第 05 章) |
+| `isPointInPath`/`isPointInStroke` 傳入的點 | **不受影響**(單位是緩衝區像素;路徑本身才吃變換,第 07 章) |
+
+三個馬上用得到的推論:
+
+1. **不跟著縮放的線寬**:在相機下建好路徑,`stroke()` 前 `save` + `setTransform(dpr, 0, 0, dpr, 0, 0)`,描完再 `restore`——點早已轉換好,只有線寬改用新矩陣,線就固定 1 CSS 像素粗。
+2. **陰影不會跟著放大**:`scale(dpr)` 和相機 `zoom` 都管不到陰影,要自己乘:`ctx.shadowBlur = 8 * dpr * zoom`。
+3. **先清畫面、再套相機**:套了相機才 `clearRect(0, 0, W, H)`,清的是世界座標裡那塊矩形,會清不乾淨。
 
 ---
 
@@ -221,7 +250,7 @@ ctx.clearRect(0, 0, W, H);
 
 ```js
 const camera = {
-  x: 0,        // 相機在世界裡的位置(平移)
+  x: 0,        // 畫面「左上角」對到的世界座標(不是畫面中心)
   y: 0,
   zoom: 1,     // 縮放倍率
 };
@@ -246,15 +275,22 @@ function render() {
 
 `drawWorld` 裡的所有物件都用**固定的世界座標**,完全不知道相機存在。你只要改 `camera.x/y/zoom`,整個世界就跟著平移縮放。
 
+想讓 `camera.x/y` 代表畫面中心(遊戲常見),就在 `applyCamera` 最前面加 `ctx.translate(W / 2, H / 2)`,3.6 的換算也要先扣掉 `W/2`、`H/2`。
+
 ```js
 // 拖曳平移:滑鼠拖動時,反向移動相機(注意要除以 zoom)
+let last = null;   // 上一次的畫布座標(getCanvasPoint 見 3.6)
+canvas.addEventListener('pointerdown', (e) => { dragging = true; last = getCanvasPoint(canvas, e); });   // pointerup 時設回 false(完整版見本章作業)
 canvas.addEventListener('pointermove', (e) => {
-  if (dragging) {
-    camera.x -= e.movementX / camera.zoom;
-    camera.y -= e.movementY / camera.zoom;
-  }
+  if (!dragging) return;
+  const p = getCanvasPoint(canvas, e);
+  camera.x -= (p.x - last.x) / camera.zoom;   // 位移自己相減:單位確定是 CSS 像素
+  camera.y -= (p.y - last.y) / camera.zoom;
+  last = p;
 });
 ```
+
+> 不用現成的 `e.movementX/Y`:它的單位各瀏覽器、各系統不一致(可能是實體像素),正好掉進 3.6 的 dpr 坑。
 
 > **心智模型**:**世界座標是「物件真正住的地方」,螢幕是「相機拍出來的照片」。** 物件不動,你動的是相機。這個「世界 / 螢幕」的分離,是所有專業圖形編輯器的架構基石。第 11 章白板的相機就是這個。
 
@@ -285,7 +321,7 @@ function getCanvasPoint(canvas, e) {
 
 | 名稱 | 是什麼 | 誰用這個單位 |
 |------|--------|-------------|
-| **CSS 像素(邏輯像素)** | 排版用的抽象像素,和螢幕精細度無關 | `getBoundingClientRect()`、`e.clientX/Y`、`e.movementX/Y`、CSS 的 `width/height` |
+| **CSS 像素(邏輯像素)** | 排版用的抽象像素,和螢幕精細度無關 | `getBoundingClientRect()`、`e.clientX/Y`、CSS 的 `width/height` |
 | **裝置像素(物理像素)** | 螢幕上真正發光的點 | canvas 的 backing store(`canvas.width/height`) |
 
 兩者的比例就是 **`devicePixelRatio`(dpr)**。普通螢幕 dpr=1(兩者相等);Retina/高解析螢幕 dpr=2,意思是「1 個 CSS 像素 = 橫豎各 2 個、共 4 個實體像素」。
@@ -310,11 +346,11 @@ ctx.scale(dpr, dpr);                     // ★ 關鍵:之後所有繪圖指令�
 
 **反過來的情況**:如果你當初**沒有** `ctx.scale(dpr)`,而是手動把每個座標乘 dpr 來畫(繪圖座標系用的是裝置像素),那滑鼠座標這邊就**得對應乘 dpr**,兩邊才會再度一致。
 
-> **一句話原則:繪圖用哪個座標系,命中測定就要用同一個座標系。** dpr 要嘛「兩邊都不出現」(靠 `ctx.scale` 統一在 CSS 座標,就是我們的做法),要嘛「兩邊都出現」(都手動乘)——**最怕只有一邊乘。** 稍後 3.6 的 `screenToWorldByMatrix` 裡會看到 `sx * dpr`,正是因為它改用了 `getTransform()`(那個矩陣把 dpr 也包進去了,要求輸入裝置像素),所以那邊才需要補乘。看似矛盾,其實同樣是「保持一致」的體現。
+> **一句話原則:繪圖用哪個座標系,命中測定就要用同一個座標系。** dpr 要嘛「兩邊都不出現」(靠 `ctx.scale` 統一在 CSS 座標,就是我們的做法),要嘛「兩邊都出現」(都手動乘)——**最怕只有一邊乘。** 同理,`ctx.getTransform()` 拿到的矩陣含 dpr,拿它換算時輸入就得是 `sx * dpr`。
 
 ### 第二步:畫布座標 → 世界座標(套用相機的逆變換)
 
-相機把世界座標變成螢幕座標(`scale` 再 `translate`),所以反過來就是**逆運算**:
+用 3.3 的「點」讀法看 `applyCamera`:世界點先被 `translate(-camera)` 推、再被 `scale(zoom)` 放大,也就是 `螢幕 = (世界 − camera) × zoom`。逆運算要**倒著撤銷**:先除以 zoom、再加回 camera(寫成 `(螢幕 + camera) / zoom` 就錯了):
 
 ```js
 function screenToWorld(screenPoint, camera) {
@@ -334,17 +370,26 @@ function worldToScreen(worldPoint, camera) {
 
 ### 更通用的做法:用矩陣的逆矩陣
 
-當變換很複雜(相機之外還有旋轉、巢狀變換),手寫逆運算會出錯。通用解法是拿 context 當下的矩陣、求逆矩陣,套到螢幕點上:
+當變換很複雜(相機之外還有旋轉、巢狀變換),手寫逆運算會出錯。通用解法是把相機組成一個 `DOMMatrix`、求逆矩陣,套到螢幕點上:
 
 ```js
-function screenToWorldByMatrix(ctx, sx, sy) {
-  const dpr = window.devicePixelRatio || 1;
-  const m = ctx.getTransform();          // 目前的變換矩陣(含 dpr、相機)
-  const inv = m.inverse();               // 求逆矩陣(DOMMatrix 內建)
-  const p = inv.transformPoint(new DOMPoint(sx * dpr, sy * dpr));   // 這個矩陣把 dpr 也包進去了,輸入要用「裝置像素」,所以補乘
+// 世界 → 畫布(CSS 像素)的矩陣:跟 applyCamera 的呼叫順序一模一樣
+function viewMatrix(camera) {
+  return new DOMMatrix()
+    .scaleSelf(camera.zoom)                  // scaleSelf(倍率) → 跟 ctx.scale 一樣是右乘
+    .translateSelf(-camera.x, -camera.y);    // translateSelf(dx, dy) → 跟 ctx.translate 一樣是右乘
+}
+
+function screenToWorldByMatrix(camera, sx, sy) {
+  const inv = viewMatrix(camera).inverse();          // inverse() → 求逆矩陣(回傳新物件)
+  const p = inv.transformPoint({ x: sx, y: sy });    // transformPoint(點) → 套用矩陣;輸入是 CSS 像素,不含 dpr
   return { x: p.x, y: p.y };
 }
 ```
+
+為什麼不拿 `ctx.getTransform()` 求逆?它回傳「**呼叫那一刻**」的矩陣,而 3.5 的 `render` 畫完就 `restore` 掉相機,滑鼠事件裡反算出來只會是螢幕座標。從 `camera` 組矩陣,任何時候都對。
+
+`DOMMatrix` 的 `scaleSelf`/`translateSelf`/`multiplySelf(B)` 都是右乘(目前 × B),跟 context 同方向;`preMultiplySelf(B)` 才是左乘。陷阱:**`rotate()`/`rotateSelf()` 的單位是「度」**,`ctx.rotate` 是弧度。
 
 > **心智模型**:變換是「世界 → 螢幕」的函式,**逆矩陣就是它的反函式「螢幕 → 世界」**。任何「我點了螢幕上這裡,對應世界的哪裡」的問題,答案都是「套用當前變換的逆矩陣」。記住有 `DOMMatrix.inverse()` 這個工具,複雜場景不用自己推三角函數。
 
@@ -375,13 +420,15 @@ function screenToWorld(screenPoint, camera) { // 畫布座標 → 世界座標(3
 // ---- 主體:滾輪縮放,游標指著的點保持不動 ----
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
+  if (e.deltaY === 0) return;                                // 純水平捲動(Shift+滾輪、觸控板橫滑)不縮放
   const screen = getCanvasPoint(canvas, e);
 
   // 1. 縮放前,游標指著的世界座標
   const before = screenToWorld(screen, camera);
 
   // 2. 改變縮放(滾輪向上放大)
-  const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;   // deltaMode 1 = 以「行」為單位,約略換成像素
+  const factor = Math.exp(-dy * 0.002);                      // 連續倍率:觸控板的小 delta 只縮一點,滑鼠一格約 ×1.2
   camera.zoom *= factor;
   camera.zoom = Math.max(0.1, Math.min(camera.zoom, 20));   // 限制範圍
 
@@ -397,6 +444,8 @@ canvas.addEventListener('wheel', (e) => {
 ```
 
 > **這段值得收藏**。「以某點為中心縮放」是所有畫布編輯器的標配,而它的數學就是上面這四步:**記住焦點的世界座標 → 縮放 → 把焦點移回原位**。第 11 章白板會直接用它。
+>
+> 倍率不用固定 ×1.1:觸控板一次手勢會送出幾十個小 delta 事件,固定倍率會暴衝。Figma 類工具則是「滾輪 = 平移、Ctrl(觸控板捏合也帶 `ctrlKey`)= 縮放」,依 `e.ctrlKey` 分流即可。
 
 ---
 
@@ -406,9 +455,9 @@ canvas.addEventListener('wheel', (e) => {
 
 - **核心心智模型**:變換移動的是**座標系(紙)**,不是圖形。你永遠「在原點畫」,用 `translate`/`rotate`/`scale` 把紙擺好。
 - **變換會累積、順序不可交換**:`translate→rotate ≠ rotate→translate`;不 `restore` 就越積越歪。繞自身中心旋轉的套路:`translate(中心)→rotate→畫在(-w/2,-h/2)`。
-- **矩陣真面目**:所有變換最終壓成六個數 `a,b,c,d,e,f`;`setTransform` 直接設定(重設利器)、`getTransform`/`inverse` 做座標反算。
+- **矩陣真面目**:所有變換最終壓成六個數 `a,b,c,d,e,f`(新座標系的 x 軸、y 軸、原點);`setTransform` 直接設定(重設利器);各東西吃變換的時機見 3.4 總表。
 - **相機**:畫世界前套用一個變換,實現平移縮放;世界座標不變,變的是相機。
-- **螢幕↔世界換算**:命中測定的前置;`screenToWorld` 用相機逆運算,複雜時用 `DOMMatrix.inverse()`。
+- **螢幕↔世界換算**:命中測定的前置;`screenToWorld` 用相機逆運算(倒著撤銷),複雜時由相機組 `DOMMatrix` 再 `inverse()`。
 - **以游標為中心縮放**:記住焦點世界座標 → 縮放 → 移回原位。
 
 **下一章(04)**,我們處理 Canvas 上的「素材」:**文字與圖片**。你會發現 Canvas **沒有自動換行**(又一個 immediate mode 的洞,得自己用 `measureText` 實作)、文字的 `textBaseline` 有個經典對齊坑;而 `drawImage` 的九參數版本,是精靈圖(sprite sheet)、把影片逐幀畫到畫布(連結影音課)的關鍵。
@@ -427,7 +476,7 @@ canvas.addEventListener('wheel', (e) => {
   <title>可平移縮放的無限網格</title>
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; }
-    canvas { display: block; cursor: grab; }
+    canvas { display: block; cursor: grab; touch-action: none; }   /* 觸控拖曳不被瀏覽器手勢搶走(第 07 章 7.8) */
     /* 角落的座標顯示,疊在畫布左上角 */
     #coords {
       position: fixed; left: 10px; top: 10px;
@@ -447,13 +496,14 @@ canvas.addEventListener('wheel', (e) => {
     const coordsEl = document.getElementById('coords');
 
     // 讓畫布佔滿視窗,並做 HiDPI 設定(第 01 章)
-    const dpr = window.devicePixelRatio || 1;
+    let dpr = 1;
     let W = 0, H = 0;   // 畫布的 CSS 像素尺寸
     function resize() {
+      dpr = window.devicePixelRatio || 1;   // 每次重讀:換螢幕、改縮放都會變
       W = window.innerWidth;
       H = window.innerHeight;
-      canvas.width = W * dpr;
-      canvas.height = H * dpr;
+      canvas.width = Math.round(W * dpr);   // dpr 可能是 1.25 這種小數,取整
+      canvas.height = Math.round(H * dpr);
       canvas.style.width = W + 'px';
       canvas.style.height = H + 'px';
     }
@@ -482,26 +532,36 @@ canvas.addEventListener('wheel', (e) => {
       };
     }
 
-    // ---- 作業要求 1:滑鼠拖曳平移 ----
-    let dragging = false;
-    canvas.addEventListener('pointerdown', () => { dragging = true; canvas.style.cursor = 'grabbing'; });
-    window.addEventListener('pointerup', () => { dragging = false; canvas.style.cursor = 'grab'; });
+    // ---- 作業要求 1:滑鼠拖曳平移(pointer 事件的完整健壯性見第 07 章 7.8)----
+    let dragging = false, last = null;
+    canvas.addEventListener('pointerdown', (e) => {
+      dragging = true; last = getCanvasPoint(canvas, e);
+      canvas.setPointerCapture(e.pointerId);   // setPointerCapture(id) → 拖出畫布外也持續收到事件
+      canvas.style.cursor = 'grabbing';
+    });
+    function endDrag() { dragging = false; canvas.style.cursor = 'grab'; }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);   // 被系統打斷時不會有 pointerup
     canvas.addEventListener('pointermove', (e) => {
+      const p = getCanvasPoint(canvas, e);
       if (dragging) {
-        camera.x -= e.movementX / camera.zoom;   // ★ 拖曳時反向移動相機,記得除以 zoom(3.5)
-        camera.y -= e.movementY / camera.zoom;
+        camera.x -= (p.x - last.x) / camera.zoom;   // ★ 拖曳時反向移動相機,記得除以 zoom(3.5)
+        camera.y -= (p.y - last.y) / camera.zoom;
+        last = p;
       }
       // ---- 作業要求 2:角落即時顯示滑鼠當前的世界座標 ----
-      const world = screenToWorld(getCanvasPoint(canvas, e), camera);
+      const world = screenToWorld(p, camera);
       coordsEl.textContent = 'world: (' + world.x.toFixed(1) + ', ' + world.y.toFixed(1) + ')';
     });
 
     // ---- 作業要求 3:滾輪以游標為中心縮放(3.7 整段搬入)----
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
+      if (e.deltaY === 0) return;                                // 純水平捲動(Shift+滾輪、觸控板橫滑)不縮放
       const screen = getCanvasPoint(canvas, e);
       const before = screenToWorld(screen, camera);   // 1. 縮放前,游標指著的世界座標
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;    // 2. 改變縮放(滾輪向上放大)
+      const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;   // 2. 改變縮放;deltaMode 1 = 以「行」為單位,約略換成像素
+      const factor = Math.exp(-dy * 0.002);                      // 連續倍率:觸控板的小 delta 只縮一點,滑鼠一格約 ×1.2
       camera.zoom *= factor;
       camera.zoom = Math.max(0.1, Math.min(camera.zoom, 20));   // 限制範圍
       const after = screenToWorld(screen, camera);    // 3. 縮放後,同一個螢幕點指著的世界座標

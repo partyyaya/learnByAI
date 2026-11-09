@@ -1628,19 +1628,22 @@ async function withRetry<T>(fn: () => Promise<T>, maxAttempts = 4): Promise<T> {
       return await fn();
     } catch (err) {
       lastError = err;
-      const problem = err.problem as ApiProblem | undefined;
+      const problem = err instanceof ApiError ? err.problem : undefined;
 
       if (!problem?.retryable) throw err;                    // 不可重試 → 立刻放棄
-      if (problem.retryStrategy === 'MODIFY_REQUEST') throw err;
+      // 這個 helper 只做退避；刷新 token／重新取得 ETag 交給 4.14.3 的分派器
+      if (problem.retryStrategy !== 'BACKOFF_AND_RETRY') throw err;
       if (attempt === maxAttempts - 1) throw err;            // 最後一次了
 
-      // 伺服器指定的優先；否則指數退避
-      const baseMs = problem.retryAfterSeconds != null
-        ? problem.retryAfterSeconds * 1000
-        : Math.min(1000 * 2 ** attempt, 30_000);
+      const backoffMs = Math.min(1000 * 2 ** attempt, 30_000);
+      const seconds = problem.retryAfterSeconds;
+      const serverMinimumMs = typeof seconds === 'number' && Number.isFinite(seconds)
+        && seconds >= 0 ? seconds * 1000 : null;
 
-      // ★ 加抖動（jitter），避免所有客戶端同時重試造成二次雪崩
-      const jitteredMs = baseMs * (0.5 + Math.random() * 0.5);
+      // 伺服器指定等待時間是下限；抖動只能加在其後，不能提早重試
+      const jitteredMs = serverMinimumMs != null
+        ? Math.max(serverMinimumMs, backoffMs) + Math.random() * 1000
+        : backoffMs * (0.5 + Math.random() * 0.5);
       await sleep(jitteredMs);
     }
   }
@@ -2740,18 +2743,29 @@ async function parseProblem(res: Response): Promise<ApiProblem> {
 
   if (contentType.includes('json')) {
     try {
-      const body = await res.json();
-      // ★ 防禦：確保必要欄位存在（後端可能有漏，或是 Nginx 的錯誤頁）
+      const raw: unknown = await res.json();
+      if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error('Problem body 必須是物件');
+      }
+      const body = raw as Record<string, unknown>;
+      const str = (value: unknown, fallback: string): string =>
+        typeof value === 'string' && value.trim() !== '' ? value : fallback;
       return {
-        type: body.type ?? 'about:blank',
-        title: body.title ?? res.statusText,
-        status: body.status ?? res.status,
-        code: body.code ?? `HTTP_${res.status}`,
-        userMessage: body.userMessage ?? body.title ?? '發生錯誤，請稍後再試。',
-        traceId: body.traceId ?? res.headers.get('X-Request-Id') ?? '',
-        timestamp: body.timestamp ?? new Date().toISOString(),
-        retryable: body.retryable ?? res.status >= 500,
+        // 先保留擴充欄位，再以驗證後的標準欄位覆寫
         ...body,
+        type: str(body.type, 'about:blank'),
+        title: str(body.title, res.statusText || '請求失敗'),
+        status: res.status,                     // HTTP 狀態決定本次處理流程
+        code: str(body.code, `HTTP_${res.status}`),
+        userMessage: str(body.userMessage, str(body.title, '發生錯誤，請稍後再試。')),
+        traceId: str(body.traceId, res.headers.get('X-Request-Id') ?? ''),
+        timestamp: str(body.timestamp, new Date().toISOString()),
+        // 未知失敗不自動重送寫入；還要有明確策略及該操作的冪等保證
+        retryable: typeof body.retryable === 'boolean' ? body.retryable : false,
+        errors: Array.isArray(body.errors) && body.errors.every(e => e != null
+          && typeof e === 'object' && typeof e.field === 'string'
+          && typeof e.code === 'string' && typeof e.message === 'string')
+          ? body.errors as ApiProblem['errors'] : undefined,
       };
     } catch {
       /* 不是合法 JSON，落到下面 */
@@ -2769,7 +2783,7 @@ async function parseProblem(res: Response): Promise<ApiProblem> {
       : '請求無法完成，請稍後再試。',
     traceId: res.headers.get('X-Request-Id') ?? '',
     timestamp: new Date().toISOString(),
-    retryable: res.status >= 500 || res.status === 429,
+    retryable: false,              // 無可靠錯誤契約時，不自動重送寫入
   };
 }
 ```

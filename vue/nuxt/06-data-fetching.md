@@ -61,11 +61,11 @@ const { data: posts, status, error, refresh } = await useFetch('/api/posts')
 |---|---|
 | `data` | 抓到的資料（Nuxt 4 是 `shallowRef`，見第 8 節） |
 | `status` | `'idle'` / `'pending'` / `'success'` / `'error'` |
-| `error` | 錯誤物件（沒錯就是 `null`） |
+| `error` | 錯誤物件（沒錯時是 `undefined`） |
 | `refresh()` | 重新抓一次 |
 | `clear()` | 清空 data / error |
 
-> `await useFetch(...)` 前面那個 `await` 會讓 SSR「等資料抓完才產出 HTML」，所以首屏就有內容。若不想等（見第 5 節 `lazy`），可以不 await。
+> `await useFetch(...)` 前面那個 `await` 讓後面的程式（例如判斷 `error.value`）拿得到結果，也讓站內切頁時「等資料到才進頁」。至於 SSR，不論有沒有 `await`，伺服器都會等這個抓取完成才產出 HTML，所以首屏一樣有內容。若不想讓切頁等資料，用第 5 節的 `lazy`。
 
 ---
 
@@ -235,7 +235,7 @@ Nuxt 4 中，所有相同 `key` 的 `useFetch`/`useAsyncData` **共用同一份 
 **③ 不要在 `useFetch` 裡再包一層 `$fetch`**
 
 ```js
-// ❌ 多此一舉，等於抓兩次的心智負擔
+// ❌ 錯誤用法：第一個參數只能是 URL 或「回傳 URL 的函式」；這裡回傳的是 Promise，會打到錯的網址
 const { data } = await useFetch(() => $fetch('/api/posts'))
 
 // ✅ 直接給 URL
@@ -255,11 +255,19 @@ const { data } = await useAsyncData('posts', () => $fetch('/api/posts'))
 <script setup>
 const { data: posts } = await useFetch('/api/posts', {
   key: 'posts',
-  // 有快取就用：payload.data 是 SSR 傳來的、static.data 是 client 導覽時抓過的；兩個都沒有才重抓
-  getCachedData: (key, nuxtApp) => nuxtApp.payload.data[key] ?? nuxtApp.static.data[key],
+  // ctx.cause：'initial'（進頁）、'refresh:manual'（呼叫 refresh()）、'refresh:hook'、'watch'
+  // 只有進頁時拿快取；refresh() 或 watch 觸發時回 undefined，才會真的重抓
+  getCachedData: (key, nuxtApp, ctx) =>
+    ctx.cause === 'initial' ? (nuxtApp.payload.data[key] ?? nuxtApp.static.data[key]) : undefined,
 })
 </script>
 ```
+
+- `nuxtApp.payload.data[key]`：這個 key 目前已有的資料（SSR 帶來的、client 端抓過的都在這）。
+- `nuxtApp.static.data[key]`：預渲染頁面的 `_payload.json` 帶來的資料。
+- 兩個都沒有（回 `undefined`）才會真的發請求。
+
+> ⚠️ Nuxt 4 起，`getCachedData` 在**每次**抓取前都會被呼叫——包括 `refresh()` 與 `watch` 觸發的重抓——並用第三個參數 `ctx.cause` 告訴你原因。若不看 `ctx.cause`、一律回快取，`refresh()` 就永遠不會重抓，`query` 變了也不會換資料。
 
 **`useNuxtData(key)`：讀「別頁已經抓好」的資料。** 經典情境是「列表 → 詳情」：列表頁已抓過所有文章，進詳情頁時先拿列表快取裡的那一筆**立刻顯示**，再背景抓完整內容更新，體感秒開：
 
@@ -271,13 +279,15 @@ const route = useRoute()
 const { data: cachedPosts } = useNuxtData('posts')
 const initial = cachedPosts.value?.find((p) => p.id === Number(route.params.id))
 
-// 再抓完整單篇；default 先給快取那筆，使用者不會先看到空白再跳出內容
-const { data: post } = await useFetch(`/api/posts/${route.params.id}`, {
+// 再背景抓完整單篇；lazy 不擋切頁，default 先給快取那筆，使用者不會先看到空白再跳出內容
+const { data: post } = useLazyFetch(`/api/posts/${route.params.id}`, {
   key: `post-${route.params.id}`,
   default: () => initial,
 })
 </script>
 ```
+
+> 這裡一定要用 `useLazyFetch`（或 `lazy: true`）且不 `await`：阻塞式的 `await useFetch` 會等完整資料抓完才進頁，`default` 那筆根本沒機會顯示。
 
 > 承第 8 節：`useFetch`/`useAsyncData` 的 `data` 預設是 **`shallowRef`**（只追蹤整包替換、不追蹤深層屬性）。若你確實需要深層響應（例如就地改 `data.value.xxx` 要即時反映到畫面），加 `deep: true` 讓它變回深層響應式的 `ref`（代價是稍多一點效能開銷）。
 
@@ -427,8 +437,9 @@ const { data: post, status, error } = await useFetch(
 )
 
 // 查無資料丟 404（API 對不存在 id 會回錯，error 會有值）
+// fatal: true 讓站內切頁時也會顯示 error.vue（第 3 章）
 if (error.value) {
-  throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  throw createError({ status: 404, message: '找不到文章', fatal: true })
 }
 </script>
 

@@ -11,16 +11,16 @@
 一個單頁白板,功能:
 
 - **工具列**:選取、矩形、圓形、文字四種工具。
-- **新增**:選工具後在畫布拖曳出圖形。
-- **選取**:點擊選中、顯示選取框與縮放手把(handles)。
-- **拖曳**:拖動圖形移動;拖動手把縮放。
+- **新增**:選工具後在畫布拖曳出圖形;文字則點一下放置、雙擊編輯。
+- **選取**:點擊選中、顯示選取框與縮放手把(handles),滑到手把上游標會變。
+- **拖曳**:拖動圖形移動;拖動手把縮放;方向鍵微移。
 - **相機**:空白處拖曳平移、滾輪以游標為中心縮放(第 03 章)。
 - **刪除**:Delete / Backspace 刪除選中物件。
-- **Undo / Redo**:Ctrl+Z / Ctrl+Shift+Z(第 08 章)。
+- **Undo / Redo**:Ctrl+Z / Ctrl+Shift+Z(或 Ctrl+Y)(第 08 章)。
 - **存檔 / 載入**:序列化到 localStorage(第 08 章)。
-- **效能**:分層 canvas + 按需渲染(第 09 章)。
+- **效能與清晰度**:分層 canvas + 按需渲染(第 09 章)、視窗大小與 DPR 改變時重設畫布(第 01 章)。
 
-> 這就是 mini-Figma 的核心迴圈。做完後,加多人協作(傳序列化資料)、加更多圖形類型,都只是延伸。
+> 這就是 mini-Figma 的核心迴圈。做完後,加更多圖形類型只是延伸;多人協作則是另一個量級的工程(見 11.10)。
 
 ---
 
@@ -59,7 +59,7 @@ class Shape {
            p.y >= this.y && p.y <= this.y + this.h;
   }
   draw(ctx) {}
-  toJSON() {   // 只輸出資料欄位(白名單),避免 _origin 之類暫態欄位被寫進存檔
+  toJSON() {   // 只輸出資料欄位(白名單),暫態狀態(例如拖曳起點)不會混進存檔
     return { type: this.constructor.type, id: this.id, x: this.x, y: this.y,
              w: this.w, h: this.h, fill: this.fill,
              ...(this.text !== undefined ? { text: this.text, fontSize: this.fontSize } : {}) };
@@ -71,7 +71,7 @@ class RectShape extends Shape {
   draw(ctx) {
     ctx.fillStyle = this.fill;
     ctx.strokeStyle = '#3b82f6';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = 1;   // 描邊是圖形內容:世界單位,跟著相機縮放(和 Figma 一樣)
     ctx.fillRect(this.x, this.y, this.w, this.h);
     ctx.strokeRect(this.x, this.y, this.w, this.h);
   }
@@ -93,25 +93,33 @@ class CircleShape extends Shape {
   }
 }
 
+const measureCtx = document.createElement('canvas').getContext('2d');   // 專門量字的離屏 context
+
 class TextShape extends Shape {
   static type = 'text';
-  constructor(props) { super({ text: '雙擊編輯', fontSize: 24, fill: '#222', ...props }); }
-  draw(ctx) {
+  constructor(props) { super({ text: '雙擊編輯', fontSize: 24, fill: '#222', ...props }); this.layout(); }
+  // 量測文字更新包圍盒(命中、選取框要用)— 第 04 章。只在 text / fontSize 改變時呼叫(理由見 11.7)
+  layout() {
+    measureCtx.font = `${this.fontSize}px sans-serif`;
+    this.w = measureCtx.measureText(this.text).width;
+    this.h = this.fontSize * 1.2;
+  }
+  draw(ctx) {   // 只讀不寫
     ctx.fillStyle = this.fill;
     ctx.font = `${this.fontSize}px sans-serif`;
     ctx.textBaseline = 'top';
     ctx.fillText(this.text, this.x, this.y);
-    // 量測文字更新包圍盒(命中、選取框要用)— 第 04 章
-    this.w = ctx.measureText(this.text).width;
-    this.h = this.fontSize * 1.2;
   }
 }
 
-const SHAPE_REGISTRY = { rect: RectShape, circle: CircleShape, text: TextShape };
-function uid() { return 'id-' + (uid._n = (uid._n || 0) + 1); }
+const REGISTRY = { rect: RectShape, circle: CircleShape, text: TextShape };
+// 時間 + 隨機:重新整理、載入舊檔後也不會跟既有 id 撞號(正式協作用 crypto.randomUUID())
+function uid() { return 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 ```
 
 > **重點**:讓圓也用「包圍盒 + w/h」描述(畫成橢圓),選取框、縮放手把、序列化就能用**一套統一邏輯**處理所有圖形,不用每種形狀寫一套手把。這是讓 Capstone 不爆炸的關鍵設計取捨。
+>
+> 矩形描邊用世界單位(`lineWidth = 1`,放大就變粗),11.6 的選取框卻用 `1 / camera.zoom`(永遠 1px):**畫的是內容還是 UI,決定它該不該跟著縮放**。`draw()` 因此不依賴相機,匯出時(11.10)才會畫得和存檔一模一樣。
 
 ---
 
@@ -129,13 +137,32 @@ function screenToWorld(sx, sy) {
   return { x: sx / camera.zoom + camera.x, y: sy / camera.zoom + camera.y };
 }
 
-function eventToWorld(canvas, e) {
+function eventToWorld(e) {   // canvas = 事件綁定的那層(11.5 宣告)
   const rect = canvas.getBoundingClientRect();
   return screenToWorld(e.clientX - rect.left, e.clientY - rect.top);
 }
 ```
 
-滾輪以游標為中心縮放,直接用第 03.7 章那段(記錄焦點世界座標 → 縮放 → 移回原位),這裡不重複。
+滾輪以游標為中心縮放,數學就是第 03.7 章那四步(記錄焦點世界座標 → 縮放 → 移回原位),這裡換成本章的函式簽名。先寫成具名函式,11.6 再跟 pointer 事件一起綁上去(這時 `canvas` 還沒宣告):
+
+```js
+function onWheel(e) {
+  e.preventDefault();                                        // 攔下頁面捲動與瀏覽器縮放
+  if (e.deltaY === 0) return;                                // 純水平捲動(Shift+滾輪、觸控板橫滑)不縮放
+  if (endTextEdit) endTextEdit(true);                        // 文字編輯框(11.6)跟不上相機:先收尾
+  const rect = canvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+  const before = screenToWorld(sx, sy);                      // 1. 縮放前,游標指著的世界座標
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;   // deltaMode 1 = 以「行」為單位,約略換成像素
+  const factor = Math.exp(-dy * 0.002);                      // 連續倍率:觸控板的小 delta 只縮一點,滑鼠一格約 ×1.2
+  camera.zoom = Math.max(0.1, Math.min(camera.zoom * factor, 20));   // 2. 縮放(限制範圍)
+  const after = screenToWorld(sx, sy);                       // 3. 同一個螢幕點,現在指著的世界座標
+  camera.x += before.x - after.x; camera.y += before.y - after.y;   // 4. 把差值補回去,焦點回到游標下
+  invalidate();                                              // 不直接呼叫 render():11.5 的 render 會自己排下一幀,再呼叫就多一條迴圈
+}
+```
+
+> Figma 式的另一種約定是「無修飾鍵滾動 = 平移、Ctrl/⌘+滾輪(觸控板捏合也會送 `ctrlKey: true` 的 wheel)= 縮放」,想改成那樣,只要在 `onWheel` 開頭依 `e.ctrlKey || e.metaKey` 分流。
 
 ---
 
@@ -145,7 +172,6 @@ function eventToWorld(canvas, e) {
 
 ```js
 // 畫布與場景:兩個 <canvas> 疊在一起(HTML 見 11.8),資料只有一份 scene
-const W = innerWidth, H = innerHeight;
 const content = document.getElementById('content');   // 圖形層
 const canvas  = document.getElementById('overlay');   // 選取框層,疊最上面(事件也綁這層,見 11.6)
 const contentCtx = content.getContext('2d');
@@ -155,25 +181,34 @@ const scene = [];   // 所有圖形(第 08 章:資料是唯一真相)
 // 互動狀態:11.6 的事件處理會更新它們,render 只負責讀
 let selected = null;             // 目前選中的圖形
 let creating = null;             // 拖曳新增中、尚未提交進 scene 的圖形
+let editing = null;              // 正在編輯的 TextShape(11.6):改由 DOM input 顯示,render 跳過它
 let drawSelection = () => {};    // 畫「選取框+手把」,先放空殼,11.6 填入實作
-
-const dpr = window.devicePixelRatio || 1;
-function setup(canvas, w, h) {
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
-}
-setup(content, W, H); setup(canvas, W, H);
 
 let contentDirty = true, overlayDirty = true;
 const invalidate = () => { contentDirty = overlayDirty = true; };
 const invalidateOverlay = () => { overlayDirty = true; };
 
+// 第 01 章 1.4:緩衝區 = CSS 尺寸 × DPR(取整);視窗大小或 DPR 一變就重設
+let W = 0, H = 0, dpr = 1;
+function resize() {
+  W = innerWidth; H = innerHeight; dpr = devicePixelRatio || 1;
+  for (const c of [content, canvas]) {
+    c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+    c.style.width = W + 'px'; c.style.height = H + 'px';
+  }
+  invalidate();   // 重設 width 會清空畫布:兩層都要重畫
+}
+function watchDpr() {   // 拖到另一個螢幕、瀏覽器縮放:DPR 變了就重設,並用新值重新註冊
+  matchMedia(`(resolution: ${devicePixelRatio}dppx)`).addEventListener('change', () => { resize(); watchDpr(); }, { once: true });
+}
+resize(); watchDpr(); addEventListener('resize', resize);
+
 function render() {
   if (contentDirty) {
-    contentCtx.setTransform(dpr, 0, 0, dpr, 0, 0);   // setTransform(a,b,c,d,e,f):a/d=縮放, b/c=傾斜, e/f=平移;這裡=重設並只放大 dpr 倍對齊 HiDPI
+    contentCtx.setTransform(dpr, 0, 0, dpr, 0, 0);   // setTransform(a,b,c,d,e,f):(a,b)=x 軸、(c,d)=y 軸、(e,f)=原點(第 03 章);這裡 = 每單位 dpr 個實體像素、原點在左上
     contentCtx.clearRect(0, 0, W, H);
     contentCtx.save(); applyCamera(contentCtx);     // save():先存一份目前繪圖狀態,套相機變換,畫完由下面 restore() 還原(免得污染下一層)
-    for (const s of scene) s.draw(contentCtx);     // 第 08 章:遍歷畫
+    for (const s of scene) if (s !== editing) s.draw(contentCtx);   // 第 08 章:遍歷畫;編輯中的文字交給 input
     contentCtx.restore();
     contentDirty = false;
   }
@@ -182,7 +217,7 @@ function render() {
     overlayCtx.clearRect(0, 0, W, H);
     overlayCtx.save(); applyCamera(overlayCtx);
     if (creating) creating.draw(overlayCtx);             // 新增中的預覽
-    if (selected) drawSelection(overlayCtx, selected);   // 選取框畫最上面
+    if (selected && selected !== editing) drawSelection(overlayCtx, selected);   // 選取框畫最上面(編輯中的文字由 input 自帶外框)
     overlayCtx.restore();
     overlayDirty = false;
   }
@@ -212,7 +247,7 @@ function getHandles(shape) {
 drawSelection = (ctx, shape) => {   // 填入 11.5 預留的空殼
   const b = shape.getBounds();
   ctx.strokeStyle = '#3b82f6';
-  ctx.lineWidth = 1 / camera.zoom;            // 線寬抵消縮放,維持 1px 觀感
+  ctx.lineWidth = 1 / camera.zoom;            // 選取框是 UI:線寬抵消縮放,維持 1px 觀感
   ctx.strokeRect(b.x, b.y, b.w, b.h);
   if (shape instanceof TextShape) return;     // 文字只框選、不畫縮放手把(大小由 fontSize 決定)
   const r = HANDLE / camera.zoom / 2;         // 手把大小抵消縮放
@@ -225,7 +260,10 @@ drawSelection = (ctx, shape) => {   // 填入 11.5 預留的空殼
 
 // 命中:先測手把(優先),再測圖形本體
 function hitHandle(shape, wp) {
-  const r = HANDLE / camera.zoom;
+  if (shape instanceof TextShape) return null;       // 文字不做框縮放(見下方說明)
+  // 圖形在螢幕上太小時,8 個手把會蓋滿本體:這時點在本體內一律算拖曳,手把只能從外圍抓
+  if (Math.min(shape.w, shape.h) * camera.zoom < HANDLE * 3 && shape.containsPoint(wp)) return null;
+  const r = HANDLE / camera.zoom;                    // 命中容差比畫出來的手把大一圈,好抓
   for (const [name, p] of Object.entries(getHandles(shape))) {
     if (Math.abs(wp.x - p.x) <= r && Math.abs(wp.y - p.y) <= r) return name;
   }
@@ -238,40 +276,47 @@ function hitShape(wp) {
 }
 ```
 
-> **文字為什麼是例外**:文字的大小由 `fontSize` 決定,不走「拉框縮放」,所以**不畫手把、也不進 `resizing`**。若照樣畫,一行小字會被 8 個手把幾乎蓋滿——你想拖曳移動時十之八九先碰到手把、變成 resize;偏偏 `TextShape.draw()` 每幀又用 `measureText` 覆寫 `w/h`,拉了也彈回,體感就會「怪怪的」。把文字排除在框縮放之外,整個包圍盒就成了乾淨的拖曳區(要改大小去調 `fontSize`)。
+> **文字為什麼是例外**:文字的大小由 `fontSize` 決定,不走「拉框縮放」,所以**不畫手把、也不進 `resizing`**。若照樣畫,一行小字會被 8 個手把幾乎蓋滿——你想拖曳移動時十之八九先碰到手把、變成 resize;偏偏文字的 `w/h` 是 `layout()` 依字量出來的,拉了下次一量又彈回,體感就會「怪怪的」。把文字排除在框縮放之外,整個包圍盒就成了乾淨的拖曳區(要改大小去調 `fontSize`)。矩形、圓在**螢幕上**很小時(例如縮小視圖看全景)也有同樣的問題,所以 `hitHandle` 對它們改成「本體優先」。
 
 ### 互動狀態機
 
-互動的本質是一台小狀態機(呼應你 [影音課](../video-player-course/README.md) 的「播放器是狀態機」心法):`idle → 依工具與命中結果進入 creating / dragging / resizing / panning → up 回到 idle`。
+互動的本質是一台小狀態機(呼應你 [影音課](../video-player-course/README.md) 的「播放器是狀態機」心法):`idle → 依工具與命中結果進入 creating / dragging / resizing / panning → up(或被取消)回到 idle`。
+
+pointer 事件的健壯性細節——`touch-action: none`、只認主鍵、只認一個 `pointerId`、處理 `pointercancel`——原理見第 07 章 7.8,這裡照用。白板多一條:手勢被中斷時用 `history.restore(history.present)` 回到最後提交的狀態,快照歷史順手就給了「取消」。
 
 ```js
 let tool = 'select';      // 'select' | 'rect' | 'circle' | 'text'
 let mode = 'idle';        // 'idle' | 'creating' | 'dragging' | 'resizing' | 'panning'
-let dragOffset = null, resizeHandle = null, resizeAnchor = null, createOrigin = null, panStart = null;
-// (selected、creating 在 11.5 已宣告)
+let activePointer = null; // 目前手勢的 pointerId:一次只認一根指標
+let dragOffset = null, resizeAnchor = null, createOrigin = null, panStart = null;
+// (selected、creating、editing 在 11.5 已宣告)
 
-// 兩個後面小節才實作的依賴,先放可運作的空殼,這節的程式碼就能直接跑:
-let history = { commit() {} };   // 11.7 換成真正的快照式 undo 歷史
+// 後面小節才實作的依賴,先放可運作的空殼,這節的程式碼就能直接跑:
+let history = { commit() {}, restore() {} };   // 11.7 換成真正的快照式 undo 歷史
 let syncToolbar = () => {};      // 11.8 換成「同步工具列按鈕高亮」
+let endTextEdit = null;          // 文字編輯中 = 收尾函式(本節後半填入);相機要動之前先呼叫
 
 canvas.addEventListener('pointerdown', (e) => {
-  const wp = eventToWorld(canvas, e);
+  if (e.button !== 0 || activePointer !== null) return;   // 只認主鍵、第二根手指不插隊
+  if (endTextEdit) endTextEdit(true);                      // 點到畫布 = 先把文字編輯收尾
+  activePointer = e.pointerId;
   canvas.setPointerCapture(e.pointerId);
+  const wp = eventToWorld(e);
 
   if (tool === 'select') {
-    // 先看是否抓到選中物件的手把 → 縮放(文字除外:它不做框縮放,直接當可拖曳物件)
-    if (selected && !(selected instanceof TextShape)) {
-      const handle = hitHandle(selected, wp);
-      if (handle) {
-        mode = 'resizing'; resizeHandle = handle;
-        const b = selected.getBounds();   // 記下固定不動的對邊當錨點 → 支援翻轉
-        resizeAnchor = {
-          ax: handle.includes('w') ? b.x + b.w : (handle.includes('e') ? b.x : null),
-          ay: handle.includes('n') ? b.y + b.h : (handle.includes('s') ? b.y : null),
-          ox: b.x, ow: b.w, oy: b.y, oh: b.h,
-        };
-        return;
-      }
+    // 先看是否抓到選中物件的手把 → 縮放
+    const handle = selected && hitHandle(selected, wp);
+    if (handle) {
+      mode = 'resizing';
+      const b = selected.getBounds();           // 記下固定不動的對邊當錨點 → 支援翻轉
+      const hp = getHandles(selected)[handle];
+      resizeAnchor = {
+        ax: handle.includes('w') ? b.x + b.w : (handle.includes('e') ? b.x : null),
+        ay: handle.includes('n') ? b.y + b.h : (handle.includes('s') ? b.y : null),
+        ox: b.x, ow: b.w, oy: b.y, oh: b.h,
+        gx: wp.x - hp.x, gy: wp.y - hp.y,       // 抓的位置離手把中心多遠(同 dragOffset 的道理)
+      };
+      return;
     }
     // 否則看點到哪個圖形 → 選取 + 拖曳
     const hit = hitShape(wp);
@@ -284,14 +329,14 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     invalidate();
   } else if (tool === 'text') {
-    // 文字:點擊即放置(寬高由 measureText 在 draw 時決定,拖曳框對文字沒意義)
+    // 文字:點擊即放置(寬高由 layout() 量出來,拖曳框對文字沒意義)
     const t = new TextShape({ x: wp.x, y: wp.y });
     scene.push(t); selected = t; history.commit();
     tool = 'select'; syncToolbar(); invalidate();
   } else {
     // 矩形 / 圓形:拖出一個新圖形
     mode = 'creating';
-    const Cls = SHAPE_REGISTRY[tool];
+    const Cls = REGISTRY[tool];
     createOrigin = { x: wp.x, y: wp.y };   // 起點存獨立變數,不掛在 shape 上(避免污染序列化)
     creating = new Cls({ x: wp.x, y: wp.y, w: 0, h: 0 });
     invalidateOverlay();
@@ -299,7 +344,10 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 
 canvas.addEventListener('pointermove', (e) => {
-  const wp = eventToWorld(canvas, e);
+  if (activePointer === null) { updateCursor(e); return; }   // 沒有手勢:只做 hover 游標回饋
+  if (e.pointerId !== activePointer) return;
+  if (e.buttons === 0) { cancelGesture(); return; }         // 放開的事件被吃掉了(例如 Mac 的 Ctrl+點擊叫出選單)
+  const wp = eventToWorld(e);
   switch (mode) {
     case 'dragging':
       selected.x = wp.x - dragOffset.x;
@@ -325,8 +373,9 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 canvas.addEventListener('pointerup', (e) => {
-  canvas.releasePointerCapture(e.pointerId);
-  if (mode === 'creating' && creating && creating.w > 2 && creating.h > 2) {
+  if (e.pointerId !== activePointer) return;
+  // 「太小就當誤點」的門檻是螢幕上的 2px:世界寬高乘回 zoom 再比,放大縮小時手感才一致
+  if (mode === 'creating' && creating.w * camera.zoom > 2 && creating.h * camera.zoom > 2) {
     scene.push(creating);          // 提交新圖形
     selected = creating;
     history.commit();              // 記一筆歷史
@@ -334,9 +383,18 @@ canvas.addEventListener('pointerup', (e) => {
     syncToolbar();
   }
   if (mode === 'dragging' || mode === 'resizing') history.commit();
-  creating = null; createOrigin = null; mode = 'idle';
-  invalidate();
+  endGesture();
 });
+
+// 系統手勢、手掌誤觸等讓瀏覽器取消這根指標:放棄這次手勢,回到最後提交的狀態
+canvas.addEventListener('pointercancel', (e) => { if (e.pointerId === activePointer) cancelGesture(); });
+canvas.addEventListener('wheel', onWheel, { passive: false });   // 11.4;passive:false 才能 preventDefault
+
+function cancelGesture() {
+  if (mode === 'dragging' || mode === 'resizing') history.restore(history.present);
+  endGesture();
+}
+function endGesture() { creating = createOrigin = null; mode = 'idle'; activePointer = null; invalidate(); }
 ```
 
 ```js
@@ -344,10 +402,20 @@ canvas.addEventListener('pointerup', (e) => {
 // 錨點在上面 pointerdown 抓到手把那一刻就算好存進 resizeAnchor。
 function applyResize(s, wp) {
   const a = resizeAnchor;
-  if (a.ax !== null) { s.x = Math.min(a.ax, wp.x); s.w = Math.max(4, Math.abs(wp.x - a.ax)); }
+  const px = wp.x - a.gx, py = wp.y - a.gy;   // 扣掉按下時「游標離手把中心」的偏移,邊才不會一動就跳
+  if (a.ax !== null) { s.x = Math.min(a.ax, px); s.w = Math.max(1, Math.abs(px - a.ax)); }
   else { s.x = a.ox; s.w = a.ow; }
-  if (a.ay !== null) { s.y = Math.min(a.ay, wp.y); s.h = Math.max(4, Math.abs(wp.y - a.ay)); }
+  if (a.ay !== null) { s.y = Math.min(a.ay, py); s.h = Math.max(1, Math.abs(py - a.ay)); }
   else { s.y = a.oy; s.h = a.oh; }
+}
+
+// hover 回饋(第 07 章):滑到手把 → 對應方向的縮放游標,滑到圖形 → move
+const HANDLE_CURSOR = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize',
+                        n: 'ns-resize', s: 'ns-resize', w_: 'ew-resize', e: 'ew-resize' };
+function updateCursor(e) {
+  const wp = eventToWorld(e), h = tool === 'select' && selected && hitHandle(selected, wp);
+  const c = tool !== 'select' ? 'crosshair' : h ? HANDLE_CURSOR[h] : hitShape(wp) ? 'move' : 'default';
+  if (canvas.style.cursor !== c) canvas.style.cursor = c;   // 沒變就不寫,免得每次 move 都動 style
 }
 ```
 
@@ -363,53 +431,65 @@ function worldToScreen(wx, wy) {   // screenToWorld 的反運算:世界座標 �
 
 ```js
 const stage = document.getElementById('stage');   // #stage 是 position:relative 的定位容器(見 11.8)
-let editing = null;                                // 正在編輯的 TextShape;render 要跳過它(改由 input 顯示)
 
 canvas.addEventListener('dblclick', (e) => {
   if (tool !== 'select') return;
   const hit = hitShape(eventToWorld(e));
-  if (hit instanceof TextShape) { selected = hit; invalidate(); startTextEdit(hit); }
+  if (hit instanceof TextShape) { selected = hit; startTextEdit(hit); }
 });
 
 function startTextEdit(shape) {
-  editing = shape; invalidate();                       // 讓 canvas 這格文字先別畫
+  editing = shape; invalidate();                       // 11.5 的 render 會跳過它
 
   const fs = shape.fontSize * camera.zoom;             // 螢幕上的字級 = 世界字級 × zoom
   const p = worldToScreen(shape.x, shape.y);           // input 要擺的螢幕位置
   const input = document.createElement('input');
+  input.type = 'text';
   input.value = shape.text;
   input.style.cssText =
-    `position:absolute;left:${p.x}px;top:${p.y}px;` +
-    `font:${fs}px sans-serif;color:${shape.fill};` +
-    `margin:0;padding:0 1px;border:0;outline:1px solid #3b82f6;background:rgba(255,255,255,.92);`;
+    `position:absolute;left:${p.x}px;top:${p.y}px;margin:0;padding:0 1px;border:0;` +
+    `font:${fs}px sans-serif;line-height:1.2;height:${fs * 1.2}px;color:${shape.fill};` +   // 行高對齊 layout() 的 1.2 倍
+    `outline:1px solid #3b82f6;background:rgba(255,255,255,.92);`;
   stage.appendChild(input);
-  input.focus(); input.select();
+  const fitWidth = () => {                             // 隨輸入內容變寬(measureText,第 04 章)
+    measureCtx.font = `${fs}px sans-serif`;
+    input.style.width = (measureCtx.measureText(input.value).width + 4) + 'px';
+  };
+  fitWidth(); input.addEventListener('input', fitWidth);
 
   function finish(commit) {
-    if (editing !== shape) return;                     // Esc 已先收尾就不重複(避免 blur 又跑一次)
-    editing = null;
+    if (editing !== shape) return;                     // 已收尾過(remove 可能再觸發一次 blur)就不重複
+    editing = null; endTextEdit = null;
     if (commit) {
       const v = input.value.trim();
-      if (v === '') scene.splice(scene.indexOf(shape), 1);   // 清空 = 刪除這個文字
-      else shape.text = v;
+      if (v) { shape.text = v; shape.layout(); }       // 文字變了 → 重新量包圍盒
+      else {                                           // 清空 = 刪除這個文字,選取一起清(別指著已刪的物件)
+        const i = scene.indexOf(shape);
+        if (i >= 0) scene.splice(i, 1);
+        if (selected === shape) selected = null;
+      }
       history.commit();                                // 收尾進 Undo/Redo(第 08 章)
     }
     input.remove(); invalidate();
   }
-  input.addEventListener('blur', () => finish(true));                      // 點別處 = 完成並存檔
+  endTextEdit = finish;                                // 點畫布、平移、縮放前會先呼叫它
+  input.addEventListener('blur', () => finish(true));                        // 點別處 = 完成並存檔
   input.addEventListener('keydown', (ev) => {
-    ev.stopPropagation();
-    if (ev.key === 'Enter') { ev.preventDefault(); input.blur(); }         // Enter = 完成
-    else if (ev.key === 'Escape') { editing = null; input.remove(); invalidate(); }   // Esc = 取消(不寫回)
+    ev.stopPropagation();                                                    // 別讓 11.7 的全域快捷鍵處理這次按鍵
+    if (ev.isComposing || ev.keyCode === 229) return;                        // 注音/拼音選字中的 Enter、Esc 是給輸入法的
+    if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }           // Enter = 完成
+    else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }    // Esc = 取消(不寫回)
   });
+  input.focus(); input.select();
 }
 ```
 
-三個關鍵細節(漏了就會出 bug):
+四個關鍵細節(漏了就會出 bug):
 
-① **位置和字級都要乘 `camera.zoom`**——`<input>` 是螢幕上的 DOM,不吃相機變換,所以世界座標與字級都得自己換算成螢幕像素,平移縮放後才對得上。
-② **編輯中要讓 canvas 跳過這個 shape**——在渲染迴圈把它濾掉(`for (const s of scene) { if (s === editing) continue; s.draw(ctx); }`),否則畫布上的靜態字會和 input 疊字。
-③ **收尾要 `history.commit()`**;而且 11.7 的全域快捷鍵早就寫了「焦點在 `<input>`/IME 組字時不攔截」——所以打字時按 Delete、Ctrl+Z 不會誤刪圖形或誤觸 undo,**當初那行防呆就是為這裡鋪的**。
+① **位置和字級都要乘 `camera.zoom`**——`<input>` 是螢幕上的 DOM,不吃相機變換,所以世界座標與字級都得自己換算成螢幕像素。它也不會跟著相機動,所以點畫布、平移、縮放之前都先呼叫 `endTextEdit(true)` 收尾。
+② **編輯中要讓 canvas 跳過這個 shape**——11.5 的 render 已經用 `editing` 濾掉(content 層不畫字、overlay 層不畫選取框),否則畫布上的靜態字會和 input 疊字。
+③ **IME 選字**——用注音、拼音打字時,按 Enter 是在「選字」,這時 keydown 的 `isComposing` 為 true(Safari 則是送 `keyCode` 229);不先放行,一選字就結束編輯了。
+④ **收尾要 `history.commit()`**,清空刪除時連 `selected` 一起清。11.7 的全域快捷鍵會再加一道「焦點在 `<input>`/IME 組字時不攔截」的防呆,兩層一起保證打字時按 Delete、Ctrl+Z 不會動到圖形。
 
 > **心智模型**:Canvas 畫不了可編輯文字,但你有整個 DOM 可用。**「平常用 canvas 畫靜態、要編輯時借一個 DOM 元件疊上去、編輯完再畫回 canvas」是所有 canvas 編輯器(Figma、Excalidraw、tldraw)的通用套路**——把兩個世界黏起來的膠水,就是第 03 章的世界↔螢幕座標換算。
 
@@ -432,10 +512,12 @@ history = {   // 填入 11.6 預留的空殼,換成真正的快照歷史
     this.future = [];                             // 新操作清空 redo
   },
   restore(json) {
+    const keepId = selected && selected.id;       // 物件會整批重建:選取改用 id 找回
     scene.length = 0;                             // 就地清空,維持同一陣列參考
     for (const d of JSON.parse(json))
-      scene.push(new SHAPE_REGISTRY[d.type](d));  // 用註冊表重建
-    selected = null; invalidate();
+      scene.push(new REGISTRY[d.type](d));        // 用註冊表重建
+    selected = scene.find(s => s.id === keepId) || null;
+    invalidate();
   },
   undo() {
     if (!this.past.length) return;
@@ -452,32 +534,49 @@ history = {   // 填入 11.6 預留的空殼,換成真正的快照歷史
 };
 history.init();
 
-addEventListener('keydown', (e) => {
-  // 焦點在輸入框 / IME 組字時不攔截(日後做文字編輯才不會誤刪圖形、誤觸 undo)
+// 焦點在輸入框 / IME 組字時不攔截:11.6 的文字編輯打字時才不會誤刪圖形、誤觸 undo
+function isTyping(e) {
   const t = e.target;
-  if (e.isComposing || (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable))) return;
+  return e.isComposing || !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable));
+}
+const NUDGE = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+addEventListener('keydown', (e) => {
+  if (isTyping(e) || mode !== 'idle') return;   // 拖曳/縮放中不吃快捷鍵:undo 會換掉 selected,手勢就斷了
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); history.undo(); }
-  else if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); history.redo(); }
+  const k = e.key.toLowerCase();                // Shift 或 Caps Lock 會讓 key 變成大寫 'Z'
+  if (mod && k === 'z' && !e.shiftKey) { e.preventDefault(); history.undo(); }
+  else if (mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); history.redo(); }
   else if ((e.key === 'Delete' || e.key === 'Backspace') && selected) {
-    scene.splice(scene.indexOf(selected), 1); selected = null;
-    history.commit(); invalidate();
+    e.preventDefault(); const i = scene.indexOf(selected);
+    if (i >= 0) scene.splice(i, 1);             // indexOf 找不到是 -1,splice(-1, 1) 會刪掉最後一個
+    selected = null; history.commit(); invalidate();
+  } else if (selected && NUDGE[e.key]) {        // 方向鍵微移(Shift = 10 倍),也是非滑鼠的操作路徑
+    e.preventDefault();
+    const [dx, dy] = NUDGE[e.key], step = e.shiftKey ? 10 : 1;
+    selected.x += dx * step; selected.y += dy * step;
+    invalidate();                               // 按住會連發 keydown:這裡只移動,放開才記一筆
   }
 });
+addEventListener('keyup', (e) => { if (!isTyping(e) && NUDGE[e.key]) history.commit(); });
 
-// 存檔 / 載入(第 08 章序列化)
-const save = () => localStorage.setItem('board', history.snapshot());
+// 存檔 / 載入(第 08 章序列化):格式帶版本號,日後改格式時才認得出舊檔、做遷移
+const save = () =>
+  localStorage.setItem('board', JSON.stringify({ version: 1, shapes: scene.map(s => s.toJSON()) }));
 const load = () => {
-  const j = localStorage.getItem('board');
-  if (!j) return;
-  history.restore(j);
-  history.present = j; history.past = []; history.future = [];   // 載入視為新初始狀態,清空歷史
+  const data = JSON.parse(localStorage.getItem('board') || 'null');
+  if (!data || data.version !== 1) return;     // 沒存過或不認得的格式
+  selected = null; history.restore(JSON.stringify(data.shapes));
+  history.present = history.snapshot(); history.past = []; history.future = [];   // 載入視為新初始狀態,清空歷史
 };
 ```
 
 > ⚠️ **兩個序列化設計重點**:
-> ① `toJSON` 用**白名單**(明列要存的欄位)而非 `...this`——否則 `_origin` 之類暫態欄位會被寫進存檔。對應地,新增圖形的拖曳起點存在獨立變數 `createOrigin`,而不是掛在 shape 上。**資料欄位與暫態狀態分清楚,序列化才乾淨。**
-> ② **載入(load)要視為「新的初始狀態」並清空 history**(`present`/`past`/`future` 一起重設)。否則在 present 基準設計下,`present` 會停在載入前的舊狀態,接著一 `commit` 就把「載入」記成一筆怪異歷史,`undo` 還會跳回載入前。
+> ① `toJSON` 用**白名單**(明列要存的欄位)而非 `...this`——否則暫態欄位會被寫進存檔。對應地,新增圖形的拖曳起點存在獨立變數 `createOrigin`,而不是掛在 shape 上。**資料欄位與暫態狀態分清楚,序列化才乾淨。**
+> ② **載入(load)要視為「新的初始狀態」並清空 history**(`present`/`past`/`future` 一起重設)。否則在 present 基準設計下,`present` 會停在載入前的舊狀態,接著一 `commit` 就把「載入」記成一筆怪異歷史,`undo` 還會跳回載入前。`present` 取 `snapshot()` 而不是讀進來的字串,是為了守住下面那條前提。
+
+> **快照式 undo 的兩個前提**:
+> ① **渲染不能改模型**。`commit()` 靠「`present` 永遠等於當下 scene 的快照」判斷有沒有變化;要是 `draw()` 偷改資料(例如邊畫邊用 `measureText` 寫回文字的 w/h),快照和畫面就差一截——點一下沒動的圖形也會多出一筆歷史,undo 之後再點一下,甚至會把 redo 堆疊清掉。所以 11.3 把量測放進 `layout()`,只在文字改變時呼叫,`draw()` 只讀不寫。
+> ② **還原會打斷物件身分**。`restore()` 建出的是全新物件,任何拿著舊物件參考的變數都會指向已不在 scene 裡的東西——所以 `restore()` 用 id 找回選取,快捷鍵也在手勢進行中一律不處理。需要長期指向某個圖形時(選取、連接線端點、協作者的游標),存 id,不存物件參考。
 
 ---
 
@@ -485,7 +584,7 @@ const load = () => {
 
 把上面組裝成單一 `index.html`(各模組依 11.3~11.7 填入)。
 
-> 📁 **完整可運行版本**:本章程式碼已組裝成一個能直接打開的 demo,放在 [`capstone-demo/`](./capstone-demo/)([index.html](./capstone-demo/index.html) + [whiteboard.js](./capstone-demo/whiteboard.js))。用任意 dev server 開啟即可操作(直接 `file://` 開也行)。它的核心邏輯(新增、拖曳、縮放翻轉、Undo/Redo、序列化)已通過自動化測試驗證。下面是 HTML 骨架:
+> 📁 **完整可運行版本**:本章程式碼已組裝成一個能直接打開的 demo,放在 [`capstone-demo/`](./capstone-demo/)([index.html](./capstone-demo/index.html) + [whiteboard.js](./capstone-demo/whiteboard.js))。用任意 dev server 開啟即可操作(直接 `file://` 開也行)。下面是 HTML 骨架:
 >
 > ⚠️ demo 裡的格線是 `#stage` 的 **CSS 背景**(固定在螢幕、不隨相機動,縮放時格線間距也不變)。這只是裝飾;真要做「格線跟著世界一起平移縮放」(像 Figma),得把格線**畫進一張 bg canvas 並套用 `applyCamera`**。
 
@@ -515,7 +614,7 @@ const load = () => {
     <canvas id="overlay" class="layer"></canvas>   <!-- 互動事件綁在最上層 overlay -->
   </div>
   <script>
-    /* … 11.3~11.7 的程式碼貼這裡:Shape 類、相機、渲染(畫布/場景的宣告在 11.5 開頭)、事件、history … */
+    /* … 11.3~11.7 的程式碼依序貼這裡:Shape 類、相機、渲染(畫布/場景的宣告在 11.5 開頭)、事件、history … */
     // 工具列切換
     document.querySelectorAll('[data-tool]').forEach(btn =>
       btn.onclick = () => { tool = btn.dataset.tool; selected = null; invalidate(); syncToolbar(); });
@@ -530,7 +629,7 @@ const load = () => {
 </html>
 ```
 
-> **提示**:事件綁在**最上層的 `overlay`** canvas（它蓋在最上面，才收得到滑鼠）；繪圖則分別畫在 `content` 與 `overlay`。`touch-action: none` 很關鍵,否則觸控裝置上手勢會搶走你的拖曳。
+> **提示**:事件綁在**最上層的 `overlay`** canvas(它蓋在最上面,才收得到滑鼠);繪圖則分別畫在 `content` 與 `overlay`。`touch-action: none` 很關鍵,否則觸控裝置上手勢會搶走你的拖曳(第 07 章 7.8)。
 
 ---
 
@@ -561,29 +660,24 @@ const load = () => {
 // 場景變動時,同步更新無障礙鏡像(同一份 scene 資料,投影成語意 DOM)
 function syncA11yMirror() {
   const mirror = document.getElementById('a11y-mirror');
-  mirror.innerHTML = scene.map((s, i) =>
-    `<li>${s.constructor.type} ${i + 1}${s.text ? ':' + s.text : ''},位於 ${Math.round(s.x)},${Math.round(s.y)}</li>`
-  ).join('');
+  mirror.replaceChildren(...scene.map((s, i) => {
+    const li = document.createElement('li');
+    // textContent 只當純文字:使用者打的字(或載入、協作傳來的)不會被當成 HTML 解析
+    li.textContent = `${s.constructor.type} ${i + 1}${s.text ? ':' + s.text : ''},位於 ${Math.round(s.x)},${Math.round(s.y)}`;
+    return li;
+  }));
 }
 function announce(msg) { document.getElementById('a11y-live').textContent = msg; }
 ```
 
 ### 3. 鍵盤可操作
 
-canvas 本身不可聚焦也不可操作,要自己補:`tabindex="0"` 讓它能被 Tab 聚焦,再用鍵盤事件提供「移動/刪除」的非滑鼠路徑:
+canvas 本身不可聚焦也不可操作,要自己補:`tabindex="0"` 讓它能被 Tab 聚焦;11.7 的 Delete 與方向鍵微移,就是「刪除/移動」的非滑鼠路徑。剩下的是把結果播報出來:
 
 ```js
-canvas.addEventListener('keydown', (e) => {
-  if (!selected) return;
-  const step = e.shiftKey ? 10 : 1;
-  if (e.key === 'ArrowLeft')       selected.x -= step;
-  else if (e.key === 'ArrowRight') selected.x += step;
-  else if (e.key === 'ArrowUp')    selected.y -= step;
-  else if (e.key === 'ArrowDown')  selected.y += step;
-  else return;
-  e.preventDefault();
-  invalidate(); history.commit();
-  announce(`移動到 ${Math.round(selected.x)}, ${Math.round(selected.y)}`);
+addEventListener('keyup', (e) => {   // 放開方向鍵時播報一次(按住連發時不會每格都念)
+  if (selected && !isTyping(e) && NUDGE[e.key])
+    announce(`移動到 ${Math.round(selected.x)}, ${Math.round(selected.y)}`);
 });
 // 進階:Tab / Enter 在 scene 裡循環選取,並 announce 當前物件
 ```
@@ -606,9 +700,13 @@ canvas.addEventListener('keydown', (e) => {
 | 物件旋轉手把 | 03(繞中心旋轉)、07(本地座標命中) |
 | 對齊輔助線(snap to 其他物件邊緣) | 07(幾何) |
 | 上萬個物件不卡(空間索引 + 視口剔除) | 07(quadtree)、09(只畫視口內) |
-| 多人即時協作(WebSocket 同步序列化差異) | 08(序列化) |
-| 匯出 PNG(`canvas.toBlob`)/ 匯出 SVG | 04、05 |
+| 多人即時協作(見下方) | 08(序列化、命令模式 Undo)|
+| 匯出 PNG(`canvas.toBlob`,見下方)/ 匯出 SVG | 04、05 |
 | 命令模式重構 Undo(取代快照) | 08 |
+
+**匯出別直接 `toBlob` 畫面上的 canvas**:那只會拿到「目前視口 × DPR」、還帶著相機狀態的畫面。正確做法是三步:算出所有圖形 `getBounds()` 的聯集 `(x0, y0)~(x1, y1)`(再留點邊);開一張 `(x1 − x0) × k` 寬、`(y1 − y0) × k` 高的離屏 canvas(`k` 是輸出倍率);`ctx.setTransform(k, 0, 0, k, -x0 * k, -y0 * k)` 讓 x、y 軸各放大 `k` 倍、原點對到 bounds 左上,把 scene 重畫一次再 `toBlob`。這正是 11.3 讓 `draw()` 不依賴相機的回報,也是資料與渲染分離的又一個紅利。
+
+**多人協作不是「把序列化資料丟上 WebSocket」**:至少還要 ① 全域唯一的 id(本章用時間 + 隨機,正式做法用 `crypto.randomUUID()`);② 衝突合併規則——Figma 公開的做法是伺服器仲裁、以「屬性」為單位的 last-writer-wins,也有團隊用 CRDT;③ z-order 改用分數索引(fractional index),陣列位置在並發插入時不穩定;④ **只撤銷自己的操作**——本章整份快照的 undo 一還原,就會把別人同時間的修改一起蓋掉,協作時得換成命令式(記錄每個操作的反向操作)。
 
 ---
 
@@ -617,8 +715,8 @@ canvas.addEventListener('keydown', (e) => {
 回到第 00 章的承諾。我們說:**用 Canvas,就是親手把 DOM 免費送你的那台渲染引擎,一塊一塊自己造出來。** 現在回頭看你做的白板:
 
 - 它有「物件」可以個別管理——你補上了 retained mode(第 08 章)。
-- 它有事件:點得到、拖得動、hover 有回饋——你補上了命中測定(第 07 章)。
-- 它會動、會回彈、過場流暢——你補上了動畫系統(第 06 章)。
+- 它有事件:點得到、拖得動、滑到手把游標會變——你補上了命中測定(第 07 章)。
+- 它在 Retina 螢幕上清晰、視窗一變就跟著重設——你補上了渲染迴圈與 HiDPI(第 01 章)。
 - 它能平移縮放、座標換算精準——你補上了相機與變換(第 03 章)。
 - 它能撤銷、能存檔、跑得順——你補上了歷史、序列化、效能架構(第 08、09 章)。
 
@@ -626,7 +724,7 @@ canvas.addEventListener('keydown', (e) => {
 
 更重要的是,你帶走的不是 Canvas API,而是一套**可遷移的心智模型**:immediate vs retained、資料與渲染分離、世界與螢幕座標、命中測定、按需渲染、何時上 GPU。換到 WebGL、換到原生繪圖、換到任何「自己控制渲染」的系統,這套模型都成立。
 
-> 🎓 **恭喜你完成這門課。** 從「一塊畫完即忘的像素佈」,到「一台你親手打造的渲染引擎」。接下來,挑一個 11.9 的延伸挑戰,或去讀 Konva / Excalidraw 的原始碼——你會發現,你已經是同一個語言的人了。
+> 🎓 **恭喜你完成這門課。** 從「一塊畫完即忘的像素布」,到「一台你親手打造的渲染引擎」。接下來,挑一個 11.10 的延伸挑戰,或去讀 Konva / Excalidraw 的原始碼——你會發現,你已經是同一個語言的人了。
 
 ---
 
@@ -638,9 +736,9 @@ canvas.addEventListener('keydown', (e) => {
 | 01 | 渲染迴圈、清晰度 | render loop、HiDPI |
 | 02 | 畫筆狀態管理 | 每個 shape.draw |
 | 03 | 座標系統 / 相機 | 平移縮放、座標換算 |
-| 04 | 文字排版、圖片 | TextShape、匯出 |
-| 05 | 像素級控制 | 匯出、濾鏡延伸 |
-| 06 | 動畫、時間 | 過場、回彈延伸 |
+| 04 | 文字排版、圖片 | TextShape 量字、文字編輯 |
+| 05 | 像素級控制 | (延伸)匯出、濾鏡 |
+| 06 | 動畫、時間 | (延伸)過場、回彈 |
 | 07 | 事件 / 命中測定 | 選取、拖曳、手把 |
 | 08 | 物件模型、Undo、存檔 | scene、history、序列化 |
 | 09 | 效能、重繪管理 | 分層、按需渲染 |

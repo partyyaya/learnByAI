@@ -99,7 +99,7 @@
 
 依照 03-rest-api 的 `orders-api.yaml` 契約，實作出一組**完整的訂單 Web 層**：
 
-- **路由與綁定**：83 條 URL 的方法簽章、14 個查詢參數綁成一個 `OrderFilter` record、
+- **路由與綁定**：83 條 URL 的方法簽章、查詢參數綁成一個 `OrderFilter` record、
   `PATCH` 的三態語意、自訂 `Converter`。
 - **驗證**：Bean Validation + 七個自訂驗證註解 + 四層 DoS 防護，錯誤一律變成 `errors[]`。
 - **一套錯誤格式**：83 個 `ErrorCode` 的註冊表、一個 advice、
@@ -148,6 +148,19 @@ Hibernate Validator 8.0 / JUnit 5.10 / Mockito 5.7 / ArchUnit 1.3。
 
 ---
 
+## 關鍵範例驗證
+
+[verification/](./verification/) 會直接從 Markdown 抽出關鍵類別，
+驗證 Java 21 / Boot 3.2.5 下的編譯與行為；執行方式與替身範圍見該目錄 README。
+驗證涵蓋冪等 owner／UNKNOWN、body 上限、CORS、SSE 競態、查詢綁定、分頁與強 ETag，
+並以真實 WebSocket 連線確認過期 token 的關閉碼及通道授權。
+它不是全站完整應用程式；Service／Repository 的持久實作仍由後續課程完成。
+
+採用教材時以各節標示的最終版為準；Web 層逾時不代表業務操作可安全重新執行，
+SSE／WebSocket 的索引與配額也必須與實際連線生命週期一起驗證。
+
+---
+
 ## 程式碼演進：後面的章節修正了前面的三處
 
 **這三處是「上游的決定被下游的現實推翻」。**
@@ -157,7 +170,7 @@ Hibernate Validator 8.0 / JUnit 5.10 / Mockito 5.7 / ArchUnit 1.3。
 | 改了什麼 | 原本在哪 | 為什麼 |
 |---|---|---|
 | `CachedBodyFilter` 要跳過 multipart | 04 章 4.4.6 | 否則 `MultipartFile` 綁到 `null`（05 章 5.6.4） |
-| 冪等指紋對 multipart 不含 body | 04 章 4.9.4 | boundary 每次隨機 → 同樣的請求算出不同指紋（05 章 5.6.4） |
+| multipart 指紋依欄位與檔案內容計算，不含 boundary | 04 章 4.9.4 | boundary 每次隨機 → 同樣的請求算出不同指紋（05 章 5.6.4） |
 | `ProblemWriter` 的 `reset()` 要保留 CORS 標頭 | 03 章 3.10.1 | 否則所有 401 / 403 前端都讀不到內容（06 章 6.3.5） |
 
 > 📌 **下一站（[05-service/](../05-service/)）有一張同樣的表，而它有 46 列。**

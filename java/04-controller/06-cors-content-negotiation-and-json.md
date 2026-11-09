@@ -827,7 +827,26 @@ public class CorsConfig {
      */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
-        var source = new UrlBasedCorsConfigurationSource();
+        CorsConfiguration authenticated = apiConfiguration();
+        var source = new UrlBasedCorsConfigurationSource() {
+            @Override
+            public CorsConfiguration getCorsConfiguration(jakarta.servlet.http.HttpServletRequest request) {
+                String path = request.getRequestURI().substring(request.getContextPath().length());
+                boolean catalogue = path.equals("/products") || path.startsWith("/products/")
+                        || path.equals("/categories") || path.startsWith("/categories/");
+                boolean preflight = org.springframework.web.cors.CorsUtils.isPreFlightRequest(request);
+                String method = preflight ? request.getHeader("Access-Control-Request-Method") : request.getMethod();
+                String requestedHeaders = java.util.Objects.toString(
+                        request.getHeader("Access-Control-Request-Headers"), "");
+                boolean usesAuthorization = request.getHeader("Authorization") != null
+                        || java.util.Arrays.stream(requestedHeaders.split(","))
+                            .anyMatch(h -> h.trim().equalsIgnoreCase("Authorization"));
+                // 同一路徑的寫入／帶 token 讀取走可信來源設定；純公開讀取才回 *。
+                if (catalogue && (!("GET".equals(method) || "HEAD".equals(method)) || usesAuthorization))
+                    return authenticated;
+                return super.getCorsConfiguration(request);
+            }
+        };
 
         // ⚠️⚠️ 註冊順序【就是】比對順序，而且是【第一個匹配就贏】★★
         //
@@ -854,7 +873,7 @@ public class CorsConfig {
         // ── ① 最精確：SSE 端點（★ 需要不同的設定）──────────────────
         source.registerCorsConfiguration("/orders/*/events", sseConfiguration());
 
-        // ── ② 公開端點（不需要 credentials，可以放寬）─────────────────
+        // ── ② 純公開 GET/HEAD（前面的 method/header 選擇先排除寫入）─────────────────
         source.registerCorsConfiguration("/products/**", publicConfiguration());
         source.registerCorsConfiguration("/categories/**", publicConfiguration());
 
@@ -8498,33 +8517,16 @@ package example.shop.common.web;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HexFormat;
-import java.util.zip.CRC32C;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
-/**
- * ETag 的產生與解析。
- *
- * <p>★ 三個設計決定：
- * <ol>
- *   <li><b>用 weak ETag（{@code W/"..."}）</b>。
- *       理由：我們的 ETag 表達「語意版本」而不是「位元組完全相同」——
- *       同一個 version 在 {@code ?fields=} 不同時位元組不同（6.6.4）。
- *       ⚠️ 而 weak ETag <b>不能</b>用於 {@code Range} 請求
- *       （RFC 9110 §13.1.3：Range 需要強 ETag），
- *       所以 05 章 5.8.3 的檔案下載用「內容 hash」當強 ETag，不走這裡。</li>
- *   <li><b>包含 version + 表述的識別</b>。
- *       同一個訂單對客戶與對客服是不同的表述（6.6.3），
- *       ETag 必須不同 —— 否則客服會拿到快取的客戶版回應。</li>
- *   <li><b>用 CRC32C 而不是 MD5</b>。
- *       ETag 不需要抗碰撞（它不是安全機制），
- *       而 CRC32C 有 CPU 指令支援，快約 10 倍。</li>
- * </ol>
- */
+/** 強 ETag 必須識別特定表述的 bytes；version/表述識別的完備性由 Service 與 mapper 契約保證。 */
 public final class ETags {
 
     private static final HexFormat HEX = HexFormat.of();
 
     /**
-     * 從「版本 + 表述識別」產生一個 weak ETag。
+     * 從「聚合版本 + 完整表述識別」產生強 ETag。
      *
      * @param version        資源的版本（樂觀鎖的 {@code @Version} 欄位）
      * @param updatedAt      最後更新時間（version 相同時的備援）
@@ -8532,16 +8534,11 @@ public final class ETags {
      *                       + locale + 選了哪些欄位）
      */
     public static String of(long version, Instant updatedAt, String representation) {
-        CRC32C crc = new CRC32C();
-        crc.update(String.valueOf(version).getBytes(StandardCharsets.UTF_8));
-        crc.update((byte) '|');
-        crc.update(String.valueOf(updatedAt == null ? 0 : updatedAt.toEpochMilli())
-                .getBytes(StandardCharsets.UTF_8));
-        crc.update((byte) '|');
-        crc.update(String.valueOf(representation).getBytes(StandardCharsets.UTF_8));
-
-        // ★ W/ 前綴 = weak ETag；引號是 RFC 9110 要求的
-        return "W/\"%d-%s\"".formatted(version, HEX.toHexDigits((int) crc.getValue()));
+        try {
+            String material = version + "\n" + String.valueOf(updatedAt) + "\n" + representation;
+            byte[] hash = MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));
+            return "\"%d-%s\"".formatted(version, HEX.formatHex(hash));
+        } catch (NoSuchAlgorithmException ex) { throw new IllegalStateException(ex); }
     }
 
     /** 從內容 hash 產生一個強 ETag（給檔案下載用，05 章 5.8.2）。 */
@@ -8578,35 +8575,14 @@ public final class ETags {
         return false;
     }
 
-    /**
-     * 比對 {@code If-Match}（樂觀鎖用）。
-     *
-     * <p>⚠️ 與 {@code If-None-Match} 的關鍵差別：
-     * {@code If-Match} 必須用 <b>strong comparison</b>（RFC 9110 §13.1.1）——
-     * weak ETag 不匹配任何東西。
-     *
-     * <p>★ 但 shop-service 的 ETag 全是 weak 的，所以嚴格照規格
-     * 會讓 {@code If-Match} 永遠失敗。
-     * <b>我們刻意用 weak comparison</b>，並在 API 文件裡寫明。
-     *
-     * <p>這是一個「規格 vs 可用性」的取捨：
-     * 嚴格的做法是「為 {@code If-Match} 提供強 ETag」，
-     * 但那需要 ETag 反映位元組（也就是要序列化整個回應才能算）——
-     * 那就回到 {@code ShallowEtagHeaderFilter} 的成本了（6.8.1）。
-     */
+    /** If-Match 必須 strong comparison；任一 W/ 標籤都不能匹配。 */
     public static boolean strongMatch(String ifMatch, String currentETag) {
-        if (ifMatch == null || ifMatch.isBlank()) {
-            return false;
-        }
-        String trimmed = ifMatch.trim();
-        if ("*".equals(trimmed)) {
-            return true;
-        }
-        String current = stripWeakPrefix(currentETag);
-        for (String candidate : trimmed.split(",")) {
-            if (current.equals(stripWeakPrefix(candidate.trim()))) {
-                return true;
-            }
+        if (ifMatch == null || currentETag == null) return false;
+        if ("*".equals(ifMatch.trim())) return true; // 呼叫端已確認資源存在
+        if (!currentETag.startsWith("\"") || !currentETag.endsWith("\"")) return false;
+        for (String candidate : ifMatch.split(",")) {
+            String value = candidate.trim();
+            if (value.startsWith("\"") && value.endsWith("\"") && value.equals(currentETag)) return true;
         }
         return false;
     }
@@ -8618,7 +8594,7 @@ public final class ETags {
      * 讓客服在客訴時能說「你手上是第 7 版，現在已經是第 8 版了」。
      *
      * <p>⚠️ 它<b>不</b>是安全機制：ETag 來自客戶端，裡面的 version 可以偽造。
-     * 真正的比對是 {@link #strongMatch}（比整個 ETag，含 CRC）。
+     * 真正的比對是 {@link #strongMatch}（比整個強 ETag）。
      * 這個方法只用來產生「給人看」的訊息。
      *
      * <p>⚠️ 而且 {@code If-Match} 可能有多個值 —— 這裡只取第一個。
@@ -8654,9 +8630,20 @@ public final class ETags {
         return value;
     }
 
+    public static String representation(String resource, String audience, String locale, String fields) {
+        // schema/序列化政策變更必須升版；fields 原文不同採保守的不同 validator。
+        return "order-detail-json-v1\n" + resource + "\n" + audience + "\n" + locale
+                + "\n" + (fields == null ? "*" : fields);
+    }
+
     private ETags() {}
 }
 ```
+
+**強 ETag 的前提**：聚合 version 必須涵蓋所有會改變詳情的子資料；表述 key 包含
+資源、權限視圖、locale、fields 與序列化政策版本。時間相依欄位、外部 label 或未納入版本的
+子資料會破壞這項保證。無法保證時，改用實際序列化 bytes 的 SHA-256，放棄快速 304；
+不能把 weak ETag 去掉前綴就當成強 validator。內容編碼也應有獨立 validator 或由壓縮層弱化。
 
 **ETag 最大的價值不是省頻寬，而是「快速 304」** —— 一個實務上很划算的最佳化：
 
@@ -8687,9 +8674,12 @@ public final class ETags {
             @PathVariable("orderId") String orderId,
             @RequestHeader(value = HttpHeaders.IF_NONE_MATCH, required = false)
                     String ifNoneMatch,
+            @RequestParam(name = "fields", required = false) String fields,
             @CurrentActor Actor actor) {
 
-        String representation = actor.isInternal() ? "support" : "customer";
+        String representation = ETags.representation(orderId,
+                actor.isInternal() ? "support" : "customer",
+                org.springframework.context.i18n.LocaleContextHolder.getLocale().toLanguageTag(), fields);
 
         // ── ① 快速路徑：只查 version ──────────────────────────────
         if (ifNoneMatch != null) {
@@ -8700,6 +8690,7 @@ public final class ETags {
                 // ★ 304 必須帶 ETag（RFC 9110 §15.4.5）
                 //   ⚠️ 而且【不可以】有 body —— ResponseEntity<Void> 或 build()
                 return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
+                        .varyBy(HttpHeaders.AUTHORIZATION, HttpHeaders.ACCEPT_LANGUAGE)
                         .eTag(etag)
                         .cacheControl(CacheControl.maxAge(Duration.ofSeconds(30))
                                 .cachePrivate().mustRevalidate())
@@ -8799,7 +8790,7 @@ public final class ETags {
 
 ```http
 PATCH /orders/ord_1
-If-Match: W/"7-a3f2b1c8"
+If-Match: "7-a3f2b1c8"
 Content-Type: application/merge-patch+json
 
 { "customerPhone": "0912345678" }
@@ -8857,6 +8848,7 @@ public class OrderUpdateController {
             @PathVariable("orderId") String orderId,
             @RequestHeader(value = HttpHeaders.IF_MATCH, required = false) String ifMatch,
             @RequestBody @Valid UpdateOrderRequest request,
+            @RequestParam(name = "fields", required = false) String fields,
             @CurrentActor Actor actor) {
 
         // ── ① If-Match 必填 ────────────────────────────────────────
@@ -8866,7 +8858,9 @@ public class OrderUpdateController {
 
         // ── ② 取當前版本並比對 ─────────────────────────────────────
         var current = orderService.getVersionInfo(orderId, actor);
-        String representation = actor.isInternal() ? "support" : "customer";
+        String representation = ETags.representation(orderId,
+                actor.isInternal() ? "support" : "customer",
+                org.springframework.context.i18n.LocaleContextHolder.getLocale().toLanguageTag(), fields);
         String currentETag = ETags.of(current.version(), current.updatedAt(), representation);
 
         if (!ETags.strongMatch(ifMatch, currentETag)) {

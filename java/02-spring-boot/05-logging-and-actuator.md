@@ -1282,7 +1282,7 @@ management:
         enabled: true
   server:
     port: 8081                      # ★ 獨立 port ★
-    address: 127.0.0.1              # 只監聽本機（配合 sidecar 或反向代理）
+    address: 0.0.0.0                # 供 Pod IP／獨立 metrics Service 連線；需網路與認證控管
 ```
 
 ---
@@ -1811,6 +1811,9 @@ management:
       exposure:
         include: health,info,prometheus
   metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true              # P99 查詢需要 _bucket；僅加 registry 不會自動開啟
     tags:
       application: ${spring.application.name}    # ★ 全域標籤，區分不同服務 ★
       env: ${ENV:unknown}
@@ -1943,7 +1946,7 @@ management:
 # ② 獨立 port：業務流量與管理流量分離
   server:
     port: 8081
-    address: 127.0.0.1        # 只監聽 loopback（配合 sidecar / 反向代理）
+    address: 0.0.0.0          # 本節採跨 Pod 抓取；由下方 NetworkPolicy 與 Security 保護
 
 # ③ 健康檢查細節只給認證使用者
   endpoint:
@@ -1990,6 +1993,10 @@ public class ActuatorSecurityConfig {
 
 ### K8s 的網路層防護
 
+這裡採 **Prometheus 跨 Pod 直連管理埠**，所以監聽 `0.0.0.0`。
+若採 sidecar 代理模式才改成 `127.0.0.1`，並另外提供實際轉送流量的 sidecar；不能只改綁定位址就沿用下面的直連 Service。
+Security 範例要求 Prometheus 以 `ACTUATOR_ADMIN` 身分認證，因此 scrape job 也要提供對應的 `basic_auth.password_file` 等憑證設定。
+
 ```yaml
 # service.yaml —— 只暴露 8080，8081 不對外
 apiVersion: v1
@@ -1997,6 +2004,8 @@ kind: Service
 metadata:
   name: shop-service
 spec:
+  selector:
+    app: shop-service
   ports:
     - name: http
       port: 80
@@ -2010,6 +2019,8 @@ kind: Service
 metadata:
   name: shop-service-metrics
 spec:
+  selector:
+    app: shop-service
   ports:
     - name: management
       port: 8081
@@ -2023,13 +2034,21 @@ metadata:
 spec:
   podSelector:
     matchLabels: { app: shop-service }
+  policyTypes: [Ingress]
   ingress:
     - from:
+        - podSelector: {}       # 同 namespace 的業務呼叫；跨 namespace Ingress controller 需另列來源
+      ports:
+        - port: 8080
+    - from:
         - namespaceSelector:
-            matchLabels: { name: monitoring }
+            matchLabels: { kubernetes.io/metadata.name: monitoring }
       ports:
         - port: 8081
 ```
+
+NetworkPolicy 選取的是整個 Pod，不是單一埠。啟用 ingress isolation 後，8080 也必須有允許規則；
+未列出的來源會被拒絕，多份 policy 的允許規則則取聯集。此例只允許同 namespace 業務呼叫，實際部署需補上 Ingress controller 等來源。
 
 ### 檢查清單
 
@@ -2115,7 +2134,8 @@ public class OrderMetrics {
     }
 
     public void orderCreated(String paymentMethod, BigDecimal amount) {
-        counter("shop.order.created", "paymentMethod", paymentMethod, "outcome", "SUCCESS")
+        counter("shop.order.created", "paymentMethod", paymentMethod,
+                "outcome", "SUCCESS", "reason", "NONE")
                 .increment();
         amountSummary.record(amount.doubleValue());
         pendingCount.incrementAndGet();
@@ -2125,6 +2145,7 @@ public class OrderMetrics {
         // reason 必須是「有限的錯誤碼」，不能是例外訊息全文
         counter("shop.order.created", "paymentMethod", paymentMethod,
                 "outcome", "FAILURE", "reason", reason).increment();
+        // 同名指標的 tag keys 必須一致；成功路徑也帶 reason=NONE。
     }
 
     public void orderCompleted() {

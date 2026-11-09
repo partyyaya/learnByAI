@@ -5,7 +5,7 @@ export default defineEventHandler(async (event) => {
 
   const body = await readBody(event)
   if (!body?.title) {
-    throw createError({ statusCode: 400, statusMessage: '標題必填' })
+    throw createError({ status: 400, message: '標題必填' })
   }
 
   setResponseStatus(event, 201)

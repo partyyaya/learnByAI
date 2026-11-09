@@ -23,7 +23,7 @@ ctx.beginPath(); ctx.arc(250, 110, 55, 0, Math.PI * 2); ctx.fill();  // 「畫�
 ctx.fillStyle = '#e2e8f0'; ctx.font = '13px system-ui, sans-serif';
 ctx.fillText('你像導演,一句句指揮;', 40, 200);
 ctx.fillText('WebGL/WebGPU 則是交「程式 + 資料」給 GPU 自己平行算', 40, 222);` },
-{ id:'blend-glow', label:'10.4 混合模式 lighter:相加發光', code:
+{ id:'blend-glow', label:'補充:lighter 相加發光(第 02 章 2.7)', code:
 `// 動畫:globalCompositeOperation = 'lighter' 讓顏色相加 → 疊處變亮(發光感)
 ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
 const blobs = [{ hue: 0, a: 0 }, { hue: 120, a: 2 }, { hue: 240, a: 4 }];
@@ -65,10 +65,12 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();` },
-{ id:'min-webgl', label:'10.5 最小 WebGL:gl.clearColor + gl.clear', code:
+{ id:'min-webgl', label:'10.7 最小 WebGL:畫完立刻貼回 2D', code:
 `// 最小 WebGL:同一張 canvas 不能又 2D 又 WebGL,所以另開一張離屏 canvas 取得 webgl
 const glCanvas = document.createElement('canvas'); glCanvas.width = W; glCanvas.height = H;
-const gl = glCanvas.getContext('webgl') || glCanvas.getContext('experimental-webgl');
+const gl = glCanvas.getContext('webgl');
+// 重跑時釋放舊的 WebGL context(瀏覽器同時能開的 context 有上限)
+window.__demoCleanup = function () { const ext = gl && gl.getExtension('WEBGL_lose_context'); if (ext) ext.loseContext(); };
 if (!gl) {
   ctx.fillStyle = '#333'; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = '#fff'; ctx.font = '15px system-ui, sans-serif';
@@ -83,7 +85,7 @@ if (!gl) {
     const b = 0.5 + 0.5 * Math.sin(t + 4);
     gl.clearColor(r, g, b, 1);               // clearColor(紅, 綠, 藍, alpha):範圍 0~1
     gl.clear(gl.COLOR_BUFFER_BIT);           // 用上面的顏色清整個顏色緩衝
-    ctx.drawImage(glCanvas, 0, 0);           // 把 WebGL 畫布貼回主 2D 畫布顯示
+    ctx.drawImage(glCanvas, 0, 0);           // 同一個 callback 裡畫完立刻貼:preserveDrawingBuffer 預設 false,晚了可能貼到空白
     ctx.fillStyle = 'rgba(0,0,0,.5)'; ctx.fillRect(0, 0, W, 28);
     ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
     ctx.fillText('WebGL:gl.clearColor + gl.clear(顏色隨時間變化)', 10, 19);

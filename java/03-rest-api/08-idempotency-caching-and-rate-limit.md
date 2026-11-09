@@ -64,7 +64,7 @@ Content-Type: application/json
 | Header 名稱 | `Idempotency-Key` | Stripe 的事實標準；IETF draft 也用這個名字 |
 | 格式 | 建議 UUIDv4；接受 16～128 字元的 `[A-Za-z0-9_-]` | 不強制 UUID（有些客戶端用自己的 ID 格式） |
 | 誰產生 | **客戶端** | 只有客戶端知道「這是重試還是新請求」 |
-| 有效期 | **24 小時** | 夠長（涵蓋所有合理的重試）；夠短（不會無限累積） |
+| 完成結果的回放有效期 | **24 小時** | 從完成時計算；IN_PROGRESS／UNKNOWN 保留至查證完成，不因 TTL 到期重做 |
 | 作用範圍 | **每個 API key / 使用者 + 端點** | 避免不同使用者的 key 互相干擾 |
 | 必填？ | **關鍵操作必填**（沒帶回 `400`） | 見下 |
 | 重播的狀態碼 | **`200`** + `Idempotent-Replay: true` | 見 8.2.7 |
@@ -115,16 +115,17 @@ public record IdempotencyRecord(
     String key,                  // Idempotency-Key
     String scope,                // "{consumerId}:{method}:{pathTemplate}"
     String requestFingerprint,   // ★ 請求內容的雜湊（見 8.2.5）
-    Status status,               // IN_PROGRESS / COMPLETED
+    Status status,               // IN_PROGRESS / UNKNOWN / COMPLETED
+    String ownerToken,           // 每次執行權的隨機識別，完成／釋放都要比對
     Integer responseStatus,      // 首次的 HTTP 狀態碼
-    String responseHeaders,      // 首次的關鍵 header（Location、ETag）JSON
-    String responseBody,         // 首次的回應 body
+    Map<String, String> responseHeaders, // 儲存時序列化為 JSON
+    byte[] responseBody,         // 首次回應原始 bytes（含 charset／Content-Type）
     String traceId,              // 首次執行的 traceId（除錯用）
     Instant createdAt,
     Instant completedAt,
     Instant expiresAt
 ) {
-    public enum Status { IN_PROGRESS, COMPLETED }
+    public enum Status { IN_PROGRESS, UNKNOWN, COMPLETED }
 }
 ```
 
@@ -154,15 +155,15 @@ T4  客戶端重試 → Redis 上的記錄還是 IN_PROGRESS
 MySQL 版本（同交易）：
 T1  同一個交易內：INSERT idempotency_record(status=COMPLETED) + 建立訂單
 T2  一起提交或一起 rollback
-    → ✅ 絕對一致
+    → ✅ 本地資料一起提交；外部扣款不在 MySQL 交易內，仍需下游冪等鍵／狀態查證
 ```
 
 **shop-service 的決定**：
 
 | 端點 | 儲存 |
 |---|---|
-| `POST /orders/{id}/payments`、`POST /payments/{id}/refunds` | **MySQL**（與業務同交易） |
-| 其他 | **Redis**（效能優先，並接受 T3 的邊界情況） |
+| `POST /orders/{id}/payments`、`POST /payments/{id}/refunds` | **MySQL 操作記錄**（本地狀態與業務同交易；外部金流另需下游冪等鍵與查證） |
+| 其他 | **Redis 協調／回放快取**，業務唯一鍵與持久化操作記錄負責遺失後恢復 |
 
 **MySQL 的 schema**：
 
@@ -172,14 +173,15 @@ CREATE TABLE idempotency_records (
     idem_key             VARCHAR(128) NOT NULL,
     scope                VARCHAR(255) NOT NULL,
     request_fingerprint  CHAR(64)     NOT NULL COMMENT 'SHA-256 hex',
-    status               VARCHAR(16)  NOT NULL COMMENT 'IN_PROGRESS / COMPLETED',
+    status               VARCHAR(16)  NOT NULL COMMENT 'IN_PROGRESS / UNKNOWN / COMPLETED',
+    owner_token          VARCHAR(36)  NOT NULL,
     response_status      SMALLINT     NULL,
     response_headers     JSON         NULL,
     response_body        MEDIUMTEXT   NULL,
     trace_id             VARCHAR(64)  NULL,
     created_at           DATETIME(3)  NOT NULL,
     completed_at         DATETIME(3)  NULL,
-    expires_at           DATETIME(3)  NOT NULL,
+    expires_at           DATETIME(3)  NULL COMMENT '只對 COMPLETED 設清理時間',
     PRIMARY KEY (id),
     UNIQUE KEY uk_idem (scope, idem_key),        -- ★ 唯一約束是原子性的基礎
     KEY idx_expires (expires_at)                  -- 清理用
@@ -197,7 +199,7 @@ void purgeExpired() {
     int total = 0;
     while (true) {
         int deleted = jdbc.update(
-                "DELETE FROM idempotency_records WHERE expires_at < ? LIMIT 5000",
+                "DELETE FROM idempotency_records WHERE status = 'COMPLETED' AND expires_at < ? LIMIT 5000",
                 Instant.now());
         total += deleted;
         if (deleted < 5000) break;
@@ -213,14 +215,12 @@ void purgeExpired() {
 ### 8.2.4 狀態機與三個競態條件
 
 ```
-（不存在）
-    │  客戶端首次請求
-    ▼
-IN_PROGRESS ──────► COMPLETED
-    │                   │
-    │ 執行失敗           │ 24 小時後
-    ▼                   ▼
-（刪除，允許重試）    （清理）
+（不存在）→ IN_PROGRESS → COMPLETED → 完成後 24 小時可清理
+                  │
+                  ├─ 已確認未產生副作用且舊執行者已停止 → 按 ownerToken 釋放
+                  └─ 逾時／結果不明 → UNKNOWN → 查證後完成或安全恢復
+
+UNKNOWN 不因 60 秒或快取 TTL 到期而直接重新執行。
 ```
 
 **競態條件 1：兩個請求同時抵達（同一個 key）**
@@ -253,9 +253,9 @@ execute();
 **Redis 版本**：
 
 ```java
-// SET key value NX EX 86400  → 只在不存在時設定，原子操作
-Boolean acquired = redis.opsForValue()
-        .setIfAbsent(redisKey, inProgressPayload, Duration.ofHours(24));
+// IN_PROGRESS 不設自動到期；ownerToken 放在 payload，完成後才設定回放 TTL
+// tryAcquire 還須先查持久化操作記錄；Redis 丟失不代表業務未執行
+Boolean acquired = redis.opsForValue().setIfAbsent(redisKey, inProgressPayload);
 if (!Boolean.TRUE.equals(acquired)) {
     return handleExisting(...);
 }
@@ -303,46 +303,31 @@ Retry-After: 1
 **`originalTraceId` 是很實用的細節**：
 它讓你能查到「第一個請求現在在做什麼」（是不是卡住了）。
 
-**⚠️ `IN_PROGRESS` 必須有較短的 TTL 或超時清理**：
+**逾時是告警與查證門檻，不是重新執行的許可**：
 
-```
-如果應用程式在執行中 crash，記錄會永遠停在 IN_PROGRESS
-→ 客戶端永遠拿到 409
-→ 這筆訂單永遠無法建立
-```
-
-**解法：`IN_PROGRESS` 的記錄視為「有效期 60 秒」**：
+超過 60 秒可能只是執行緒暫停或下游回應慢，原請求仍可能完成。
+CAS 只能保證兩個接手者不互撞，不能阻止舊 owner 扣款；因此不自動接手。
 
 ```java
-private Response handleExisting(String scope, String key, String fingerprint) {
-    IdempotencyRecord rec = repo.findByScopeAndKey(scope, key).orElseThrow();
-
-    if (rec.status() == IN_PROGRESS) {
-        // ★ 超過 60 秒仍在 IN_PROGRESS → 視為前一個執行失敗，允許接手
-        if (rec.createdAt().isBefore(Instant.now().minusSeconds(60))) {
-            boolean claimed = repo.reclaimStale(scope, key, rec.createdAt());  // CAS
-            if (claimed) {
-                log.warn("接手逾時的冪等記錄 key={} originalTraceId={}", key, rec.traceId());
-                return null;                      // null = 繼續執行
-            }
-        }
-        throw new IdempotentRequestInProgressException(rec.traceId());
-    }
-    // COMPLETED → 見 8.2.5 的指紋比對與 8.2.7 的回放
-    ...
+if (rec.status() == IN_PROGRESS && rec.createdAt().isBefore(clock.instant().minusSeconds(60))) {
+    store.markUnknownOwned(scope, key, rec.ownerToken());  // CAS，只轉待查證
+    recovery.enqueue(scope, key);                         // 查持久化記錄／付款供應商
 }
+// IN_PROGRESS / UNKNOWN 均回 409 + Retry-After；同 key 重送不再次執行
+throw new IdempotentRequestInProgressException(rec.traceId());
 ```
 
 ```sql
--- reclaimStale 的 CAS（比較並交換）
+-- owner 條件也必須用於 completeOwned、markUnknownOwned、releaseOwned
 UPDATE idempotency_records
-SET created_at = ?, trace_id = ?
-WHERE scope = ? AND idem_key = ?
-  AND status = 'IN_PROGRESS'
-  AND created_at = ?          -- ★ 只有「還是我讀到的那個舊值」才更新
+SET status = 'UNKNOWN'
+WHERE scope = ? AND idem_key = ? AND owner_token = ? AND status = 'IN_PROGRESS';
 ```
 
-**`AND created_at = ?` 是關鍵** —— 它防止兩個請求同時「接手」。
+`UNKNOWN`／`IN_PROGRESS` 不靠 TTL 清掉。恢復工作先檢查業務操作記錄與下游結果：
+已有結果就補寫 COMPLETED；只有確認無副作用、原執行者已停止或副作用端可 fencing 時，
+才可 CAS 換新 ownerToken 或釋放。舊 owner 的 complete／release 不得改到新 owner 記錄。
+外部付款使用同一個供應商冪等鍵；ownerToken 只保護記錄所有權，不取代副作用端的冪等保證。
 
 **競態條件 3：業務執行成功但記錄更新失敗**
 
@@ -354,8 +339,8 @@ T3  💥 更新記錄為 COMPLETED 時 crash
 
 | 儲存方式 | 後果 |
 |---|---|
-| MySQL（同交易） | ✅ 不可能發生（記錄和訂單一起提交） |
-| Redis | ⚠️ 記錄停在 IN_PROGRESS → 60 秒後被「接手」→ **可能重複建立訂單** 🔴 |
+| MySQL（同交易） | 本地訂單與操作結果一起提交；外部付款另需冪等鍵與查證 |
+| Redis | 記錄轉待查證；從持久化操作記錄恢復，不能因過 60 秒而重新建立訂單 |
 
 **Redis 版本的補救：業務層的二次防護**
 
@@ -390,7 +375,7 @@ try {
 ### 8.2.5 請求指紋：偵測「相同 key 不同內容」
 
 ```java
-static String fingerprint(String method, String path, String body, String consumerId) {
+static String of(String method, String path, String consumerId, String body) {
     // ★ 要包含哪些東西，是一個設計決定
     String canonical = String.join("\n",
             method,
@@ -423,7 +408,10 @@ static String fingerprint(String method, String path, String body, String consum
 static String canonicalizeJson(String raw) {
     if (raw == null || raw.isBlank()) return "";
     try {
-        JsonNode node = MAPPER.readTree(raw);
+        // 指紋專用 reader 保留精確 decimal，避免不同數值先被 double 捨入成相同值
+        JsonNode node = MAPPER.reader().with(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                              .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES)
+                              .readTree(raw);
         return MAPPER.writer()                        // ★ 遞迴排序所有物件的 key
                      .with(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
                      .writeValueAsString(sortKeys(node));
@@ -485,7 +473,8 @@ private static JsonNode sortKeys(JsonNode node) {
 {"quantity": 2.0}    → 指紋 B    ← 不同！
 ```
 
-Jackson 的 `readTree` 會把 `2` 讀成 `IntNode`，`2.0` 讀成 `DoubleNode` —— 序列化回去不同。
+本例指紋 reader 保留 decimal 精度與 scale：`2` 是 `IntNode`，`2.0` 是 `DecimalNode`，
+序列化仍不同。不要先轉 double 再做正規化，否則不同的高精度輸入可能變成相同指紋。
 
 **如果這在實務上造成問題**，可以在正規化時把數值標準化：
 
@@ -520,137 +509,211 @@ if (node.isNumber()) {
 **⚠️ 絕對不要回傳「原始請求的內容」** —— 那可能包含敏感資料，
 而且送這個請求的人可能和原始的不是同一個（雖然 scope 有包含 consumerId）。
 
-### 8.2.6 完整實作（Interceptor + Redis）
+### 8.2.6 Filter 實作與儲存介面
+
+Filter 依序位於認證、端點授權之後；命中回放前仍需執行資源層授權，不能依賴稍後才會執行的 Controller。
+以下省略建構子與 Problem 寫出函式；`AuthorizationGate` 必須依已驗證身分檢查資源權限。
+`policy.scopeOf` 使用預先登記的端點識別與已驗證 consumerId，不讀尚未執行的 MVC HandlerMapping。
+此 consumerId 必須包含租戶／使用者 subject 的隔離資訊；`X-Client-Id` 只識別應用程式，不能單獨當作使用者身分。
 
 ```java
-@Component
-@Order(Ordered.HIGHEST_PRECEDENCE + 100)      // ★ 在 TraceIdFilter 之後
+@Component  // 作為 Security chain 的依賴；下方停用 Servlet 容器的自動註冊
 public class IdempotencyFilter extends OncePerRequestFilter {
-
     private static final String HEADER = "Idempotency-Key";
     private static final Pattern KEY_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{16,128}$");
-    private static final Duration TTL = Duration.ofHours(24);
-    private static final Duration IN_PROGRESS_TIMEOUT = Duration.ofSeconds(60);
-
+    private static final int MAX_FINGERPRINT_BODY = 65_536;
     private final IdempotencyStore store;
-    private final IdempotencyPolicy policy;       // 哪些端點必填
-    private final ObjectMapper mapper;
+    private final IdempotencyPolicy policy;
+    private final AuthorizationGate authorization;
+    private final RecoveryQueue recovery;
 
     @Override
     protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res,
                                     FilterChain chain) throws ServletException, IOException {
-
-        if (!policy.applies(req)) {                       // GET/PUT/DELETE 等直接放行
-            chain.doFilter(req, res);
-            return;
-        }
-
+        if (!policy.applies(req)) { chain.doFilter(req, res); return; }
+        authorization.checkResourceAccess(req);       // 每次都檢查，包含回放
+        String consumerId = currentConsumerId();      // 已通過 Security 的認證
         String key = req.getHeader(HEADER);
-
         if (key == null || key.isBlank()) {
-            if (policy.isRequired(req)) {
-                writeProblem(res, ErrorCode.IDEMPOTENCY_KEY_REQUIRED);
-                return;
-            }
-            chain.doFilter(req, res);                      // 選填且沒帶 → 直接執行
-            return;
+            if (policy.isRequired(req)) { writeProblem(res, ErrorCode.IDEMPOTENCY_KEY_REQUIRED); return; }
+            chain.doFilter(req, res); return;
         }
         if (!KEY_PATTERN.matcher(key).matches()) {
-            writeProblem(res, ErrorCode.INVALID_IDEMPOTENCY_KEY);
+            writeProblem(res, ErrorCode.INVALID_IDEMPOTENCY_KEY); return;
+        }
+        ReplayableBodyRequest wrapped;
+        try {
+            wrapped = new ReplayableBodyRequest(req, MAX_FINGERPRINT_BODY);
+        } catch (BodyTooLargeException e) {
+            res.setStatus(413);
+            writePayloadTooLargeProblem(res);         // application/problem+json，寫出同一個 413
             return;
         }
-
-        // ★ 必須快取 body（因為要算指紋，而且下游還要讀）
-        ContentCachingRequestWrapper wrappedReq = new ContentCachingRequestWrapper(req);
-        String body = readBody(wrappedReq);                // 見下方的注意事項
-        String scope = policy.scopeOf(req);
-        String fingerprint = Fingerprint.of(req.getMethod(), req.getRequestURI(),
-                                            currentConsumerId(), body);
-
-        // ── 嘗試取得執行權（原子）────────────────────
-        IdempotencyStore.Acquisition acq = store.tryAcquire(scope, key, fingerprint, TTL);
-
+        String body = new String(wrapped.body(), StandardCharsets.UTF_8);
+        String scope = policy.scopeOf(req, consumerId);
+        String fp = Fingerprint.of(req.getMethod(), req.getRequestURI(), consumerId, body);
+        var acq = store.tryAcquire(scope, key, fp);     // 含持久化操作查詢及原子取得
         switch (acq.outcome()) {
-            case ACQUIRED -> executeAndRecord(wrappedReq, res, chain, scope, key, fingerprint);
+            case ACQUIRED -> executeAndRecord(wrapped, res, chain, scope, key, acq.ownerToken());
             case COMPLETED -> replay(res, acq.record());
-            case IN_PROGRESS -> {
-                if (acq.record().createdAt().isBefore(Instant.now().minus(IN_PROGRESS_TIMEOUT))
-                        && store.reclaimStale(scope, key, acq.record())) {
-                    log.warn("接手逾時的冪等記錄 key={} originalTraceId={}",
-                             key, acq.record().traceId());
-                    executeAndRecord(wrappedReq, res, chain, scope, key, fingerprint);
-                } else {
-                    writeProblem(res, ErrorCode.IDEMPOTENT_REQUEST_IN_PROGRESS,
-                                 Map.of("originalTraceId", acq.record().traceId()),
-                                 Map.of("Retry-After", "1"));
-                }
-            }
-            case FINGERPRINT_MISMATCH -> writeProblem(res, ErrorCode.IDEMPOTENCY_KEY_REUSED,
-                    Map.of("originalRequestAt", acq.record().createdAt(),
-                           "originalTraceId", acq.record().traceId()));
+            case IN_PROGRESS, UNKNOWN -> writeProblem(res,
+                    ErrorCode.IDEMPOTENT_REQUEST_IN_PROGRESS,
+                    Map.of("originalTraceId", acq.record().traceId()), Map.of("Retry-After", "1"));
+            case FINGERPRINT_MISMATCH -> writeProblem(res, ErrorCode.IDEMPOTENCY_KEY_REUSED);
         }
     }
 
-    private void executeAndRecord(ContentCachingRequestWrapper req, HttpServletResponse res,
-                                  FilterChain chain, String scope, String key, String fingerprint)
-            throws ServletException, IOException {
-
-        ContentCachingResponseWrapper wrappedRes = new ContentCachingResponseWrapper(res);
-        boolean shouldRecord = false;
+    private void executeAndRecord(HttpServletRequest req, HttpServletResponse res, FilterChain chain,
+                                  String scope, String key, String owner) throws ServletException, IOException {
+        var wrappedRes = new ContentCachingResponseWrapper(res);
+        boolean returned = false;
         try {
             chain.doFilter(req, wrappedRes);
-            // ★ 只記錄「確定的結果」—— 見下方的討論
-            shouldRecord = isDeterministicOutcome(wrappedRes.getStatus());
+            returned = true;
         } finally {
-            if (shouldRecord) {
-                store.complete(scope, key,
-                        wrappedRes.getStatus(),
-                        captureHeaders(wrappedRes),
-                        wrappedRes.getContentAsByteArray(),
-                        MDC.get("traceId"));
-            } else {
-                store.release(scope, key);          // ★ 刪除記錄，允許重試
+            try {
+                int status = wrappedRes.getStatus();
+                if (returned && isReplayableStatus(status)) {
+                    store.completeOwned(scope, key, owner, status, captureHeaders(wrappedRes),
+                                        wrappedRes.getContentAsByteArray(), MDC.get("traceId"));
+                } else if (Boolean.TRUE.equals(req.getAttribute("idempotency.confirmedNoEffect"))) {
+                    // 只由業務層在確認本地 rollback、下游無副作用且不會繼續執行後設定
+                    store.releaseOwned(scope, key, owner);
+                } else {
+                    store.markUnknownOwned(scope, key, owner);
+                    recovery.enqueue(scope, key);
+                }
+            } catch (RuntimeException e) {
+                // 儲存或排程恢復失敗，不遮蔽原例外／已成功的回應；定期掃描負責補償
+                log.error("冪等記錄更新失敗 scope={} key={}", scope, key, e);
+            } finally {
+                wrappedRes.copyBodyToResponse();       // 儲存失敗也不能吞掉原 body
             }
-            wrappedRes.copyBodyToResponse();
         }
     }
 
-    /**
-     * 哪些結果該被記錄（後續重試會拿到相同回應）？
-     *
-     * ✅ 2xx        —— 成功，一定要記錄
-     * ✅ 4xx        —— 客戶端的錯，重送同樣的請求還是會錯 → 記錄可省下一次執行
-     * ❌ 5xx        —— 我們的錯，可能是暫時的 → 不記錄，讓客戶端能重試
-     * ❌ 408 / 429  —— 暫時性的 → 不記錄
-     */
-    private static boolean isDeterministicOutcome(int status) {
-        if (status >= 500) return false;
-        if (status == 408 || status == 429) return false;
-        return true;
+    private static boolean isReplayableStatus(int status) {
+        return status >= 200 && status < 300
+            || status >= 400 && status < 500 && status != 408 && status != 429;
     }
 
-    /** 只保留客戶端需要的 header */
     private static Map<String, String> captureHeaders(HttpServletResponse res) {
         Map<String, String> out = new LinkedHashMap<>();
         for (String h : List.of("Location", "ETag", "Content-Type")) {
-            String v = res.getHeader(h);
-            if (v != null) out.put(h, v);
+            String value = res.getHeader(h);
+            if (value != null) out.put(h, value);
         }
         return out;
+    }
+
+    private void replay(HttpServletResponse res, IdempotencyRecord rec) throws IOException {
+        res.setStatus(rec.responseStatus() == 201 ? 200 : rec.responseStatus());
+        rec.responseHeaders().forEach(res::setHeader);
+        res.setHeader("Idempotent-Replay", "true");
+        res.setHeader("Cache-Control", "no-store");
+        res.getOutputStream().write(rec.responseBody());
     }
 }
 ```
 
-**`isDeterministicOutcome` 這個判斷很重要，而且容易做錯**：
+正常返回的 4xx 必須代表業務已拒絕且沒有未決副作用；若先付款後驗證失敗，必須改造業務流程，
+不能以 4xx 當成已回滾的證明。`confirmedNoEffect` 的預設值是 false，不能只看 HTTP 狀態設定。
+5xx、408、429、未捕捉例外都可能結果未知；未知操作先保留並查證，而非直接重做或永遠回放 504。
 
-| 狀態碼 | 記錄？ | 理由 |
-|---|---|---|
-| `201` / `200` / `202` | ✅ | 成功了，重試必須拿到同一個結果 |
-| `400` / `422` | ✅ | 內容錯，重送同樣的內容還是錯 → 記錄可以省下一次驗證 |
-| `409`（庫存不足） | ⚠️ **有爭議** | 補貨後重試「應該」成功 —— 但客戶端用的是同一個 key… 見下 |
-| `500` | ❌ | 可能是暫時的 bug／DB 閃斷 → 必須讓客戶端能重試 |
-| `503` / `504` | ❌ | 暫時性 |
-| `429` | ❌ | 限流是暫時的 |
+```java
+// 加在應用程式既有的 SecurityFilterChain 設定中
+http.addFilterAfter(idempotencyFilter, AuthorizationFilter.class);
+
+@Bean
+FilterRegistrationBean<IdempotencyFilter> disableContainerRegistration(IdempotencyFilter filter) {
+    var registration = new FilterRegistrationBean<>(filter);
+    registration.setEnabled(false);  // 只由 Security chain 呼叫，避免在認證前又跑一次
+    return registration;
+}
+```
+
+**request body 必須能重讀，且在配置記憶體時就限制大小**：
+
+`ContentCachingRequestWrapper` 不提供 stream 重播；它只能以 `getContentAsByteArray()` 取得已讀內容。
+以下 wrapper 適用同步 JSON MVC 端點；multipart／Servlet 非阻塞 I/O 需另外設計，不套用此實作。
+
+```java
+public final class ReplayableBodyRequest extends HttpServletRequestWrapper {
+    private final byte[] body;
+
+    public ReplayableBodyRequest(HttpServletRequest req, int maximum) throws IOException {
+        super(req);
+        // 最多配置 maximum + 1 bytes，超過就拒絕，不先 readAllBytes()
+        body = req.getInputStream().readNBytes(maximum + 1);
+        if (body.length > maximum) throw new BodyTooLargeException();
+    }
+
+    public byte[] body() { return body.clone(); }
+
+    @Override
+    public ServletInputStream getInputStream() {
+        var input = new ByteArrayInputStream(body);
+        return new ServletInputStream() {
+            @Override public int read() { return input.read(); }
+            @Override public int read(byte[] b, int off, int len) { return input.read(b, off, len); }
+            @Override public boolean isFinished() { return input.available() == 0; }
+            @Override public boolean isReady() { return true; }
+            @Override public void setReadListener(ReadListener listener) {
+                throw new UnsupportedOperationException("只支援同步 JSON 端點");
+            }
+        };
+    }
+
+    @Override
+    public BufferedReader getReader() {
+        Charset charset = getCharacterEncoding() == null ? StandardCharsets.UTF_8
+                : Charset.forName(getCharacterEncoding());
+        return new BufferedReader(new InputStreamReader(getInputStream(), charset));
+    }
+}
+```
+
+**儲存介面的必要契約**：`Acquisition` 需回傳 ownerToken；`completeOwned`、`releaseOwned`、
+`markUnknownOwned` 必須以 scope/key/ownerToken 原子比對，不可用 GET 後無條件 SET／DEL。
+例如 `releaseOwned` 只能刪除同 owner 的非完成記錄：
+
+```lua
+-- idempotency-release-owned.lua；KEYS[1] 記錄鍵，ARGV[1] ownerToken
+local value = redis.call('GET', KEYS[1])
+if not value then return 0 end
+local rec = cjson.decode(value)
+if rec.ownerToken ~= ARGV[1] or rec.status == 'COMPLETED' then return 0 end
+return redis.call('DEL', KEYS[1])
+```
+
+**Redis 的原子取得（Lua；持久化操作記錄確認後才呼叫）**：
+
+```lua
+-- idempotency-acquire.lua
+-- ARGV：fingerprint、traceId、ownerToken、nowMillis
+local existing = redis.call('GET', KEYS[1])
+if not existing then
+    local rec = cjson.encode({status = 'IN_PROGRESS', fp = ARGV[1],
+        traceId = ARGV[2], ownerToken = ARGV[3], createdAt = tonumber(ARGV[4])})
+    redis.call('SET', KEYS[1], rec)  -- 未完成不設 TTL；由查證工作處理停滯記錄
+    return cjson.encode({outcome = 'ACQUIRED', ownerToken = ARGV[3]})
+end
+local rec = cjson.decode(existing)
+if rec.fp ~= ARGV[1] then
+    return cjson.encode({outcome = 'FINGERPRINT_MISMATCH', record = rec})
+end
+return cjson.encode({outcome = rec.status, record = rec})
+```
+
+只有 COMPLETED 才設定 24 小時回放 TTL。Redis 遺失後，`tryAcquire` 仍須依持久化操作記錄
+恢復結果／拒絕未知操作，不能把快取不存在解讀成未執行。付款／退款的供應商請求必須帶同一個
+持久化的下游冪等鍵；MySQL 交易本身不能讓外部扣款與本地 commit 原子化。
+
+| 執行結果 | 記錄處理 |
+|---|---|
+| 正常完成的 2xx、確定拒絕的 400／409／422 | COMPLETED，保留狀態、headers、body |
+| 已證明沒有副作用的失敗 | owner CAS 釋放；相同 key 可以安全重新執行 |
+| 5xx／逾時／執行中斷且結果不明 | UNKNOWN，查證後補完成或安全恢復 |
 
 **`409` 的爭議值得展開**：
 
@@ -677,55 +740,7 @@ POST /orders（key=K1）→ 409 庫存不足
 **理由**：`retryStrategy: MODIFY_REQUEST` 已經告訴客戶端「要改內容」——
 而改了內容就必須換 key（否則會撞到 `IDEMPOTENCY_KEY_REUSED`）。**語意是一致的。**
 
-**⚠️ `ContentCachingRequestWrapper` 的三個坑**：
-
-| 坑 | 說明 | 解法 |
-|---|---|---|
-| `getContentAsByteArray()` 在 `doFilter` **之前**是空的 | 它只快取「已經被讀過」的內容 | 在算指紋前先主動讀完 `getInputStream()` |
-| 大 body 會全部進記憶體 | 上傳 10MB 檔案 → 佔 10MB | 對 `multipart` 端點跳過冪等檢查，或限制 body 大小 |
-| 讀了 body 之後下游可能讀不到 | 需要 wrapper 正確實作 `getInputStream()` | `ContentCachingRequestWrapper` 已處理；但要確保傳給 `chain.doFilter` 的是 wrapper |
-
-```java
-private static String readBody(ContentCachingRequestWrapper req) throws IOException {
-    // ★ 主動讀完，讓 wrapper 快取住
-    try (InputStream in = req.getInputStream()) {
-        byte[] bytes = in.readAllBytes();
-        if (bytes.length > MAX_FINGERPRINT_BODY) {
-            // 太大就只用雜湊（避免記憶體壓力）
-            return DigestUtils.sha256Hex(bytes);
-        }
-        return new String(bytes, StandardCharsets.UTF_8);
-    }
-}
-```
-
-**Redis 的原子取得（Lua）**：
-
-```lua
--- idempotency-acquire.lua
--- KEYS[1] = idempotency key
--- ARGV[1] = fingerprint, ARGV[2] = traceId, ARGV[3] = ttl 秒, ARGV[4] = now(ms)
-local existing = redis.call('GET', KEYS[1])
-if not existing then
-    local rec = cjson.encode({
-        status = 'IN_PROGRESS', fp = ARGV[1], traceId = ARGV[2], createdAt = tonumber(ARGV[4])
-    })
-    redis.call('SET', KEYS[1], rec, 'EX', tonumber(ARGV[3]))
-    return cjson.encode({ outcome = 'ACQUIRED' })
-end
-
-local rec = cjson.decode(existing)
-if rec.fp ~= ARGV[1] then
-    return cjson.encode({ outcome = 'FINGERPRINT_MISMATCH', record = rec })
-end
-if rec.status == 'IN_PROGRESS' then
-    return cjson.encode({ outcome = 'IN_PROGRESS', record = rec })
-end
-return cjson.encode({ outcome = 'COMPLETED', record = rec })
-```
-
-**用 Lua 的理由**：`GET` + 判斷 + `SET` 三個操作必須是**原子的**。
-分開做就有 8.2.4 競態條件 1 的問題。
+body 重讀與有界讀取使用前文 `ReplayableBodyRequest`；不要改回先讀光的 ContentCachingRequestWrapper。
 
 ### 8.2.7 回放的語意
 
@@ -759,7 +774,8 @@ Idempotency-Key: 8f14e45f-...
 
 **兩種都合理，關鍵是「文件要寫清楚並保持一致」。**
 
-**shop-service 選 `200` + `Idempotent-Replay: true`**，理由：
+**shop-service 僅將已完成的 `201` 回放轉為 `200` + `Idempotent-Replay: true`**。
+其他狀態（包含 `202` 及所有錯誤）保留原碼；絕不能把 409／422 的 Problem body 包在 HTTP 200 裡。理由：
 
 ```typescript
 // 客戶端可以避免重複播放「訂單建立成功」的動畫／通知
@@ -851,7 +867,7 @@ function getOrCreateCheckoutKey(cartVersion: string): string {
 ```java
 // 指標（低基數標籤，第 04 章 4.12.5）
 Counter.builder("idempotency.requests")
-       .tag("outcome", outcome.name())          // ACQUIRED / COMPLETED / IN_PROGRESS / FINGERPRINT_MISMATCH
+       .tag("outcome", outcome.name())          // ACQUIRED / COMPLETED / IN_PROGRESS / UNKNOWN / FINGERPRINT_MISMATCH
        .tag("endpoint", normalizedPath)
        .tag("consumer", consumerId)
        .register(registry).increment();
@@ -864,7 +880,7 @@ Counter.builder("idempotency.requests")
 | `COMPLETED`（回放）的比例 | 0.1% ~ 2% | **暴增** → 客戶端在大量重試 → 可能是你的服務變慢或客戶端有 bug |
 | `IN_PROGRESS` 的比例 | < 0.1% | **暴增** → 請求處理太慢，或客戶端重試間隔太短 |
 | `FINGERPRINT_MISMATCH` 的比例 | ~0% | **任何非零值都值得查** → 客戶端沒有正確管理 key |
-| 「接手逾時記錄」的次數 | 0 | **非零** → 有請求 crash 了，要查為什麼 |
+| 「逾時轉待查證」的次數 | 0 | **非零** → 有請求 crash 了，要查為什麼 |
 
 **第三個特別重要**：`FINGERPRINT_MISMATCH` 表示某個 consumer
 「用同一個 key 送了不同的內容」—— 這幾乎一定是它的 bug，值得主動聯絡。
@@ -1477,6 +1493,7 @@ return { allowed, math.floor(tokens), retryAfterMs, capacity }
 public class TokenBucketRateLimiter {
 
     private final StringRedisTemplate redis;
+    private final Clock clock;                   // 測試可注入固定時間，避免補充令牌干擾斷言
     private final RedisScript<List> script;      // 載入上面的 Lua
 
     public RateLimitResult tryConsume(String bucketKey, RateLimitPolicy policy, int cost) {
@@ -1484,7 +1501,7 @@ public class TokenBucketRateLimiter {
                 List.of("rl:" + bucketKey),
                 String.valueOf(policy.capacity()),
                 String.valueOf(policy.refillPerSecond()),
-                String.valueOf(System.currentTimeMillis()),
+                String.valueOf(clock.millis()),
                 String.valueOf(cost),
                 String.valueOf(policy.ttlSeconds()));
 
@@ -2228,7 +2245,7 @@ else                  cost = 3;      // 實際執行：完整的業務邏輯
 
 | 機制 | 關鍵指標 | 異常代表什麼 |
 |---|---|---|
-| 冪等鍵 | 回放比例、指紋不符次數、接手逾時次數 | 8.2.9 |
+| 冪等鍵 | 回放比例、指紋不符次數、逾時待查證次數 | 8.2.9 |
 | 快取 | `304` 比例、CDN 命中率、`ETag` 命中率 | `304` 比例接近 0 → ETag 策略無效（可能是 8.3.4 的問題） |
 | 限流 | 各桶的拒絕率（按 consumer 分組） | 自家 consumer 被拒 → 🔴 設定錯誤（8.4.8） |
 
@@ -2238,7 +2255,7 @@ else                  cost = 3;      // 實際執行：完整的業務邏輯
 ┌─ 冪等 ──────────────────────────────────────────┐
 │ 回放比例          0.8%   ← 正常（0.1~2%）        │
 │ 指紋不符          0      ← 正常（任何非零都要查） │
-│ 接手逾時          0      ← 正常                  │
+│ 逾時待查證        0      ← 正常                  │
 ├─ 快取 ──────────────────────────────────────────┤
 │ CDN 命中率        78%    ← /products             │
 │ 304 比例          12%    ← /orders/{id}          │
@@ -2359,16 +2376,17 @@ idempotency:
   header: Idempotency-Key
   key-pattern: "^[A-Za-z0-9_-]{16,128}$"
   ttl: PT24H
-  in-progress-timeout: PT60S
+  stale-alert-after: PT60S                # 告警／查證，不自動接手
   max-fingerprint-body-bytes: 65536
-  replay-status: 200                      # 回放時的狀態碼
+  replay-created-status: 200              # 只將 201 轉 200；其他狀態保留
   replay-header: Idempotent-Replay
   fingerprint:
     canonicalize-json: true               # 物件 key 排序
     canonicalize-arrays: false            # 陣列順序保留
-    normalize-numbers: true               # 2.0 → 2
+    normalize-numbers: false              # 與 8.2.5 主範例一致；若啟用須套用該節額外數值規則
   # 記錄哪些結果（後續重試會拿到相同回應）
-  record-outcomes: "2xx,4xx"              # 5xx / 408 / 429 不記錄
+  replay-outcomes: "2xx,terminal-4xx"     # 需為確定結果
+  uncertain-outcome: retain-and-reconcile # 未知結果保留；非依狀態碼直接刪除
   storage:
     default: redis
     transactional-endpoints:               # 這些用 MySQL（與業務同交易）
@@ -2501,7 +2519,8 @@ rate-limit:
 客戶端重試時被誤判為「不同的請求」。**必須正規化。**
 
 **誤區 3：「冪等鍵要記錄所有結果」**
-8.2.6：`5xx` **不能**記錄 —— 否則暫時性的錯誤會被永久回放，客戶端無法重試。
+8.2.6：HTTP 5xx 無法證明未執行。結果未知時記為 UNKNOWN 並查證；
+只有證明無副作用才可釋放，已完成的結果才能回放。
 
 **誤區 4：「客戶端會正確管理冪等鍵」**
 8.2.8：最常見的失效原因是「key 沒持久化」——
@@ -2612,7 +2631,7 @@ public class OrderController {
 | 7 | **回放時遺失 `Location` 與 `ETag`** | 只存了 body。客戶端拿不到資源 URI（第 02 章 2.4.2） |
 | 8 | **回放時沒有 `Idempotent-Replay` header** | 客戶端無法區分「真的建立」與「回放」→ 8.2.7 的重複計數問題 |
 | 9 | **回放的狀態碼是 `200`，首次是 `201`** | ⚠️ 這個「碰巧」符合 8.2.7 的建議，但**是意外而非設計**——<br>因為它沒有記錄首次的狀態碼，所以如果首次是 `409`，回放也會變 `200` 🔴 |
-| 10 | **只記錄成功的結果** | `service.create()` 拋例外時完全不記錄 → 8.2.6 的 `record-outcomes` 沒實作。<br>`400`/`422` 應該記錄（省下重複驗證） |
+| 10 | **只記錄成功的結果** | `service.create()` 拋例外時完全不記錄 → 未區分確定完成與結果未知。<br>確定拒絕的 `400`/`422` 可回放；未知結果必須保留待查證 |
 | 11 | **TTL 只有 1 小時** | 太短。客戶端的離線重試可能超過 1 小時（8.2.2 建議 24 小時） |
 | 12 | **沒有驗證 key 的格式** | 客戶端可以送 10MB 的 key → Redis 記憶體壓力 |
 | 13 | **沒有 `traceId`** | 出問題時無法追查「首次執行發生了什麼」 |
@@ -2644,75 +2663,13 @@ public ResponseEntity<OrderDetail> create(@Valid @RequestBody CreateOrderRequest
 ```
 
 ```java
-// ② Filter 處理全部（節錄 8.2.6 的關鍵部分）
-public class IdempotencyFilter extends OncePerRequestFilter {
-
-    @Override
-    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res,
-                                    FilterChain chain) throws ServletException, IOException {
-        if (!policy.applies(req)) { chain.doFilter(req, res); return; }
-
-        String key = req.getHeader("Idempotency-Key");
-
-        // ★ 修正 5：必填檢查
-        if (isBlank(key)) {
-            if (policy.isRequired(req)) {
-                writeProblem(res, IDEMPOTENCY_KEY_REQUIRED); return;
-            }
-            chain.doFilter(req, res); return;
-        }
-        // ★ 修正 12：格式驗證
-        if (!KEY_PATTERN.matcher(key).matches()) {
-            writeProblem(res, INVALID_IDEMPOTENCY_KEY); return;
-        }
-
-        var wrapped = new ContentCachingRequestWrapper(req);
-        String body = readBody(wrapped);
-        // ★ 修正 4：scope 含 consumer + method + path
-        String scope = currentConsumerId() + ":" + req.getMethod() + ":" + pathTemplate(req);
-        // ★ 修正 3：指紋（含正規化）
-        String fp = Fingerprint.of(req.getMethod(), req.getRequestURI(), currentConsumerId(), body);
-
-        // ★ 修正 1、2：原子取得 + IN_PROGRESS 狀態
-        var acq = store.tryAcquire(scope, key, fp, Duration.ofHours(24));   // ★ 修正 11：24h
-
-        switch (acq.outcome()) {
-            case ACQUIRED -> executeAndRecord(wrapped, res, chain, scope, key, fp);
-            case COMPLETED -> replay(res, acq.record());                    // ★ 修正 7、8、9
-            case IN_PROGRESS -> handleInProgress(res, scope, key, fp, acq, wrapped, chain);
-            case FINGERPRINT_MISMATCH -> writeProblem(res, IDEMPOTENCY_KEY_REUSED,
-                    Map.of("originalRequestAt", acq.record().createdAt(),
-                           "originalTraceId", acq.record().traceId()));      // ★ 修正 13
-        }
-    }
-
-    // ★ 修正 7、8、9、15：完整回放
-    private void replay(HttpServletResponse res, IdempotencyRecord rec) throws IOException {
-        res.setStatus(200);                                  // 8.2.7 的決定
-        res.setHeader("Idempotent-Replay", "true");
-        res.setHeader("Cache-Control", "no-store");
-        rec.responseHeaders().forEach(res::setHeader);        // Location、ETag、Content-Type
-        res.getOutputStream().write(rec.responseBody());
-        replayCounter.increment();                            // ★ 修正 16
-    }
-
-    // ★ 修正 10：依狀態碼決定是否記錄
-    private void executeAndRecord(...) throws ... {
-        var wrappedRes = new ContentCachingResponseWrapper(res);
-        boolean record = false;
-        try {
-            chain.doFilter(wrappedReq, wrappedRes);
-            record = isDeterministicOutcome(wrappedRes.getStatus());   // 2xx/4xx 記錄，5xx 不記錄
-        } finally {
-            if (record) store.complete(scope, key, wrappedRes.getStatus(),
-                                       captureHeaders(wrappedRes),
-                                       wrappedRes.getContentAsByteArray(),
-                                       MDC.get("traceId"));
-            else        store.release(scope, key);
-            wrappedRes.copyBodyToResponse();
-        }
-    }
-}
+// ② 使用 8.2.6 的完整 Filter、可重讀 wrapper 與 Security 註冊
+// 取得已驗證 consumer，回放前檢查資源權限；scope 來自已登記端點
+// 原子取得 ownerToken；完成／釋放／標記未知都以 ownerToken CAS
+// 201 回放可轉 200；409／422 等其餘狀態保留原碼
+// 5xx／逾時不代表未執行，保留 UNKNOWN，向持久化操作記錄及下游查證
+// 僅在業務層證明無副作用且舊執行者停止後，才能 releaseOwned
+// Redis 更新失敗也須 copyBodyToResponse；持久化操作記錄可重建快取
 ```
 
 ```sql
@@ -2724,9 +2681,10 @@ ALTER TABLE orders
 
 ```java
 // ★ 修正 18：Redis 掛掉的處理
-public Acquisition tryAcquire(String scope, String key, String fp, Duration ttl) {
+public Acquisition tryAcquire(String scope, String key, String fp) {
     try {
-        return redisStore.tryAcquire(scope, key, fp, ttl);
+        // adapter 先查持久化操作記錄，再原子協調 Redis；不是單純 GET／SET 快取
+        return durableAwareRedisStore.tryAcquire(scope, key, fp);
     } catch (RedisConnectionFailureException e) {
         idempotencyFallbackCounter.increment();
         log.error("冪等儲存不可用 scope={} key={}", scope, key, e);
@@ -3458,8 +3416,8 @@ public class RateLimitFilter extends OncePerRequestFilter { }
 ```
 TraceIdFilter      @Order(HIGHEST_PRECEDENCE)        ← 最先（要有 traceId）
 RateLimitFilter    @Order(HIGHEST_PRECEDENCE + 10)   ← 第二（盡早擋掉）
-IdempotencyFilter  @Order(HIGHEST_PRECEDENCE + 100)  ← 第三
-Security filters   ...
+Security chain：認證 → 端點授權 → consumer 限流 → 資源授權／IdempotencyFilter → MVC
+IdempotencyFilter 不以容器 @Order 註冊，見 8.2.6（避免認證前回放）
 ```
 
 **⚠️ 但這裡有個兩難**：限流要按 `consumer` 分維度，
@@ -3669,16 +3627,16 @@ app:
 
 - [ ] 我能完整定義冪等鍵的語意（相同 key + 相同內容 / 相同 key + 不同內容 / 不同 key）。
 - [ ] 我知道哪些端點必填冪等鍵，並能說出判準（「重複執行會不會出事」）。
-- [ ] 我能說出冪等記錄要存的九個欄位，特別是 `requestFingerprint` 與 `responseStatus`。
+- [ ] 我能說出冪等記錄的必要欄位，特別是 fingerprint、ownerToken、狀態與原始回應。
 - [ ] 我知道 Redis 與 MySQL 儲存的取捨，特別是「能否與業務交易同一個交易」。
-- [ ] 我能說出冪等鍵的三個競態條件，並知道解法一律是「原子的插入或取得」。
-- [ ] 我知道 `IN_PROGRESS` 必須有逾時接手機制，且接手要用 CAS（`AND created_at = ?`）。
+- [ ] 我能區分原子取得執行權、舊 owner 隔離與業務提交／記錄一致性，不能只靠 SET NX 解決全部競態。
+- [ ] 我知道逾時只能觸發查證，不能直接重做；ownerToken CAS 也不能取代副作用端的冪等／fencing。
 - [ ] 我知道「執行成功但記錄失敗」要靠業務表的 UNIQUE 約束當第二道防線。
 - [ ] 我知道請求指紋**必須**正規化 JSON（物件 key 排序、數值標準化），否則客戶端重試會被誤判。
 - [ ] 我知道陣列順序**不該**正規化（順序可能有語意），並要在文件明說。
-- [ ] 我知道 `5xx` / `408` / `429` **不能**記錄為冪等結果，否則暫時性錯誤會被永久回放。
-- [ ] 我知道 `ContentCachingRequestWrapper` 的三個坑（要主動讀完、大 body 佔記憶體、要傳 wrapper 給下游）。
-- [ ] 我能說出回放該回 `200` + `Idempotent-Replay` 的理由（避免客戶端重複計數事件）。
+- [ ] 我能區分確定完成、已確認無副作用、UNKNOWN；不以 5xx 判定可以刪除記錄重做。
+- [ ] 我知道 ContentCachingRequestWrapper 不重播 stream；同步 JSON 要使用有讀取上限的可重讀 wrapper。
+- [ ] 我知道只有 201 回放轉 200；202／4xx 等保留原碼，並帶 Idempotent-Replay。
 - [ ] 我知道客戶端的 key 必須持久化（`sessionStorage`），否則 F5 就失去保護。
 - [ ] 我知道冪等鍵要監控四個指標，特別是「指紋不符」任何非零值都值得查。
 - [ ] 我能區分快取的「新鮮度」與「驗證」兩種機制，並知道兩者該併用。

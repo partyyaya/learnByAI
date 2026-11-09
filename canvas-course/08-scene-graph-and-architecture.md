@@ -43,11 +43,12 @@ class Shape {
   }
   draw(ctx) {}                    // 子類實作:怎麼畫自己
   containsPoint(p) { return false; }  // 子類實作:命中測定(第 07 章)
-  getBounds() {}                  // 子類實作:回傳包圍盒(選取框、髒區用)
+  getBounds() {}                  // 子類實作:回傳世界座標的包圍盒 {x,y,w,h}(選取框、髒區用)
 }
 
 // ── 具體圖形 ──
 class RectShape extends Shape {
+  static type = 'rect';               // 型別標記(序列化用,見 8.8)
   constructor(props) { super({ w: 100, h: 60, fill: '#888', ...props }); }
   draw(ctx) {
     ctx.save();
@@ -61,9 +62,15 @@ class RectShape extends Shape {
     const local = rotatePoint(p.x - this.x, p.y - this.y, -this.rotation);
     return Math.abs(local.x) <= this.w/2 && Math.abs(local.y) <= this.h/2;
   }
+  getBounds() {                       // 旋轉後的 AABB:把半寬、半高投影到 x、y 軸(rotation=0 時就是 w×h)
+    const c = Math.abs(Math.cos(this.rotation)), s = Math.abs(Math.sin(this.rotation));
+    const hw = (this.w * c + this.h * s) / 2, hh = (this.w * s + this.h * c) / 2;
+    return { x: this.x - hw, y: this.y - hh, w: hw * 2, h: hh * 2 };
+  }
 }
 
 class CircleShape extends Shape {
+  static type = 'circle';
   constructor(props) { super({ r: 40, fill: '#888', ...props }); }
   draw(ctx) {
     ctx.save();
@@ -77,12 +84,13 @@ class CircleShape extends Shape {
     const dx = p.x - this.x, dy = p.y - this.y;
     return dx*dx + dy*dy <= this.r*this.r;
   }
+  getBounds() { return { x: this.x - this.r, y: this.y - this.r, w: this.r * 2, h: this.r * 2 }; }
 }
 ```
 
 ```js
-// ── 場景:就是一個物件陣列 ──
-const scene = [
+// ── 場景:就是一個物件陣列(用 let:8.8 載入存檔時會整個換掉) ──
+let scene = [
   new RectShape({ x: 100, y: 100, fill: '#e63946' }),
   new CircleShape({ x: 300, y: 150, fill: '#457b9d' }),
 ];
@@ -153,6 +161,34 @@ class Node {
 
 > **心智模型**:這就是 DOM 的「子元素座標相對父元素」、SVG 的 `<g>` 群組、遊戲引擎的「場景樹」——全部都是「**節點樹 + 相對變換,遞迴繪製,用 save/restore 隔離每層**」。第 03 章學的變換累積,在這裡開花結果:階層變換就是一路 `save → 套用本層變換 → 畫 → 遞迴子節點 → restore`。
 
+### 階層裡的命中:世界矩陣
+
+繪製時 ctx 幫你一層層累積變換;命中測定時沒有 ctx,得自己算出節點的**世界矩陣**(本地座標 → 世界座標)= **父的世界矩陣 × 自己的本地矩陣**,再用逆矩陣把滑鼠座標轉回本地(第 03 章 3.6)。在 `Node` 裡再加兩個方法:
+
+```js
+class Node {
+  // ...上面的 constructor / add / draw...
+  getWorldMatrix() {
+    const local = new DOMMatrix()            // 本地矩陣:跟 draw() 一樣 translate → rotate → scale
+      .translateSelf(this.x, this.y)
+      .rotateSelf(this.rotation * 180 / Math.PI)   // DOMMatrix 的 rotate 吃「度」
+      .scaleSelf(this.scale, this.scale);
+    return this.parent ? this.parent.getWorldMatrix().multiply(local) : local;   // 父 × 本地(反過來乘就錯)
+  }
+  hitTest(p) {                               // 命中順序 = 繪製順序反過來
+    for (let i = this.children.length - 1; i >= 0; i--) {   // 子節點畫在自己之上 → 先反向測子節點
+      const hit = this.children[i].hitTest(p);
+      if (hit) return hit;
+    }
+    const q = this.getWorldMatrix().inverse().transformPoint(new DOMPoint(p.x, p.y));   // 世界 → 本地
+    return this.containsLocal(q) ? this : null;   // containsLocal:子類用本地座標判斷,例如 |x| ≤ w/2
+  }
+  containsLocal(q) { return false; }
+}
+```
+
+節點一多,每次從根乘下來太浪費:實務上把世界矩陣**快取**起來,節點的變換一改,就遞迴把自己和所有子孫標成 dirty,下次用到才重算。有了快取,繪製也能改用 `ctx.setTransform(...)` 一次設好(記得先乘上 dpr),不必層層 save/restore;群組的包圍盒 = 子節點的四個角經世界矩陣轉換後取聯集。
+
 ---
 
 ## 8.5 z-order:誰蓋在誰上面
@@ -162,17 +198,19 @@ class Node {
 ```js
 function bringToFront(scene, shape) {
   const i = scene.indexOf(shape);
+  if (i < 0) return;        // 不在這個陣列裡:splice(-1, 1) 會誤刪最後一個元素
   scene.splice(i, 1);       // 從原位置移除
   scene.push(shape);        // 放到陣列尾端 = 最後畫 = 最上層
 }
 function sendToBack(scene, shape) {
   const i = scene.indexOf(shape);
+  if (i < 0) return;
   scene.splice(i, 1);
   scene.unshift(shape);     // 放到開頭 = 最先畫 = 最底層
 }
 ```
 
-> 命中測定要記得跟 z-order 一致:**畫由下往上(正向遍歷),命中由上往下(反向遍歷)**(第 07.5 章)。兩者用同一個 `scene` 陣列,順序天然對齊。
+> 命中測定要記得跟 z-order 一致:**畫由下往上(正向遍歷),命中由上往下(反向遍歷)**(第 07 章 7.5 節)。兩者用同一個 `scene` 陣列,順序天然對齊。在 8.4 的樹裡,z-order 只在同一層兄弟之間有意義:調整子節點的層級要操作 `shape.parent.children`。
 
 ---
 
@@ -187,27 +225,59 @@ function intersects(a, b) {
          a.y < b.y + b.h && a.y + a.h > b.y;
 }
 
-function renderDirty(ctx, scene, dirtyRect) {
+// 世界座標的髒區 → 螢幕座標(CSS 像素),外擴到「裝置像素」的整數格,再多留 1px 給抗鋸齒
+function snapToScreen(r, camera, dpr) {
+  const x0 = Math.floor((r.x - camera.x) * camera.zoom * dpr) - 1;
+  const y0 = Math.floor((r.y - camera.y) * camera.zoom * dpr) - 1;
+  const x1 = Math.ceil((r.x + r.w - camera.x) * camera.zoom * dpr) + 1;
+  const y1 = Math.ceil((r.y + r.h - camera.y) * camera.zoom * dpr) + 1;
+  return { x: x0 / dpr, y: y0 / dpr, w: (x1 - x0) / dpr, h: (y1 - y0) / dpr };
+}
+
+function renderDirty(ctx, scene, dirtyRect) {               // dirtyRect:世界座標
+  const s = snapToScreen(dirtyRect, camera, window.devicePixelRatio || 1);
+  const area = { x: s.x / camera.zoom + camera.x, y: s.y / camera.zoom + camera.y,
+                 w: s.w / camera.zoom, h: s.h / camera.zoom };   // 實際清掉的範圍,換回世界座標
   ctx.save();
-  // 只清除髒區域
-  ctx.clearRect(dirtyRect.x, dirtyRect.y, dirtyRect.w, dirtyRect.h);
+  ctx.clearRect(s.x, s.y, s.w, s.h);       // 只清除髒區域(此時 ctx 只有 dpr 縮放,單位是 CSS 像素)
   // 把裁切設成髒區域:之後的繪圖只會落在這塊(第 02 章 clip)
   ctx.beginPath();
-  ctx.rect(dirtyRect.x, dirtyRect.y, dirtyRect.w, dirtyRect.h);
+  ctx.rect(s.x, s.y, s.w, s.h);
   ctx.clip();
-  // 只重畫「包圍盒跟髒區域相交」的物件
+  applyCamera(ctx, camera);                // 跟 render() 一樣套相機,物件才畫在對的位置
+  // 只重畫「包圍盒跟清除範圍相交」的物件:用 area 而非 dirtyRect,外擴那圈裡的鄰居也被清掉了
   for (const shape of scene) {
-    if (intersects(shape.getBounds(), dirtyRect)) shape.draw(ctx);
+    if (intersects(shape.getBounds(), area)) shape.draw(ctx);
   }
   ctx.restore();
 }
 ```
 
+三個漏掉任何一個就會畫錯或留殘影的細節:
+
+- **對齊像素**:髒區邊緣落在小數座標時,`clearRect` 和 `clip` 都會做抗鋸齒,邊緣像素只被「擦掉一部分」,一幀幀累積成拖尾。所以要外擴到裝置像素的整數格,再多留 1px。
+- **換算相機**:`getBounds()` 是世界座標,清除和裁切卻發生在螢幕上,中間要套 8.2 的相機。
+- **包圍盒要包全**:旋轉過的矩形要用 8.2 `RectShape.getBounds()` 的投影公式——150×52、旋轉 0.3 rad 的矩形,真正的包圍盒是 158.7×94,直接回傳 w×h 會上下各漏掉約 21px。有描邊再外擴 `lineWidth / 2`,有陰影再外擴 `shadowBlur` 加偏移量(陰影以緩衝區像素計、不吃變換,見第 03 章 3.4 的總表;換回世界座標要除以 dpr × zoom)。
+
 當一個物件移動,髒區域 = 「**一塊同時把舊位置和新位置都框進去的矩形**」——因為你要把舊位置擦乾淨、又要在新位置畫上,兩塊都算「有變動」,所以取一個能把兩者都涵蓋的範圍。
 
-> 這裡假設每個 `Shape` 都實作了 `getBounds()`(回傳**世界座標的包圍盒** `{x,y,w,h}`)——8.2 的基底 `Shape` 只留了空的 `getBounds()`,實務上每種形狀要各自 override(矩形回傳自身範圍、圓形回傳 `{x-r, y-r, 2r, 2r}`)。第 11 章 capstone 有完整實作。
+但一幀裡有好幾塊髒區時(多個物件在動、物件瞬移),別全部取聯集:兩塊 40×40 的髒區分在畫面兩角,聯集面積是分開算的近 100 倍。常見做法是收集一份髒區清單,只合併「合併後不會多浪費太多面積」的:
 
-> **務實提醒**:髒矩形邏輯不好寫對(重疊、半透明、陰影都會讓「受影響區域」變大),容易出殘影 bug。**實務上,更常用、更簡單的優化是「分層 canvas」**(把靜態背景和動態前景拆成不同 canvas,只重畫動的那層)——這留到第 09 章。本節讓你理解原理即可:**重畫的面積越大、成本就越高,所以縮小每次重畫的面積,就是優化**。
+```js
+function addDirty(list, r) {               // 每幀把髒區一塊塊加進 list,繪製時逐塊 renderDirty
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i], x = Math.min(a.x, r.x), y = Math.min(a.y, r.y);
+    const u = { x, y, w: Math.max(a.x + a.w, r.x + r.w) - x, h: Math.max(a.y + a.h, r.y + r.h) - y };
+    if (u.w * u.h <= 1.5 * (a.w * a.h + r.w * r.h)) {   // 合併後不超過兩塊總和的 1.5 倍才合併
+      list.splice(i, 1);
+      return addDirty(list, u);            // 合併後變大了,可能又能跟別塊合併
+    }
+  }
+  list.push(r);   // 塊數太多(例如超過 8 塊)或總面積超過畫面一半時,乾脆整張重畫
+}
+```
+
+> **務實提醒**:髒矩形省下的主要是「**少畫幾個物件**」,不只是「面積變小」:`clip` 只省掉填像素的工作,凡是和髒區相交的物件,建路徑、下指令的固定開銷照付,而在 GPU 加速的 canvas 上這些固定開銷常比填像素還貴。物件一多,連「逐一檢查 `getBounds()`」都是 O(n),要配合第 07 章 7.7 的空間索引,用髒區去查有哪些物件。它不好寫對,所以**實務上更常用、更簡單的是「分層 canvas」**(把靜態背景和動態前景拆成不同 canvas,只重畫動的那層)——這留到第 09 章,兩者也能並用。
 
 ---
 
@@ -220,10 +290,10 @@ function renderDirty(ctx, scene, dirtyRect) {
 每次操作後,把整個場景**深拷貝**存進歷史堆疊。Undo 就是還原上一個快照。
 
 ```js
-// 先把場景轉成「純資料」,快照才能安全拷貝(這個函式 8.8 序列化會細講)
+// 先把場景轉成「純資料」:每次都產生全新的物件,本身就是深拷貝(這個函式 8.8 序列化會細講)
 function serialize(scene) {
   return scene.map(s => ({
-    type: s.constructor.name,   // 'RectShape' / 'CircleShape'
+    type: s.constructor.type,   // 'rect' / 'circle'(類別上的 static type,見 8.8)
     x: s.x, y: s.y, rotation: s.rotation,
     ...(s.w !== undefined ? { w: s.w, h: s.h } : { r: s.r }),
     fill: s.fill,
@@ -233,11 +303,11 @@ function serialize(scene) {
 class History {
   constructor() { this.past = []; this.future = []; }
   commit(scene) {
-    this.past.push(structuredClone(serialize(scene)));   // 存當前狀態的拷貝(先轉純資料,深拷貝才有效)
+    this.past.push(serialize(scene));                    // 存當前狀態的快照
     this.future = [];                                    // 新操作清空 redo
   }
   undo(applyState) {
-    if (this.past.length < 2) return;
+    if (this.past.length < 2) return;                    // past[0] 是初始狀態,守住不彈出
     this.future.push(this.past.pop());                   // 當前狀態移到 future
     applyState(this.past[this.past.length - 1]);         // 還原到上一個
   }
@@ -248,6 +318,10 @@ class History {
     applyState(state);
   }
 }
+
+const history = new History();
+history.commit(scene);                                   // 先存初始狀態,第一個操作才撤銷得掉
+function applyState(data) { scene = deserialize(data); render(); }   // 快照 → 重建實例(8.8)→ 重新投影
 ```
 
 - 優點:超好實作、絕對正確。
@@ -269,6 +343,12 @@ class MoveCommand {
 - 優點:記憶體省(只存操作的差異)、語意清晰、可做「合併連續操作」。
 - 缺點:每種操作要寫一個命令類別。
 
+實作命令模式有三個常踩的坑:
+
+- **拖曳只產生一個命令**:拖曳中直接改資料做即時預覽,放開時才推入**一個**帶總位移的 `MoveCommand`——推入時別再執行一次 `do()`,否則物件會移動兩次。
+- **記 id,不記實例**:命令和「目前選取」都該記物件的穩定 `id`,再從場景查實例。快照式還原會重建所有實例,舊參照全部失效(作業裡 undo 之後要清掉 `selected`,就是這個原因)。
+- **新命令清空 redo**:推入新命令時把 redo 堆疊清空,否則 redo 會跳回一條已經分岔的時間線。
+
 > **心智模型**:Undo/Redo 的本質是「**狀態的時間旅行**」——而時間旅行的前提是「狀態是資料、可被保存/還原」。這正是 8.3 資料/渲染分離帶來的紅利。小專案用快照、大專案用命令模式。第 11 章白板會實作一個。
 
 ---
@@ -280,7 +360,7 @@ class MoveCommand {
 ```js
 function serialize(scene) {
   return scene.map(s => ({
-    type: s.constructor.name,   // 'RectShape' / 'CircleShape'
+    type: s.constructor.type,   // 'rect' / 'circle'
     x: s.x, y: s.y, rotation: s.rotation,
     ...(s.w !== undefined ? { w: s.w, h: s.h } : { r: s.r }),
     fill: s.fill,
@@ -288,17 +368,21 @@ function serialize(scene) {
 }
 
 function deserialize(data) {
-  const registry = { RectShape, CircleShape };   // 型別名 → 類別
-  return data.map(d => new registry[d.type](d));
+  const registry = { rect: RectShape, circle: CircleShape };   // 型別標記 → 類別
+  return data.filter(d => registry[d.type])                   // 認不得的型別直接略過(舊檔、被改過的資料)
+             .map(d => new registry[d.type](d));
 }
 
 // 存檔
 localStorage.setItem('myCanvas', JSON.stringify(serialize(scene)));
-// 載入
-const scene = deserialize(JSON.parse(localStorage.getItem('myCanvas')));
+// 載入(沒存過檔時 getItem 回傳 null,要先擋掉)
+const raw = localStorage.getItem('myCanvas');
+if (raw) scene = deserialize(JSON.parse(raw));
 ```
 
 > ⚠️ **序列化要存「資料」,不要存「函式/類別實例」**。`JSON.stringify` 一個含方法的物件,方法會丟失。標準做法是存「純資料 + 型別標記」,載入時用一個「型別註冊表(registry)」重建實例。這也是為什麼資料和行為要分離。協作編輯(多人即時)傳的也是這份資料(或它的差異),不是像素。
+>
+> 型別標記要自己寫死(`static type = 'rect'`),**別用 `constructor.name`**:打包工具壓縮時(terser、esbuild 的預設)會把類別改名成 `a`、`b`,存出來的檔換一版 build 就載不回來。存檔外層也建議包一層版本號 `{ version: 1, shapes: [...] }`,日後格式改版才能遷移舊檔。
 
 ---
 
@@ -324,11 +408,11 @@ const scene = deserialize(JSON.parse(localStorage.getItem('myCanvas')));
 
 - **核心動作**:用物件陣列存圖形,每個物件會 `draw`/`containsPoint`/`getBounds`;render = 遍歷叫大家畫自己。你親手重建了 retained mode(就是 Konva/Fabric 的本質)。
 - **資料/渲染分離**:場景是純資料、唯一真相來源;畫面只是它的投影(同 React 哲學)。這個分離解鎖了後面全部能力。
-- **階層/群組**:節點樹 + 相對變換,遞迴繪製、`save/restore` 隔離每層;移動父節點,子節點自動跟動。
-- **z-order**:繪製順序即層級;命中反向、繪製正向,共用同一陣列。
-- **髒矩形**:重繪成本正比於面積;原理重要,但實務常用分層 canvas 取代(第 09 章)。
+- **階層/群組**:節點樹 + 相對變換,遞迴繪製、`save/restore` 隔離每層;移動父節點,子節點自動跟動。命中時用「父 × 本地」的世界矩陣,反轉回本地座標判斷。
+- **z-order**:繪製順序即層級;命中反向、繪製正向,共用同一陣列(樹裡是先子後己)。
+- **髒矩形**:省的主要是「少畫物件」;要對齊像素、換算相機、包圍盒包全、多塊髒區有節制地合併。實務常用分層 canvas,兩者可並用(第 09 章)。
 - **Undo/Redo**:狀態的時間旅行——快照(簡單)或命令模式(專業),兌現第 02 章伏筆。
-- **序列化**:存純資料 + 型別標記,用註冊表重建;存檔、載入、協作都靠它。
+- **序列化**:存純資料 + 自訂的型別標記(不靠 `constructor.name`),用註冊表重建;存檔、載入、協作都靠它。
 
 **下一章(09)**,場景圖建好了,但「複雜場景每幀全畫」會卡。我們進入**效能工程**:先學會用 DevTools 測量(別瞎猜),再上最實用的優化——**分層 canvas**、離屏快取、減少狀態切換、按需渲染,以及把繪圖搬到背景執行緒的 **OffscreenCanvas + Web Worker**。最後談「什麼時候撞到 Canvas 2D 的天花板,該上 GPU」。
 
@@ -384,11 +468,12 @@ const scene = deserialize(JSON.parse(localStorage.getItem('myCanvas')));
       containsPoint(p) { return false; }  // 子類實作:命中測定(第 07 章)
       getBounds() { return { x: this.x, y: this.y, w: 0, h: 0 }; }  // 子類實作:包圍盒(畫選取框用)
       toJSON() {                          // 序列化白名單:只存純資料 + 型別標記,不存方法(8.8)
-        return { type: this.constructor.name, x: this.x, y: this.y, fill: this.fill };
+        return { type: this.constructor.type, x: this.x, y: this.y, fill: this.fill };   // type:子類的 static type
       }
     }
 
     class RectShape extends Shape {
+      static type = 'rect';               // 型別標記寫死,不靠 constructor.name(壓縮後會被改名,8.8)
       constructor(props) { super({ w: 120, h: 70, ...props }); }
       draw(ctx) {
         ctx.fillStyle = this.fill;
@@ -402,6 +487,7 @@ const scene = deserialize(JSON.parse(localStorage.getItem('myCanvas')));
     }
 
     class CircleShape extends Shape {
+      static type = 'circle';
       constructor(props) { super({ r: 45, ...props }); }
       draw(ctx) {
         ctx.fillStyle = this.fill;
@@ -418,6 +504,7 @@ const scene = deserialize(JSON.parse(localStorage.getItem('myCanvas')));
     }
 
     class TextShape extends Shape {
+      static type = 'text';
       constructor(props) { super({ text: '你好 Canvas', size: 28, ...props }); }
       draw(ctx) {
         ctx.fillStyle = this.fill;
@@ -441,9 +528,11 @@ const scene = deserialize(JSON.parse(localStorage.getItem('myCanvas')));
     }
 
     // ---- 序列化(8.8):場景 → 純資料;載入時用型別註冊表重建實例 ----
-    const SHAPE_REGISTRY = { RectShape, CircleShape, TextShape };       // 型別名 → 類別
+    const SHAPE_REGISTRY = { rect: RectShape, circle: CircleShape, text: TextShape };   // 型別標記 → 類別
     function serialize(scene) { return scene.map(s => s.toJSON()); }    // 每次都回傳全新純資料,天然就是深拷貝
-    function deserialize(data) { return data.map(d => new SHAPE_REGISTRY[d.type](d)); }
+    function deserialize(data) {                                        // 認不得的型別直接略過(舊檔、被改過的資料)
+      return data.filter(d => SHAPE_REGISTRY[d.type]).map(d => new SHAPE_REGISTRY[d.type](d));
+    }
 
     // ---- 快照式 Undo/Redo(8.7 做法 A):歷史堆疊存整份場景的純資料快照 ----
     class History {

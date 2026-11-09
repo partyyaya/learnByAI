@@ -590,8 +590,12 @@ public AddressResponse update(String addressId, UpdateAddressRequest req) {
             .orElseThrow(() -> new ResourceNotFoundException("address", addressId));
 
     req.recipient().ifPresent(v -> {
-        if (v == null) throw new FieldValidationException("recipient", "收件人為必填");
+        if (v == null || v.isBlank()) throw new FieldValidationException("recipient", "收件人不可清空或空白");
         entity.setRecipient(v);
+    });
+    req.phone().ifPresent(v -> {
+        if (v == null || v.isBlank()) throw new FieldValidationException("phone", "電話不可清空或空白");
+        entity.setPhone(v);
     });
     req.line2().ifPresent(entity::setLine2);    // null 就是清空，合法
     req.note().ifPresent(entity::setNote);
@@ -1177,7 +1181,8 @@ Request 的欄位缺少 = 「不要動這個欄位」
 ```
 
 **這兩個方向的 `null` 語意不同，是最容易搞混的地方。**
-在 OpenAPI 裡要分別標註 request schema 和 response schema 的 `nullable`。
+OpenAPI 3.1 要分別定義 request／response 的 `type`（例如 `[string, "null"]`）與 `required`；
+`nullable: true` 是 3.0 的寫法，不會讓 3.1 的字串自動接受 null。
 
 ### 3.7.3 空字串的處理
 

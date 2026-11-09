@@ -206,6 +206,11 @@ $ du -sh extracted/*
 > ```
 > `layertools` 在 3.3 起已棄用。這是第 09 章遷移清單的一項。
 
+提取時請先將原始可執行 jar 固定命名為 `application.jar`；第 8.3 節會示範。
+`tools extract --layers` 的預設高效版型會產生參照外部依賴的應用程式 jar，合併各層後以
+`java -jar application.jar` 啟動。它不同於舊版 `layertools` 的散開 classpath 版型，
+不能直接混用 `java org.springframework.boot.loader.launch.JarLauncher`。
+
 ### 分層的意義：那 46 MB 只要上傳一次
 
 ```
@@ -329,7 +334,8 @@ RUN --mount=type=cache,target=/root/.m2 \
     ./mvnw clean package -DskipTests -B -q
 
 # ⑤ 提取分層
-RUN java -Djarmode=tools -jar target/*.jar extract --layers --destination extracted
+RUN cp target/*.jar application.jar && \
+    java -Djarmode=tools -jar application.jar extract --layers --destination extracted
 
 
 # ══════════════════════════════════════════════════════════
@@ -378,8 +384,8 @@ ENV JAVA_OPTS="\
 HEALTHCHECK --interval=15s --timeout=3s --start-period=45s --retries=3 \
   CMD curl -fsS http://localhost:8081/actuator/health/liveness || exit 1
 
-# ⑦ ★ 用 exec 形式 + JarLauncher，讓 java 成為 PID 1 並直接收到 SIGTERM ★
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
+# ⑦ ★ 用 exec 形式 + 提取出的 application.jar，讓 java 成為 PID 1 並直接收到 SIGTERM ★
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar application.jar \"$@\"", "--"]
 ```
 
 ### 逐點說明
@@ -488,7 +494,8 @@ ENV JAVA_OPTS="-XX:MaxRAMPercentage=70.0"
 
 有這個參數：
   發生 OOM → JVM 立刻退出 → 容器重啟 → 服務恢復
-  → 而且 K8s 會記錄 OOMKilled，你知道發生了什麼
+  → K8s 會記錄容器的非零退出碼；仍需從 JVM 日誌判斷 OOM
+  → `OOMKilled` 通常是核心／容器記憶體限制觸發的終止，不能和 JVM 主動退出混為一談
 ```
 
 > **「快速失敗」在分散式系統裡比「勉強活著」好**——
@@ -508,11 +515,11 @@ ENTRYPOINT java -jar /app.jar
 ENTRYPOINT ["java", "$JAVA_OPTS", "-jar", "/app.jar"]     # $JAVA_OPTS 不會被展開
 
 # ✅ 用 sh -c 但加 exec：exec 會「取代」sh 程序，讓 java 成為 PID 1
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar application.jar \"$@\"", "--"]
 
 # ✅ 或用 tini 當 init（處理殭屍程序 + 訊號轉發）
 # RUN apk add --no-cache tini
-# ENTRYPOINT ["/sbin/tini", "--", "sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
+# ENTRYPOINT ["/sbin/tini", "--", "sh", "-c", "exec java $JAVA_OPTS -jar application.jar \"$@\"", "--"]
 ```
 
 **驗證方式：**
@@ -521,13 +528,16 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.la
 $ docker run -d --name shop shop-service:1.4.2
 $ docker exec shop ps -ef
 PID   USER     TIME  COMMAND
-    1 spring    0:12 java -XX:MaxRAMPercentage=70.0 ... JarLauncher     ← ★ java 是 PID 1 ★
+    1 spring    0:12 java -XX:MaxRAMPercentage=70.0 ... -jar application.jar     ← ★ java 是 PID 1 ★
    45 spring    0:00 ps -ef
 
 # 如果看到這樣就是錯的：
 #     1 spring    0:00 sh -c java -jar /app.jar
 #     7 spring    0:12 java -jar /app.jar        ← java 不是 PID 1
 ```
+
+`"$@"` 與末尾的 `"--"` 會把 `docker run image --spring.profiles.active=...`／K8s `args`
+傳入應用程式；只寫 `sh -c "exec java ..."` 會遺失這些參數。`JAVA_OPTS` 則在 shell 展開後傳給 JVM。
 
 ### `.dockerignore`（不要漏）
 
@@ -711,7 +721,7 @@ $ ./mvnw spring-boot:build-image -DskipTests
                 <TZ>Asia/Taipei</TZ>
             </environment>
             <!-- ★ 可重現建置：固定時間戳 ★ -->
-            <creationTime>USE_CURRENT_TIMESTAMP</creationTime>
+            <creationTime>1970-01-01T00:00:00Z</creationTime>
         </container>
     </configuration>
 </plugin>
@@ -770,7 +780,7 @@ COPY --from=builder /build/extracted/application/             ./
 #    Boot 3.3+ 提供 spring.context.exit=onRefresh，啟動完成就退出
 RUN java -XX:ArchiveClassesAtExit=/app/application.jsa \
          -Dspring.context.exit=onRefresh \
-         org.springframework.boot.loader.launch.JarLauncher
+         -jar application.jar
 
 FROM eclipse-temurin:21-jre-alpine AS runtime
 # ... 使用者設定同前 ...
@@ -781,7 +791,7 @@ USER 10001:10001
 
 # ② 執行時使用 archive
 ENV JAVA_OPTS="-XX:SharedArchiveFile=/app/application.jsa -XX:MaxRAMPercentage=70.0"
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar application.jar \"$@\"", "--"]
 ```
 
 **效果**：啟動時間通常縮短 **20～40%**（例如 2.5 秒 → 1.6 秒）。
@@ -1158,7 +1168,7 @@ t=0    JVM 立刻停止 → 所有正在處理的請求「連線被切斷」
 
 ```yaml
 server:
-  shutdown: graceful                          # ★ 預設是 immediate ★
+  shutdown: graceful                          # Boot 3.4+ 已是預設；舊版需明確開啟
 
 spring:
   lifecycle:
@@ -1174,11 +1184,10 @@ spring:
         await-termination: true
         await-termination-period: 25s
 
-  datasource:
-    hikari:
-      # 關閉時等連線歸還（避免「交易還沒完成就關連線池」）
-      keepalive-time: 30000
 ```
+
+`spring.datasource.hikari.keepalive-time` 控制閒置連線的存活檢查，**不是關閉時等待交易完成的設定**。
+請靠 HTTP／背景任務的排空、等待時間及 Bean 資源依賴，讓工作在 DataSource 關閉前完成。
 
 **`server.shutdown: graceful` 做的事：**
 
@@ -1307,7 +1316,7 @@ public class LongRunningBatch {
 ### 第 2 層：容器（8.3 已講）
 
 ```dockerfile
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar application.jar \"$@\"", "--"]
 ```
 
 **驗證：**
@@ -1316,7 +1325,7 @@ ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.la
 $ docker run -d --name shop shop-service:1.4.2
 $ docker exec shop ps -ef | head -3
 PID   USER     COMMAND
-    1 spring    java -XX:MaxRAMPercentage=70.0 ... JarLauncher    ← ✅ java 是 PID 1
+    1 spring    java -XX:MaxRAMPercentage=70.0 ... -jar application.jar    ← ✅ java 是 PID 1
 
 $ time docker stop shop
 shop
@@ -1807,7 +1816,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              name: monitoring
+              kubernetes.io/metadata.name: monitoring
       ports:
         - port: 8081
 ```
@@ -2095,7 +2104,7 @@ SIGTERM 傳不到 JVM，優雅關閉完全失效。
 
 ### ⑦ 沒設 `server.shutdown: graceful`
 
-預設是 `immediate`，部署時掉請求。
+Boot 3.4+ 預設已是 `graceful`；舊版需明確開啟，仍要配置關閉時間與容器訊號。
 
 ### ⑧ 沒有 `preStop` hook
 
@@ -2270,7 +2279,8 @@ COPY src/ src/
 RUN --mount=type=cache,target=/root/.m2 ./mvnw clean package -DskipTests -B -q
 
 # 修正 5、7：提取分層，且不寫死版本號（用 *.jar）
-RUN java -Djarmode=tools -jar target/*.jar extract --layers --destination extracted
+RUN cp target/*.jar application.jar && \
+    java -Djarmode=tools -jar application.jar extract --layers --destination extracted
 
 # ══════════ 執行階段 ══════════
 # 修正 1、2：維護中的 JRE 映像，且 builder 階段不進最終映像
@@ -2309,7 +2319,7 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=45s --retries=3 \
   CMD curl -fsS http://localhost:8081/actuator/health/liveness || exit 1
 
 # 修正 9：exec 形式，讓 java 成為 PID 1
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar application.jar \"$@\"", "--"]
 ```
 
 **修正 4：`.dockerignore`**
@@ -2554,7 +2564,7 @@ management:
 
 ```dockerfile
 # 修正 1
-ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar application.jar \"$@\"", "--"]
 ```
 
 ```yaml
@@ -2887,7 +2897,7 @@ RUN ./mvnw clean package                # 會跑測試，讓建置變慢且無�
 - [ ] **我知道 `RestClient` / `RestTemplate` 不設逾時就是無限等待，這是最常見的單一事故原因。**
 - [ ] 我能用 `jstack` 認出「一大票執行緒卡在同一個 socket read」的畫面。
 - [ ] **我知道優雅關閉要三層都設對：Spring、容器、K8s。**
-- [ ] 我知道 `server.shutdown` 預設是 `immediate`。
+- [ ] 我知道 Boot 3.4+ 的 `server.shutdown` 預設是 `graceful`，舊版需明確開啟。
 - [ ] **我能解釋 `preStop: sleep 10` 為什麼必要（endpoints 更新與 SIGTERM 的競態）。**
 - [ ] 我知道 `terminationGracePeriodSeconds` 要大於 preStop + shutdown timeout。
 - [ ] 我知道長時間批次任務要主動檢查關閉訊號。

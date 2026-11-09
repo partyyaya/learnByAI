@@ -12,7 +12,7 @@ window.CH = {
   title: '繪圖基本指令與狀態機',
   md: '../02-drawing-commands-and-state-machine.md',
   W: 360, H: 240,
-  note: '<b>提示:</b>測「1px 線為什麼糊」的範例時,打開「像素格線」最明顯——整數座標的線騎在格線上會糊,<code>+0.5</code> 的線落在格子中央才銳利。',
+  note: '<b>提示:</b>「像素格線」是每 10px 一格的背景。「1px 線為什麼糊」範例把小畫布放大 10 倍,一個像素剛好一格:整數座標的線騎在兩格上(各 50% 灰),<code>+0.5</code> 的線剛好填滿一格。在「destination-out 橡皮擦」範例打開格線,可以看到擦出的洞是真的透明(透出背後的格子)。',
   presets: [
     { id: 'state', label: '2.1 狀態機:fillStyle 會殘留', code:
 `// 狀態機:設一次 fillStyle,之後每個 fillRect 都沿用它
@@ -75,6 +75,25 @@ ctx.lineTo(200, 40);
 ctx.lineTo(130, 160);
 ctx.closePath();   // 從終點自動連回起點,封成三角形(拿掉這行看看差別)
 ctx.stroke();` },
+    { id: 'fill-rule', label: '2.3 填色規則 nonzero vs evenodd', code:
+`// 同一條「外圈 + 內圈」路徑,換填色規則:左邊預設 nonzero(填滿),右邊 evenodd(挖出洞)
+const r = Math.min(70, W / 4 - 10);
+function donut(cx, cy) {
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);           // 外圈
+  ctx.moveTo(cx + r / 2, cy);                    // 移到內圈起點,開新的子路徑(避免和外圈連線)
+  ctx.arc(cx, cy, r / 2, 0, Math.PI * 2);       // 內圈,和外圈同方向
+}
+ctx.fillStyle = '#457b9d';
+donut(W / 4, H / 2);
+ctx.fill();                                      // nonzero:中心總和 = 2 ≠ 0 → 填滿
+donut(W * 3 / 4, H / 2);
+ctx.fill('evenodd');                             // evenodd:中心穿過 2 次(偶數)→ 挖洞
+ctx.fillStyle = '#334155';
+ctx.font = '13px sans-serif';
+ctx.textBaseline = 'top';
+ctx.fillText("fill()", W / 4 - 16, 8);
+ctx.fillText("fill('evenodd')", W * 3 / 4 - 46, 8);` },
     { id: 'fill-stroke', label: '2.4 fill vs stroke(先填後描)', code:
 `ctx.beginPath();
 ctx.arc(180, 120, 70, 0, Math.PI * 2);
@@ -97,16 +116,28 @@ ctx.setLineDash([]);        // 清掉!否則下面這條也會變虛線
 ctx.beginPath();
 ctx.moveTo(30, 140); ctx.lineTo(330, 140);
 ctx.stroke();               // 這條是實線` },
-    { id: 'crisp', label: '2.4 1px 線為什麼糊(開格線看)', code:
-`// 打開右上角「像素格線」,對比兩條線
-ctx.strokeStyle = '#000';
-ctx.lineWidth = 1;
+    { id: 'crisp', label: '2.4 1px 線為什麼糊(放大 10 倍 + 開格線看)', code:
+`// 放大鏡:先在 24x12 的小畫布畫兩條 1px 線,再放大 10 倍 → 一個像素 = 一格(打開「像素格線」對照)
+const off = document.createElement('canvas');
+off.width = 24; off.height = 12;
+const o = off.getContext('2d');
+o.strokeStyle = '#000';
+o.lineWidth = 1;
 
-// ❌ 糊:整數座標,線騎在格線上 → 平分到兩格
-ctx.beginPath(); ctx.moveTo(100, 30); ctx.lineTo(100, 210); ctx.stroke();
+// ❌ 糊:整數座標,線騎在格線上 → 平分到兩格(各 50% 灰)
+o.beginPath(); o.moveTo(6, 1); o.lineTo(6, 11); o.stroke();
 
-// ✅ 銳利:+0.5,線落在格子正中央
-ctx.beginPath(); ctx.moveTo(180.5, 30); ctx.lineTo(180.5, 210); ctx.stroke();` },
+// ✅ 銳利:+0.5,線落在格子正中央 → 剛好一格全黑
+o.beginPath(); o.moveTo(16.5, 1); o.lineTo(16.5, 11); o.stroke();
+
+ctx.imageSmoothingEnabled = false;    // 放大時不要內插,保留一格一格的像素(第 04 章)
+ctx.drawImage(off, 0, 0, 240, 120);   // drawImage(圖, x, y, 寬, 高):放大 10 倍,每個像素正好對齊 10px 格線
+
+ctx.fillStyle = '#334155';
+ctx.font = '13px sans-serif';
+ctx.textBaseline = 'top';
+ctx.fillText('左:x = 6 → 兩格各 50%(糊)', 4, 130);
+ctx.fillText('右:x = 16.5 → 剛好一格(銳利)', 4, 150);` },
     { id: 'shadow', label: '2.4 陰影 shadow*', code:
 `ctx.shadowColor = 'rgba(0,0,0,.35)';
 ctx.shadowBlur = 14;
@@ -161,15 +192,17 @@ ctx.restore();                 // 還原裁切區(否則後面全被裁在圓裡
   { color: '#457b9d', alpha: 0.6, dash: [8, 4] },
   { color: '#2a9d8f', alpha: 1,   dash: [2, 3] },
 ];
+const slot = W / items.length;               // 畫布寬平分成三格,每個圖示放在一格中央
+const r = Math.min(40, slot / 2 - 8);         // 半徑依格寬縮放,窄畫布也不會被切掉
 items.forEach((item, i) => {
-  ctx.save();                        // ① 每個圖示前存檔
-  ctx.translate(80 + i * 100, 120);  // 移到各自位置(第 03 章詳述)
+  ctx.save();                                 // ① 每個圖示前存檔
+  ctx.translate(slot * (i + 0.5), H / 2);     // 移到各自位置(第 03 章詳述)
   ctx.globalAlpha = item.alpha;
   ctx.strokeStyle = item.color;
   ctx.lineWidth = 4;
   ctx.setLineDash(item.dash);
-  ctx.beginPath();                   // ② 形狀前 beginPath
-  ctx.arc(0, 0, 40, 0, Math.PI * 2);
+  ctx.beginPath();                            // ② 形狀前 beginPath
+  ctx.arc(0, 0, r, 0, Math.PI * 2);           // 畫一個圓的輪廓(虛線、透明度取自上面的狀態)
   ctx.stroke();
   ctx.restore();                     // ③ 讀檔:alpha/dash/顏色全還原
 });` },

@@ -3127,6 +3127,15 @@ public class JsonStreaming {
 
 延續第 06 章的專案，加入 JSON 檔案持久化與 `Clock` 注入。
 
+先把 `CollectionsDemo.java`（第 05 章）與 `StreamStatsDemo.java`（第 06 章）移出
+`src/main/java/com/example/todo/`，作為歷史範例保留即可；後續用本節的 `App.java` 驗收。
+這兩支入口仍傳入 `LocalDateTime`，並使用舊的 `TodoStatistics(List<Todo>)` 建構子，
+不能在本章改為 `Instant`／明確 `ZoneId` 後原封不動繼續編譯。
+`TodoList.java` 則已在第 03 章被 Repository/Service 取代並移除。
+
+檔案版 Repository 對外回傳 Todo 複本。修改後必須呼叫 `save`；直接改查詢結果不會修改已提交的快取。
+寫入採「候選快照 → 成功存檔 → 發布快取」順序，存檔失敗保留上一個已提交狀態。
+
 ```
 demo/src/main/java/com/example/todo/
 ├── exception/ ...            （第 04 章）
@@ -3480,56 +3489,70 @@ import java.util.Objects;
 import java.util.Optional;
 
 /**
- * 檔案版的 Repository。
- * 策略：啟動時全部載入記憶體，每次變更後寫回檔案（write-through）。
- *
- * ⚠️ 這只適用於「小資料量的單機工具」。
- *    資料量大或多程序共用時，要用真正的資料庫（第 06～08 站）。
+ * 小資料量、單程序的檔案儲存庫。
+ * 私有快取擁有自己的 Todo 複本；候選快照成功寫檔後才取代快取。
  */
 public class JsonFileTodoRepository implements TodoRepository {
 
     private final TodoFileStore store;
     private final Map<Long, Todo> cache = new LinkedHashMap<>();
-    private long sequence = 0;
+    private long sequence;
 
     public JsonFileTodoRepository(TodoFileStore store) {
         this.store = Objects.requireNonNull(store, "store 不可為 null");
         reload();
     }
 
-    /** 從檔案載入到記憶體，並把 sequence 對齊到最大 id */
     public final void reload() {
-        cache.clear();
-        List<Todo> loaded = store.load();
-        for (Todo todo : loaded) {
-            cache.put(todo.id(), todo);
-            sequence = Math.max(sequence, todo.id());     // ✅ 避免重啟後 id 撞號
+        Map<Long, Todo> loaded = new LinkedHashMap<>();
+        long max = 0;
+        for (Todo todo : store.load()) {
+            loaded.put(todo.id(), copy(todo));
+            max = Math.max(max, todo.id());
         }
+        // load 失敗時不清除舊快取；reload 也不把已發出的序號倒退。
+        cache.clear();
+        cache.putAll(loaded);
+        sequence = Math.max(sequence, max);
     }
 
     @Override
     public Todo save(Todo todo) {
         Objects.requireNonNull(todo, "todo 不可為 null");
-        cache.put(todo.id(), todo);
-        flush();
-        return todo;
+        Map<Long, Todo> candidate = new LinkedHashMap<>(cache);
+        Todo snapshot = copy(todo);
+        candidate.put(snapshot.id(), snapshot);
+        persistAndPublish(candidate);
+        return copy(snapshot);
+    }
+
+    public void saveAll(List<Todo> todos) {
+        Objects.requireNonNull(todos, "todos 不可為 null");
+        if (todos.isEmpty()) return;
+        Map<Long, Todo> candidate = new LinkedHashMap<>(cache);
+        for (Todo todo : todos) {
+            candidate.put(todo.id(), copy(todo));
+        }
+        persistAndPublish(candidate);
     }
 
     @Override
     public Optional<Todo> findById(long id) {
-        return Optional.ofNullable(cache.get(id));
+        return Optional.ofNullable(cache.get(id)).map(JsonFileTodoRepository::copy);
     }
 
     @Override
     public List<Todo> findAll() {
-        return List.copyOf(cache.values());
+        return cache.values().stream().map(JsonFileTodoRepository::copy).toList();
     }
 
     @Override
     public boolean deleteById(long id) {
-        boolean removed = cache.remove(id) != null;
-        if (removed) flush();
-        return removed;
+        if (!cache.containsKey(id)) return false;
+        Map<Long, Todo> candidate = new LinkedHashMap<>(cache);
+        candidate.remove(id);
+        persistAndPublish(candidate);
+        return true;
     }
 
     @Override
@@ -3537,16 +3560,19 @@ public class JsonFileTodoRepository implements TodoRepository {
         return ++sequence;
     }
 
-    /** 批次寫入：一次存多筆時，只寫檔一次（避免 N 次 IO） */
-    public void saveAll(List<Todo> todos) {
-        for (Todo todo : todos) {
-            cache.put(todo.id(), todo);
-        }
-        flush();
+    /** 第 08 章的呼叫者必須持有寫鎖；失敗時不發布 candidate。 */
+    private void persistAndPublish(Map<Long, Todo> candidate) {
+        store.save(List.copyOf(candidate.values()));
+        cache.clear();
+        cache.putAll(candidate);
+        long max = candidate.keySet().stream().mapToLong(Long::longValue).max().orElse(0L);
+        sequence = Math.max(sequence, max);
     }
 
-    private void flush() {
-        store.save(List.copyOf(cache.values()));
+    /** 集合的淺拷貝不夠：Todo 在第 07～11 章仍是可變物件。 */
+    private static Todo copy(Todo todo) {
+        return new Todo(todo.id(), todo.title(), todo.priority(), todo.createdAt(),
+                todo.isDone(), todo.completedAt(), todo.tags());
     }
 }
 ```
@@ -4695,10 +4721,12 @@ public class Quiz {
 | 4 | **`LocalDateTime` + `ZoneId` 兩個欄位** | 關鍵在「未來」+「要跟著當地時區」。存成 `Instant` 的話，若該國在會議之前改了 DST 規則，會議就跑掉一小時（7.12 節第 ② 點）。這也是 Google Calendar 的做法 |
 | 5 | **`Instant`**（絕對過期點）或 **`Duration`**（TTL） | 存 `Instant expiresAt` 讓判斷簡單（`clock.instant().isAfter(expiresAt)`）。設定用 `Duration.ofMinutes(5)` 表達 TTL |
 | 6 | **`ChronoUnit.DAYS.between()`** | **不要用 `Period.getDays()`**（只是天的部分，不是總天數） |
-| 7 | **`Duration`** + `System.nanoTime()` | ⚠️ 量測耗時要用 `System.nanoTime()` 或 `Clock.tick`，**不要用 `Instant.now()` 相減**——系統時鐘可能被 NTP 校正而倒退，算出負的耗時。`nanoTime` 是單調遞增的 |
+| 7 | **`Duration`** + `System.nanoTime()` | ⚠️ 量測耗時要用 `System.nanoTime()` 的差值，**不要用 `Instant.now()` 相減**——系統時鐘可能被 NTP 校正而倒退，算出負的耗時。`nanoTime` 是單調遞增的 |
 | 8 | **`LocalDate`** | 純日期。發票日期是法律文件上的日期，不是時刻 |
 | 9 | **`DATETIME(6)` 存 UTC ↔ Java `Instant`** | 見 7.16 節。PostgreSQL 用 `timestamptz` 更好 |
 | 10 | **epoch 秒（`long`）** | JWT 規格（RFC 7519）明定 `exp` / `iat` / `nbf` 是 **NumericDate**，即 epoch 秒。Java 端用 `Instant.getEpochSecond()` / `Instant.ofEpochSecond()` 轉換。這是「規格說了算」的情況，不要自己改成 ISO 字串 |
+
+`Clock.tick` 只會把底層時鐘截斷到指定粒度，底層回撥時仍可能倒退，不能代替 `nanoTime`。
 
 **第 7 題值得單獨示範，因為它是常見錯誤：**
 
@@ -4709,7 +4737,7 @@ import java.time.Instant;
 public class MeasuringElapsedTime {
     public static void main(String[] args) throws InterruptedException {
 
-        // ❌ 用系統時鐘量耗時：NTP 校正、手動改時間、DST 都會影響
+        // ❌ 用系統時鐘量耗時：NTP 校正、手動改系統時間都會影響（DST 不改變 Instant 本身）
         Instant t1 = Instant.now();
         Thread.sleep(50);
         Instant t2 = Instant.now();

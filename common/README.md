@@ -51,6 +51,7 @@
 | 檔案 | 主題 |
 |------|------|
 | [mouse-erase-reveal.html](./mouse-erase-reveal.html) | 滑鼠擦除露圖效果 — Canvas 遮罩與滑鼠互動，可用瀏覽器開啟觀察 |
+| [cube/cube.md](./cube/cube.md) | CSS 3D 魔方設計教學 — 整數座標、朝向矩陣、函數式狀態管理與互動動畫；[開啟範例](./cube/cube.html) |
 
 ---
 

@@ -15,7 +15,7 @@ ctx.fillText('Hello Canvas', 100, 100);   // fillText(文字, x, y) → 在座�
 ctx.strokeText('Outline', 100, 150);      // 只描邊框的空心字
 ```
 
-文字也是**狀態機**的一員(第 02 章):`font`、`textAlign`、`textBaseline`、`fillStyle` 都是設定後持續生效的狀態。
+文字也是**狀態機**的一員(第 02 章):`font`、`textAlign`、`textBaseline`、`fillStyle` 都是設定後持續生效的狀態。預設值是 `font = '10px sans-serif'`、`textAlign = 'start'`、`textBaseline = 'alphabetic'`、`direction = 'inherit'`。
 
 ### `font` 屬性:就是 CSS 的 font 簡寫
 
@@ -26,13 +26,18 @@ ctx.font = 'bold italic 28px "Noto Sans TC", sans-serif';
 
 ⚠️ 兩個坑:
 
-1. **一定要寫單位**:`ctx.font = '24'` 無效,必須 `'24px ...'`。
-2. **網頁字型(@font-face)要先載入完**,否則 `fillText` 會用後備字型畫,等字型載入完也**不會自動重畫**(immediate mode!)。用 `document.fonts.ready` 或 `FontFace` API 等載入完再畫:
+1. **單位與字族都要寫**:`ctx.font = '24'`、`'bold 24px'`(缺字族)都無效——無效值會被**靜默忽略**,沿用前一個字型,不報錯。
+2. **網頁字型(@font-face)要先載入完**,否則 `fillText` 會用後備字型畫,等字型載入完也**不會自動重畫**(immediate mode!)。而 @font-face 是「用到才下載」,頁面還沒用到時 `document.fonts.ready` 會立刻 resolve、字型根本沒開始載,所以要**明確觸發並等待**:
 
 ```js
-await document.fonts.ready;   // 等所有字型就緒
-render();                     // 再畫,才會用到正確字型
+// document.fonts.load(字型, 要畫的文字) → 觸發下載,載完才 resolve
+await document.fonts.load('bold 28px "Noto Sans TC"', '要畫的所有文字');
+render();   // 再畫,才會用到正確字型
+// 之後陸續載到的字型(例如新文字落在別的子集)→ 重新排版、重畫
+document.fonts.addEventListener('loadingdone', () => { relayoutText(); render(); });
 ```
+
+第二個參數很重要:Google Fonts 的中文字型用 `unicode-range` 切成上百個子集,它預設只是一個空白,只會載到含空白的那份。自架字型可用 `FontFace`:`const f = new FontFace('Brand', 'url(/brand.woff2)'); document.fonts.add(f); await f.load();`。字型載入前 `measureText` 量的是後備字型,換行結果也要重算。
 
 ---
 
@@ -41,7 +46,7 @@ render();                     // 再畫,才會用到正確字型
 `fillText(text, x, y)` 的 `(x, y)` 是文字的「錨點」,但「錨點落在文字的哪裡」由這兩個狀態決定:
 
 ```js
-ctx.textAlign = 'center';      // 水平:left(預設) / center / right
+ctx.textAlign = 'center';      // 水平:start(預設,LTR 下 = left)/ end / left / center / right
 ctx.textBaseline = 'middle';   // 垂直:這個最會出錯,見下
 ```
 
@@ -58,17 +63,30 @@ y=0 ───── A的基線在這 ──── 字往「上」長,跑到畫�
 | `textBaseline` 值 | `y` 對應到 | 何時用 |
 |--------------------|-----------|--------|
 | `alphabetic`(預設) | 字母基線(字底偏上) | 跟隨排版習慣時 |
-| `top` | 文字頂端 | **想用 (x,y) 當左上角時最直覺** |
-| `middle` | 文字垂直中心 | 想垂直置中時 |
-| `bottom` | 文字底端 | 對齊底線 |
+| `top` | 字型 em 方框的頂(不是字的墨跡頂) | **想用 (x,y) 當左上角時最直覺** |
+| `middle` | em 方框的垂直中心 | 想垂直置中時 |
+| `bottom` | em 方框的底 | 對齊底線 |
+| `ideographic` | 中日韓方塊字的底線 | 純中文排版 |
 
-> **實用建議**:做 UI 標籤、置中文字時,設 `textBaseline = 'middle'` + `textAlign = 'center'`,然後 `(x,y)` 給「你想讓文字中心落在的點」,最直覺、最不會算錯。
+`top`/`middle`/`bottom` 對齊的是**字型的度量框**,不是字的墨跡:`top` 時字上方會留空白,各瀏覽器還差 1~2px。中英混排時,`alphabetic` 基線下的中文會比英文往下凸(方塊字的底線比字母基線低)。
+
+> **實用建議**:做 UI 標籤、置中文字時,設 `textBaseline = 'middle'` + `textAlign = 'center'`,然後 `(x,y)` 給「你想讓文字中心落在的點」,最省事。
 
 ```js
-// 在任意 (cx, cy) 完美置中一段文字
+// 在任意 (cx, cy) 大致置中一段文字
 ctx.textAlign = 'center';
 ctx.textBaseline = 'middle';
 ctx.fillText('置中', cx, cy);
+```
+
+中文大致是正的,但英文大寫、數字(按鈕、徽章最常見)常偏上或偏下。要依墨跡精確置中,用 4.3 量到的實際上下緣:
+
+```js
+ctx.textAlign = 'center';
+ctx.textBaseline = 'alphabetic';
+const m = ctx.measureText(text);
+// 墨跡在基線上方 ascent、下方 descent → 把基線往下推 (ascent − descent) / 2,墨跡中心就落在 cy
+ctx.fillText(text, cx, cy + (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2);
 ```
 
 ---
@@ -79,9 +97,18 @@ Canvas **不會幫你排版**——它不知道一段文字多寬、會不會超
 
 ```js
 const metrics = ctx.measureText('Hello');
-console.log(metrics.width);   // 這段文字的像素寬度
-// 進階:metrics.actualBoundingBoxAscent / Descent 可算精確高度
+console.log(metrics.width);   // 這段文字的「前進寬度」:排版時下一個字該從哪裡接
 ```
+
+`measureText` 回傳的 `TextMetrics` 有三組常用欄位,用途不同:
+
+| 欄位 | 量的是什麼 | 用在 |
+|------|-----------|------|
+| `width` | 前進寬度(斜體、外伸的筆畫可能超出) | 排版、換行 |
+| `actualBoundingBoxAscent/Descent/Left/Right` | **這串字**的墨跡框,內容不同就不同(`'ace'` 和 `'Ág'` 高度差很多) | 精準框選、視覺置中 |
+| `fontBoundingBoxAscent/Descent` | **字型**的固定上下界,跟內容無關 | 行高、等高的背景框 |
+
+上下方向的值都是相對「目前的 `textBaseline`」量的;而且 `measureText` 不受變換矩陣影響,回傳的是目前座標系的單位。
 
 ### 自己實作「自動換行」(immediate mode 的洞)
 
@@ -92,29 +119,31 @@ DOM 裡文字超出寬度會自動換行,**Canvas 完全不會**。你得自己:
  * 把 text 在 maxWidth 寬度內自動換行,逐行畫出。
  */
 function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
-  // 切成「可斷點單位」:CJK 逐字、英文單字保持整塊、其餘標點/空白各自成 token。
+  // 切成「可斷點單位」:漢字逐字、英文單字保持整塊、其餘標點/空白/emoji 各自成 token。
   // (中文沒有空格,不能像英文那樣用 split(' ');這裡用正則同時處理中英混排)
-  // 一-鿿:是一個字元範圍集合(character class):比對範圍 Unicode 碼位:一 = U+4E00,鿿 = U+9FFF 之間的任一個字
-  // 中文:每個字都能當斷點 → 逐字切([一-鿿])
-  // 英文:單字不該被拆開(hel 換行 lo 很醜)→ 整個單字當一個 token([A-Za-z0-9]+)
-  const tokens = text.match(/[一-鿿]|[A-Za-z0-9]+|\s|\S/g) || [];
+  // \p{Script=Han}:任一個漢字(含 𠮷 這類擴充區的字)→ 中文逐字可斷
+  // [\p{Script=Latin}\p{N}'’]+:拉丁字母(含 é)、數字、撇號連成一塊 → 英文單字不被拆開(hel 換行 lo 很醜)
+  // u 旗標不能省:沒有它,emoji 和擴充區漢字會被 \S 切成兩半,斷在中間就變亂碼
+  const tokens = text.match(/\p{Script=Han}|[\p{Script=Latin}\p{N}'’]+|\s|\S/gu) || [];
   let line = '';
 
   for (const tk of tokens) {
     const testLine = line + tk;
     if (ctx.measureText(testLine).width > maxWidth && line.trim() !== '') {
-      ctx.fillText(line, x, y);            // 這一行滿了,先畫出來
+      ctx.fillText(line.trimEnd(), x, y);  // 這一行滿了,先畫出來(去掉行尾空白,置中/靠右才不會偏)
       line = tk.trim() === '' ? '' : tk;   // 換行;行首不留空白
       y += lineHeight;                     // y 往下挪一行
     } else {
       line = testLine;
     }
   }
-  if (line) ctx.fillText(line, x, y);      // 畫最後一行
+  if (line) ctx.fillText(line.trimEnd(), x, y);   // 畫最後一行
 }
 ```
 
-> 上面的 CJK 偵測(`一-鿿`)是簡化版,涵蓋常用漢字;要完整支援(含全形標點、日韓、emoji 不被拆開)可改用 `Intl.Segmenter`(`new Intl.Segmenter('zh', { granularity: 'word' })`),它是瀏覽器內建的斷詞器,但較新(2023 起普及),用前先確認相容性。
+> 這個正則仍是簡化版:膚色、國旗這類多字元 emoji 還是會被拆,要完全不拆可先用 `Intl.Segmenter`(`granularity: 'grapheme'`)切字素;`'word'` 粒度則給詞邊界(Firefox 125 起,2024 年後主流瀏覽器都支援)。但兩者都**不管標點禁則**——`，` `。` `、` `」` 不該出現在行首,得自己加規則併到上一行。
+
+`wrapText` 每加一個 token 就重量整行,動畫裡每幀重跑很吃 CPU。實務上把結果依 `(text, font, maxWidth)` 快取,其一改變或字型載入完成(4.1)才重算——在 immediate mode 上補一層 retained 的第一個小例子(第 08 章)。
 
 > **心智模型**:Canvas 的文字是「畫上去的像素」,不是「會自己流動的文字盒」。**排版邏輯(換行、對齊、省略號…)全都是你的 JS 程式碼的責任**。這也是為什麼大型應用(如線上文件)寧可把文字交給 DOM,只把圖形交給 Canvas——排版這件事 DOM 做得太好了,沒必要重造。
 
@@ -150,8 +179,9 @@ ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
 
 ```js
 const FRAME = 64;            // 每格 64×64
-const col = frameIndex % 4;  // 第幾欄
-const row = (frameIndex / 4) | 0;
+const COLS = 3;              // 精靈圖一列有幾格(上圖是 3 格)
+const col = frameIndex % COLS;              // 第幾欄
+const row = Math.floor(frameIndex / COLS);  // 第幾列
 ctx.drawImage(
   spriteSheet,
   col * FRAME, row * FRAME, FRAME, FRAME,   // 來源:裁出這一格
@@ -165,14 +195,16 @@ ctx.drawImage(
 
 ## 4.5 致命坑:圖片要「載入完」才能畫(非同步)
 
-`new Image()` 的載入是**非同步**的。第 01 章除錯清單第 9 條就是它:你 `drawImage` 時圖片還沒下載好,結果什麼都沒畫出來,而且**不報錯**(immediate mode 忠實執行了一道「畫一張空圖」的命令)。
+`new Image()` 的載入是**非同步**的。第 01 章除錯清單第 9 條就是它:你 `drawImage` 時圖片還沒下載好,結果什麼都沒畫出來,而且**不報錯**(immediate mode 忠實執行了一道「畫一張空圖」的命令)。反倒是載入**失敗**(404、格式壞)的圖再拿去畫,會丟 `InvalidStateError`。
 
 ```js
 // ❌ 錯:圖片還沒載入就畫
 const img = new Image();
 img.src = 'cat.png';
 ctx.drawImage(img, 0, 0);   // 多半畫不出來,因為圖還在下載
+```
 
+```js
 // ✅ 對:等 onload
 const img = new Image();
 img.onload = () => ctx.drawImage(img, 0, 0);   // 載入完才畫
@@ -193,12 +225,13 @@ function loadImage(src) {
 }
 ```
 
-不過 `onload` 只保證「**下載完**」,解碼(把壓縮的 JPEG/PNG bytes 轉成記憶體點陣圖)常被延遲到第一次 `drawImage` 才做,可能造成首幀卡頓。**更好的做法是改用 `img.decode()`**——它保證下載 + 解碼都完成才 resolve,`drawImage` 不會卡頓。同樣包成回傳 Promise 的函式,並記得處理載入失敗時的 reject:
+不過 `onload` 只保證「**下載完**」,解碼(把壓縮的 JPEG/PNG bytes 轉成記憶體點陣圖)常被延遲到第一次 `drawImage` 才做,可能造成首幀卡頓。**更好的做法是改用 `img.decode()`**——下載 + 解碼都完成才 resolve,大幅降低首幀卡頓(但瀏覽器仍可能在記憶體吃緊時丟掉解碼結果;要確保一直是解碼好的點陣圖,用 4.6 的 `createImageBitmap`)。同樣包成回傳 Promise 的函式,並記得處理載入失敗時的 reject:
 
 ```js
-// 進階版:用 decode(),首次繪製不卡頓
+// 進階版:用 decode(),降低首次繪製的卡頓
 async function loadImage(src) {   // async 函式本身就回傳 Promise
   const img = new Image();
+  // 跨域圖片之後要 getImageData/toBlob 的話:img.crossOrigin = 'anonymous' 必須寫在設 src 之前(第 05 章 5.8)
   img.src = src;
   try {
     await img.decode();           // 下載 + 解碼都完成才往下走
@@ -233,31 +266,35 @@ startRenderLoop();
 | `HTMLVideoElement` | **把影片當前幀畫上去**——影音處理(連結影音課) |
 | `ImageBitmap` | 已解碼的點陣圖,可傳給 Worker(第 09 章) |
 | `OffscreenCanvas` | 離屏畫布(第 09 章) |
+| `VideoFrame` | WebCodecs 解出的單一視訊幀(用完要 `close()`) |
 
 ### 把 `<video>` 逐幀畫到畫布(連結影音播放器課)
 
-這是 Canvas 跟你 [影音播放器課](../video-player-course/README.md) 的接點:在渲染迴圈裡把 video 當前畫面畫上去,就能做濾鏡、加浮水印、做彈幕底圖、擷取截圖:
+這是 Canvas 跟你 [影音播放器課](../video-player-course/README.md) 的接點:影片每出一幀就畫上去,就能做濾鏡、加浮水印、做彈幕底圖、擷取截圖:
 
 ```js
 const video = document.querySelector('video');
-function drawFrame() {
-  if (!video.paused && !video.ended) {
-    ctx.drawImage(video, 0, 0, W, H);   // 把影片「當下這一幀」畫到畫布
-    // 在這之後可以疊字幕、加濾鏡、做像素處理(第 05 章)...
-  }
-  requestAnimationFrame(drawFrame);
+// requestVideoFrameCallback(cb) → 影片「真的出現新的一幀」時才呼叫 cb
+function onVideoFrame() {
+  ctx.drawImage(video, 0, 0, W, H);   // 把影片「當下這一幀」畫到畫布
+  // 在這之後可以疊字幕、加濾鏡、做像素處理(第 05 章)...
+  video.requestVideoFrameCallback(onVideoFrame);   // 預約下一幀
 }
-video.addEventListener('play', () => requestAnimationFrame(drawFrame));
+video.requestVideoFrameCallback(onVideoFrame);
 ```
+
+不用 rAF 迴圈,是因為它跟著螢幕刷新(60/120Hz)跑,30fps 影片的同一幀會重畫好幾次,暫停時拖進度條還得另外補畫,每次 `play` 都重開迴圈更會越開越多條。`requestVideoFrameCallback` 只在有新影格時觸發:暫停不叫、seek 完會叫。
 
 > **心智模型**:`drawImage` 不在乎來源是「靜態圖、另一張畫布、還是影片的某一瞬間」,對它來說都是「一塊可取像素的矩形」。理解這點,你就能把 Canvas 當成「**所有視覺來源的混音台**」——影片 + 圖片 + 文字 + 自己畫的圖形,全疊在一起。`WebCodecs` 解出的視訊幀(影音課第 11 章)也是這樣畫的。
 
 ### `createImageBitmap`:給 Worker 用的解碼圖
 
 ```js
-const bitmap = await createImageBitmap(blob);   // 非同步解碼成點陣
+const bitmap = await createImageBitmap(blob);   // 非同步解碼成點陣(拿到時已解碼完成)
 ctx.drawImage(bitmap, 0, 0);
-// bitmap 可以用 postMessage「轉移(transfer)」給 Web Worker,不複製、零成本(第 09 章)
+// postMessage(資料, [轉移清單]) → 轉移給 Web Worker,不複製、零成本(第 09 章);轉移後這邊的 bitmap 就失效了
+worker.postMessage(bitmap, [bitmap]);
+// 自己留著的 bitmap 用完呼叫 bitmap.close(),立刻釋放記憶體
 ```
 
 ---
@@ -269,8 +306,14 @@ ctx.drawImage(bitmap, 0, 0);
 ```js
 ctx.imageSmoothingEnabled = false;   // 關掉平滑 → 放大時是清晰的方塊像素
 ctx.drawImage(pixelArt, 0, 0, 16, 16, 0, 0, 256, 256);   // drawImage(圖, 來源sx,sy,sw,sh, 目標dx,dy,dw,dh):取來源 16×16、放大貼成 256×256(放大 16 倍)
-// imageSmoothingQuality = 'high' 則可在需要平滑時提高品質
+// imageSmoothingQuality = 'low'(預設)/ 'medium' / 'high':需要平滑時的品質提示,各瀏覽器支援與效果不一
 ```
+
+常被誤會的三點:
+
+- 它只影響**圖像取樣**(`drawImage`、`createPattern` 的貼磚),**不會**關掉形狀與文字的反鋸齒。
+- 它是 context 狀態:會被 `save`/`restore` 保存,改 `canvas.width/height` 時**重設回 `true`**——像素遊戲 resize 後突然變糊多半是它(第 01 章)。
+- 倍率取整數,每個像素才一樣大。若被放大的是 `<canvas>` 元素本身(CSS 尺寸大於緩衝區),要用 CSS `image-rendering: pixelated`,這個屬性管不到。
 
 ---
 
@@ -279,9 +322,8 @@ ctx.drawImage(pixelArt, 0, 0, 16, 16, 0, 0, 256, 256);   // drawImage(圖, 來�
 把本章的東西串起來——圓形頭像(用第 02 章的 `clip`)+ 標題 + 自動換行的內文:
 
 ```js
-async function drawCard(ctx, x, y, avatarSrc, name, bio) {
-  const avatar = await loadImage(avatarSrc);   // 4.5 預載
-
+// 先預載(4.5),再呼叫:const avatar = await loadImage('avatar.png'); drawCard(ctx, 20, 20, avatar, …)
+function drawCard(ctx, x, y, avatar, name, bio) {   // 繪製函式保持同步:收到的是「已載入」的圖
   ctx.save();
   ctx.translate(x, y);                          // 第 03 章:把座標系挪到卡片左上
 
@@ -324,16 +366,18 @@ async function drawCard(ctx, x, y, avatarSrc, name, bio) {
 
 這段用上了:`clip` 圓形頭像(02)、`translate` 定位(03)、`drawImage`(04.4)、預載(04.5)、`measureText` 換行(04.3)、`textBaseline`(04.2)、`save`/`restore` 紀律(02)。
 
+`drawCard` 刻意寫成**同步**:若在裡面 `await loadImage`,之後的繪製會晚到別的幀才發生,落在別人設的變換、裁切之下,甚至在清畫面之後才冒出來。**非同步只留給「準備素材」,繪製一律同步**。另外內文沒限制行數,`bio` 太長會溢出卡片——「最多 N 行 + …」也得自己在 `wrapText` 裡數行(DOM 的 `line-clamp` 免費送)。
+
 ---
 
 ## 4.9 本章小結與下一步
 
-- **文字**:`fillText`/`strokeText`;`font` 要寫單位、網頁字型要等 `document.fonts.ready`;**`textBaseline` 預設 alphabetic 是位置錯亂的元兇**,UI 置中用 `middle` + `center`。
-- **自動換行要自己做**:Canvas 不排版,用 `measureText` 逐詞累加實作 word wrap——又一個 immediate mode 的洞。
+- **文字**:`fillText`/`strokeText`;`font` 要寫單位與字族、網頁字型要用 `document.fonts.load(字型, 文字)` 觸發並等待;**`textBaseline` 預設 alphabetic 是位置錯亂的元兇**,UI 置中用 `middle` + `center`,要精確就用墨跡框。
+- **自動換行要自己做**:Canvas 不排版,用 `measureText` 逐詞累加實作 word wrap——又一個 immediate mode 的洞;斷詞正則記得加 `u` 旗標。
 - **`drawImage` 三簽名**:原尺寸 / 縮放 / **九參數裁切**(精靈圖、影片幀的核心)。
-- **圖片非同步**:必須 `onload` 或 `await img.decode()` 後才畫,否則靜默畫不出。
-- **來源多樣**:image / canvas / **video** / ImageBitmap / OffscreenCanvas——Canvas 是所有視覺來源的混音台,接得上影音課與第 09 章。
-- **`imageSmoothingEnabled`**:像素藝術要關掉平滑。
+- **圖片非同步**:必須 `onload` 或 `await img.decode()` 後才畫,否則靜默畫不出;繪製函式本身保持同步。
+- **來源多樣**:image / canvas / **video** / ImageBitmap / OffscreenCanvas / VideoFrame——Canvas 是所有視覺來源的混音台,接得上影音課與第 09 章。
+- **`imageSmoothingEnabled`**:像素藝術要關掉平滑;只影響圖像,resize 後要重設。
 
 **下一章(05)**,我們進入第三種繪圖典範:**直接操作每一個像素**。你會學到 `getImageData` 拿到的 RGBA 陣列怎麼讀寫,做出灰階、反相、模糊、邊緣偵測這些濾鏡;也會理解一個第 00 章就埋下的真相——**`getImageData` 是 GPU→CPU 的回讀,很貴**,以及跨域圖片會「污染畫布」讓你讀不到像素(安全機制)。這章直接連到你的 [影像加密課](../image-encryption-course/07-canvas-rendering-and-hardening.md)。
 
@@ -399,19 +443,19 @@ async function drawCard(ctx, x, y, avatarSrc, name, bio) {
     // 跟 4.3 的 wrapText 同一套量測邏輯,但「只切行、先不畫」:
     // 因為底部文字要從最後一行往上排,得先知道總共幾行才能定位。
     function layoutLines(text, maxWidth) {
-      const tokens = text.match(/[一-鿿]|[A-Za-z0-9]+|\s|\S/g) || [];
+      const tokens = text.match(/\p{Script=Han}|[\p{Script=Latin}\p{N}'’]+|\s|\S/gu) || [];
       const lines = [];
       let line = '';
       for (const tk of tokens) {
         const testLine = line + tk;
         if (ctx.measureText(testLine).width > maxWidth && line.trim() !== '') {
-          lines.push(line);                    // 這一行滿了,收進結果
+          lines.push(line.trimEnd());          // 這一行滿了,收進結果(去掉行尾空白,置中才不會偏)
           line = tk.trim() === '' ? '' : tk;   // 換行,行首不留空白
         } else {
           line = testLine;
         }
       }
-      if (line) lines.push(line);
+      if (line) lines.push(line.trimEnd());
       return lines;
     }
 

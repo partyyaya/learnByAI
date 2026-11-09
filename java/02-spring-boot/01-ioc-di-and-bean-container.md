@@ -1453,7 +1453,6 @@ public class OrderService {
          │        ★ @PostConstruct 就是由 CommonAnnotationBeanPostProcessor 在這裡呼叫 ★
          │
          ├─ 3.5 初始化方法
-         │        ├─ @PostConstruct 標註的方法
          │        ├─ InitializingBean.afterPropertiesSet()
          │        └─ @Bean(initMethod = "...")
          │
@@ -1685,7 +1684,8 @@ public class TimingBeanPostProcessor implements BeanPostProcessor {
 |---|---|
 | `AutowiredAnnotationBeanPostProcessor` | 處理 `@Autowired` / `@Value` 的注入 |
 | `CommonAnnotationBeanPostProcessor` | 處理 `@PostConstruct` / `@PreDestroy` / `@Resource` |
-| `AnnotationAwareAspectJAutoProxyCreator` | **產生 AOP 代理**（`@Transactional`、`@Async`、`@Cacheable` 都靠它） |
+| 自動代理建立器（例如 `AnnotationAwareAspectJAutoProxyCreator`） | 為適用的切面與交易／快取 advisor 建立代理；實際實作依啟用的基礎設施而異 |
+| `AsyncAnnotationBeanPostProcessor` | 處理 `@Async`，可把非同步 advisor 加到既有代理或建立代理 |
 | `ConfigurationPropertiesBindingPostProcessor` | 綁定 `@ConfigurationProperties` |
 
 > **這一格就是整個 Spring 的「魔法來源」**：
@@ -1729,22 +1729,29 @@ BeanPostProcessors (for example: not eligible for auto-proxying)
 **這個警告的意思是：`someService` 上的 `@Transactional` / `@Async` 不會生效。**
 很多人看到這行警告直接忽略，然後花三天查「為什麼交易沒生效」。
 
-解法：用 `ObjectProvider` 延遲取得。
+`ObjectProvider` 只延後到 `getObject()` 才解析，**不保證呼叫時所有 Bean 都已就緒**。
+不要在通用的後處理 callback 裡無條件取得 `SomeService`，否則處理它自己時又會要求取得自己。
+若需求是「一般單例都初始化後再使用服務」，改用獨立的 `SmartInitializingSingleton`：
 
 ```java
+package com.example.shop.config;
+
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
+import org.springframework.stereotype.Component;
+
 @Component
-public class GoodPostProcessor implements BeanPostProcessor {
+public class ServiceAfterSingletonsReady implements SmartInitializingSingleton {
     private final ObjectProvider<SomeService> provider;
 
-    public GoodPostProcessor(ObjectProvider<SomeService> provider) {
+    public ServiceAfterSingletonsReady(ObjectProvider<SomeService> provider) {
         this.provider = provider;
     }
 
     @Override
-    public Object postProcessAfterInitialization(Object bean, String beanName) {
-        // 真的要用的時候才取
-        SomeService service = provider.getObject();
-        return bean;
+    public void afterSingletonsInstantiated() {
+        SomeService service = provider.getObject();  // 一般非 lazy 單例已完成初始化與代理
+        // 在這裡進行需要 service 的初始化後工作；不要放回 BeanPostProcessor callback。
     }
 }
 ```

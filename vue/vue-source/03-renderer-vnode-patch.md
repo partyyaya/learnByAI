@@ -218,7 +218,14 @@ hydration 的核心函式 `hydrateNode` 會「一邊沿著真實 DOM 節點走�
 
 ### 3.10.2 hydration mismatch
 
-若伺服器輸出的 DOM 與 client 端 vnode 對不起來（標籤不同、文字不同、少了節點），就是 **hydration mismatch**。開發模式下 Vue 會 `console.warn` 指出不一致的節點，並退回「以 client 端 vnode 為準」重建該處。
+若伺服器輸出的 DOM 與 client 端 vnode 對不起來（標籤不同、文字不同、少了節點），就是 **hydration mismatch**。開發模式下 Vue 會 `console.warn` 指出不一致的節點，並在第一次偵測到不一致時 `console.error` 一行 `Hydration completed but contains mismatches.`（整頁只印一次）。production 預設只檢查節點與文字層級的不一致（同樣會印這一行）；`class`、`style`、attribute 要開 `__VUE_PROD_HYDRATION_MISMATCH_DETAILS__` 才會檢查。
+
+修正方式依類型而不同：
+
+- 節點或 children 對不上：以 client 端 vnode 為準重建該處
+- 文字不同：改寫成 client 端的文字
+- `class`、`style` 不同：**不修正**（開發模式只警告），畫面保留伺服器輸出的值
+- 一般 attribute 不同：同樣不修正；只有帶 `PROPS` 旗標的動態綁定（如 `:title`，3.5.39 起）、事件與表單 `value` 會在水合時重新套用
 
 常見成因：SSR 與 client 用到了不確定值（`Date.now()`、`Math.random()`、只在瀏覽器存在的 API），導致兩邊產出的結構不一致。
 
@@ -245,7 +252,7 @@ hydration 的核心函式 `hydrateNode` 會「一邊沿著真實 DOM 節點走�
   })
   ```
 
-> 追源碼時：`createHydrationRenderer`、`hydrate()`、`hydrateNode()` 在 `runtime-core/src/hydration.ts`；lazy hydration 策略在 `runtime-core/src/hydrationStrategies.ts`。
+> 追源碼時：`createHydrationRenderer` 在 `runtime-core/src/renderer.ts`（它把 `createHydrationFunctions` 傳給 `baseCreateRenderer`）；`hydrate()`、`hydrateNode()` 由 `runtime-core/src/hydration.ts` 的 `createHydrationFunctions` 產生；lazy hydration 策略在 `runtime-core/src/hydrationStrategies.ts`。
 
 ---
 

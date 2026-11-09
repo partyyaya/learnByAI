@@ -701,8 +701,9 @@ public class FinalDemo {
 }
 ```
 
-`String`、`Integer`、`LocalDate`、`BigDecimal` 都是 `final` 類別——因為它們是不可變的，
-被繼承後子類別可能加上可變狀態，破壞不可變的保證。
+`String`、`Integer`、`LocalDate` 都是 `final` 類別，能避免子類別改變它們承諾的行為。
+`BigDecimal` 則是歷史上的例外：它按不可變方式設計，類別本身卻**沒有**宣告 `final`。
+不可變性與 `final class` 不是同一個概念。
 
 ### `protected` 的真正意義
 
@@ -1829,6 +1830,8 @@ public class SealedPreview {
 ## 3.15 練習專案：Todo CLI 加上介面
 
 第 02 章的 `TodoList` 把「資料管理」和「儲存」混在一起。現在抽出介面。
+原有職責由 Repository 與 Service 接手後，請刪除 `src/main/java/com/example/todo/model/TodoList.java`，
+並用本節版本取代 `App.java`；不要讓已被取代的類別繼續留在後續章節的編譯來源中。
 
 ```
 demo/src/main/java/com/example/todo/
@@ -1911,6 +1914,7 @@ public class InMemoryTodoRepository implements TodoRepository {
     public Todo save(Todo todo) {
         Objects.requireNonNull(todo, "todo 不可為 null");
         storage.put(todo.id(), todo);
+        sequence = Math.max(sequence, todo.id()); // 也支援直接匯入既有 id
         return todo;
     }
 

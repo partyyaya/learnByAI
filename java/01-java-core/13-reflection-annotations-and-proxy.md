@@ -96,7 +96,7 @@ when(repo.findById(1L)).thenReturn(Optional.of(todo));
 | JUnit 找到 `@Test` | 反射掃描 + 自訂註解 | 13.4、13.8、13.10 |
 | Jackson 寫入 `private final` | 反射 + `setAccessible` | 13.5、13.6 |
 | `-parameters` | 反射讀參數名 | 13.14 |
-| `mock()` 回傳的物件 | **動態代理** | 13.11 |
+| `mock()` 回傳的物件 | **執行期產生的測試替身**（Mockito 使用 Byte Buddy） | 13.11 |
 
 這三個機制（**反射、註解、動態代理**）就是這一章的全部內容。
 它們也是下一站 Spring 的全部基礎——
@@ -943,8 +943,9 @@ public final class MiniTestRunner {
 TodoRepository repo = mock(TodoRepository.class);     // 介面不能 new，那這是什麼？
 ```
 
-答案：**JVM 在執行期產生了一個實作該介面的類別，並建立它的實例。**
-這個機制叫**動態代理**，是 Java 標準函式庫的功能，不需要任何第三方套件。
+這個 mock 是執行期產生的替身；Mockito 預設由 Byte Buddy 與 inline mock maker 實作，
+不能把它一概當成 `java.lang.reflect.Proxy`。
+以下改用 JDK 的**動態代理**來示範「把介面呼叫交給攔截器」的概念：這一部分只需標準函式庫。
 
 ### 最小可跑的例子
 
@@ -982,7 +983,12 @@ public class LoggingProxyDemo {
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             // Object 的方法不要記錄，否則 debugger 一碰就洗版（見下方陷阱二）
             if (method.getDeclaringClass() == Object.class) {
-                return method.invoke(target, args);
+                return switch (method.getName()) {
+                    case "equals" -> proxy == args[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "toString" -> "LoggingProxy[" + target + "]";
+                    default -> throw new IllegalStateException("未處理的 Object 方法: " + method);
+                };
             }
 
             long start = System.nanoTime();
@@ -1065,7 +1071,8 @@ InMemoryTodoRepository impl = (InMemoryTodoRepository) proxy;
 把代理放進 `HashMap` 當 key 時 `hashCode` 走進了你的攔截器，
 用 debugger 一步一步走時 `toString` 每次都觸發完整的攔截邏輯。
 
-上面範例第一行的 `if (method.getDeclaringClass() == Object.class)` 就是在擋這個。
+上面範例先辨識 `Object` 方法，採代理物件本身的 identity 語意，並跳過業務攔截。
+不要直接把 `equals(proxy)` 轉送給 target，否則 `proxy.equals(proxy)` 可能回傳 false。
 （`getClass()`、`wait()`、`notify()` 是 `final` 的，不會被攔截。）
 
 **④ ★ 代理內部的 `this` 不是代理 ★**
@@ -1133,7 +1140,7 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Map;
 
 /**
@@ -1151,21 +1158,31 @@ public final class TimedProxy {
                 new Handler(target));
     }
 
-    private record Handler(Object target) implements InvocationHandler {
+    private static final class Handler implements InvocationHandler {
 
-        /** ★ 快取：不要每次呼叫都做一次反射查找（13.13） */
-        private static final Map<Method, Method> TARGET_METHODS = new HashMap<>();
+        private final Object target;
+        // 每個 Handler 只服務一個 target，避免同一介面的不同實作共用錯誤的 Method。
+        private final Map<Method, Method> targetMethods = new ConcurrentHashMap<>();
+
+        private Handler(Object target) {
+            this.target = java.util.Objects.requireNonNull(target);
+        }
 
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (method.getDeclaringClass() == Object.class) {
-                return method.invoke(target, args);
+                return switch (method.getName()) {
+                    case "equals" -> proxy == args[0];
+                    case "hashCode" -> System.identityHashCode(proxy);
+                    case "toString" -> "TimedProxy[" + target + "]";
+                    default -> throw new IllegalStateException("未處理的 Object 方法: " + method);
+                };
             }
 
             // ⚠️ 註解貼在「實作類別的方法」上，介面的 Method 讀不到 —— 13.8 的 @Inherited 陷阱
-            Method impl = TARGET_METHODS.computeIfAbsent(method, m -> {
+            Method impl = targetMethods.computeIfAbsent(method, m -> {
                 try {
-                    return target.getClass().getDeclaredMethod(m.getName(), m.getParameterTypes());
+                    return target.getClass().getMethod(m.getName(), m.getParameterTypes());
                 } catch (NoSuchMethodException e) {
                     return m;
                 }
@@ -1386,8 +1403,8 @@ Caused by: java.lang.IllegalStateException: 庫存不足    ← ★ 你要的東
 | `field.setAccessible(true)` + `set` | 欄位注入 `@Autowired`（02-spring-boot 1.7） | 填欄位 | 填 Entity 欄位 | 注入 `@TempDir` |
 | `Method.invoke` | 呼叫 `@PostConstruct`、事件監聽器 | getter 存取 | — | 執行測試方法 |
 | `field.getGenericType()` | `ResolvableType`、泛型注入 | `TypeReference` | 關聯的目標型別 | 參數化測試的型別轉換 |
-| `Proxy.newProxyInstance` | **AOP 代理**（02-spring-boot 4.4） | — | 延遲載入代理（08-jpa-mybatis） | Mockito 的 `mock()` |
-| `InvocationHandler` | `@Around` Advice（02-spring-boot 4.10） | — | — | Mockito 的 stub 邏輯 |
+| `Proxy.newProxyInstance` | **AOP 代理**（02-spring-boot 4.4） | — | 延遲載入代理（08-jpa-mybatis） | —（Mockito 預設使用 Byte Buddy） |
+| `InvocationHandler` | `@Around` Advice（02-spring-boot 4.10） | — | — | 與 stub 攔截概念相近，並非 Mockito 的預設實作 |
 | **`this.inner()` 繞過代理** | **自呼叫失效**（02-spring-boot 4.14 ★） | — | 延遲載入失效 | — |
 | 快取 `Method` 物件 | `ReflectionUtils` 的快取 | 序列化計畫快取 | Metamodel | — |
 
@@ -1664,7 +1681,12 @@ public final class RetryProxy {
         return (T) Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[]{iface},
                 (proxy, method, args) -> {
                     if (method.getDeclaringClass() == Object.class) {
-                        return method.invoke(target, args);
+                        return switch (method.getName()) {
+                            case "equals" -> proxy == args[0];
+                            case "hashCode" -> System.identityHashCode(proxy);
+                            case "toString" -> "RetryProxy[" + target + "]";
+                            default -> throw new IllegalStateException("未處理的 Object 方法: " + method);
+                        };
                     }
                     Method impl = target.getClass()
                             .getDeclaredMethod(method.getName(), method.getParameterTypes());

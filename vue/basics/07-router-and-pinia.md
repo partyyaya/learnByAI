@@ -204,7 +204,7 @@ router.beforeEach((to) => {
 })
 ```
 
-> 這是最小可用的登入保護骨架。注意：純前端的守衛只是「體驗上的攔截」，真正的安全要靠後端驗證——這正是 Nuxt 那類全端框架加上 server middleware 才能做到的（結尾會提）。
+> 這是最小可用的登入保護骨架。注意：純前端的守衛只是「體驗上的攔截」，真正的安全要靠後端 API 驗證權限（Nuxt 在伺服器端怎麼做，見[第 8 章結業](./08-testing-with-vitest.md)的對照表）。
 
 ## 8. 路由層級的 lazy 載入
 
@@ -438,7 +438,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import PostList from '../pages/PostList.vue'
 import { useAuthStore } from '../stores/auth'
 
-const routes = [
+// routes 與 authGuard 都匯出：第 8 章的測試會直接 import 它們，測的就是這份正式程式
+export const routes = [
   { path: '/', name: 'home', component: PostList },
   {
     path: '/posts/:id',
@@ -454,18 +455,20 @@ const routes = [
   },
 ]
 
+// 登入守衛：沒登入不准進 requiresAuth 的頁
+export function authGuard(to) {
+  const auth = useAuthStore()
+  if (to.meta.requiresAuth && !auth.isLoggedIn) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes,
 })
 
-// 登入守衛：沒登入不准進 requiresAuth 的頁
-router.beforeEach((to) => {
-  const auth = useAuthStore()
-  if (to.meta.requiresAuth && !auth.isLoggedIn) {
-    return { name: 'login', query: { redirect: to.fullPath } }
-  }
-})
+router.beforeEach(authGuard)
 ```
 
 ### `src/main.js`
@@ -491,9 +494,11 @@ const auth = useAuthStore()
 const { user, isLoggedIn } = storeToRefs(auth)
 const router = useRouter()
 
-function handleLogout() {
+async function handleLogout() {
+  // 先離開目前頁面再清登入狀態：反過來的話，停在 /admin 時
+  // Admin 頁會在導航完成前以 user = null 重繪，讀 auth.user.name 就噴錯
+  await router.push('/')
   auth.logout()
-  router.push('/')
 }
 </script>
 
@@ -645,7 +650,7 @@ const auth = useAuthStore()
 - 點標題 → 進 `/posts/:id`，`useFetch` 的 getter url 讓切換文章時自動重抓（不用手寫 watch）。
 - 未登入點「後台」或直開 `/admin` → 守衛把你踢到 `/login?redirect=/admin`。
 - 在登入頁輸入暱稱送出 → Pinia 存下登入者，導回 `/admin`，頁首即時顯示「哈囉，你的名字」（跨元件同步）。
-- 按登出 → Pinia 清掉，頁首變回「登入」，再點後台又被擋。
+- 按登出 → 回到首頁、Pinia 清掉，頁首變回「登入」，再點後台又被擋。
 
 這個骨架就是一個真實 SPA 的縮影：**路由分頁 + 資料抓取 + 全域狀態 + 存取控制**，全用本課教過的東西拼出來。
 

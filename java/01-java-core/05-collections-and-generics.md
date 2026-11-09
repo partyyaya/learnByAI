@@ -2277,6 +2277,7 @@ public class IndexedTodoRepository implements TodoRepository {
         }
 
         byId.put(todo.id(), todo);
+        sequence = Math.max(sequence, todo.id());
         addToIndexes(todo);
         return todo;
     }
@@ -3418,7 +3419,7 @@ public class ResultDemo {
 | 1 | **`LinkedHashSet`**（或 `LinkedHashMap` accessOrder=true） | 需要「不重複」+「有順序」。重複瀏覽時 `remove` 再 `add` 就會移到最後。若要自動淘汰第 21 個，用 5.6 節的 `LinkedHashMap(accessOrder=true)` + `removeEldestEntry`。**不要用 `List`**——`contains` 是 O(n)，且去重要自己寫 |
 | 2 | **`HashSet<String>`** | 只需要 `contains`，O(1)。10 萬筆的記憶體完全沒問題。**不要用 `List`**（O(n) 掃描，每秒上千次就是災難）。若要支援「IP 網段」查詢（`192.168.1.0/24`），改用 `TreeMap` 的 `floorEntry` 做區間查找 |
 | 3 | **`ConcurrentHashMap<String, LongAdder>`** | 多執行緒必須用併發集合。計數器用 `LongAdder` 比 `AtomicLong` 在高競爭下快得多（第 08 章）。用 `computeIfAbsent(path, k -> new LongAdder()).increment()`。**不要用 `HashMap` + `synchronized`**（整個 map 一把鎖） |
-| 4 | **`TreeMap<LocalDateTime, List<Meeting>>`** | 需要範圍查詢。用 `subMap(start, end)` 找出時段內的會議，O(log n + k)。搭配第 02 章練習 2 的 `DateRange.overlaps` 做精確判斷。**不要用 `List` + 全掃**（會議多了就慢） |
+| 4 | **`TreeMap<LocalDateTime, List<Meeting>>`** | 需要範圍查詢。先用 `headMap(end, false)` 找出開始時間早於查詢結束的候選，再篩選 `meeting.end().isAfter(start)`（半開區間）。`subMap(start, end)` 會漏掉「查詢開始前已開會、查詢期間仍未結束」的項目，例如 09:00–11:00 與 10:00–10:30。這種篩法最壞仍是 O(n)；要 O(log n + k) 需用區間樹等索引 |
 | 5 | **`PriorityQueue`**（單執行緒）／ **`PriorityBlockingQueue`**（多執行緒） | 「依優先度取出」正是它的定義。`Comparator.comparingInt(Notification::priority).thenComparingLong(Notification::createdAt)` 讓同優先度先進先出。**不要用 `List` + 每次排序** |
 | 6 | **`EnumSet`** | key 是 enum → 內部用 `long` 位元遮罩，比 `HashSet` 快數倍且幾乎不佔記憶體。20 種權限剛好放進一個 `long`。集合運算（`containsAll` / `removeAll`）也是位元運算，極快 |
 | 7 | **`Map.copyOf(...)`（不可變 Map）** | 不可變物件天生執行緒安全，不需要任何鎖（第 02 章 2.9 節）。讀取效能等同 `HashMap`。**不要用 `ConcurrentHashMap`**——它是為了「併發寫入」設計的，這裡完全不寫入，用不可變更好 |

@@ -14,6 +14,7 @@ cd blog-demo
 
 # 1) 安裝依賴
 npm install
+cp .env.example .env   # .env 不進版控，先從範本複製
 
 # 2) 建立 SQLite 資料表 + 產生 Prisma client
 npx prisma migrate dev --name init
@@ -50,7 +51,7 @@ npm run dev
 | 登入 / 註冊 | [app/pages/login.vue](./app/pages/login.vue) | 11 |
 | 後台發文 / 刪除（樂觀更新） | [app/pages/admin/index.vue](./app/pages/admin/index.vue) | 9、10、11 |
 | 路由守衛 | [app/middleware/auth.js](./app/middleware/auth.js) | 9 |
-| Nitro 文章 CRUD API | [server/api/posts.*](./server/api/) | 8、10 |
+| Nitro 文章 CRUD API（含草稿權限） | [server/api/posts.*](./server/api/) | 8、10、11 |
 | 認證 API（含伺服器端守衛） | [server/api/auth/](./server/api/auth/) | 11 |
 | Prisma 單例 | [server/utils/prisma.js](./server/utils/prisma.js) | 10 |
 | 資料模型 | [prisma/schema.prisma](./prisma/schema.prisma) | 10、11 |
@@ -65,7 +66,7 @@ npm run dev
 blog-demo/
 ├─ nuxt.config.ts          # 模組（nuxt-auth-utils）、CSS、head
 ├─ vitest.config.ts        # 測試設定（environment: 'nuxt'）
-├─ .env                    # DATABASE_URL、NUXT_SESSION_PASSWORD
+├─ .env.example            # 複製成 .env：DATABASE_URL、NUXT_SESSION_PASSWORD
 ├─ tests/
 │  ├─ unit/                # 純函式與元件測試（跑得快，天天跑）
 │  │  ├─ format.spec.js
@@ -77,11 +78,11 @@ blog-demo/
 ├─ server/                 # Nitro（只在伺服器執行）
 │  ├─ utils/prisma.js      # PrismaClient 單例
 │  └─ api/
-│     ├─ posts.get.js      # GET  /api/posts（?all=true 需登入）
+│     ├─ posts.get.js      # GET  /api/posts（?all=true 需登入：已發佈 + 自己的草稿）
 │     ├─ posts.post.js     # POST /api/posts（需登入）
 │     ├─ posts/[id].get.js # GET  /api/posts/:id
 │     ├─ posts/[id].delete.js # DELETE（需登入 + 只能刪自己的）
-│     └─ auth/             # register / login / logout
+│     └─ auth/             # register / login（登出用 useUserSession().clear()）
 └─ app/                    # 前端（Nuxt 4 srcDir）
    ├─ app.vue
    ├─ error.vue
@@ -101,8 +102,9 @@ blog-demo/
 - 密碼用 `hashPassword`（scrypt）雜湊後才進資料庫，**不存明文**。
 - 每支會改資料的 API 都用 `requireUserSession` 在**伺服器端**再驗一次；前端 `middleware/auth.js` 只負責體驗（導向登入頁）。
 - 刪除文章會檢查 `authorId === user.id`，**只能刪自己的**。
+- 草稿只有作者本人看得到：單篇 API 對其他人一律回 404，後台列表（`?all=true`）也只回「已發佈 + 自己的草稿」。
 
-> 試試看：登入後打開 DevTools，在 Console 直接 `await $fetch('/api/posts/1', { method: 'DELETE' })` 刪一篇不是你的文章——伺服器會回 **403**。這證明安全不是只靠前端藏按鈕。
+> 試試看：先跑過 `npm run db:seed`，登入後在首頁點開一篇示範文章、記下網址上的 id，再打開 DevTools，在 Console 直接 `await $fetch('/api/posts/<那個 id>', { method: 'DELETE' })`——伺服器會回 **403**。這證明安全不是只靠前端藏按鈕。
 
 ---
 
@@ -120,15 +122,16 @@ npm run test:e2e    # E2E：真的啟動 Nuxt，測 SSR 與 API
 |---|---|---|---|
 | 單元 | [tests/unit/format.spec.js](./tests/unit/format.spec.js) | `excerpt` / `formatDate` / `authorName` 三個純函式的正常值、邊界、空值 | 無 |
 | 單元 | [tests/unit/PostCard.spec.js](./tests/unit/PostCard.spec.js) | 用 `mountSuspended` 掛元件：標題、摘要截斷、草稿標籤、連結、無作者時掛站長 | 無 |
-| E2E | [tests/e2e/blog.spec.js](./tests/e2e/blog.spec.js) | 首頁 SSR 出得來、`/api/posts` 只回已發佈、未登入拿全部／發文會被擋、不存在的文章回 404 | 先 `npx prisma migrate dev --name init` 建好資料表 |
+| E2E | [tests/e2e/blog.spec.js](./tests/e2e/blog.spec.js) | 首頁 SSR 出得來、`/api/posts` 只回已發佈、未登入拿後台列表／發文會被擋（斷言 401）、不存在的文章回 404 | 先 `cp .env.example .env`、`npx prisma migrate dev --name init` 建好資料表 |
 
 幾個實作重點：
 
 - [vitest.config.ts](./vitest.config.ts) 用 `defineVitestConfig({ test: { environment: 'nuxt' } })`，測試裡才有自動匯入與 `~` 別名。
 - E2E 那支檔案開頭有 `// @vitest-environment node`——它要跑真的伺服器，不能用模擬的 Nuxt 瀏覽器環境。
 - E2E 用 `setup({ dev: true })` 起 dev 伺服器：啟動快，而且會自動讀 `.env`。
+- E2E 的錯誤斷言寫成 `rejects.toMatchObject({ statusCode: 401 })`，連狀態碼一起驗；只寫 `rejects.toThrow()` 的話，伺服器壞掉回 500 也會「通過」。
 - E2E 執行時終端機可能出現 `vite:define` 或 `WebSocket port 24678` 的警告，那是 Nuxt dev server 的雜訊，不影響測試結果。
-- 那三個「未登入會被擋」的 E2E 測試，測的正是下面〈安全重點〉講的事——**伺服器端真的擋得住**，不是只有前端藏按鈕。
+- 那兩個「未登入會被擋」的 E2E 測試，測的正是上面〈安全重點〉講的事——**伺服器端真的擋得住**，不是只有前端藏按鈕。
 
 ---
 
@@ -140,11 +143,13 @@ npm run build       # 打包（prisma generate + nuxt build）
 npm run preview     # 本機預覽 build 結果
 npm run test        # 單元測試
 npm run test:e2e    # E2E 測試
-npm run db:seed     # 重新塞示範文章
+npm run db:seed     # 重新塞示範文章（只換掉示範文章，你自己發的文章不受影響）
 npm run db:studio   # 用 GUI 看資料庫
 ```
 
 ## 部署提醒（第 16 章）
 
 - 有 SSR 與 API，走 `npm run build` + Node 伺服器（或 Vercel/Netlify/Cloudflare，Nitro 自動偵測 preset）。
-- 正式環境務必設強隨機的 `NUXT_SESSION_PASSWORD`，並把 SQLite 換成託管資料庫（PostgreSQL 等），部署時跑 `npx prisma migrate deploy`。
+- 正式環境務必設強隨機的 `NUXT_SESSION_PASSWORD`，並把 SQLite 換成託管資料庫（PostgreSQL 等），部署時跑 `npx prisma migrate deploy`。換資料庫種類時要刪掉 `prisma/migrations` 重新 `migrate dev`（migration 會記住原本的 provider）。
+- 正式站要走 HTTPS：session cookie 預設帶 `Secure`，用 http 開的站（localhost 除外）瀏覽器不會存它，登入會像沒反應。
+- `node .output/server/index.mjs` 不會讀 `.env`；本機驗證 build 結果用 `npm run preview`（會讀 `.env`），或先把環境變數 export 進來。

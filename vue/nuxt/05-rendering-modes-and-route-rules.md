@@ -82,7 +82,7 @@ export default defineNuxtConfig({
 | `prerender: true` | 打包時就產生靜態 HTML |
 | `ssr: false` | 這段路由走 SPA（client 才渲染） |
 | `swr: <秒>` / `swr: true` | 伺服器端快取（stale-while-revalidate，見下節） |
-| `isr: <秒>` / `isr: true` | 類似 SWR，設計給有 CDN/邊緣的平台（Vercel/Netlify…） |
+| `isr: <秒>` / `isr: true` | 類似 SWR，但只在支援的平台（Vercel/Netlify）有效；自架 Node 伺服器設了不會快取 |
 | `redirect: '/x'` | 轉址 |
 | `headers: {}` | 加 HTTP 標頭 |
 | `cors: true` | 允許跨來源（常用在 `/api/**`） |
@@ -119,14 +119,14 @@ Nuxt 會從進入點開始，**自動爬你頁面裡的 `<NuxtLink>`** 去發現
 export default defineNuxtConfig({
   nitro: {
     prerender: {
-      crawlLinks: true,           // 自動爬連結（預設就有）
+      crawlLinks: true,           // 自動爬連結（npm run generate 預設開啟；npm run build 要自己設）
       routes: ['/posts/1', '/posts/2', '/posts/3'], // 手動補上爬不到的
     },
   },
 })
 ```
 
-> 動態路由（`/posts/[id]`）不會自己知道有哪些 id，要嘛靠 `crawlLinks` 從列表頁的連結爬到，要嘛用 `routes` 明列。第 6 章抓到真實文章清單後，會再回來補這段。
+> 動態路由（`/posts/[id]`）不會自己知道有哪些 id，要嘛靠 `crawlLinks` 從列表頁的連結爬到，要嘛用 `routes` 明列。
 
 ---
 
@@ -146,7 +146,7 @@ routeRules: {
 2. 一小時內其他人來 → 直接給快取的 HTML（超快，不重算）。
 3. 過了一小時 → 先把**舊的**給你（stale），同時**背景重算**一份新的更新快取（revalidate）。下一個人就拿到新的。
 
-這樣既有 SSR 的動態內容，又有接近靜態的速度。`isr` 用法幾乎一樣，差別在它是設計給有 CDN/邊緣網路的部署平台。
+這樣既有 SSR 的動態內容，又有接近靜態的速度。`isr` 寫法幾乎一樣，但它靠平台的 CDN 實作，只在 Vercel、Netlify 這類支援的平台有效；部署到自己的 Node 伺服器（`npm run build` 的預設輸出）時，`isr` 不會快取任何東西，請用 `swr`。
 
 > 選擇口訣：**每次都要最新** → 純 SSR（不設快取）；**可以容忍幾分鐘的舊** → `swr`；**幾乎不變** → `prerender`。
 
@@ -194,6 +194,9 @@ routeRules: {
 
 ```ts
 export default defineNuxtConfig({
+  compatibilityDate: '2025-07-01', // 相容日期：保留專案原本那一行即可
+  devtools: { enabled: true },
+
   // 整站預設仍是 Universal(SSR)，只針對個別路由調整
   routeRules: {
     '/':          { prerender: true },   // 首頁：打包時靜態化
@@ -283,13 +286,13 @@ const renderedAt = useState('posts-rendered-at', () => new Date().toISOString())
 
 驗證方式：
 
-> ⚠️ **先看這段，不然你會以為設定沒生效**：`prerender`、`swr`、`isr` 這些**快取類**的 routeRules 在 `npm run dev` 下**不會生效**（dev 模式每次都重新渲染，方便你改檔案立刻看到結果）。要驗證它們，必須跑打包後的版本：
+> ⚠️ **先看這段，不然你會以為設定沒生效**：`prerender`、`swr` 這些**快取類**的 routeRules 在 `npm run dev` 下**不會生效**（dev 模式每次都重新渲染，方便你改檔案立刻看到結果）。要驗證它們，必須跑打包後的版本：
 >
 > ```bash
 > npm run build && npm run preview
 > ```
 >
-> `redirect` 與 `ssr: false` 則在 dev 就看得到。
+> `redirect` 與 `ssr: false` 則在 dev 就看得到。`isr` 只在 Vercel/Netlify 等平台有效，本機的 dev 與 preview 都看不出效果。
 
 | # | 驗證項目 | 在哪驗 |
 |---|---|---|

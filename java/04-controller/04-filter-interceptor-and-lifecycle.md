@@ -822,25 +822,24 @@ public class CachedBodyRequestWrapper extends HttpServletRequestWrapper {
     public CachedBodyRequestWrapper(HttpServletRequest request, int maxBytes)
             throws IOException {
         super(request);
+        if (maxBytes < 1) throw new IllegalArgumentException("maxBytes must be positive");
         var buffer = new java.io.ByteArrayOutputStream();
+        boolean exceeded = false;
         try (var in = request.getInputStream()) {
             byte[] chunk = new byte[8192];
-            int total = 0;
             int read;
-            while ((read = in.read(chunk)) != -1) {
-                if (total + read > maxBytes) {
-                    // ★ 只快取到上限，但「繼續把剩下的讀掉」是錯的（浪費）；
-                    //   這裡直接停止並標記 truncated，讓上層決定要不要拒絕
-                    buffer.write(chunk, 0, maxBytes - total);
-                    total = maxBytes;
+            while ((read = in.read(chunk, 0, Math.min(chunk.length,
+                    maxBytes - buffer.size() + 1))) != -1) {
+                int remaining = maxBytes - buffer.size();
+                buffer.write(chunk, 0, Math.min(read, remaining));
+                if (read > remaining) {
+                    exceeded = true; // 這次 read 已讀到超限 byte，不可再靠 EOF 猜測
                     break;
                 }
-                buffer.write(chunk, 0, read);
-                total += read;
             }
-            this.truncated = (total >= maxBytes && in.read() != -1);
         }
         this.body = buffer.toByteArray();
+        this.truncated = exceeded;
     }
 
     /** 快取的完整 body（不可修改）。 */
@@ -903,6 +902,7 @@ Spring MVC 的一般路徑是阻塞的，所以沒問題；
 ```java
 package example.shop.common.web;
 
+import example.shop.common.config.FilterProperties;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -932,15 +932,28 @@ public class CachedBodyFilter extends OncePerRequestFilter {
                    HttpMethod.PATCH.name(), HttpMethod.DELETE.name());
 
     private final int maxBytes;
+    private final ProblemWriter problems;
 
-    public CachedBodyFilter(FilterProperties properties) {
+    public CachedBodyFilter(FilterProperties properties, ProblemWriter problems) {
+        this.problems = problems;
         this.maxBytes = properties.cachedBodyMaxBytes();
     }
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain chain) throws ServletException, IOException {
-        chain.doFilter(new CachedBodyRequestWrapper(request, maxBytes), response);
+        var cached = org.springframework.web.util.WebUtils.getNativeRequest(
+                request, CachedBodyRequestWrapper.class);
+        if (cached == null) cached = new CachedBodyRequestWrapper(request, maxBytes);
+        if (cached.isTruncated()) {
+            problems.write(request, response,
+                    example.shop.common.error.ErrorCode.PAYLOAD_TOO_LARGE,
+                    "JSON request body exceeds the cache limit.", java.util.Map.of());
+            return; // 所有 JSON 都拒絕截短的 body，不只保護冪等端點
+        }
+        // 已有內層快取時保留外層 Security wrapper；第一次才傳新 wrapper。
+        chain.doFilter(org.springframework.web.util.WebUtils.getNativeRequest(request,
+                CachedBodyRequestWrapper.class) != null ? request : cached, response);
     }
 
     @Override
@@ -3304,7 +3317,7 @@ curl -s 'localhost:8080/orders?page=5000&size=20' | jq '.errors[0]'
 |---|---|
 | 1 | **原子性建立**：`INSERT` + UNIQUE 約束。第二個 INSERT 失敗 → 它知道自己是後到的 |
 | 2 | 回 **409 `PAYMENT_ALREADY_IN_PROGRESS`** + `statusCheckUrl` + `Retry-After`。前端輪詢 |
-| 3 | **租約（lease）**：紀錄帶 `expiresAt`；過期的 `IN_PROGRESS` 可以被接手 |
+| 3 | 執行期限到後標記 **UNKNOWN**，保留紀錄並查證；不因逾時重新執行 |
 
 ⚠️ **另外還有第四個問題：同一個 key，不同的 body。**
 
@@ -3368,7 +3381,7 @@ public @interface Idempotent {
     /** 結果保留多久（秒）。03-rest-api 8.2 的建議是 24 小時。 */
     long ttlSeconds() default 86_400;
 
-    /** 「執行中」的租約時間（秒）。超過就視為前一次已失敗，可以被接手（競態 3）。 */
+    /** 執行告警期限（秒）；逾時標記 UNKNOWN，不能自動接手重做。 */
     long leaseSeconds() default 60;
 }
 ```
@@ -3380,56 +3393,34 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 
-/**
- * 冪等紀錄的儲存抽象。
- *
- * <p>正式環境的實作應該用**資料庫**（有 UNIQUE 約束、有交易、重啟不遺失），
- * 不是 Redis —— 因為 Redis 的 SETNX 雖然原子，但「與業務交易一起提交」做不到。
- * （06-repository 與 07-mysql 會實作 JDBC 版本。）
- */
+/** 正式環境使用持久儲存；Web 層紀錄須與 Service 的業務操作紀錄共同保護副作用。 */
 public interface IdempotencyStore {
+    enum State { IN_PROGRESS, UNKNOWN, COMPLETED }
 
-    enum State { IN_PROGRESS, COMPLETED }
+    record Record(String key, String actorId, String fingerprint, String ownerToken,
+                  State state, Instant expiresAt, Instant leaseExpiresAt,
+                  Integer responseStatus, Map<String, String> responseHeaders,
+                  byte[] responseBody) {}
 
-    record Record(
-        String key,
-        String actorId,
-        String fingerprint,
-        State state,
-        Instant expiresAt,
-        Instant leaseExpiresAt,
-        Integer responseStatus,
-        Map<String, String> responseHeaders,
-        byte[] responseBody
-    ) {}
-
-    /** 建立結果。 */
     sealed interface ClaimResult {
-        /** 成功取得執行權 —— 這是第一個（或接手了過期租約的）請求。 */
-        record Acquired() implements ClaimResult {}
-        /** 已經有完成的結果 → 重播它。 */
+        record Acquired(String ownerToken) implements ClaimResult {}
         record Replay(Record record) implements ClaimResult {}
-        /** 前一個還在執行中 → 回 409 + 輪詢。 */
+        // UNKNOWN 也回 InProgress；leaseExpiresAt 只用於告警／重試提示，絕非重做許可。
         record InProgress(Instant leaseExpiresAt) implements ClaimResult {}
-        /** 同一個 key 但不同的請求內容 → 回 409。 */
         record FingerprintMismatch(String storedFingerprint) implements ClaimResult {}
     }
 
-    /**
-     * 原子性地嘗試取得執行權。
-     *
-     * <p>★ 實作必須是原子的（單一 SQL 或交易），否則競態 1 仍然存在。
-     */
+    /** 原子取得新操作；僅 COMPLETED 可在完成起算的 TTL 到期後清理。 */
     ClaimResult claim(String key, String actorId, String fingerprint,
                       long ttlSeconds, long leaseSeconds);
 
-    /** 記錄成功的結果，狀態改為 COMPLETED。 */
-    void complete(String key, String actorId, int status,
-                  Map<String, String> headers, byte[] body);
+    /** CAS ownerToken；成功後由此刻起算結果 TTL。過時 owner 不得覆寫新紀錄。 */
+    void completeOwned(String key, String actorId, String ownerToken, int status,
+                       Map<String, String> headers, byte[] body);
+    void markUnknownOwned(String key, String actorId, String ownerToken);
 
-    /** 釋放執行權（執行失敗且不該被重播時）。 */
-    void release(String key, String actorId);
-
+    /** 僅供已查證「沒有副作用」的安全恢復使用，Filter 不依 HTTP status 自動呼叫。 */
+    void releaseOwned(String key, String actorId, String ownerToken);
     Optional<Record> find(String key, String actorId);
 }
 ```
@@ -3444,11 +3435,13 @@ CREATE TABLE idempotency_record (
     actor_id        VARCHAR(64)  NOT NULL,
     fingerprint     CHAR(64)     NOT NULL,          -- SHA-256 hex
     state           VARCHAR(16)  NOT NULL,
-    expires_at      DATETIME(3)  NOT NULL,
+    owner_token     VARCHAR(36) NOT NULL,
+    result_ttl_seconds BIGINT    NOT NULL,
+    expires_at      DATETIME(3)  NULL, -- 只在完成後設定
     lease_expires_at DATETIME(3) NULL,
     response_status SMALLINT     NULL,
     response_headers JSON        NULL,
-    response_body   BLOB         NULL,
+    response_body   MEDIUMBLOB   NULL, -- JSON 結果最多 16777215 bytes，串流不走此表
     created_at      DATETIME(3)  NOT NULL,
     updated_at      DATETIME(3)  NOT NULL,
     -- ★★★ 這個約束是「原子性」的來源（競態 1 的解法）
@@ -3460,39 +3453,56 @@ CREATE TABLE idempotency_record (
 ```sql
 -- claim 的第一步：嘗試插入（原子）
 INSERT INTO idempotency_record
-    (idem_key, actor_id, fingerprint, state, expires_at, lease_expires_at,
-     created_at, updated_at)
-VALUES (?, ?, ?, 'IN_PROGRESS', ?, ?, NOW(3), NOW(3));
--- 成功 → ClaimResult.Acquired
+    (idem_key, actor_id, fingerprint, owner_token, result_ttl_seconds,
+     state, expires_at, lease_expires_at, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, 'IN_PROGRESS', NULL, ?, NOW(3), NOW(3));
+-- 成功 → ClaimResult.Acquired(ownerToken)
 -- 撞到 uk_idempotency_key → 走下面的查詢
 ```
 
 ```sql
 -- 插入失敗後：看看現有紀錄是什麼狀態
-SELECT fingerprint, state, expires_at, lease_expires_at,
+SELECT fingerprint, owner_token, state, expires_at, lease_expires_at,
        response_status, response_headers, response_body
 FROM idempotency_record
 WHERE idem_key = ? AND actor_id = ?
-FOR UPDATE;                                        -- ★ 鎖住，避免和「接手租約」競爭
+FOR UPDATE; -- 與後續判斷／更新同一交易；先比指紋，不同內容一律 409
 ```
 
 ```sql
--- 接手過期的租約（競態 3 的解法）
+-- 告警期限過後只標記結果不明；不得據此重新執行外部操作。
 UPDATE idempotency_record
-SET fingerprint = ?, lease_expires_at = ?, updated_at = NOW(3)
-WHERE idem_key = ? AND actor_id = ?
-  AND state = 'IN_PROGRESS'
-  AND lease_expires_at < NOW(3);                   -- ★ 只有過期的才能被接手
--- 影響列數 = 1 → 接手成功（Acquired）
--- 影響列數 = 0 → 別人搶先了（InProgress）
+SET state = 'UNKNOWN', updated_at = NOW(3)
+WHERE idem_key = ? AND actor_id = ? AND owner_token = ?
+  AND state = 'IN_PROGRESS' AND lease_expires_at < NOW(3);
+
+-- completeOwned：owner 與狀態都要 CAS；TTL 從完成時開始。
+UPDATE idempotency_record
+SET state = 'COMPLETED', response_status = ?, response_headers = ?, response_body = ?,
+    expires_at = TIMESTAMPADD(SECOND, result_ttl_seconds, NOW(3)), updated_at = NOW(3)
+WHERE idem_key = ? AND actor_id = ? AND owner_token = ?
+  AND state IN ('IN_PROGRESS', 'UNKNOWN');
+
+-- releaseOwned：只由查證已無副作用的恢復流程呼叫。
+DELETE FROM idempotency_record
+WHERE idem_key = ? AND actor_id = ? AND owner_token = ?
+  AND state IN ('IN_PROGRESS', 'UNKNOWN');
+
+-- 清理不得刪掉 IN_PROGRESS / UNKNOWN。
+DELETE FROM idempotency_record
+WHERE state = 'COMPLETED' AND expires_at < NOW(3);
 ```
+
+只有 COMPLETED 且結果 TTL 到期，才能在 claim 的交易內條件刪除並重試 INSERT。
+清理與完成要比對 owner；IN_PROGRESS／UNKNOWN 即使超過結果 TTL 也不能刪除。
+唯一鍵競爭失敗後，先處理已完成結果的到期，再檢查指紋與回放狀態。
 
 ### 4.9.4 `IdempotencyInterceptor`
 
 ```java
 package example.shop.common.web.idempotency;
 
-import example.shop.common.error.ErrorCode;
+import example.shop.common.error.*;
 import example.shop.common.web.*;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -3530,6 +3540,7 @@ public class IdempotencyInterceptor extends OncePerRequestInterceptor {
     /** Filter 用這些 attribute 決定要不要包裝 / 記錄。 */
     public static final String ATTR_STORE_KEY = "shop.idempotency.storeKey";
     public static final String ATTR_ACTOR_ID = "shop.idempotency.actorId";
+    public static final String ATTR_OWNER = "shop.idempotency.ownerToken";
 
     private static final int MAX_KEY_LENGTH = 64;
     private static final int MIN_KEY_LENGTH = 8;
@@ -3573,10 +3584,11 @@ public class IdempotencyInterceptor extends OncePerRequestInterceptor {
 
         return switch (result) {
 
-            // 第一個請求（或接手過期租約）→ 繼續執行，並請 Filter 記錄結果
-            case IdempotencyStore.ClaimResult.Acquired ignored -> {
+            // 只有新操作取得執行權；UNKNOWN 不會自動接手
+            case IdempotencyStore.ClaimResult.Acquired acquired -> {
                 request.setAttribute(ATTR_STORE_KEY, key);
                 request.setAttribute(ATTR_ACTOR_ID, actorId);
+                request.setAttribute(ATTR_OWNER, acquired.ownerToken());
                 yield true;
             }
 
@@ -3629,12 +3641,15 @@ public class IdempotencyInterceptor extends OncePerRequestInterceptor {
      * </ul>
      */
     private String fingerprintOf(HttpServletRequest request) {
-        byte[] body = (request instanceof CachedBodyRequestWrapper cached)
-                ? cached.cachedBody()
-                : new byte[0];
+        var cached = org.springframework.web.util.WebUtils.getNativeRequest(
+                request, CachedBodyRequestWrapper.class);
+        if (cached == null && request.getContentType() != null
+                && request.getContentType().toLowerCase(java.util.Locale.ROOT).contains("json"))
+            throw new IllegalStateException("CachedBodyFilter is required for JSON idempotency");
+        byte[] body = cached != null ? cached.cachedBody() : new byte[0];
 
         // ⚠️ body 被截斷時不能算指紋（會把兩個不同的請求視為相同）
-        if (request instanceof CachedBodyRequestWrapper cached && cached.isTruncated()) {
+        if (cached != null && cached.isTruncated()) {
             throw new IdempotencyBodyTooLargeException();
         }
 
@@ -3658,7 +3673,8 @@ public class IdempotencyInterceptor extends OncePerRequestInterceptor {
             log.warn("回應已 committed，無法重播冪等結果 key={}", record.key());
             return;
         }
-        response.reset();
+        response.resetBuffer(); // 保留外層 CORS、Vary、trace 與安全標頭
+        response.setContentLengthLong(record.responseBody() == null ? 0 : record.responseBody().length);
         response.setStatus(record.responseStatus());
         record.responseHeaders().forEach(response::setHeader);
         // ★ 明確標記這是重播 —— 對除錯與客戶端都有價值
@@ -3749,8 +3765,8 @@ public class IdempotencyFilter extends OncePerRequestFilter {
     private static final List<String> STORED_HEADERS = List.of(
             HttpHeaders.CONTENT_TYPE, HttpHeaders.LOCATION, HttpHeaders.ETAG);
 
-    /** 回應大小上限；超過就不存（重播的價值不值得那個記憶體）。 */
-    private static final int MAX_STORED_BODY = 64 * 1024;
+    /** MEDIUMBLOB 的容量；超過時保留 UNKNOWN，交由業務紀錄恢復，絕不釋放 key。 */
+    private static final int MAX_STORED_BODY = 16 * 1024 * 1024 - 1;
 
     private final IdempotencyStore store;
 
@@ -3763,14 +3779,20 @@ public class IdempotencyFilter extends OncePerRequestFilter {
                                     FilterChain chain) throws ServletException, IOException {
 
         var wrapper = new ContentCachingResponseWrapper(response);
+        boolean returnedNormally = false;
         try {
             chain.doFilter(request, wrapper);
+            returnedNormally = true;
         } finally {
             try {
-                storeIfNeeded(request, wrapper);
+                if (returnedNormally && !request.isAsyncStarted()) storeIfNeeded(request, wrapper);
+                else markUnknown(request);
             } catch (Exception e) {
-                // ★ 記錄失敗不能影響回應。代價是「重播會失效」，可接受
-                log.warn("冪等結果寫入失敗: {}", e.getMessage());
+                // 寫入失敗也不得釋放執行權；原紀錄至少仍為 IN_PROGRESS / UNKNOWN
+                log.warn("冪等結果寫入失敗，保留紀錄待查證", e);
+                try { markUnknown(request); } catch (Exception failure) {
+                    log.error("無法標記 UNKNOWN；不得清掉原紀錄", failure);
+                }
             }
             // ★★★ 一定要在 finally（4.4.6）
             wrapper.copyBodyToResponse();
@@ -3782,25 +3804,21 @@ public class IdempotencyFilter extends OncePerRequestFilter {
         // Interceptor 只在「取得執行權」時設這兩個 attribute
         Object key = request.getAttribute(IdempotencyInterceptor.ATTR_STORE_KEY);
         Object actorId = request.getAttribute(IdempotencyInterceptor.ATTR_ACTOR_ID);
-        if (key == null || actorId == null) return;
+        Object owner = request.getAttribute(IdempotencyInterceptor.ATTR_OWNER);
+        if (key == null || actorId == null || owner == null) return;
 
         int status = wrapper.getStatus();
 
-        // ★ 5xx 不存 —— 那代表失敗，客戶端「應該」能重試
-        if (status >= 500) {
-            store.release(key.toString(), actorId.toString());
-            return;
-        }
-        // ★ 429 也不存（限流是暫時的）
-        if (status == 429) {
-            store.release(key.toString(), actorId.toString());
+        // HTTP 失敗不代表操作沒有副作用；取得執行權後保守保留 UNKNOWN。
+        if (status >= 500 || status == 429) {
+            markUnknown(request);
             return;
         }
 
         byte[] body = wrapper.getContentAsByteArray();
         if (body.length > MAX_STORED_BODY) {
-            log.info("回應過大（{} bytes），不記錄冪等結果 key={}", body.length, key);
-            store.release(key.toString(), actorId.toString());
+            log.warn("結果超過 inline 儲存容量，保留 UNKNOWN key={}", key);
+            markUnknown(request);
             return;
         }
 
@@ -3810,7 +3828,16 @@ public class IdempotencyFilter extends OncePerRequestFilter {
             if (value != null) headers.put(name, value);
         }
 
-        store.complete(key.toString(), actorId.toString(), status, headers, body);
+        store.completeOwned(key.toString(), actorId.toString(), owner.toString(),
+                            status, headers, body);
+    }
+
+    private void markUnknown(HttpServletRequest request) {
+        Object key = request.getAttribute(IdempotencyInterceptor.ATTR_STORE_KEY);
+        Object actor = request.getAttribute(IdempotencyInterceptor.ATTR_ACTOR_ID);
+        Object owner = request.getAttribute(IdempotencyInterceptor.ATTR_OWNER);
+        if (key != null && actor != null && owner != null)
+            store.markUnknownOwned(key.toString(), actor.toString(), owner.toString());
     }
 
     @Override
@@ -3827,26 +3854,19 @@ public class IdempotencyFilter extends OncePerRequestFilter {
 }
 ```
 
-⚠️ **「4xx 要不要存」是一個需要決定的問題。**
+**結果保留規則**（只在成功 claim 後適用）：
 
-| 狀態碼 | 存嗎 | 理由 |
-|---|---|---|
-| 2xx | ✅ 存 | 成功的結果要能重播 |
-| 422（驗證失敗） | ✅ 存 | 同樣的請求會得到同樣的驗證錯誤，重播是正確的 |
-| 409（業務衝突） | ✅ 存 | 同上 |
-| 429（限流） | ❌ 不存 | 限流是**暫時**的，客戶端稍後重試應該要能成功 |
-| 5xx | ❌ 不存 | 失敗應該可以重試 |
+| 結果 | 儲存行為 |
+|---|---|
+| 已正常產生的 2xx / 4xx（429 除外） | `completeOwned`，回放原結果；TTL 從完成起算 |
+| 5xx、429、拋例外、非同步尚未完成 | `markUnknownOwned`，不因狀態碼釋放 key |
+| JSON 回應大於 64 KiB | 仍儲存，MEDIUMBLOB 不是 64 KiB 的 BLOB |
+| 超過 inline 儲存容量或儲存失敗 | 保留 UNKNOWN / IN_PROGRESS，查業務紀錄恢復，不能重新執行 |
 
-⚠️ **5xx 不存 + `release()` 的組合有一個風險**：
-如果 Service 已經有部分副作用（例如已經呼叫了金流商但寫資料庫失敗），
-釋放 key 會讓客戶端重試 → **重複扣款**。
-
-**這就是為什麼「冪等」不能只靠這一層。**
-真正的保護需要 Service 層的「先寫入 PENDING 紀錄再呼叫外部」
-（03 章練習 2 的 `PaymentOutcomeUnknownException` 就是這個模式）。
-
-> **這一層是「便宜的第一道防線」，不是唯一的防線。**
-> 03-rest-api 第 09 章「每一層都是別人的安全網」的同一個原則。
+Filter 只負責同步 JSON。長時間操作先持久建立工作，再回 202；串流不包裝。
+`UNKNOWN` 不靠租約或 TTL 清除。恢復流程須查業務操作與下游結果，
+確定沒有副作用後才能帶正確 owner 呼叫 `releaseOwned`。
+Service 仍須以同一個操作識別保護訂單／付款副作用；Web 快取不等於業務交易。
 
 ### 4.9.6 套用到 Controller
 
@@ -5096,7 +5116,16 @@ public interface AuditRepository {
 }
 ```
 
-#### 冪等相關的兩個例外
+#### 冪等相關的例外
+
+```java
+package example.shop.common.error;
+public class IdempotencyKeyRequiredException extends BusinessException {
+    public IdempotencyKeyRequiredException() {
+        super(ErrorCode.IDEMPOTENCY_KEY_REQUIRED, "The Idempotency-Key header is required.");
+    }
+}
+```
 
 ```java
 package example.shop.common.error;

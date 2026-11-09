@@ -13,7 +13,7 @@
 - 追蹤成功、輸入失敗、Guard 拒絕與業務拋錯時的執行順序。
 - 在獨立 Docker 環境跑完 HTTP 基準、真實資料庫與程序關閉測試。
 
-先完成 [12 章分層](12-service-repository-and-manual-di.md) 與 [13 章遷移基準](13-express-capstone-and-migration-baseline.md)。若還不熟悉裝飾器，可先閱讀 [TypeScript 課程](../typescript/README.md) 的相關章節。
+先完成 [12 章分層](12-service-repository-and-manual-di.md) 與 [13 章遷移基準](13-express-capstone-and-migration-baseline.md)。裝飾器與 metadata 的必要觀念會在本章 14.5 節透過 Controller 範例介紹。
 
 完整範例：[examples/14](examples/14/README.md)。本章從 examples/13 複製成獨立快照，不會從上一章的 src 匯入程式，也不共用其資料庫 volume。
 

@@ -40,20 +40,24 @@ ctx.fillRect(180, 0, 50, 50);   // 還是藍色
 | 類別 | 狀態屬性 | 預設值 | 本章哪節講 |
 |------|----------|--------|-----------|
 | 填色 | `fillStyle` | `'#000'` 黑 | 2.4 |
-| 描邊 | `strokeStyle`、`lineWidth`、`lineCap`、`lineJoin`、`miterLimit`、`lineDashOffset` | 黑 / 1 / butt / miter | 2.4 |
+| 描邊 | `strokeStyle`、`lineWidth`、`lineCap`、`lineJoin`、`miterLimit`、虛線(`setLineDash`、`lineDashOffset`) | 黑 / 1 / butt / miter / 10 / 無虛線 | 2.4 |
 | 透明/合成 | `globalAlpha`、`globalCompositeOperation` | 1 / source-over | 2.7 |
-| 文字 | `font`、`textAlign`、`textBaseline` | (見第 04 章) | 第 04 章 |
+| 文字 | `font`、`textAlign`、`textBaseline`、`direction`、`letterSpacing`… | (見第 04 章) | 第 04 章 |
+| 影像平滑 | `imageSmoothingEnabled`、`imageSmoothingQuality` | true / low | 第 04 章 |
+| 濾鏡 | `filter` | none | 第 05 章 |
 | 陰影 | `shadowColor`、`shadowBlur`、`shadowOffsetX/Y` | 透明 / 0 | 2.4 補充 |
 | 變換 | 變換矩陣(`translate`/`rotate`/`scale`…) | 單位矩陣 | 第 03 章 |
 | 裁切 | 目前的 clip 區域 | 全畫布 | 2.8 |
 
 ⚠️ 注意:**「當前路徑(current path)」不在這張表裡**——這很重要,2.6 講 `save/restore` 時會回來解釋為什麼。
 
+狀態屬性收到無效值時**不報錯,默默保留舊值**:打錯的色碼(`'#ggg'`)會沿用上一個顏色;`lineWidth = 0`、負數、`NaN` 也被忽略,所以它關不掉描邊——不想描邊就別呼叫 `stroke()`。
+
 ---
 
 ## 2.2 三種繪圖典範:Path、Rectangle 捷徑、Pixel
 
-Canvas 2D 畫東西其實只有三條路:
+Canvas 2D 畫「形狀」其實只有三條路(文字 `fillText` 與圖片 `drawImage` 是另外兩類,第 04 章講):
 
 1. **路徑(Path)**:先「規劃」一條路徑(直線、曲線、圓弧的組合),再決定要 `fill()`(填滿內部)還是 `stroke()`(描出輪廓)。**最通用、最重要**,本章主角。
 2. **矩形捷徑(Rectangle)**:`fillRect`/`strokeRect`/`clearRect`——因為矩形太常用,Canvas 給了「一步到位、不用建路徑」的捷徑。
@@ -81,8 +85,10 @@ ctx.stroke();                          // stroke():把目前路徑「描出輪�
 
 ctx.arc(150, 50, 20, 0, Math.PI * 2);  // 這個 arc 累加到舊路徑!
 ctx.stroke();                          // 把圓 A + 圓 B「一起」再描一次
-// 結果:圓 A 被描了兩次(變深/變模糊),還可能多出一條連接線
+// 結果:圓 A 被描了兩次(邊緣變深變粗),而且多出一條從 (70,50) 連到 (170,50) 的直線
 ```
+
+連接線來自 `arc()` 的規則:它會先從「目前點」拉直線到圓弧起點(圓 A 停在 (70,50),圓 B 從 (170,50) 開始)。所以想把很多圓放進**同一條**路徑一次 `fill()`(第 09 章批次繪圖),每個 `arc` 前要先 `moveTo(圓心x + 半徑, 圓心y)` 開新的子路徑。
 
 ```js
 // ✅ 正確:每個獨立形狀前都 beginPath
@@ -99,7 +105,7 @@ ctx.stroke();
 
 ### 直線類:`moveTo` / `lineTo`
 
-- `moveTo(x, y)`:把「畫筆」抬起來、移到 `(x,y)`,**不畫線**(像鉛筆懸空移動)。
+- `moveTo(x, y)`:把「畫筆」抬起來、移到 `(x,y)`,**不畫線**(像鉛筆懸空移動),並開始一段新的**子路徑(subpath)**。
 - `lineTo(x, y)`:從目前位置「拉一條線」到 `(x,y)`(鉛筆落下畫線)。
 
 ```js
@@ -113,7 +119,7 @@ ctx.stroke();          // 描邊(此時是開口的折線)
 ### 圓與圓弧:`arc`(最容易搞混角度)
 
 ```js
-ctx.arc(x, y, radius, startAngle, endAngle, counterClockwise);
+ctx.arc(x, y, radius, startAngle, endAngle, counterclockwise);
 ```
 
 三個要命的細節:
@@ -156,11 +162,11 @@ ctx.quadraticCurveTo(cpx, cpy, x, y);
 ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y);
 ```
 
-> 曲線屬於進階,做圓角矩形、流暢連線、簽名板平滑化時會用到。這裡先知道「Canvas 能畫貝茲曲線、控制點決定彎曲方向」即可,Capstone(第 11 章)做連接線時會回來深入。現代瀏覽器也有 `ctx.roundRect(x,y,w,h,r)` 直接畫圓角矩形(較新 API:Safari 16+、2023 起才全瀏覽器普及;舊環境要自己用 `arcTo`/`arc` 拼),很方便。
+> 曲線屬於進階,做圓角矩形、流暢連線、簽名板平滑化時會用到。這裡先知道「Canvas 能畫貝茲曲線、控制點決定彎曲方向」即可,Capstone(第 11 章)做連接線時會回來深入。現代瀏覽器也有 `ctx.roundRect(x, y, w, h, radii)` 把圓角矩形加進路徑(跟 `rect` 一樣要自己 `beginPath` + `fill`/`stroke`;`radii` 可給一個數字或 `[左上, 右上, 右下, 左下]`。較新 API:Safari 16+、2023 起才全瀏覽器普及;舊環境要自己用 `arcTo`/`arc` 拼),很方便。
 
 ### `closePath()` —— 它不是「結束路徑」
 
-最後一個常見誤會:`closePath()` **不是**「結束/落筆」的意思,它是「**從目前位置拉一條線回到路徑起點,把形狀封口**」。
+最後一個常見誤會:`closePath()` **不是**「結束/落筆」的意思,它是「**從目前位置拉一條線回到這段子路徑的起點(最近一次 `moveTo` 的位置),把形狀封口**」。
 
 ```js
 ctx.beginPath();
@@ -173,6 +179,26 @@ ctx.stroke();      // 現在是封閉三角形,而不是開口折線
 
 - `fill()` 時即使不 `closePath`,也會**自動視為封閉**來填(它會自動連回起點計算內部)。
 - `stroke()` 時就有差:不 `closePath` 是開口折線,有 `closePath` 才封口。
+- 自己 `lineTo` 回起點也不等於 `closePath`:那樣起點是兩條線的**端點**(套 `lineCap`),粗線會在角落留下缺口;`closePath` 才會用 `lineJoin` 把頭尾接成完整的角。
+
+### 填色規則:`nonzero` 與 `evenodd`
+
+路徑自己交疊、或一條路徑裡有「圈中圈」時,`fill()` 要靠**填色規則**決定哪裡算內部。想像從某一點往外拉一條射線:
+
+- `'nonzero'`(預設):路徑順時針穿過射線記 +1、逆時針記 −1,總和不為 0 就算內部。
+- `'evenodd'`:只數穿過幾次,奇數算內部、偶數算外部。
+
+```js
+// 甜甜圈:一條路徑裡放外圈 + 內圈
+ctx.beginPath();
+ctx.arc(100, 100, 60, 0, Math.PI * 2);   // 外圈
+ctx.moveTo(130, 100);                     // 移到內圈起點,開新的子路徑(避免和外圈連線)
+ctx.arc(100, 100, 30, 0, Math.PI * 2);   // 內圈,和外圈同方向
+ctx.fill('evenodd');                      // fill(規則):中心穿過 2 次 → 偶數 → 外部 → 挖出洞
+// 換成預設的 ctx.fill():兩圈同方向,中心總和 = 2 ≠ 0 → 整塊填滿,沒有洞
+```
+
+> 不改規則也行:把內圈**反方向**畫(`arc` 第 6 個參數傳 `true`),nonzero 下中心總和變 0。自交圖形差最多:一筆畫完的五角星,中央在 nonzero 下被填滿、evenodd 下是空的。SVG 的 `fill-rule` 是同一套規則;`clip()` 和第 07 章的 `isPointInPath()` 也接受這個參數。
 
 ---
 
@@ -238,7 +264,25 @@ ctx.beginPath(); ctx.moveTo(50, 10); ctx.lineTo(50, 100); ctx.stroke();
 ctx.beginPath(); ctx.moveTo(50.5, 10); ctx.lineTo(50.5, 100); ctx.stroke();
 ```
 
-> **心智模型**:像素是有「格子」的,但座標是「格線」(在格子之間)。1px 的線畫在格線上 → 騎跨兩格 → 糊;畫在格子中央(+0.5)→ 正好填滿一格 → 銳利。畫表格、格線、像素藝術時這個技巧救命。(這跟第 01 章的 HiDPI 糊是**不同的糊**,別搞混:那個是緩衝區不夠細,這個是線騎在格線上。)
+> **心智模型**:像素是有「格子」的,但座標是「格線」(在格子之間)。1px 的線畫在格線上 → 騎跨兩格 → 糊;畫在格子中央(+0.5)→ 正好填滿一格 → 銳利。畫表格、格線、像素藝術時這個技巧救命。(這跟第 01 章的 HiDPI 糊是**不同的糊**:那個是緩衝區不夠細,這個是線騎在格線上。但兩者會互相影響,見下面。)
+
+這個 +0.5 只在兩個前提下成立:
+
+- **奇數線寬的描邊**。填色(`fillRect`)用整數座標就落滿整格,+0.5 反而糊;偶數線寬(2px)的描邊也是整數座標才銳利。
+- **1 個座標單位 = 1 個裝置像素**。做了第 01 章的 `scale(dpr)` 後:DPR=2 時 1px 線本來就蓋滿 2 個裝置像素,加不加都銳利;DPR=3 要加;DPR=1.5 怎麼加都糊。通則是讓線的兩條邊緣落在**裝置像素**的格線上:
+
+```js
+// 在已 scale(dpr) 的畫布上畫一條約 1 CSS 像素寬的銳利垂直線
+function crispVLine(ctx, x, y0, y1, dpr) {
+  const devW = Math.max(1, Math.round(dpr));            // 線寬取整數個裝置像素
+  const devX = Math.round(x * dpr) + (devW % 2) / 2;    // 奇數寬放格子中央,偶數寬放格線上
+  ctx.lineWidth = devW / dpr;                           // 換回邏輯單位
+  ctx.beginPath();
+  ctx.moveTo(devX / dpr, y0);
+  ctx.lineTo(devX / dpr, y1);
+  ctx.stroke();
+}
+```
 
 ### 陰影(順帶一提)
 
@@ -247,8 +291,11 @@ ctx.shadowColor = 'rgba(0,0,0,.3)';
 ctx.shadowBlur = 8;
 ctx.shadowOffsetX = 2;
 ctx.shadowOffsetY = 2;
-// 之後畫的東西都會帶陰影,直到你把 shadowColor 設回透明或 shadowBlur 設 0
+// 之後畫的東西都會帶陰影,直到你把 shadowColor 設回 'transparent',
+// 或把 shadowBlur 和兩個 offset 都設回 0(只把 blur 設 0,會剩下一個硬邊陰影)
 ```
+
+> ⚠️ `shadowOffsetX/Y` 與 `shadowBlur` **不受變換影響**(單位是緩衝區像素),第 01 章的 `scale(dpr)` 縮放不到它們,所以 DPR=2 時陰影只有一半大;要跨螢幕一致就自己乘上 dpr。哪些東西吃變換、哪些不吃,見第 03 章 3.4 的總表。
 
 ---
 
@@ -269,10 +316,10 @@ ctx.fillRect(0, 0, 300, 200);
 |------|------|
 | `createLinearGradient(x0,y0,x1,y1)` | 線性漸層(沿一條方向) |
 | `createRadialGradient(x0,y0,r0,x1,y1,r1)` | 放射狀漸層(兩個圓之間) |
-| `createConicGradient(angle,x,y)` | 圓錐(角度)漸層,做色相環、儀表 |
+| `createConicGradient(angle,x,y)` | 圓錐(角度)漸層,做色相環、儀表(角度 0 在 3 點鐘、順時針;CSS `conic-gradient` 從 12 點鐘開始) |
 | `createPattern(image, repeat)` | 用一張圖當重複貼磚(背景紋理) |
 
-> **重點**:漸層物件**建立時就綁定了座標**(那條方向是相對畫布座標的)。這在第 03 章你開始用 `translate`/`rotate` 移動座標系後會有微妙影響——漸層方向會跟著變換一起轉,有時是你要的、有時不是。先記著。
+> **重點**:漸層座標**不是相對於你畫的形狀**(CSS 漸層是相對元素盒子),而是畫布座標系——用 `createLinearGradient(0, 0, 100, 0)` 填 `x = 200` 的矩形,只會看到終點色。而且它套用 `fill()`/`stroke()` **當下**的變換,不是建立時的:第 03 章用 `translate`/`rotate` 移動座標系後,漸層會跟著移動、旋轉;想讓漸層跟著形狀走,就先 `translate` 到形狀位置再畫。
 
 ---
 
@@ -386,7 +433,9 @@ ctx.fill();                                       // 在這個圓的範圍把畫
 ctx.globalCompositeOperation = 'source-over';     // 用完務必還原!
 ```
 
-> 同樣是狀態機的成員:**用完一定要還原**(或包在 `save`/`restore` 裡)。`destination-out`、`multiply` 這些是做圖層特效、橡皮擦、發光的利器,第 05 章影像處理、第 11 章白板的橡皮擦都會用到。
+> 同樣是狀態機的成員:**用完一定要還原**(或包在 `save`/`restore` 裡)。`destination-out`、`multiply` 這些是做圖層特效、橡皮擦、刮刮樂、發光的利器。
+>
+> ⚠️ `source-in`、`source-out`、`destination-in`、`destination-atop`、`copy` 會影響**形狀以外**:新形狀沒蓋到的地方全部變透明。用 `destination-in` 畫小方塊當遮罩,方塊外的內容會整片消失。
 
 ---
 
@@ -405,6 +454,8 @@ ctx.restore();                    // 還原裁切區(否則後面全被裁在那
 ```
 
 > **務必用 `save`/`restore` 包住 `clip`**。否則裁切區會一直生效,你會發現「後面畫的東西莫名其妙只出現在某個圓裡」——這又是一個超難 debug 的狀態污染,因為裁切是「看不見」的狀態。
+>
+> 為什麼非 `restore` 不可?`clip()` 只會跟現有裁切區**取交集**,沒有任何 API 能把它放大回去。裁切區洩漏時,連 `clearRect` 都只清得到裁切區內(第 01 章 1.6)。
 
 ---
 
@@ -426,11 +477,10 @@ items.forEach((item, i) => {
   // 設定這個圖示專屬的畫筆狀態
   ctx.globalAlpha = item.alpha;
   ctx.strokeStyle = item.color;
-  ctx.fillStyle = item.color;
   ctx.lineWidth = 4;
   ctx.setLineDash(item.dash);
 
-  // 畫一個圓 + 內部填色
+  // 畫一個圓的輪廓(虛線、透明度都取自上面設定的狀態)
   ctx.beginPath();                   // ② 形狀前 beginPath
   ctx.arc(0, 0, 40, 0, Math.PI * 2);
   ctx.stroke();
@@ -453,8 +503,8 @@ items.forEach((item, i) => {
 這一章我們把 Canvas 最反直覺的本質講透了:
 
 - **`ctx` 是狀態機**:你設的是「畫筆當前狀態」,不是「物件屬性」;狀態會持續生效到你改它,這是所有「顏色/虛線污染」bug 的根源。
-- **路徑生命週期**:`beginPath`(清空)→ 規劃(`moveTo`/`lineTo`/`arc`/曲線)→ 落筆(`fill`/`stroke`)。**每個獨立形狀前 `beginPath`**;`arc` 的角度是弧度、0 在右方、順時針。
-- **描邊細節**:`fill` vs `stroke`、線條樣式、描邊跨在路徑中央導致的 **1px 線模糊**與 +0.5 解法。
+- **路徑生命週期**:`beginPath`(清空)→ 規劃(`moveTo`/`lineTo`/`arc`/曲線)→ 落筆(`fill`/`stroke`)。**每個獨立形狀前 `beginPath`**;`arc` 的角度是弧度、0 在右方、順時針;圈中圈、自交路徑的內部由 `nonzero`/`evenodd` 決定。
+- **描邊細節**:`fill` vs `stroke`、線條樣式、描邊跨在路徑中央導致的 **1px 線模糊**與 +0.5 解法(只適用奇數線寬的描邊,真正要對齊的是裝置像素)。
 - **`fillStyle` 可以是漸層/圖樣**,不只顏色。
 - **`save`/`restore`** 是「狀態存檔/讀檔」堆疊——**每個繪圖函式 save 開頭、restore 結尾**是黃金法則;但它**不是 Undo**,不還原路徑、也不還原已畫的像素。
 - **合成與裁切**(`globalCompositeOperation`、`clip`)也是狀態,用完務必還原。

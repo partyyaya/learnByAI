@@ -8,15 +8,15 @@ export default defineEventHandler(async (event) => {
 
   // 基本驗證（實務可改用 zod + readValidatedBody，見第 11 章）
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw createError({ statusCode: 400, statusMessage: 'email 格式不正確' })
+    throw createError({ status: 400, message: 'email 格式不正確' })
   }
   if (password.length < 8) {
-    throw createError({ statusCode: 400, statusMessage: '密碼至少 8 個字元' })
+    throw createError({ status: 400, message: '密碼至少 8 個字元' })
   }
 
   const exists = await prisma.user.findUnique({ where: { email } })
   if (exists) {
-    throw createError({ statusCode: 409, statusMessage: 'email 已被註冊' })
+    throw createError({ status: 409, message: 'email 已被註冊' })
   }
 
   // hashPassword 由 nuxt-auth-utils 提供（scrypt），密碼雜湊後才存

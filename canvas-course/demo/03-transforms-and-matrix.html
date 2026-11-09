@@ -27,15 +27,15 @@ function drawBadge() {
 // A:不平移 → 落在畫面左上角 (0,0)
 drawBadge();
 
-// B:translate(160,90) → 原點搬到 (160,90),同一段畫圖就落在那
+// B:translate 到畫布中央附近 → 原點搬過去,同一段畫圖就落在那
 ctx.save();
-ctx.translate(160, 90);
+ctx.translate(W / 2 - 35, H / 2 - 20);
 drawBadge();
 ctx.restore();
 
 // C:再往右下 → 證明「動的是紙,手(畫圖座標)永遠不動」
 ctx.save();
-ctx.translate(250, 190);
+ctx.translate(W - 80, H - 50);
 drawBadge();
 ctx.restore();` },
 { id: 'rotate-scale', label: '3.2 rotate 與 scale:另外兩個基本變換', code:
@@ -44,33 +44,34 @@ ctx.font = '12px system-ui, sans-serif';
 
 // scale:座標系放大 2 倍,20x20 的方塊畫出來變 40x40
 ctx.save();
-ctx.translate(30, 40);
+ctx.translate(20, 30);
 ctx.scale(2, 2);
 ctx.fillStyle = '#457b9d';
 ctx.fillRect(0, 0, 20, 20);
 ctx.restore();
 ctx.fillStyle = '#457b9d';
-ctx.fillText('scale(2,2)', 30, 95);
+ctx.fillText('scale(2,2)', 20, 90);
 
-// rotate:座標系繞「目前原點」轉 30 度
+// rotate:座標系繞「目前原點」轉 30 度(正角度 = 順時針,因為 y 軸朝下)
 ctx.save();
-ctx.translate(170, 40);
+ctx.translate(W / 2, 30);
 ctx.rotate(Math.PI / 6);
 ctx.fillStyle = '#2a9d8f';
 ctx.fillRect(0, 0, 90, 28);
 ctx.restore();
 ctx.fillStyle = '#2a9d8f';
-ctx.fillText('rotate(30 度)', 150, 140);
+ctx.fillText('rotate(30 度)', W / 2 - 20, 118);
 
 // scale 可為負 → 鏡射:sx=-1 水平翻轉,方塊往「左」長出去
 ctx.save();
-ctx.translate(320, 180);
+ctx.translate(W - 20, H - 55);
 ctx.scale(-1, 1);
 ctx.fillStyle = '#e63946';
 ctx.fillRect(0, 0, 70, 45);
 ctx.restore();
 ctx.fillStyle = '#e63946';
-ctx.fillText('scale(-1,1) 鏡射', 200, 240);` },
+ctx.textAlign = 'right';
+ctx.fillText('scale(-1,1) 鏡射', W - 100, H - 25);` },
 { id: 'car-compose', label: '3.2 save/restore + 變換:可組合的小車(不污染)', code:
 `// 同一個 drawCar 擺三次,靠 save/restore 隔離變換,彼此互不污染
 function drawCar() {
@@ -92,31 +93,31 @@ function placeCar(x, y, angle) {
   ctx.restore();         // 還原,不污染下一輛
 }
 
-placeCar(40, 60, 0);
-placeCar(160, 100, Math.PI / 6);     // 轉 30 度,drawCar 一行都不用改
-placeCar(250, 190, -Math.PI / 12);   // 轉 -15 度` },
+placeCar(30, 40, 0);
+placeCar(W / 2 - 30, H / 2 - 15, Math.PI / 6);   // 轉 30 度,drawCar 一行都不用改
+placeCar(W - 90, H - 45, -Math.PI / 12);         // 轉 -15 度` },
 { id: 'order-matters', label: '3.3 順序不可交換:translate→rotate vs 反過來', code:
-`// A 與 B 用「完全相同」的 translate(140,60) + rotate(30 度),只是順序相反
+`// A 與 B 用「完全相同」的 translate(120,50) + rotate(30 度),只是順序相反
 const ang = Math.PI / 6;
 
-// 淡色參考:完全沒旋轉時,方塊該在的位置 (140,60)
+// 淡色參考:完全沒旋轉時,方塊該在的位置 (120,50)
 ctx.fillStyle = 'rgba(0,0,0,.1)';
-ctx.fillRect(140, 60, 46, 46);
+ctx.fillRect(120, 50, 40, 40);
 
-// A:先平移再旋轉 → 繞「平移後的新原點 (140,60)」轉
+// A:先平移再旋轉 → 繞「平移後的新原點 (120,50)」轉
 ctx.save();
-ctx.translate(140, 60);
+ctx.translate(120, 50);
 ctx.rotate(ang);
 ctx.fillStyle = '#457b9d';
-ctx.fillRect(0, 0, 46, 46);
+ctx.fillRect(0, 0, 40, 40);
 ctx.restore();
 
-// B:先旋轉再平移 → 「往 (140,60) 推」沿著已轉過的軸,落點完全不同
+// B:先旋轉再平移 → 「往 (120,50) 推」沿著已轉過的軸,落點完全不同
 ctx.save();
 ctx.rotate(ang);
-ctx.translate(140, 60);
+ctx.translate(120, 50);
 ctx.fillStyle = '#e63946';
-ctx.fillRect(0, 0, 46, 46);
+ctx.fillRect(0, 0, 40, 40);
 ctx.restore();
 
 ctx.font = '13px system-ui, sans-serif';
@@ -136,9 +137,10 @@ function drawRotatedRect(cx, cy, w, h, angle, color) {
 }
 
 // 同一個中心、不同角度 → 全都繞自己中心轉,位置不會跑掉
-drawRotatedRect(180, 130, 120, 120, 0, 'rgba(69,123,157,.25)');
-drawRotatedRect(180, 130, 120, 120, Math.PI / 8, 'rgba(69,123,157,.5)');
-drawRotatedRect(180, 130, 120, 120, Math.PI / 4, '#457b9d');
+const s = Math.min(120, H * 0.5);     // 邊長依畫布大小,小畫布也放得下
+drawRotatedRect(W / 2, H / 2, s, s, 0, 'rgba(69,123,157,.25)');
+drawRotatedRect(W / 2, H / 2, s, s, Math.PI / 8, 'rgba(69,123,157,.5)');
+drawRotatedRect(W / 2, H / 2, s, s, Math.PI / 4, '#457b9d');
 
 // 對照組:沒 translate 到中心就直接 rotate → 繞畫布左上角轉走了
 ctx.save();
@@ -164,18 +166,60 @@ function frame() {
   requestAnimationFrame(frame);
 }
 frame();` },
-{ id: 'camera', label: '3.5 相機:拖曳平移 + 滾輪縮放(世界/螢幕分離)', code:
-`// 互動:按住拖曳平移、滾輪縮放;物件的世界座標不變,變的只是相機
-const camera = { x: 0, y: 0, zoom: 1 };
-let dragging = false, lastX = 0, lastY = 0;
+{ id: 'matrix', label: '3.4 矩陣 a~f + 逆矩陣:把滑鼠點反算回區域座標', code:
+`// 依序 translate → rotate → scale,每一步用 getTransform() 印出 a,b,c,d,e,f;
+// 再用 inverse() 把滑鼠的螢幕點反算回「最後那個區域座標系」,在區域座標裡畫十字
+let mouse = { x: W * 0.6, y: H * 0.6 };
+canvas.style.touchAction = 'none';
+const fmt = (m) => [m.a, m.b, m.c, m.d, m.e, m.f].map(v => +v.toFixed(2)).join(',');
+
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  const log = ['單位      ' + fmt(ctx.getTransform())];   // getTransform() → 目前矩陣的複本(DOMMatrix)
+  ctx.translate(W * 0.5, H * 0.45); log.push('translate ' + fmt(ctx.getTransform()));
+  ctx.rotate(Math.PI / 6);          log.push('rotate    ' + fmt(ctx.getTransform()));
+  ctx.scale(1.5, 1);                log.push('scale     ' + fmt(ctx.getTransform()));
+
+  // 在最後的區域座標系畫一個 50×30 的框和兩條軸:這就是「紙」現在的擺法
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#457b9d'; ctx.strokeRect(0, 0, 50, 30);
+  ctx.strokeStyle = '#e63946'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(40, 0); ctx.stroke();   // 區域 x 軸 = (a,b)
+  ctx.strokeStyle = '#2a9d8f'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 40); ctx.stroke();   // 區域 y 軸 = (c,d)
+
+  // 逆矩陣:螢幕點 → 區域座標。在「區域座標」畫十字,它應該剛好落在游標上
+  const local = ctx.getTransform().inverse().transformPoint({ x: mouse.x, y: mouse.y });   // inverse() → 逆矩陣;transformPoint(點) → 套用
+  ctx.strokeStyle = '#1d3557';
+  ctx.beginPath();
+  ctx.moveTo(local.x - 6, local.y); ctx.lineTo(local.x + 6, local.y);
+  ctx.moveTo(local.x, local.y - 6); ctx.lineTo(local.x, local.y + 6);
+  ctx.stroke();
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);   // 文字用螢幕座標畫
+  ctx.font = '10px monospace'; ctx.fillStyle = '#333';
+  log.forEach((s, i) => ctx.fillText(s, 6, 14 + i * 13));
+  ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = '#1d3557';
+  ctx.fillText('區域座標 (' + local.x.toFixed(1) + ', ' + local.y.toFixed(1) + ')', 6, H - 8);
+}
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  mouse = { x: e.clientX - r.left, y: e.clientY - r.top };
+  render();
+});
+render();` },
+{ id: 'camera', label: '3.5 相機:拖曳平移(滾輪只改 zoom → 繞左上角縮放)', code:
+`// 互動:按住拖曳平移;滾輪「只改 zoom」→ 畫面繞左上角縮放(3.7 的範例會修好它)
+const camera = { x: 0, y: 0, zoom: 1 };   // x/y = 畫面左上角對到的世界座標
+let dragging = false, last = null;
 let mouse = { x: W / 2, y: H / 2 };
 canvas.style.cursor = 'grab';
+canvas.style.touchAction = 'none';        // 觸控拖曳不被瀏覽器手勢搶走
 
 function getCanvasPoint(e) {
   const rect = canvas.getBoundingClientRect();
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
-function screenToWorld(p) {   // 螢幕 → 世界:相機的逆運算
+function screenToWorld(p) {   // 螢幕 → 世界:相機的逆運算(先 ÷zoom、再 +camera)
   return { x: p.x / camera.zoom + camera.x, y: p.y / camera.zoom + camera.y };
 }
 
@@ -189,7 +233,7 @@ function drawWorld() {
 }
 
 function render() {
-  ctx.setTransform(1, 0, 0, 1, 0, 0);    // 重設變換
+  ctx.setTransform(1, 0, 0, 1, 0, 0);    // 先重設、清空,再套相機
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#eef1f4';
   ctx.fillRect(0, 0, W, H);
@@ -205,47 +249,46 @@ function render() {
   ctx.fillRect(0, H - 22, W, 22);
   ctx.fillStyle = '#fff';
   ctx.font = '12px system-ui, sans-serif';
-  ctx.fillText('拖曳平移 / 滾輪縮放   世界(' + wpt.x.toFixed(0) + ',' + wpt.y.toFixed(0) + ')   zoom=' + camera.zoom.toFixed(2), 8, H - 7);
+  ctx.fillText('世界(' + wpt.x.toFixed(0) + ',' + wpt.y.toFixed(0) + ')  zoom=' + camera.zoom.toFixed(2), 8, H - 7);
 }
 
-canvas.addEventListener('mousedown', (e) => {
+canvas.addEventListener('pointerdown', (e) => {
   dragging = true; canvas.style.cursor = 'grabbing';
-  const p = getCanvasPoint(e); lastX = p.x; lastY = p.y;
+  last = getCanvasPoint(e);
+  canvas.setPointerCapture(e.pointerId);   // 拖出畫布外也持續收到事件
 });
-canvas.addEventListener('mousemove', (e) => {
+canvas.addEventListener('pointermove', (e) => {
   const p = getCanvasPoint(e); mouse = p;
   if (dragging) {
-    camera.x -= (p.x - lastX) / camera.zoom;   // 反向移動相機(記得除以 zoom)
-    camera.y -= (p.y - lastY) / camera.zoom;
-    lastX = p.x; lastY = p.y;
+    camera.x -= (p.x - last.x) / camera.zoom;   // 反向移動相機(記得除以 zoom)
+    camera.y -= (p.y - last.y) / camera.zoom;
+    last = p;
   }
   render();
 });
-canvas.addEventListener('mouseup', () => { dragging = false; canvas.style.cursor = 'grab'; });
-canvas.addEventListener('mouseleave', () => { dragging = false; canvas.style.cursor = 'grab'; });
+function endDrag() { dragging = false; canvas.style.cursor = 'grab'; }
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const p = getCanvasPoint(e);
-  const before = screenToWorld(p);                     // 縮放前游標指著的世界座標
-  const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-  camera.zoom = Math.max(0.3, Math.min(camera.zoom * factor, 6));
-  const after = screenToWorld(p);                      // 縮放後同一螢幕點的世界座標
-  camera.x += before.x - after.x;                      // 補上差值 → 以游標為中心縮放
-  camera.y += before.y - after.y;
+  if (e.deltaY === 0) return;                                // 純水平捲動不縮放
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;   // deltaMode 1 = 以「行」為單位,約略換成像素
+  camera.zoom = Math.max(0.3, Math.min(camera.zoom * Math.exp(-dy * 0.002), 6));   // 只改 zoom:繞畫面左上角縮放
   render();
 }, { passive: false });
 
 render();` },
 { id: 'screen-world', label: '3.6 螢幕座標 ↔ 世界座標(滑鼠反算)', code:
 `// 互動:移動滑鼠,看螢幕座標如何反算成世界座標(相機有位移+縮放,兩者不相等)
-const camera = { x: -20, y: -15, zoom: 1.5 };   // 固定相機
+// 固定相機;zoom 依畫布大小調整,小畫布也看得到整片世界
+const camera = { x: -20, y: -15, zoom: Math.min(1.5, W / 230, H / 165) };
 let mouse = { x: W / 2, y: H / 2 };
 
 function getCanvasPoint(e) {
   const rect = canvas.getBoundingClientRect();
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
-function screenToWorld(p) {   // 螢幕 → 世界:相機逆運算
+function screenToWorld(p) {   // 螢幕 → 世界:相機逆運算(先 ÷zoom、再 +camera)
   return { x: p.x / camera.zoom + camera.x, y: p.y / camera.zoom + camera.y };
 }
 function worldToScreen(p) {   // 世界 → 螢幕:相機正向運算
@@ -286,10 +329,70 @@ function render() {
 
   ctx.fillStyle = 'rgba(0,0,0,.75)'; ctx.fillRect(0, 0, W, 20);
   ctx.fillStyle = '#fff'; ctx.font = '12px system-ui, sans-serif';
-  ctx.fillText('螢幕(' + mouse.x.toFixed(0) + ',' + mouse.y.toFixed(0) + ')  反算成  世界(' + w.x.toFixed(0) + ',' + w.y.toFixed(0) + ')', 8, 14);
+  ctx.fillText('螢幕(' + mouse.x.toFixed(0) + ',' + mouse.y.toFixed(0) + ') → 世界(' + w.x.toFixed(0) + ',' + w.y.toFixed(0) + ')', 8, 14);
 }
 
-canvas.addEventListener('mousemove', (e) => { mouse = getCanvasPoint(e); render(); });
+canvas.addEventListener('pointermove', (e) => { mouse = getCanvasPoint(e); render(); });
+render();` },
+{ id: 'zoom-cursor', label: '3.7 以游標為中心縮放:游標下的世界點不動', code:
+`// 滾輪縮放時,先記住游標下的世界點 → 改 zoom → 把相機平移差值,讓那個點回到游標下
+// 對照 3.5 的範例:那邊只改 zoom,畫面繞左上角縮放
+const camera = { x: 0, y: 0, zoom: 1 };
+let mouse = { x: W / 2, y: H / 2 };
+let lastBefore = null, lastAfter = null;
+canvas.style.touchAction = 'none';
+
+function getCanvasPoint(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+function screenToWorld(p) {
+  return { x: p.x / camera.zoom + camera.x, y: p.y / camera.zoom + camera.y };
+}
+
+function render() {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#eef1f4'; ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.scale(camera.zoom, camera.zoom);
+  ctx.translate(-camera.x, -camera.y);
+  ctx.drawImage(sampleImage, 20, 20);                   // 世界裡的東西
+  ctx.fillStyle = '#e63946'; ctx.fillRect(70, 190, 60, 40);
+  ctx.restore();
+
+  ctx.strokeStyle = '#1d3557'; ctx.lineWidth = 1.5;     // 游標十字
+  ctx.beginPath();
+  ctx.moveTo(mouse.x - 9, mouse.y); ctx.lineTo(mouse.x + 9, mouse.y);
+  ctx.moveTo(mouse.x, mouse.y - 9); ctx.lineTo(mouse.x, mouse.y + 9);
+  ctx.stroke();
+
+  const w = screenToWorld(mouse);
+  const f = (p) => '(' + p.x.toFixed(1) + ',' + p.y.toFixed(1) + ')';
+  ctx.fillStyle = 'rgba(0,0,0,.72)'; ctx.fillRect(0, 0, W, 38);
+  ctx.fillStyle = '#fff'; ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText('游標下世界點 ' + f(w) + ' zoom=' + camera.zoom.toFixed(2), 8, 15);
+  if (lastBefore) ctx.fillText('縮放前 ' + f(lastBefore) + ' → 後 ' + f(lastAfter), 8, 31);
+}
+
+canvas.addEventListener('pointermove', (e) => { mouse = getCanvasPoint(e); render(); });
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (e.deltaY === 0) return;                                // 純水平捲動(Shift+滾輪、觸控板橫滑)不縮放
+  const p = getCanvasPoint(e);
+  const before = screenToWorld(p);                           // 1. 縮放前,游標指著的世界座標
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;   // deltaMode 1 = 以「行」為單位,約略換成像素
+  const factor = Math.exp(-dy * 0.002);                      // 2. 連續倍率:觸控板的小 delta 只縮一點,滑鼠一格約 ×1.2
+  camera.zoom = Math.max(0.2, Math.min(camera.zoom * factor, 8));
+  const after = screenToWorld(p);                            // 3. 縮放後,同一螢幕點指著的世界座標
+  camera.x += before.x - after.x;                            // 4. 平移差值 → 游標下的世界點回到原位
+  camera.y += before.y - after.y;
+  lastBefore = before; lastAfter = screenToWorld(p);         // 兩者應該相等
+  mouse = p;
+  render();
+}, { passive: false });
+
 render();` },
 { id:'homework', label:'💡 動手作業:可平移縮放的無限網格', code:
 `// 第 03 章作業:相機 + 無限網格。拖曳平移、滾輪以游標為中心縮放,左上角即時顯示世界座標
@@ -303,10 +406,12 @@ function screenToWorld(s, cam) {            // 相機的逆運算(3.6)
   return { x: s.x / cam.zoom + cam.x, y: s.y / cam.zoom + cam.y };
 }
 let mouse = { x: 0, y: 0 };
-// 作業要求 1:拖曳平移——用 setPointerCapture,放開就算移出畫布也收得到(playground 內免掛 window 監聽)
+// 作業要求 1:拖曳平移——setPointerCapture 讓放開時就算移出畫布也收得到;完整健壯性見第 07 章 7.8
+canvas.style.touchAction = 'none';         // 觸控拖曳不被瀏覽器手勢搶走
 let dragging = false, last = null;
 canvas.addEventListener('pointerdown', (e) => { dragging = true; last = getCanvasPoint(e); canvas.setPointerCapture(e.pointerId); });
 canvas.addEventListener('pointerup',   (e) => { dragging = false; canvas.releasePointerCapture(e.pointerId); });
+canvas.addEventListener('pointercancel', () => { dragging = false; });   // 被系統打斷時不會有 pointerup
 canvas.addEventListener('pointermove', (e) => {
   const p = getCanvasPoint(e); mouse = p;
   if (dragging) {
@@ -318,9 +423,11 @@ canvas.addEventListener('pointermove', (e) => {
 // 作業要求 3:滾輪以游標為中心縮放(3.7 整段搬入)
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
+  if (e.deltaY === 0) return;                                // 純水平捲動(Shift+滾輪、觸控板橫滑)不縮放
   const s = getCanvasPoint(e);
-  const before = screenToWorld(s, camera);      // 縮放前游標指著的世界座標
-  camera.zoom *= (e.deltaY < 0 ? 1.1 : 1 / 1.1);
+  const before = screenToWorld(s, camera);                   // 縮放前游標指著的世界座標
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;   // deltaMode 1 = 以「行」為單位,約略換成像素
+  camera.zoom *= Math.exp(-dy * 0.002);                      // 連續倍率:觸控板的小 delta 只縮一點,滑鼠一格約 ×1.2
   camera.zoom = Math.max(0.2, Math.min(camera.zoom, 20));
   const after = screenToWorld(s, camera);       // 縮放後同一螢幕點指著的世界座標
   camera.x += before.x - after.x;               // 平移差值,讓游標下的世界點回到原位

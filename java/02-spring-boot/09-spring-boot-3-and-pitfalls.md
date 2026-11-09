@@ -38,16 +38,21 @@
 
 ## 9.2 為什麼要升，不升的風險是什麼
 
-### Spring Boot 2.7 已經沒有支援了
+### Spring Boot 2.7 的公開 OSS 支援已結束；商業支援另依合約
 
 ```
 2022-05  Spring Boot 2.7 發布
 2023-11  ★ OSS 免費支援結束 ★  → 之後不再有免費的安全性修補
-2025-08  商業支援（Enterprise Subscription）也已到期
-2026-08  今天 —— 2.x 已經完全沒有官方修補管道
+2024-09  官方公告將 2.7 商業支援延長至 2026 年底
+2025-02  官方再更新商業支援政策；期限須查當期支援表
+2026-11  OSS 支援已結束；持有適用商業合約者仍有對應修補管道
 ```
 
-**「沒有支援」的具體意思：**
+**未取得適用商業支援時，繼續使用已結束 OSS 支援版本的影響：**
+
+官方已多次延長商業支援，不能寫成「2025 年起完全沒有官方修補」。
+期限與資格請查 [官方支援公告](https://spring.io/blog/2024/09/27/spring-boot-2-7-support-period-extended/)
+及 [2025 支援政策更新](https://spring.io/blog/2025/02/13/support-policy-updates/)。
 
 | 情況 | 有支援時 | 沒有支援時 |
 |---|---|---|
@@ -805,7 +810,7 @@ public class SecurityConfig {                          // ① 不再繼承任何
 | `configure(WebSecurity)` | `WebSecurityCustomizer` Bean |
 | `@EnableGlobalMethodSecurity(prePostEnabled = true)` | `@EnableMethodSecurity`（`prePostEnabled` 預設就是 true） |
 | `access("hasRole('X') and hasIpAddress('...')")` | `access(AuthorizationManager)` |
-| `NoOpPasswordEncoder` | ❌ 移除（本來就不該用） |
+| `NoOpPasswordEncoder` | 仍存在但已 deprecated、明文密碼不安全；應遷移到適合的密碼雜湊器 |
 | `WebSecurityConfigurerAdapter` 的多個實作 | 多個 `SecurityFilterChain` Bean + `@Order` |
 
 ### 多條 Filter Chain（很常見）
@@ -1546,7 +1551,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 ```
 
 ```bash
-# 全域替換（行為相同，可以直接換）
+# 機械性更名後仍要檢查覆寫／spy 建立條件，並執行測試
 find src/test -name '*.java' -exec sed -i '' \
   -e 's/org\.springframework\.boot\.test\.mock\.mockito\.MockBean/org.springframework.test.context.bean.override.mockito.MockitoBean/g' \
   -e 's/org\.springframework\.boot\.test\.mock\.mockito\.SpyBean/org.springframework.test.context.bean.override.mockito.MockitoSpyBean/g' \
@@ -1561,8 +1566,12 @@ find src/test -name '*.java' -exec sed -i '' \
 # ❌ Boot 3.1 及之前
 ENTRYPOINT ["java", "org.springframework.boot.loader.JarLauncher"]
 
-# ✅ Boot 3.2+
+# ✅ 舊式散開 classpath 版型，在 Boot 3.2+ 的 launcher 名稱
 ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+
+# ✅ 本課 Boot 3.5 使用 tools extract --layers 的預設高效版型
+# 原 jar 先固定命名為 application.jar，再合併四層
+ENTRYPOINT ["java", "-jar", "application.jar"]
 ```
 
 ```bash
@@ -2256,7 +2265,7 @@ echo "── 設定值差異 ──"       && diff <(jq -S . $BASE/configprops.j
 | `server.error.include-message` | `always`（2.3 前） | `never` | 錯誤訊息不再回給前端 |
 | `spring.jackson.default-property-inclusion` | 無 | 無 | 不變 |
 | `management.endpoints.web.exposure.include` | `health,info` | `health` | ⚠️ **`/info` 預設不再開放** |
-| Spring Security 密碼編碼 | — | 更嚴格 | `NoOpPasswordEncoder` 已移除 |
+| Spring Security 密碼編碼 | — | 更嚴格 | `NoOpPasswordEncoder` 仍保留供舊系統／測試使用，正式環境應改用安全的密碼雜湊 |
 
 > **`management.endpoints.web.exposure.include` 那一項要特別注意**：
 > Boot 3 起 `/actuator/info` 預設**不再暴露**。
@@ -2677,7 +2686,7 @@ public class SecurityConfig {                   // ② 不再繼承 WebSecurityC
 
 | # | 修改 | 為什麼 |
 |---|---|---|
-| ① | `@EnableGlobalMethodSecurity(prePostEnabled=true)` → `@EnableMethodSecurity` | 舊註解已移除，新註解的 `prePostEnabled` 預設 true |
+| ① | `@EnableGlobalMethodSecurity(prePostEnabled=true)` → `@EnableMethodSecurity` | 舊註解仍存在但 deprecated；新註解的 `prePostEnabled` 預設 true |
 | ② | 不再繼承 | `WebSecurityConfigurerAdapter` 已移除 |
 | ③ | `@Autowired` 欄位 → 建構子注入 | 順手改善（第 01 章 1.7） |
 | ④ | `.and()` → lambda DSL | 舊寫法已 deprecated |
@@ -3104,7 +3113,7 @@ class AutoConfigurationRegistrationTest {
 
 ### 如果只能記住十件事
 
-1. **容器裡的 Bean 是「代理」，不是你 `new` 的那個物件**——所有註解都建立在這件事上。
+1. **需要 AOP 攔截的 Bean 才會被代理**；MVC 路由、依賴注入與排程另有各自的處理機制。
 2. **一律建構子注入**——這不是潔癖，是「能不能寫測試」的分界線。
 3. **`this.method()` 不經過代理**——`@Transactional`、`@Async`、`@Cacheable`、`@PreAuthorize` 全部失效。
 4. **自動組態是有條件的，而且你自己定義的 Bean 一定贏**——`/actuator/conditions` 告訴你為什麼。

@@ -12,7 +12,8 @@ export function formatDate(value) {
   if (!value) return ''
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleDateString('zh-TW')
+  // 釘死時區：伺服器（常是 UTC）與瀏覽器才會算出同一個日期，不會 hydration mismatch（第 13 章）
+  return date.toLocaleDateString('zh-TW', { timeZone: 'Asia/Taipei' })
 }
 
 /** 顯示用的作者名稱：沒有作者（例如 seed 的示範文章）就掛站長 */

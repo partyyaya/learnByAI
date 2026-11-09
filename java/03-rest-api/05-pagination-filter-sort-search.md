@@ -856,33 +856,45 @@ public record Cursor(
     }
 
     public static Cursor decode(String raw, String expectedSort, String expectedFilterHash) {
-        // ★ 嚴格驗證：長度、字元集、格式、版本、一致性
-        if (raw.length() > 512) throw new InvalidCursorException("cursor 過長");
-        if (!raw.matches("[A-Za-z0-9_-]+")) throw new InvalidCursorException("cursor 格式錯誤");
-
-        Map<String, Object> m;
+        // 空 cursor 是第一頁，由分頁解析器處理，不傳入 decode
+        if (raw == null || raw.length() > 512 || !raw.matches("[A-Za-z0-9_-]+")) {
+            throw new InvalidCursorException("cursor 格式錯誤");
+        }
+        JsonNode m;
         try {
-            byte[] json = Base64.getUrlDecoder().decode(raw);
-            m = MAPPER.readValue(json, new TypeReference<>() {});
-        } catch (Exception e) {
+            m = MAPPER.readTree(Base64.getUrlDecoder().decode(raw));
+        } catch (IOException | IllegalArgumentException e) {
             throw new InvalidCursorException("cursor 無法解析");
         }
-
-        int v = ((Number) m.getOrDefault("v", 0)).intValue();
-        if (v != CURRENT_VERSION) throw new InvalidCursorException("cursor 版本不支援");
-
-        String sortSpec = (String) m.get("s");
-        String filterHash = (String) m.get("f");
-        if (!expectedSort.equals(sortSpec) || !expectedFilterHash.equals(filterHash)) {
-            throw new CursorQueryMismatchException(sortSpec, expectedSort);   // → 400
+        if (m == null || !m.isObject() || !m.path("v").isIntegralNumber()
+                || !m.path("v").canConvertToInt() || m.path("v").intValue() != CURRENT_VERSION
+                || !m.path("s").isTextual() || !m.path("f").isTextual()
+                || !m.path("d").isTextual()
+                || !Set.of("next", "prev").contains(m.path("d").textValue())
+                || !m.path("k").isArray()) {
+            throw new InvalidCursorException("cursor 欄位或版本錯誤");
         }
-
-        @SuppressWarnings("unchecked")
-        List<String> keys = (List<String>) m.get("k");
-        if (keys == null || keys.size() > 4) throw new InvalidCursorException("cursor 鍵數異常");
-
-        return new Cursor(keys, sortSpec, filterHash,
-                          Direction.of((String) m.get("d")), v);
+        String sortSpec = m.path("s").textValue();
+        String filterHash = m.path("f").textValue();
+        if (!expectedSort.equals(sortSpec) || !expectedFilterHash.equals(filterHash)) {
+            throw new CursorQueryMismatchException(sortSpec, expectedSort);  // → 400
+        }
+        int expectedKeys = expectedSort.split(",", -1).length;
+        JsonNode k = m.path("k");
+        if (expectedKeys < 1 || expectedKeys > 4 || k.size() != expectedKeys) {
+            throw new InvalidCursorException("cursor 鍵數異常");
+        }
+        List<String> keys = new ArrayList<>();
+        for (JsonNode value : k) {
+            if (!value.isTextual() || value.textValue().isBlank()) {
+                throw new InvalidCursorException("cursor 鍵必須是非空字串");
+            }
+            keys.add(value.textValue());
+        }
+        // 依白名單排序欄位解析 Instant／ID／decimal；失敗一律轉 InvalidCursorException
+        validateKeyValues(expectedSort, keys);
+        return new Cursor(List.copyOf(keys), sortSpec, filterHash,
+                          Direction.of(m.path("d").textValue()), CURRENT_VERSION);
     }
 }
 ```
@@ -893,7 +905,7 @@ public record Cursor(
 |---|---|
 | **嚴格驗證長度與字元集** | cursor 的內容會進 SQL 的參數。雖然用 PreparedStatement 綁定就安全，但**長度不限會讓人送 10 MB 的字串** |
 | **`keys` 的數量與型別要檢查** | 攻擊者可以送 100 個 key → 你的 SQL 組出 100 個條件 → 效能問題 |
-| **不要把敏感資訊放進 cursor** | base64 **不是加密**，任何人 30 秒就能解出來。不要放 `customerId`、內部 ID、密鑰 |
+| **不要把敏感資訊放進 cursor** | base64 **不是加密**，任何人 30 秒就能解出來。不要放密鑰或敏感個資；base64 內的排序 ID 也能被讀出。若內部自增 ID 不可公開，改用公開 ID 作 tie-breaker 或使用伺服器端游標 session |
 
 **要不要簽章（HMAC）？**
 
@@ -1151,7 +1163,8 @@ GET /orders?cursor=eyJ...&limit=20&sort=createdAt,desc
 | 規則 | 說明 |
 |---|---|
 | `page` 與 `cursor` **互斥** | 同時出現 → `400`（不要猜使用者想要哪一種） |
-| 都不給 → 預設 offset 第一頁 | 向下相容（既有客戶端不用改） |
+| 未提供 `cursor`（即使有 `limit`）→ offset 第一頁 | 向下相容；`limit` 單獨出現不切換模式 |
+| `cursor=` → cursor 第一頁 | 依參數「是否存在」選模式；空字串不呼叫 `Cursor.decode` |
 | `size` 與 `limit` 是別名 | 兩個都接受，但同時給不同值 → `400` |
 | 回應的 `page` 物件**結構不同** | offset 模式有 `number`/`totalElements`；cursor 模式有 `hasMore`/`nextCursor` |
 | 深分頁上限只對 offset 模式生效 | cursor 模式沒有這個限制 |
@@ -1195,7 +1208,7 @@ components:
         mode: { type: string, enum: [CURSOR] }
         limit: { type: integer }
         hasMore: { type: boolean }
-        nextCursor: { type: string, nullable: true }
+        nextCursor: { type: [string, "null"] }
 ```
 
 **`mode` 欄位是關鍵**（第 03 章 3.10.2 的同一個思路）：
@@ -1691,52 +1704,52 @@ WHERE created_at >= '2026-08-01 00:00:00' AND created_at < '2026-09-01 00:00:00'
 
 ```java
 public record DateRangeFilter(String from, String to) {
-
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Taipei");
 
-    /** 下界（含），轉成 UTC Instant */
     public Instant fromInstant() {
         if (from == null) return null;
-        return parseAsLowerBound(from);
+        return from.length() == 10
+                ? LocalDate.parse(from).atStartOfDay(BUSINESS_ZONE).toInstant()
+                : parseTimestamp(from, "createdFrom");
     }
 
-    /** 上界（不含），轉成 UTC Instant —— 注意是 exclusive */
-    public Instant toExclusive() {
+    public record UpperBound(Instant value, boolean inclusive) {}
+
+    public UpperBound upperBound() {
         if (to == null) return null;
-        return parseAsUpperBoundExclusive(to);
+        if (to.length() == 10) {
+            return new UpperBound(LocalDate.parse(to).plusDays(1)
+                    .atStartOfDay(BUSINESS_ZONE).toInstant(), false);
+        }
+        return new UpperBound(parseTimestamp(to, "createdTo"), true); // 保留 <=
     }
 
-    private static Instant parseAsLowerBound(String s) {
-        if (s.length() == 10) {                                  // "2026-08-01"
-            return LocalDate.parse(s).atStartOfDay(BUSINESS_ZONE).toInstant();
+    private static Instant parseTimestamp(String text, String field) {
+        try {
+            Instant value = Instant.parse(text);
+            if (value.getNano() % 1000 != 0) {
+                throw new FieldValidationException(field, "時間精度最多到微秒"); // → 422
+            }
+            return value;
+        } catch (DateTimeParseException e) {
+            throw new FieldValidationException(field, "時間必須為 ISO-8601 UTC 格式");
         }
-        return Instant.parse(s);                                 // "2026-08-01T00:00:00Z"
-    }
-
-    private static Instant parseAsUpperBoundExclusive(String s) {
-        if (s.length() == 10) {                                  // "2026-08-31"
-            // ★ 關鍵：+1 天，然後用 < 比較（等價於「包含 8/31 整天」）
-            return LocalDate.parse(s).plusDays(1)
-                            .atStartOfDay(BUSINESS_ZONE).toInstant();
-        }
-        // 時間點：客戶端明確指定，用 <= 語意 → 這裡加 1 奈秒轉成 exclusive
-        return Instant.parse(s).plusNanos(1);
     }
 }
 ```
 
 ```sql
--- 產生的 SQL 一律是 [from, toExclusive)
+-- 純日期：使用營業時區的次日零點作為 exclusive 上界
 WHERE created_at >= ? AND created_at < ?
+-- 明確時間點：保留 inclusive 上界
+WHERE created_at >= ? AND created_at <= ?
 ```
 
-**為什麼統一用 `[from, to)` 半開區間**：
+查詢建構器依 `UpperBound.inclusive()` 選擇固定的 `<` 或 `<=` 條件，值一律綁參數。
+純日期用半開區間可以涵蓋整天；時間點則遵守「包含該點」的契約。
+**不要以 `+1ns` 模擬包含邊界**：MySQL 的小數秒精度最多 6 位，JDBC 綁定時可能失去該增量。
+本例的時間篩選輸入限至微秒精度；更細的輸入回 `422`，避免 driver 捨入改變邊界。
 
-| 好處 | 說明 |
-|---|---|
-| 連續區間不重疊 | `[8/1, 9/1)` 和 `[9/1, 10/1)` 剛好接上，不會有訂單被算兩次 |
-| 不用處理「最後一奈秒」 | `<= 23:59:59.999999999` 這種寫法在不同精度的資料庫欄位上行為不同 |
-| SQL 最佳化器友善 | 範圍掃描的邊界清楚 |
 
 **驗證：`from > to` 要回 `422`**（第 04 章 4.6.3 情境 3）：
 
@@ -3806,9 +3819,13 @@ public class OrderSortResolver {
 
 **API 契約**
 
+這是專用的 `GET /vendor/orders` 整合端點：`limit` 上限 500，與一般 `GET /orders` 的上限 100 分開。
+第一頁明確帶 `cursor=`，後續沿用 `links.next`。本節同步游標使用 `SyncCursor`，在 5.4.3 的
+位置欄位外加 `u`（整輪固定的安全上界），不可用一般 `Cursor` 解碼後把 `u` 丟掉。
+
 ```http
-GET /orders?updatedFrom=2026-08-19T06:00:00Z&sort=updatedAt,asc&limit=500
-Authorization: Bearer <廠商 API key>
+GET /vendor/orders?cursor=&updatedFrom=2026-08-19T06:00:00Z&sort=updatedAt,asc&limit=500
+X-Api-Key: <廠商 API key>
 Accept: application/json
 ```
 
@@ -3824,11 +3841,11 @@ Cache-Control: private, no-store
     "mode": "CURSOR",
     "limit": 500,
     "hasMore": true,
-    "nextCursor": "eyJrIjpbIjIwMjYtMDgtMTlUMDY6MTQ6MDIuMTIzWiIsIm9yZF8wMUo1R0siXSwicyI6InVwZGF0ZWRBdDphc2MsaWQ6YXNjIiwiZiI6ImE5ZjNjMWU4IiwiZCI6Im5leHQiLCJ2IjoxfQ"
+    "nextCursor": "eyJrIjpbIjIwMjYtMDgtMTlUMDY6MTQ6MDIuMTIzWiIsIjQ4MjEzIl0sInMiOiJ1cGRhdGVkQXQ6YXNjLGlkOmFzYyIsImYiOiJhOWYzYzFlOCIsImQiOiJuZXh0IiwidSI6IjIwMjYtMDgtMTlUMDY6MTQ6NTUuMDAwWiIsInYiOjF9"
   },
   "links": {
-    "self": "/orders?updatedFrom=2026-08-19T06:00:00Z&sort=updatedAt,asc&limit=500",
-    "next": "/orders?updatedFrom=2026-08-19T06:00:00Z&sort=updatedAt,asc&limit=500&cursor=eyJrIjpb..."
+    "self": "/vendor/orders?cursor=&updatedFrom=2026-08-19T06:00:00Z&sort=updatedAt,asc&limit=500",
+    "next": "/vendor/orders?updatedFrom=2026-08-19T06:00:00Z&sort=updatedAt,asc&limit=500&cursor=eyJrIjpbIjIwMjYtMDgtMTlUMDY6MTQ6MDIuMTIzWiIsIjQ4MjEzIl0sInMiOiJ1cGRhdGVkQXQ6YXNjLGlkOmFzYyIsImYiOiJhOWYzYzFlOCIsImQiOiJuZXh0IiwidSI6IjIwMjYtMDgtMTlUMDY6MTQ6NTUuMDAwWiIsInYiOjF9"
   },
   "syncMeta": {
     "serverTime": "2026-08-19T06:15:00.000Z",
@@ -3842,15 +3859,21 @@ Cache-Control: private, no-store
 ```python
 # 廠商端的正確做法
 watermark = load_last_watermark()          # 上次的 safeWatermark
-url = f"/orders?updatedFrom={watermark}&sort=updatedAt,asc&limit=500"
+url = f"/vendor/orders?cursor=&updatedFrom={watermark}&sort=updatedAt,asc&limit=500"
+cycle_watermark = None
 
 while url:
     res = get(url)
+    returned = res["syncMeta"]["safeWatermark"]
+    if cycle_watermark is None:
+        cycle_watermark = returned
+    elif cycle_watermark != returned:
+        raise ValueError("同一輪的同步邊界不得改變")
     for order in res["items"]:
         upsert_order(order)                # ★ 必須是 upsert（見陷阱 1）
     url = res["links"].get("next")
 
-save_watermark(res["syncMeta"]["safeWatermark"])    # ★ 只在整輪跑完才更新
+save_watermark(cycle_watermark)    # ★ 只在整輪跑完才更新
 ```
 
 **cursor 設計**
@@ -3858,10 +3881,11 @@ save_watermark(res["syncMeta"]["safeWatermark"])    # ★ 只在整輪跑完才�
 ```jsonc
 // base64url 編碼前
 {
-  "k": ["2026-08-19T06:14:02.123Z", "ord_01J5GKQ8Z4W9V2X3Y6N7M8P0QR"],
+  "k": ["2026-08-19T06:14:02.123Z", "48213"],
   "s": "updatedAt:asc,id:asc",
   "f": "a9f3c1e8",                 // SHA-256("updatedFrom=2026-08-19T06:00:00Z|vendorId=v_001")[:8]
   "d": "next",
+  "u": "2026-08-19T06:14:55.000Z", // 此輪固定上界，後續每個 cursor 都攜帶
   "v": 1
 }
 ```
@@ -3882,6 +3906,7 @@ SELECT id, order_number, status, total_amount, updated_at, ...
 FROM orders
 WHERE vendor_id = ?                              -- ★ 來自 token，不來自參數
   AND updated_at >= ?                            -- updatedFrom
+  AND updated_at < ?                             -- 固定的 cycleWatermark
 ORDER BY updated_at ASC, id ASC
 LIMIT 501;                                       -- ★ limit + 1
 
@@ -3889,8 +3914,9 @@ LIMIT 501;                                       -- ★ limit + 1
 SELECT id, order_number, status, total_amount, updated_at, ...
 FROM orders
 WHERE vendor_id = ?
-  AND updated_at >= ?                            -- updatedFrom（保留，作為外層邊界）
-  AND (updated_at, id) > (?, ?)                  -- ★ cursor
+  AND updated_at >= ?                            -- updatedFrom
+  AND updated_at < ?                             -- 同一個 cycleWatermark
+  AND (updated_at > ? OR (updated_at = ? AND id > ?)) -- MySQL 使用 OR 展開
 ORDER BY updated_at ASC, id ASC
 LIMIT 501;
 ```
@@ -3900,7 +3926,7 @@ LIMIT 501;
 ```
 -> Limit: 501 row(s)
     -> Index range scan on orders using idx_orders_vendor_updated
-       over (vendor_id = 'v_001' AND (updated_at, id) > (...))
+       over (vendor_id = 'v_001' AND updated_at >= ... AND updated_at < ...)
        (actual rows=501 loops=1)        ← 只掃 501 筆 ✅
 ```
 
@@ -3960,40 +3986,47 @@ T=06:30:00.000  下一輪同步：WHERE updated_at >= '06:14:55.005'
 **根因**：`updated_at` 是在**交易開始時**（或 SQL 執行時）決定的，
 但資料是在**交易提交時**才可見。**兩者之間有時間差。**
 
-**解法：`safeWatermark` —— 留一個安全邊界**
+**解法：一輪開始時固定 `safeWatermark`，每頁都套用相同上界**
 
 ```java
-public SyncMeta buildSyncMeta() {
-    Instant now = clock.instant();
-    // ★ 保守地往回退，確保所有「可能還沒 commit」的交易都已經完成
-    Instant safeWatermark = now.minusSeconds(MAX_TRANSACTION_DURATION_SECONDS);
-    return new SyncMeta(now, safeWatermark);
-}
+// 第一頁只計算一次；後續頁從經驗證的 SyncCursor 讀回同一個 u
+Instant cycleWatermark = syncCursor == null
+        ? clock.instant().minusSeconds(MAX_TRANSACTION_DURATION_SECONDS)
+        : syncCursor.upperExclusive();
+SyncMeta meta = new SyncMeta(clock.instant(), cycleWatermark);
 ```
 
-`MAX_TRANSACTION_DURATION_SECONDS` 要設成**大於你系統最長交易的時間**。
-如果你的交易超時設 3 秒，那設 5～10 秒。
+`SyncCursor` 必須先驗證 5.4.3 的位置欄位，再驗證 `u` 為合法時間點、
+`updatedFrom <= u <= 當下安全上界`；任何錯誤回 `400 INVALID_CURSOR`。
+編碼下一頁時保留同一個 `u`；filterHash 仍綁定 updatedFrom、vendorId 與排序。
+若 cursor 會封裝其他受信任的查詢範圍，應使用 HMAC 或伺服器端同步 session。
 
-**廠商端的規則**：
+`MAX_TRANSACTION_DURATION_SECONDS` 必須大於實際的最長交易時間，且 updated_at
+來自一致的資料庫時鐘，不可回填較早時間。只有查詢 timeout 並不能限制整個交易時長；
+需要交易 deadline、監控與超時終止。無法滿足這些前提時，應使用 CDC／可靠事件串流。
+
+本輪 SQL 統一掃描 `[updatedFrom, cycleWatermark)`；完成整輪後才把 **同一個**
+cycleWatermark 存成下輪 updatedFrom。空結果也可前進到該界線；中斷則不前進。
+`serverTime` 可以每頁不同，`safeWatermark` 不可逐頁重算。
 
 ```
-❌ 用「最後一筆的 updatedAt」當下次的 updatedFrom
-✅ 用回應裡的 safeWatermark 當下次的 updatedFrom
+反例：第一頁 T10 讀到 cursor=T9，X(updatedAt=T8.5) 尚未提交；T11 X 提交。
+      若最後一頁 T20 儲存新算出的 watermark=T15，X 會永久漏掉。
+修正：第一頁的上界固定 T5，此輪不讀 T5 以後的資料；下輪從 T5 開始會讀到 X。
 ```
 
-**代價**：每次同步會**重複拉取**最後 5～10 秒的資料。
-→ 這就是為什麼陷阱 1 的 upsert 是必要的（兩個陷阱的解法互相支援）。
+若資料在掃描期間更新到上界外，會在下一輪讀取；消費端以 orderId upsert。
+此保證針對目前狀態的最終同步，不保證每一個中間版本；刪除還需要 tombstone／刪除事件。
 
-**更嚴謹的替代方案**（如果 `safeWatermark` 的重複量太大）：
+**替代方案的保證範圍**：
 
 | 方案 | 說明 |
 |---|---|
-| **用單調遞增的序號**（`change_seq BIGINT AUTO_INCREMENT`） | ⚠️ AUTO_INCREMENT **也有同樣的問題**（序號在交易開始時取得，commit 後才可見） |
-| **CDC（讀 binlog）** | ★ 最正確 —— binlog 的順序**就是** commit 的順序，不存在這個問題 |
-| **outbox 模式** | 在同一個交易裡寫一筆 `order_change_events`，同步時讀那張表 ✅ 有交易保證 |
+| 單純按 AUTO_INCREMENT 查下一頁 | 不保證提交順序；尚未提交的小序號仍可能被跳過 |
+| CDC（讀 binlog） | 以已提交事件的位置續傳，並持久化消費 offset |
+| outbox | 與業務同交易寫事件，再以可靠 relay／CDC 發布；消費端確認與去重。只按 outbox ID 輪詢仍會漏 |
 
-**shop-service 的決定**：先用 `safeWatermark`（成本低、夠用），
-如果廠商反映重複量太大，再升級到 outbox 模式。
+shop-service 在上述時鐘／交易前提可落實時使用固定邊界同步，否則改用 CDC 或可靠 outbox。
 
 ### 陷阱 3：cursor 過期與 `updatedFrom` 的關係
 
@@ -4037,7 +4070,8 @@ public SyncMeta buildSyncMeta() {
 □ limit 上限 500，超過回 400
 □ hasMore 用「多取一筆」判斷，不用 COUNT
 □ 不提供 totalElements（廠商不需要）
-□ 提供 safeWatermark —— 解決陷阱 2 🔴
+□ 首頁固定 safeWatermark，SyncCursor 的 u、所有 SQL 上界與各頁回應一致
+□ 完成整輪才保存固定界線；有晚提交交易與慢分頁的回歸測試
 □ 文件明確標示 at-least-once 語意，要求 upsert —— 解決陷阱 1
 □ CURSOR_QUERY_MISMATCH 的 hint 給出恢復步驟 —— 解決陷阱 3
 □ Cache-Control: private, no-store

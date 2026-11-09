@@ -363,7 +363,9 @@ mvn -pl todo-model -am install
     <jackson.version>2.17.2</jackson.version>
     <junit.version>5.11.0</junit.version>
     <assertj.version>3.26.3</assertj.version>
-    <mockito.version>5.13.0</mockito.version>
+    <mockito.version>5.17.0</mockito.version>
+    <byte-buddy.version>1.15.11</byte-buddy.version>
+    <argLine></argLine> <!-- JaCoCo 未啟用時，Surefire 延遲求值仍有空的預設值 -->
 
     <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
     <maven-surefire-plugin.version>3.5.0</maven-surefire-plugin.version>
@@ -1347,13 +1349,13 @@ mvn dependency:tree -DoutputType=dot -DoutputFile=target/deps.dot   # 可以用 
 </dependencyManagement>
 ```
 
-**這不會引入依賴**，只是宣告「如果最終用到 guava，一律用 33.3.0-jre」。
+**這不會引入依賴**，只是提供受管理版本：未寫版本的直接依賴與傳遞依賴使用 33.3.0-jre；當前 POM 的直接依賴若明寫版本，則以該宣告為準。
 語意更誠實，而且在父 pom 裡寫一次，所有子模組通用。
 
 > 🔥 **重要且違反直覺**：`dependencyManagement` 的優先權**高於**「最近者優先」。
-> 它是在依賴解析的最後階段強制套用的。所以父 pom 裡的一行 `dependencyManagement`，
-> 可以無聲地覆寫掉你子模組期待的版本——這是多模組專案最常見的「我明明寫了 2.0，
-> 為什麼跑起來是 1.5」之謎。**排查時第一個動作：`mvn help:effective-pom`。**
+> 這是對**傳遞依賴**的管理，不是解析最後才強制覆寫任何版本。
+> 子 pom 在 `<dependencies>` 直接寫出的 `<version>` 可覆寫父層管理值；
+> 子 pom 若省略版本，才繼承父層的管理值。排查時用 `mvn help:effective-pom` 與 `dependency:tree` 分別確認宣告及解析結果。
 
 **方式 C：`<exclusions>`（外科手術）**
 
@@ -2691,7 +2693,9 @@ todo-cli  ──→ todo-importer ──→ todo-core ──→ todo-model
     <slf4j.version>2.0.16</slf4j.version>
     <logback.version>1.5.8</logback.version>
     <assertj.version>3.26.3</assertj.version>
-    <mockito.version>5.13.0</mockito.version>
+    <mockito.version>5.17.0</mockito.version>
+    <byte-buddy.version>1.15.11</byte-buddy.version>
+    <argLine></argLine> <!-- JaCoCo 未啟用時，Surefire 延遲求值仍有空的預設值 -->
   </properties>
 
   <!-- parent 的部分：版本管理 -->
@@ -2749,6 +2753,17 @@ todo-cli  ──→ todo-importer ──→ todo-core ──→ todo-model
         <groupId>org.mockito</groupId>
         <artifactId>mockito-core</artifactId>
         <version>${mockito.version}</version>
+      </dependency>
+      <!-- Mockito 與 AssertJ 都依賴 Byte Buddy；統一版本以通過 dependencyConvergence -->
+      <dependency>
+        <groupId>net.bytebuddy</groupId>
+        <artifactId>byte-buddy</artifactId>
+        <version>${byte-buddy.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>net.bytebuddy</groupId>
+        <artifactId>byte-buddy-agent</artifactId>
+        <version>${byte-buddy.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -2919,6 +2934,32 @@ todo-cli  ──→ todo-importer ──→ todo-core ──→ todo-model
       <groupId>org.mockito</groupId>
       <artifactId>mockito-core</artifactId>
       <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>
+```
+
+**`todo-importer/pom.xml`**：
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>com.example</groupId>
+    <artifactId>todo</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+  </parent>
+  <artifactId>todo-importer</artifactId>
+  <name>Todo :: Importer</name>
+  <dependencies>
+    <dependency>
+      <groupId>com.example</groupId>
+      <artifactId>todo-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-csv</artifactId>
+      <version>1.11.0</version>
     </dependency>
   </dependencies>
 </project>
@@ -3817,7 +3858,8 @@ slf4j = "2.0.16"
 logback = "1.5.8"
 junit = "5.11.0"
 assertj = "3.26.3"
-mockito = "5.13.0"
+mockito = "5.17.0"
+commons-csv = "1.11.0"
 
 [libraries]
 jackson-bom = { module = "com.fasterxml.jackson:jackson-bom", version.ref = "jackson" }
@@ -3830,6 +3872,7 @@ junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
 junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
 assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
 mockito = { module = "org.mockito:mockito-core", version.ref = "mockito" }
+commons-csv = { module = "org.apache.commons:commons-csv", version.ref = "commons-csv" }
 
 [plugins]
 shadow = { id = "com.gradleup.shadow", version = "8.3.3" }
@@ -3903,6 +3946,16 @@ dependencies {
     implementation(libs.jackson.jsr310)
 
     testImplementation(libs.mockito)
+}
+```
+
+**`todo-importer/build.gradle.kts`**（第 08 章新增的 CSV 解析依賴也要帶過來）
+
+```kotlin
+dependencies {
+    // 匯入器的 public API 使用 TodoRepository，讓 CLI 也看得到 core/model 型別。
+    api(project(":todo-core"))
+    implementation(libs.commons.csv)
 }
 ```
 
@@ -5149,9 +5202,8 @@ my-app
 **③ `32.1.3-jre`。**
 
 `dependencyManagement` 的優先權**高於**最近者優先與宣告順序。
-它在依賴解析的最後階段強制套用，會覆寫掉樹上算出來的任何版本。
-
-這也是多模組專案「我明明在子模組寫了 33.3，為什麼跑起來是 32.1」的答案。
+本題的 guava 都是傳遞依賴，會被管理成 32.1.3-jre。
+若子模組在 `<dependencies>` **直接明寫** guava 33.3.0-jre，則該直接宣告可以覆寫父層管理值；不能把兩種情況混為一談。
 排查指令：
 
 ```bash
@@ -5209,9 +5261,9 @@ mvn dependency:tree -Dverbose -Dincludes=com.google.guava:guava
 </plugin>
 ```
 
-加上 `dependencyConvergence` 之後，情境 ①②③ 全部會在 `validate` 階段
-就讓建置失敗，並印出兩條完整路徑。你被迫做出**明確的決定**，
-而不是接受 Maven 幫你隨便選一個。
+只對原始情境加入 `dependencyConvergence` 時，①②會因版本不收斂而失敗；
+③已透過 `dependencyManagement` 統一版本，會通過。上面的修正版 POM 也會先收斂再檢查。
+這個規則檢查的是「各路徑是否使用同一版本」，**不保證該版本的 API 與所有依賴都相容**；仍需測試。
 
 </details>
 

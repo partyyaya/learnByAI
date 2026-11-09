@@ -5,7 +5,7 @@
 完成這一章後，你應該可以：
 
 1. 在 Nuxt 用三種層次管理 CSS：全域、scoped、CSS 變數（暗色模式）。
-2. 安裝並使用 **Tailwind CSS** 模組寫 utility-first 樣式。
+2. 安裝 **Tailwind CSS**（v4，用 `@tailwindcss/vite`）寫 utility-first 樣式。
 3. 用 **`@nuxt/image`** 的 `<NuxtImg>` / `<NuxtPicture>` 做自動最佳化的圖片。
 4. 用 **`@nuxt/fonts`** 自動最佳化字型，避免版面跳動。
 5. 知道 `@nuxt/ui`、`@nuxtjs/color-mode` 這類 UI 模組的定位。
@@ -57,10 +57,27 @@ body { background: var(--bg); color: var(--fg); }
 
 ## 2. Tailwind CSS
 
-Tailwind 是 utility-first 框架：不寫 CSS 檔，直接在 class 組樣式。安裝模組：
+Tailwind 是 utility-first 框架：不寫 CSS 檔，直接在 class 組樣式。Tailwind v4 官方的 Nuxt 安裝方式是 Vite plugin：
 
 ```bash
-npx nuxi module add @nuxtjs/tailwindcss
+npm install tailwindcss @tailwindcss/vite
+```
+
+```ts
+// nuxt.config.ts
+import tailwindcss from '@tailwindcss/vite'
+
+export default defineNuxtConfig({
+  css: ['~/assets/css/main.css'],
+  vite: {
+    plugins: [tailwindcss()],
+  },
+})
+```
+
+```css
+/* app/assets/css/main.css（放在檔案最上面） */
+@import "tailwindcss";
 ```
 
 裝好後直接在模板用 class：
@@ -85,7 +102,7 @@ npx nuxi module add @nuxtjs/tailwindcss
 - 響應式：`md:flex`、`lg:grid-cols-3`（前綴就是斷點）
 - 狀態：`hover:`、`focus:`、`dark:`
 
-> Tailwind 版本演進較快（v4 改用 Vite plugin + `@import "tailwindcss"` 的設定方式）。用 `nuxi module add` 裝的版本會幫你配好，class 用法基本不變；細節設定以你安裝版本的文件為準。
+> Tailwind v4 不需要 `tailwind.config.js`，自訂顏色、字型等主題設定改寫在 CSS 的 `@theme` 裡。你可能會在舊專案看到社群模組 `@nuxtjs/tailwindcss`：它目前（6.x）裝的仍是 Tailwind v3，class 用法大致相同，但設定方式是 v3 那一套；新專案照上面用 `@tailwindcss/vite` 即可。
 
 ---
 
@@ -169,7 +186,7 @@ const colorMode = useColorMode()
 </template>
 ```
 
-> 選型建議：**要一致又快** → `@nuxt/ui`；**只想要 Tailwind + 自己刻** → `@nuxtjs/tailwindcss`（+ 需要時加 `color-mode`）。本課範例走後者，保持透明。
+> 選型建議：**要一致又快** → `@nuxt/ui`；**只想要 Tailwind + 自己刻** → 第 2 節的 Tailwind（+ 需要時加 `color-mode`）。本章範例走後者；期末專題 `blog-demo` 則只用一支全域 CSS（`app/assets/css/main.css`，CSS 變數 + 少量 class），不依賴任何樣式框架。
 
 ---
 
@@ -185,17 +202,36 @@ const colorMode = useColorMode()
 
 ## 最後範例：好看的文章卡片頁（Tailwind + NuxtImg）
 
-> 用 Tailwind 排版、`<NuxtImg>` 放封面圖，做出響應式的文章卡片。先安裝 `@nuxtjs/tailwindcss` 與 `@nuxt/image`，並在 `public/covers/` 放三張圖（或改成你有的檔名）。
+> 用 Tailwind 排版、`<NuxtImg>` 放封面圖，做出響應式的文章卡片。先照第 2 節裝好 Tailwind（`npm install tailwindcss @tailwindcss/vite`）、用 `npx nuxi module add image` 裝 `@nuxt/image`，並在 `public/covers/` 放三張圖（或改成你有的檔名）。`nuxt.config.ts` 是在既有設定裡**加入**本章的設定，其餘檔案原樣建立即可跑。
 
-### `nuxt.config.ts`
+### `nuxt.config.ts`（加入 @nuxt/image 與 Tailwind）
+
+別整份覆蓋：前面章節加的模組（Pinia、`nuxt-auth-utils`）還有頁面在用，拿掉就會壞。加完後的完整內容如下：
 
 ```ts
+import tailwindcss from '@tailwindcss/vite'
+
 export default defineNuxtConfig({
-  modules: [
-    '@nuxtjs/tailwindcss',
-    '@nuxt/image',
-  ],
+  compatibilityDate: '2025-07-01',
+  devtools: { enabled: true },
+  // 前面章節加的保留（第 12 章有裝 @nuxtjs/seo 也一起留著），本章再加 @nuxt/image
+  modules: ['@pinia/nuxt', 'nuxt-auth-utils', '@nuxt/image'],
+  // app.head、runtimeConfig、routeRules 等前面章節的設定照舊保留
+
+  // 本章新增
+  css: ['~/assets/css/main.css'],
+  vite: {
+    plugins: [tailwindcss()],
+  },
 })
+```
+
+### `app/assets/css/main.css`
+
+第 2 節已經建好這個檔案的話，確認最上面有這一行即可：
+
+```css
+@import "tailwindcss";
 ```
 
 ### `app/pages/index.vue`
@@ -250,7 +286,7 @@ const posts = [
 
 - 縮放視窗 → 卡片從一欄變兩欄、三欄（Tailwind 響應式前綴）。
 - 封面圖經 `@nuxt/image` 最佳化（Network 面板可看到轉成 webp、依尺寸產生、lazy load）。
-- 全程沒寫任何 `.css` 檔（Tailwind utility class 全包）。
+- 除了 `main.css` 那一行 `@import`，沒寫任何 CSS（Tailwind utility class 全包）。
 
 > 若你沒有圖檔，先隨便放三張 jpg 到 `public/covers/`，或把 `src` 換成允許網域的外部圖片網址（記得在 `nuxt.config` 的 `image.domains` 加上該網域）。
 

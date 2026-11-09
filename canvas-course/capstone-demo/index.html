@@ -22,7 +22,7 @@
       linear-gradient(#f3f4f6 1px, transparent 1px) 0 0 / 24px 24px,
       linear-gradient(90deg, #f3f4f6 1px, transparent 1px) 0 0 / 24px 24px, #fafafa; }
     .layer { position: absolute; top: 0; left: 0; }
-    #overlay { touch-action: none; }   /* 防止觸控手勢搶走拖曳 */
+    #overlay { touch-action: none; }   /* 防止觸控手勢搶走拖曳(第 07 章 7.8) */
   </style>
 </head>
 <body>
@@ -41,7 +41,7 @@
     <canvas id="overlay" class="layer"></canvas>
   </div>
 
-  <div id="hint">選工具後拖曳新增 · 點擊選取 · 拖動移動 · 邊角縮放 · 雙擊文字編輯 · 空白處拖曳平移 · 滾輪縮放 · Ctrl/⌘+Z 復原 · Delete 刪除</div>
+  <div id="hint">選工具後拖曳新增 · 點擊選取 · 拖動移動 · 邊角縮放 · 方向鍵微移 · 雙擊文字編輯 · 空白處拖曳平移 · 滾輪縮放 · Ctrl/⌘+Z 復原 · Delete 刪除</div>
 
   <script src="whiteboard.js"></script>
 </body>

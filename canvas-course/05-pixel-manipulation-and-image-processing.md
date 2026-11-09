@@ -29,7 +29,7 @@ ctx.putImageData(imageData, 0, 0);
 
 `getImageData` 回傳的 `ImageData` 有三個東西:`width`、`height`、`data`。關鍵是 `data`:
 
-- 它是一個 **`Uint8ClampedArray`**(8 位元、自動夾在 0~255 的整數陣列)。
+- 它是一個 **`Uint8ClampedArray`**(8 位元整數陣列:寫入時自動四捨五入(.5 取偶數)並夾在 0~255)。
 - **每個像素佔 4 個格子:R、G、B、A**(紅、綠、藍、透明度,各 0~255)。
 - 像素是**逐列(row-major)**排列的:先第 0 列由左到右,再第 1 列……
 
@@ -52,6 +52,8 @@ const a = data[index + 3];
 
 > **心智模型**:`data` 是把二維的畫布「攤平成一條」的一維陣列。`y * width + x` 是「攤平後第幾個像素」,再 `× 4` 因為每像素 4 個數字。這個 `(y*width+x)*4` 公式,是所有像素操作的核心,寫到變肌肉記憶。
 
+> ⚠️ **讀回來的值,不一定是你寫進去的值**:`data` 是**非預乘**的 RGBA,畫布內部卻通常以**預乘 alpha**(存 `R×A/255` 而不是 R)儲存。半透明像素 `putImageData` 再 `getImageData` 讀回,RGB 會被量化(實測 Chromium:`(255,128,7,1)` 讀回 `(255,255,0,1)`),alpha=0 的像素 RGB 一律變 0——規格明文允許這種損失。所以逐像素加密/隱寫只在 alpha=255 的像素上才位元精確;對含透明的圖做模糊,透明區的 RGB=0 會滲進來形成黑邊,要先把 RGB 乘上 alpha 再卷積、最後除回去。此外,圖檔的色彩描述檔與廣色域圖片畫進 sRGB 畫布(`ImageData.colorSpace` 預設 `'srgb'`)時會被色彩轉換,部分隱私保護環境還會在讀回時加雜訊。
+
 ---
 
 ## 5.3 第一批濾鏡:灰階、反相、亮度
@@ -65,7 +67,7 @@ const data = imageData.data;
 for (let i = 0; i < data.length; i += 4) {   // 每次跳 4(一個像素)
   const r = data[i], g = data[i + 1], b = data[i + 2];
 
-  // ── 灰階:用加權平均(人眼對綠最敏感)──
+  // ── 灰階:用加權平均(人眼對綠最敏感;Rec.601 係數,見下方)──
   const gray = 0.299 * r + 0.587 * g + 0.114 * b;
   data[i] = data[i + 1] = data[i + 2] = gray;
 
@@ -82,7 +84,9 @@ for (let i = 0; i < data.length; i += 4) {   // 每次跳 4(一個像素)
 ctx.putImageData(imageData, 0, 0);   // 寫回
 ```
 
-> **重點**:`data` 是 `Uint8ClampedArray`,**算出來超過 255 自動變 255、低於 0 自動變 0**(clamp 的由來),所以調亮不用自己 `Math.min`。但這也意味著「過曝」的資訊會永久丟失。
+> **重點**:`data` 是 `Uint8ClampedArray`,**算出來超過 255 自動變 255、低於 0 自動變 0**(clamp 的由來;換成一般的 `Uint8Array` 就不會夾,400 會繞回 144),所以調亮不用自己 `Math.min`。但這也意味著「過曝」的資訊會永久丟失。
+
+> **灰階係數從哪來**:上面的係數是 Rec.601(類比電視、JPEG)的傳統值。sRGB 的原色跟 Rec.709 相同,對應係數是 0.2126/0.7152/0.0722,5.7 的 `ctx.filter = 'grayscale(1)'` 用的就是這組——純綠 `(0,255,0)` 用上面公式得 150,用 `ctx.filter` 得 182。兩者都是直接套在 gamma 編碼值上的近似,嚴格的亮度要先把 sRGB 解碼成線性值再加權。
 
 ---
 
@@ -90,7 +94,7 @@ ctx.putImageData(imageData, 0, 0);   // 寫回
 
 `putImageData` **不是一般的繪圖命令**,它有兩個反直覺的行為,踩過的人都記得:
 
-1. **它無視變換矩陣**:`translate`/`scale`/相機(第 03 章)對它**完全無效**。它的座標永遠是「畫布緩衝區的物理像素座標」。
+1. **它無視變換矩陣**:`translate`/`scale`/相機(第 03 章)對它**完全無效**。它的座標永遠是「畫布點陣的像素座標」(`canvas.width × canvas.height` 那一套);`getImageData` 也一樣(見第 03 章 3.4 的總表)。
 2. **它無視 `globalAlpha`、合成模式、clip**:它是「直接覆蓋像素」,不跟既有內容混合。
 
 ```js
@@ -98,7 +102,9 @@ ctx.translate(100, 100);
 ctx.putImageData(imageData, 0, 0);   // 還是畫在 (0,0),translate 沒用!
 ```
 
-> **心智模型**:`drawImage` 是「**畫**一張圖」(尊重所有狀態);`putImageData` 是「**直接把記憶體蓋上去**」(繞過一切狀態)。需要混合、變換時,先 `putImageData` 到一張離屏 canvas,再用 `drawImage` 把它畫上來——這也是處理 HiDPI 下像素操作的標準做法(因為 `getImageData` 拿的是物理像素,跟你 `scale(dpr)` 後的邏輯座標對不上)。
+> **心智模型**:`drawImage` 是「**畫**一張圖」(尊重所有狀態);`putImageData` 是「**直接把記憶體蓋上去**」(繞過一切狀態)。需要混合、變換時,先 `putImageData` 到一張離屏 canvas,再用 `drawImage` 把它畫上來。
+
+> ⚠️ **HiDPI 下尺寸要用 `canvas.width/height`**:本章範例的 `W`、`H` 都假設點陣和邏輯尺寸 1:1。若沿用第 01 章「`canvas.width = W*dpr` 再 `scale(dpr)`」的設定,`getImageData(0, 0, W, H)` 只讀到左上角 1/dpr² 的面積,卷積核的半徑也以點陣像素計(dpr=2 時 3×3 模糊看起來只剩一半強度)。像素操作一律用 `canvas.width/height`,直接在點陣尺寸上處理。
 
 ---
 
@@ -143,7 +149,7 @@ function convolve(ctx, W, H, kernel) {
           const px = Math.min(W - 1, Math.max(0, x + kx - half));   // 邊界夾住
           const py = Math.min(H - 1, Math.max(0, y + ky - half));
           const si = (py * W + px) * 4;
-          const wt = kernel[ky * side + kx];
+          const wt = kernel[ky * side + kx];   // 沒把核翻轉:嚴格說是 correlation,對稱核結果相同
           r += s[si] * wt; g += s[si + 1] * wt; b += s[si + 2] * wt;
         }
       }
@@ -159,8 +165,8 @@ convolve(ctx, W, H, [-1,-1,-1, -1,8,-1, -1,-1,-1]);
 ```
 
 > ⚠️ **兩個卷積的隱含契約,沒注意會以為程式壞了**:
-> ① 上面的 `convolve` 沒做正規化,所以 **kernel 權重總和要自己先湊成 1**(均值模糊就是每格 `1/9`,**不能**傳整數 `1`,否則整張過曝變白)。要更通用就加一個 `divisor` 參數,把累加結果除以權重總和。
-> ② 邊緣偵測核(權重和=0)算出的值多半是負或接近 0,寫進 `Uint8ClampedArray` 被夾成黑——所以**正確結果就是「黑底、只有邊緣發亮」**,不是「白底黑線稿」。要白底黑線,得再加一個 `offset`(bias,例如結果 +128)或對結果取絕對值。
+> ① 上面的 `convolve` 沒做正規化,所以 **kernel 權重總和要自己先湊成 1**(均值模糊就是每格 `1/9`,**不能**傳整數 `1`,否則整張過曝變白)。要更通用就加一個 `divisor` 參數,把累加結果除以權重總和(邊緣核的總和是 0,要寫成 `divisor || 1`)。
+> ② 邊緣偵測核(權重和=0)算出的值多半是負或接近 0,寫進 `Uint8ClampedArray` 被夾成黑——所以**正確結果就是「黑底、只有邊緣發亮」**,不是「白底黑線稿」。要別的樣子就改寫回的值:`+128`(bias)→ 灰底浮雕;取絕對值 → 仍是黑底,但邊緣兩側都亮;`255 - |值|` → 白底黑線。
 
 > **心智模型**:卷積就是「**每個像素抄一點鄰居的值**」。抄法(kernel)決定效果——抄平均→模糊;放大跟鄰居的差異→銳化/找邊緣。這正是 CNN(卷積神經網路)裡「卷積」的同一個概念,做完這章你會對 [Browser AI 課](../browserAI/README.md) 的卷積更有感。
 
@@ -183,13 +189,14 @@ convolve(ctx, W, H, [-1,-1,-1, -1,8,-1, -1,-1,-1]);
 
 優化原則:
 
-1. **`willReadFrequently` 提示**:若你會頻繁讀像素,建立 context 時提示瀏覽器把畫布放在 CPU 端,省掉來回搬運:
+1. **`willReadFrequently` 提示**:若你會頻繁讀像素,建立 context 時提示瀏覽器把畫布放在 CPU 端,省掉來回搬運。代價是這張畫布的一般繪圖(`fill`、`drawImage`、`filter`)也改走 CPU、變慢,所以只在「讀」佔大宗時用;而且必須在**第一次** `getContext` 就傳,之後再傳會被忽略:
    ```js
    const ctx = canvas.getContext('2d', { willReadFrequently: true });
    ```
 2. **減少回讀次數**:一次取一大塊、批次處理,不要在迴圈裡一格一格 `getImageData`(那是災難)。
 3. **只取需要的區域**:`getImageData(x, y, smallW, smallH)` 而不是整張。
 4. **能不碰像素就別碰**:很多效果(模糊、亮度、對比)可以用下一節的 `ctx.filter` 在 GPU 上做,完全不用回讀。
+5. **一次寫一整個像素**:`new Uint32Array(imageData.data.buffer)` 跟 `data` 共用同一塊記憶體,一格就是一個像素,填色、複製、比對顏色時讀寫次數少 4 倍。注意位元組序:幾乎所有裝置都是小端序,記憶體裡的 `[R,G,B,A]` 會讀成 `0xAABBGGRR`(不透明紅是 `0xFF0000FF`),而且經由它寫入不會 clamp。
 
 ---
 
@@ -207,7 +214,9 @@ ctx.drawImage(img, 0, 0);
 ctx.filter = 'none';                         // 用完還原(狀態機!第 02 章)
 ```
 
-> **決策原則**:**能用 `ctx.filter` 達成的效果(模糊、灰階、亮度、對比、色相旋轉…),就別自己 `getImageData` 卷積**——前者 GPU 跑、零回讀、快得多。只有當你需要 `ctx.filter` 做不到的**自訂演算法**(影像加密的逐像素 XOR、特殊的邊緣演算法、讀取某點顏色做命中測定)時,才動用 `getImageData`。
+> **決策原則**:**能用 `ctx.filter` 達成的效果(模糊、灰階、亮度、對比、色相旋轉…),就別自己 `getImageData` 卷積**——前者 GPU 跑、零回讀、快得多。只有當你需要 `ctx.filter` 做不到的**自訂演算法**(影像加密的逐像素 XOR、讀取某點顏色做命中測定、要拿到數值做判斷的分析)時,才動用 `getImageData`。自訂卷積核也不一定要回讀:`ctx.filter` 接受 `url(#濾鏡id)`,指向頁面上 SVG 的 `<feConvolveMatrix>` 就能套任意核。
+
+> 不支援 `ctx.filter` 的瀏覽器(例如部分 Safari 版本)會靜默忽略它、照常畫出沒有濾鏡的圖;依賴它之前先偵測:`'filter' in CanvasRenderingContext2D.prototype`。
 
 ---
 
@@ -221,16 +230,18 @@ ctx.filter = 'none';                         // 用完還原(狀態機!第 02 �
 SecurityError: The canvas has been tainted by cross-origin data.
 ```
 
-這是**安全機制**:防止惡意網站把你登入後才看得到的跨域圖片(例如你的私人相片)畫到畫布、再讀出像素偷走。畫布一旦「被污染」,就**永久禁止讀像素**(`getImageData`、`toDataURL`、`toBlob` 全部失效)。
+(這是 Chrome 的訊息;其他瀏覽器文字不同,但錯誤名稱都是 `SecurityError`。)這是**安全機制**:防止惡意網站把你登入後才看得到的跨域圖片(例如你的私人相片)畫到畫布、再讀出像素偷走。畫布一旦「被污染」,就**永久禁止讀像素**(`getImageData`、`toDataURL`、`toBlob` 全部失效)。
 
 解法:圖片伺服器要回傳允許跨域的標頭,且你載入時要宣告:
 
 ```js
 const img = new Image();
-img.crossOrigin = 'anonymous';   // 宣告要用 CORS 方式載入
+img.crossOrigin = 'anonymous';   // 宣告要用 CORS 方式載入;必須在設 src 之前
 img.src = 'https://other-domain.com/pic.jpg';
 // 且對方伺服器必須回 Access-Control-Allow-Origin
 ```
+
+兩種失敗的症狀不同:**沒設** `crossOrigin` → 圖照常顯示,但畫布被污染;**設了**但對方沒回 `Access-Control-Allow-Origin` → 圖片整個載入失敗(觸發 `onerror`)。
 
 > 這個機制跟你 [影像加密課](../image-encryption-course/07-canvas-rendering-and-hardening.md) 的威脅模型直接相關:Canvas 的像素讀取能力強大,瀏覽器才用「同源 + CORS」嚴格把關。把影片畫到畫布再 `getImageData`(第 04 章)也受同樣限制——跨域影片同樣會污染畫布。
 
@@ -238,7 +249,7 @@ img.src = 'https://other-domain.com/pic.jpg';
 
 每個通道只有 0~255 共 256 階,而且是**整數**。每做一次運算,結果都得「四捨五入回整數 + 夾在 0~255 之間」,這一步會產生兩種不可逆的損失:
 
-**① 捨入誤差會累積**——小數被砍掉,做越多層濾鏡誤差滾越大。以某像素亮度 `100`,先調暗到 1/3、再調亮 3 倍為例(理論上該回到 100):
+**① 捨入誤差會累積**——小數被四捨五入掉,做越多層濾鏡誤差滾越大。以某像素亮度 `100`,先調暗到 1/3、再調亮 3 倍為例(理論上該回到 100):
 
 ```
 100 ÷ 3 = 33.33…  →  存回 Uint8 只能是 33   ← 小數 .33 永遠消失
@@ -273,20 +284,21 @@ for (let i = 0; i < buf.length; i++) {
 
 ## 5.9 綜合範例:即時調整亮度的滑桿
 
-把像素操作接到 UI,做一個即時濾鏡。注意這裡刻意用 `willReadFrequently` + 從原圖重算(而不是反覆在已處理的結果上疊加,以免累積誤差):
+把像素操作接到 UI,做一個即時濾鏡。注意這裡刻意從原圖重算(而不是反覆在已處理的結果上疊加,以免累積誤差)。原圖只讀一次、之後全是寫入,所以不需要 `willReadFrequently`:
 
 ```js
-const ctx = canvas.getContext('2d', { willReadFrequently: true });
-let original;   // 暫存原圖像素,每次都從它重算
+const ctx = canvas.getContext('2d');
+let original, out;   // original:原圖像素,每次都從它重算;out:輸出緩衝,重複使用
 
 img.decode().then(() => {
   ctx.drawImage(img, 0, 0, W, H);
   original = ctx.getImageData(0, 0, W, H);   // 只取一次原圖
+  out = ctx.createImageData(W, H);           // 輸出緩衝建一次就好,不必每次 input 都配置
 });
 
 slider.addEventListener('input', () => {
+  if (!original) return;                              // 圖還沒解碼完
   const delta = Number(slider.value);                 // -100 ~ 100
-  const out = ctx.createImageData(W, H);
   const src = original.data, dst = out.data;
   for (let i = 0; i < src.length; i += 4) {
     dst[i]     = src[i]     + delta;   // clamp 自動處理溢位
@@ -311,31 +323,31 @@ slider.addEventListener('input', () => {
 const url = canvas.toDataURL('image/png');        // 也可 'image/jpeg', 0.8(第二參數是品質)
 img.src = url;
 
-// 2. toBlob:非同步,回傳 Blob(大圖首選——不佔記憶體、可直接下載/上傳)
+// 2. toBlob:非同步,回傳 Blob(大圖首選——編碼不卡主執行緒、沒有 base64 膨脹,可直接下載/上傳)
 canvas.toBlob((blob) => {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = 'canvas.png';
   a.click();
-  URL.revokeObjectURL(a.href);                     // 用完釋放,別漏記憶體
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);   // 等下載開始後再釋放,別漏記憶體
 }, 'image/png');
 ```
 
 | 方法 | 回傳 | 適合 |
 |------|------|------|
 | `toDataURL(type, quality)` | 同步、base64 字串(`data:` URL) | 小圖、要當字串存 / 塞 `src` |
-| `toBlob(cb, type, quality)` | 非同步、`Blob` | 大圖、下載、上傳(省記憶體) |
-| `OffscreenCanvas.convertToBlob()` | `Promise<Blob>`(Worker 內用) | 背景執行緒匯出(第 09 章) |
+| `toBlob(cb, type, quality)` | 非同步、`Blob` | 大圖、下載、上傳(不卡主執行緒) |
+| `OffscreenCanvas.convertToBlob()` | `Promise<Blob>`(主執行緒、Worker 都能用) | 背景執行緒匯出(第 09 章) |
 
-> ⚠️ **三個坑**:① **匯出的是緩衝區的物理像素**——HiDPI 下你會得到 `CSS尺寸 × dpr` 的大圖(通常是好事,更清晰);要固定輸出尺寸就另開一張指定大小的離屏 canvas 重畫再匯出。② **被污染的畫布(5.8 的跨域圖片)會讓 `toDataURL`/`toBlob` 直接拋 `SecurityError`**——跟 `getImageData` 是同一道安全閘。③ `toDataURL` 的 base64 對大圖又慢又佔記憶體(字串膨脹約 1.33 倍),大圖一律用 `toBlob`。
+> ⚠️ **四個坑**:① **匯出的是緩衝區的物理像素**——HiDPI 下你會得到 `CSS尺寸 × dpr` 的大圖(通常是好事,更清晰);要固定輸出尺寸就另開一張指定大小的離屏 canvas 重畫再匯出。② **被污染的畫布(5.8 的跨域圖片)會讓 `toDataURL`/`toBlob` 直接拋 `SecurityError`**——跟 `getImageData` 是同一道安全閘。③ `toDataURL` 是同步編碼(大圖會卡住主執行緒),base64 字串又膨脹約 1.33 倍,大圖一律用 `toBlob`。④ **JPEG 沒有透明**:透明區匯出後變黑色,要白底就先 `fillRect` 鋪底再畫;不支援的 `type` 會靜默退回 PNG,要確認就看 `blob.type`。
 
 ---
 
 ## 5.11 本章小結與下一步
 
 - **第三種典範**:`getImageData` → 改 `data` → `putImageData`,直接讀寫像素。
-- **`ImageData` 結構**:`Uint8ClampedArray`,每像素 RGBA 4 格,逐列排列;核心公式 **`(y*width+x)*4`**;超界自動 clamp 到 0~255。
-- **`putImageData` 的脾氣**:無視變換、透明、clip——它是「直接蓋記憶體」,不是繪圖命令。
+- **`ImageData` 結構**:`Uint8ClampedArray`,每像素 RGBA 4 格(非預乘,半透明像素讀回會失真),逐列排列;核心公式 **`(y*width+x)*4`**;寫入時四捨五入並 clamp 到 0~255。
+- **`putImageData` 的脾氣**:無視變換、透明、clip——它是「直接蓋記憶體」,不是繪圖命令;get/put 都用點陣座標,HiDPI 下尺寸用 `canvas.width/height`。
 - **卷積核**:模糊/銳化/邊緣偵測的通用框架,本質是「每個像素抄一點鄰居」,跟 CNN 同源。
 - **效能真相**:`getImageData` 是昂貴的 GPU→CPU 回讀;用 `willReadFrequently`、減少回讀、能用 **`ctx.filter`(GPU)就別自己卷積**。
 - **兩大限制**:跨域圖片**污染畫布**(安全機制,連結影像加密課)、8 位元精度誤差。

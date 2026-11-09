@@ -7,7 +7,7 @@
 1. 分清「路由中介層（route middleware）」與第 8 章的「伺服器中介層（server middleware）」。
 2. 用 `defineNuxtRouteMiddleware` 寫具名、全域、行內三種中介層。
 3. 用 `navigateTo` 導向、用 `abortNavigation` 取消導覽。
-4. 理解中介層在 SSR 首次載入與 client 端切頁時各跑一次，並正確處理。
+4. 理解中介層在 SSR 首次載入時伺服器、瀏覽器（hydration）各跑一次，之後切頁在瀏覽器跑，並正確處理。
 5. 做出一個「未登入就踢到登入頁」的路由守衛雛形。
 
 ---
@@ -20,7 +20,7 @@ Nuxt 有兩個「中介層」，名字像但完全不同：
 |---|---|---|
 | 位置 | `server/middleware/` | `app/middleware/` |
 | 何時跑 | 每個 **HTTP 請求**進伺服器時 | 每次**頁面導覽**（換路由）時 |
-| 在哪跑 | 只在伺服器 | 伺服器（首次載入）+ 瀏覽器（之後切頁） |
+| 在哪跑 | 只在伺服器 | 伺服器（首次載入）+ 瀏覽器（hydration 時再跑一次，以及之後每次切頁） |
 | 典型用途 | 記錄請求、解析 token 掛到 `event.context` | 擋頁面、依權限導向、確認資料 |
 | 拿到什麼 | `event`（請求物件） | `to` / `from`（路由物件） |
 
@@ -47,7 +47,7 @@ export default defineNuxtRouteMiddleware((to, from) => {
 | 不 return（或 `return`） | 放行，繼續導覽 |
 | `return navigateTo('/login')` | 改導到別的路由 |
 | `return abortNavigation()` | 取消這次導覽（留在原地） |
-| `return abortNavigation(createError({...}))` | 取消並顯示錯誤頁 |
+| `return abortNavigation(createError({ ..., fatal: true }))` | 取消並顯示錯誤頁（要加 `fatal: true`，站內切頁才會顯示，見第 4 節） |
 
 ---
 
@@ -128,10 +128,12 @@ return navigateTo('https://外部網站', { external: true })       // 外部連
 ```js
 export default defineNuxtRouteMiddleware((to) => {
   if (to.params.id === 'secret') {
-    return abortNavigation(createError({ statusCode: 403, statusMessage: '禁止進入' }))
+    return abortNavigation(createError({ status: 403, message: '禁止進入', fatal: true }))
   }
 })
 ```
+
+帶錯誤取消時記得加 `fatal: true`：沒有它，只有首次載入（伺服器端）會顯示錯誤頁；站內切頁時只會取消導覽、停在原頁，畫面看不出發生了什麼。
 
 > ⚠️ 一定要 `return`。寫 `navigateTo('/x')` 不 return，導覽不會被攔下來。
 
@@ -141,8 +143,8 @@ export default defineNuxtRouteMiddleware((to) => {
 
 路由中介層預設在**兩端都跑**：
 
-- **首次載入**某網址（直接輸入網址、重整）→ 在**伺服器**跑一次。
-- 之後在站內用 `<NuxtLink>` 切頁 → 在**瀏覽器**跑。
+- **首次載入**某網址（直接輸入網址、重整）→ 先在**伺服器**跑一次；HTML 送到瀏覽器、hydration 時，**瀏覽器會再跑一次**。
+- 之後在站內用 `<NuxtLink>` 切頁 → 只在**瀏覽器**跑。
 
 所以中介層裡不要直接用只有瀏覽器才有的東西（`localStorage`、`window`）。要嘛用 `useState`/`useCookie`（兩端都可讀，第 11 章），要嘛判斷環境：
 
@@ -153,7 +155,17 @@ export default defineNuxtRouteMiddleware((to) => {
 })
 ```
 
-想讓某個中介層**只在 client 跑**，就用上面的 `if (import.meta.server) return` 環境判斷——`definePageMeta` 並**沒有**「讓中介層只在某一端跑」這種設定，別去那裡找。多數守衛其實應該兩端都跑（否則 SSR 首屏會先閃出受保護內容再被踢走）。
+「只在某一端跑」的控制都寫在中介層裡面，用 `import.meta.server` / `import.meta.client` 判斷。若只是不想在首次載入時於瀏覽器重跑一次（例如中介層裡有較重的工作），可以只跳過 hydration 那一次：
+
+```js
+export default defineNuxtRouteMiddleware((to) => {
+  const nuxtApp = useNuxtApp()
+  if (import.meta.client && nuxtApp.isHydrating && nuxtApp.payload.serverRendered) return
+  // 伺服器首次渲染、之後的站內切頁都會跑到這裡
+})
+```
+
+多數守衛其實應該兩端都跑（否則 SSR 首屏會先閃出受保護內容再被踢走）。
 
 > 為什麼要在 server 也擋？因為使用者可能**直接貼網址**進受保護頁。若只在 client 擋，伺服器會先把內容算出來送出去（內容外洩 + 畫面閃一下），才被前端踢走。**兩端都擋才安全。**
 
@@ -283,7 +295,7 @@ function login() {
 - 未登入時點「後台」或直接開 `/admin` → 被 `auth` 踢到 `/login?redirect=/admin`。
 - 在登入頁按「一鍵登入」→ `loggedIn` 設 true 並導回 `/admin`。
 - 進到後台按「登出」→ `loggedIn` 設 false 並回首頁；再點後台又被擋。
-- console 每次切頁都有 `[導覽]` 記錄（global 中介層）。
+- console 每次切頁都有 `[導覽]` 記錄（global 中介層）；重整頁面時也會印一次，那是 hydration 時在瀏覽器重跑的那一次。
 
 ---
 

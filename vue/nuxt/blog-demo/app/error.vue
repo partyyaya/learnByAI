@@ -9,8 +9,8 @@ function goHome() {
 
 <template>
   <div class="error-wrap">
-    <h1>{{ error?.statusCode || 500 }}</h1>
-    <p>{{ error?.statusMessage || '發生了一點問題' }}</p>
+    <h1>{{ error?.status || 500 }}</h1>
+    <p>{{ error?.message || '發生了一點問題' }}</p>
     <button class="btn" @click="goHome">回首頁</button>
   </div>
 </template>

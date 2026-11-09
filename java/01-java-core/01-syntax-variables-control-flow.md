@@ -1896,9 +1896,10 @@ public class OrderCalculator {
     }
 
     public static void main(String[] args) {
-        System.out.println(calculate("4.35", 100, "GOLD"));    // 298.00 (435*0.8=348, -50)
-        System.out.println(calculate("4.35", 100, "NORMAL"));  // 385.00 (435, -50)
+        System.out.println(calculate("4.35", 100, "GOLD"));    // 348.00 (435*0.8=348，未達 1000)
+        System.out.println(calculate("4.35", 100, "NORMAL"));  // 435.00 (未達 1000)
         System.out.println(calculate("19.99", 3, "SILVER"));   // 53.97  (59.97*0.9, 未達門檻)
+        System.out.println(calculate("1250", 1, "GOLD"));    // 950.00 (折扣後剛好 1000，再減 50)
 
         try {
             calculate("100", 1, "PLATINUM");
@@ -1911,7 +1912,7 @@ public class OrderCalculator {
 
 **三個關鍵點：**
 
-1. 折扣率也用 `BigDecimal`，不要 `subtotal.multiply(BigDecimal.valueOf(0.8))`——`0.8` 這個 `double` 本身就不精確。
+1. 固定折扣率用 `new BigDecimal("0.8")` 能直接表達十進位意圖。`BigDecimal.valueOf(0.8)` 也會透過 `Double.toString` 得到精確的 `0.8`，與 `new BigDecimal(0.8)` 不同；但 `valueOf(0.1 + 0.2)` 無法補救先前浮點運算已產生的誤差。
 2. 門檻比較用 `compareTo`，不是 `equals`。
 3. `setScale` 放在**最後**。中途每一步都 setScale 會累積捨入誤差。
 

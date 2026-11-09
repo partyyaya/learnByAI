@@ -264,9 +264,11 @@ function frame(){
   if (ball.y < ball.r || ball.y > H-ball.r) ball.vy *= -1;
   const nb = bounds();
   // 髒區域 = 上一幀 ∪ 這一幀(擦掉舊位置、畫上新位置)
-  const dx = Math.min(prev.x, nb.x), dy = Math.min(prev.y, nb.y);
-  const dw = Math.max(prev.x+prev.w, nb.x+nb.w) - dx;
-  const dh = Math.max(prev.y+prev.h, nb.y+nb.h) - dy;
+  // 再外擴到整數像素 + 1px:邊緣落在小數座標時,clip 與填色都會抗鋸齒、只「部分擦掉」邊緣像素,
+  // 一幀幀累積就成了拖尾殘影(把下面 3 行的 Math.floor/ceil 與 ±1 拿掉就看得到)
+  const dx = Math.floor(Math.min(prev.x, nb.x)) - 1, dy = Math.floor(Math.min(prev.y, nb.y)) - 1;
+  const dw = Math.ceil(Math.max(prev.x+prev.w, nb.x+nb.w)) + 1 - dx;
+  const dh = Math.ceil(Math.max(prev.y+prev.h, nb.y+nb.h)) + 1 - dy;
   drawBg(dx, dy, dw, dh);                  // 只重畫這一小塊,不是整片畫面
   ctx.save();
   ctx.beginPath(); ctx.rect(dx, dy, dw, dh); ctx.clip();
@@ -297,9 +299,10 @@ class Shape {
   draw(ctx) {}
   containsPoint(p) { return false; }
   getBounds() { return { x: this.x, y: this.y, w: 0, h: 0 }; }
-  toJSON() { return { type: this.constructor.name, x: this.x, y: this.y, fill: this.fill }; }   // 白名單:只存純資料
+  toJSON() { return { type: this.constructor.type, x: this.x, y: this.y, fill: this.fill }; }   // 白名單:只存純資料;type 是子類的 static type
 }
 class RectShape extends Shape {
+  static type = 'rect';                                 // 型別標記寫死,不靠 constructor.name(壓縮後會被改名,8.8)
   constructor(props) { super(Object.assign({ w: 90, h: 56 }, props)); }
   draw(ctx) { ctx.fillStyle = this.fill; ctx.fillRect(this.x - this.w / 2, this.y - this.h / 2, this.w, this.h); }
   containsPoint(p) { return Math.abs(p.x - this.x) <= this.w / 2 && Math.abs(p.y - this.y) <= this.h / 2; }
@@ -307,6 +310,7 @@ class RectShape extends Shape {
   toJSON() { return Object.assign(super.toJSON(), { w: this.w, h: this.h }); }
 }
 class CircleShape extends Shape {
+  static type = 'circle';
   constructor(props) { super(Object.assign({ r: 34 }, props)); }
   draw(ctx) { ctx.fillStyle = this.fill; ctx.beginPath(); ctx.arc(this.x, this.y, this.r, 0, Math.PI * 2); ctx.fill(); }
   containsPoint(p) { const dx = p.x - this.x, dy = p.y - this.y; return dx * dx + dy * dy <= this.r * this.r; }
@@ -314,6 +318,7 @@ class CircleShape extends Shape {
   toJSON() { return Object.assign(super.toJSON(), { r: this.r }); }
 }
 class TextShape extends Shape {
+  static type = 'text';
   constructor(props) { super(Object.assign({ text: '你好 Canvas', size: 24 }, props)); }
   draw(ctx) {
     ctx.fillStyle = this.fill; ctx.font = this.size + 'px sans-serif';
@@ -326,9 +331,9 @@ class TextShape extends Shape {
 }
 
 // ---- 序列化(8.8):場景 → 純資料;載入用型別註冊表重建實例 ----
-const SHAPE_REGISTRY = { RectShape, CircleShape, TextShape };
+const SHAPE_REGISTRY = { rect: RectShape, circle: CircleShape, text: TextShape };   // 型別標記 → 類別
 function serialize(scene) { return scene.map(s => s.toJSON()); }               // 回傳全新純資料,天然就是深拷貝
-function deserialize(data) { return data.map(d => new SHAPE_REGISTRY[d.type](d)); }
+function deserialize(data) { return data.filter(d => SHAPE_REGISTRY[d.type]).map(d => new SHAPE_REGISTRY[d.type](d)); }   // 認不得的型別略過
 
 // ---- 快照式 Undo/Redo(8.7 做法 A) ----
 class History {

@@ -71,11 +71,11 @@ targetMap (WeakMap)
 
 ## 1.3.1 Vue 3.5 reactivity 重寫：從集合到 `Link` 雙向鏈結
 
-> 這是全章最重要的一節。你在網路上看到的舊教學（含本課早期版本）大多停在 `dep = Set<effect>` 的模型，那是 **3.3 以前**的實作。追 3.5 原始碼會看到完全不同的東西。
+> 這是全章最重要的一節。你在網路上看到的舊教學大多停在 `dep = Set<effect>` 的模型，那是 **3.3 以前**的實作。追 3.5 原始碼會看到完全不同的東西。
 
 ### 先搞清楚版本：3.4 和 3.5 各重構過一次，內容不一樣
 
-這是最多教學（也包括本課早期版本）搞混的地方。兩次重構的目標完全不同：
+這是最多教學搞混的地方。兩次重構的目標完全不同：
 
 | 版本 | 做了什麼 | 原始碼特徵 |
 |------|----------|-----------|
@@ -301,7 +301,7 @@ ref(raw) → new RefImpl(raw)
 
 上面省略 shallow／readonly 等分支；`shallowRef` 不會主動把內部物件轉成 Proxy，
 但若傳進去的本來就是 Proxy，它也不會把既有響應式移除。
-對照 Vue 3.5.13 的 [ref.ts](https://github.com/vuejs/core/blob/v3.5.13/packages/reactivity/src/ref.ts)，查看 `createRef`、`RefImpl` 的 constructor 與 getter/setter；內部欄位不是應用程式應直接操作的 API。
+對照 Vue 3.5.41 的 [ref.ts](https://github.com/vuejs/core/blob/v3.5.41/packages/reactivity/src/ref.ts)，查看 `createRef`、`RefImpl` 的 constructor 與 getter/setter；內部欄位不是應用程式應直接操作的 API。
 
 ### 1.7.2 兩層依賴：換整包與改欄位走不同路徑
 
@@ -374,7 +374,7 @@ console.log(nested.total)          // 1：nested 也仍指向舊的巢狀 Proxy
 解構造成的是變數綁定與原屬性的斷連，取得的物件本身仍可能有響應式。參考 [Reactivity in Depth](https://vuejs.org/guide/extras/reactivity-in-depth.html)。
 
 另外，深層代理通常在 getter 讀到巢狀物件時才建立，並使用代理快取，
-不是呼叫 `reactive` 時就把整棵樹遍歷完。詳見 [baseHandlers.ts](https://github.com/vuejs/core/blob/v3.5.13/packages/reactivity/src/baseHandlers.ts) 的 `get` 與本章 1.10。
+不是呼叫 `reactive` 時就把整棵樹遍歷完。詳見 [baseHandlers.ts](https://github.com/vuejs/core/blob/v3.5.41/packages/reactivity/src/baseHandlers.ts) 的 `get` 與本章 1.10。
 
 ---
 
@@ -439,12 +439,12 @@ function useDebouncedRef(value, delay = 300) {
 
 當 effect 中又執行了另一個 effect，作用中的訂閱者不能被覆蓋錯亂。
 
-- **3.2 之前**用一個 effect stack（陣列）push/pop；
-- **3.2 起移除 stack**，改用 `effect.parent` 記住上一層；
+- **3.0～3.2.29** 用一個 effect stack（陣列）push/pop；
+- **3.2.30 起移除 stack**，改用 `effect.parent` 記住上一層；
 - **3.4 起移除 `parent`**，改用區域變數在 `run()` 裡存/還原上一個作用中的 effect；
 - **3.5 起**這個區域變數叫 `activeSub`（連同 `shouldTrack`、`link.prevActiveLink` 一起存還原）。
 
-所以「Vue 用 stack 管理 activeEffect」是過時說法——1.4 的 mini 版已改用區域變數 `prev` 還原，就是對齊這個真實做法。
+所以「Vue 用 stack 管理 activeEffect」是過時說法——1.4 的 mini 版用區域變數 `prev` 還原，就是對齊這個真實做法。
 
 ### B. cleanup（避免過期依賴）
 
@@ -471,7 +471,7 @@ function useDebouncedRef(value, delay = 300) {
 重點：
 
 - **`TriggerOpTypes`**（`ADD` / `DELETE` / `SET` / `CLEAR`）決定要不要順帶觸發**迭代依賴**——例如新增/刪除一個 key 會影響 `Object.keys`、`v-for`，所以 ADD/DELETE 會 trigger `ITERATE_KEY`。
-- **陣列**特別處理：`length` 有自己的 dep；`push`/`pop`/`splice` 等會改 length 的方法、以及 `includes`/`indexOf`/`lastIndexOf` 這類「依賴每個索引」的方法，都被 array instrumentation 特別包裝過（否則會漏 track 或無限迴圈）。
+- **陣列**特別處理：`length` 有自己的 dep；`push`/`pop`/`splice` 等會改 length 的方法、以及 `includes`/`indexOf`/`lastIndexOf` 這類「依賴每個索引」的方法，都被 array instrumentation 特別包裝過（否則會漏 track 或無限迴圈）。**3.5 起**這些包裝獨立成 `arrayInstrumentations.ts`，並把 `forEach`/`map`/`filter`/`find`/`some`/`every`/`reduce`/`join`、`for...of`（`Symbol.iterator`）等迭代方法也包起來：整個陣列只 track 一次 `ARRAY_ITERATE_KEY`，不再逐一 track 每個索引，大陣列的依賴收集成本因此明顯下降。
 
 ### Map / Set：`collectionHandlers.ts`
 

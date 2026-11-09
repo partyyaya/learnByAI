@@ -1414,8 +1414,9 @@ public class FilteringAuditRecorder implements AuditRecorder {
 ```
 
 > **`<optional>true</optional>` 是 starter 開發的關鍵技巧**：
-> 它讓 `spring-jdbc` 出現在**編譯期**（讓你可以寫 `@ConditionalOnClass(DataSource.class)`），
-> 但**不會傳遞給使用者**。使用者如果沒有 JDBC，`@ConditionalOnClass` 就不成立，那段組態不生效。
+> 它讓 `spring-jdbc` 出現在**編譯期**，但**不會傳遞給使用者**。
+> 要判斷這個可選依賴是否存在，應檢查它提供的 `JdbcTemplate.class`。
+> `javax.sql.DataSource` 屬於 JDK 的 `java.sql` 模組，不能用來判斷是否引入 `spring-jdbc`。
 >
 > 如果不加 `optional`，使用者只要加你的 starter 就被迫拉進 JDBC——這就是「重依賴 starter」的來源。
 
@@ -1473,6 +1474,7 @@ public class AuditProperties {
 package com.example.audit.autoconfigure;
 
 import com.example.audit.AuditRecorder;
+import com.example.audit.FilteringAuditRecorder;
 import com.example.audit.JdbcAuditRecorder;
 import com.example.audit.LoggingAuditRecorder;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -1484,6 +1486,7 @@ import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
 
@@ -1508,7 +1511,7 @@ public class AuditAutoConfiguration {
     }
 
     @Configuration(proxyBeanMethods = false)
-    @ConditionalOnClass(DataSource.class)                       // ⑥ 有 JDBC 才可能
+    @ConditionalOnClass(JdbcTemplate.class)                     // ⑥ 有可選的 spring-jdbc 才啟用此分支
     @ConditionalOnProperty(prefix = "shop.audit", name = "target", havingValue = "JDBC")
     static class JdbcRecorderConfiguration {
 
@@ -1533,14 +1536,14 @@ public class AuditAutoConfiguration {
 | ③ | 這一行才會讓 `AuditProperties` 進容器並完成綁定 |
 | ④ | 自動組態一律用 lite 模式，避免產生 CGLIB 代理拖慢啟動 |
 | ⑤ | **starter 的黃金規則**：所有 `@Bean` 都要有 `@ConditionalOnMissingBean`，使用者永遠能覆寫 |
-| ⑥ | `@ConditionalOnClass` 用來擋「classpath 根本沒有 JDBC」的情況，這一步很快（讀 metadata 索引） |
+| ⑥ | 檢查 `spring-jdbc` 提供的 `JdbcTemplate`；JDK 本身已有 `DataSource`，不能用它判斷這個可選依賴 |
 | ⑦ | `@ConditionalOnBean` 擋「有 JDBC 類別但沒設定 DataSource」的情況 |
 | ⑧ | **設定一定要有人用**。`excluded-actions` 如果只是宣告在 `AuditProperties` 裡卻沒有任何程式讀它，使用者設了會以為有效 —— 這是 starter 最容易累積的一種「假設定」 |
 
 > **⑥ 和 ⑦ 為什麼都要？**
-> - 沒有 ⑥：使用者沒有 JDBC 時，`JdbcAuditRecorder` 這個類別的方法簽章裡有 `DataSource`，
->   載入這個組態類別時會 `NoClassDefFoundError`。
-> - 沒有 ⑦：使用者有 JDBC jar 但沒設定資料庫，`@Bean` 方法需要注入 `DataSource` 會失敗。
+> - ⑥ 表達本 starter 的啟用條件：JDBC 分支需有可選的 `spring-jdbc`。此例的 recorder 用標準 JDBC，
+>   並不是因為缺 `spring-jdbc` 就無法載入 `DataSource`。
+> - 沒有 ⑦：即使類別存在，沒有真正的 `DataSource` Bean，`@Bean` 方法注入仍會失敗。
 >
 > **兩層防護：先擋類別，再擋 Bean。** 這是 Spring Boot 官方自動組態的標準寫法。
 
@@ -1792,6 +1795,7 @@ import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import javax.sql.DataSource;
 
@@ -1843,9 +1847,9 @@ class AuditAutoConfigurationTest {
     }
 
     @Test
-    void classpath沒有DataSource類別時應正常啟動() {
+    void classpath沒有SpringJdbc時應正常啟動() {
         // ★ FilteredClassLoader 模擬「使用者專案沒有 spring-jdbc」的情境 ★
-        runner.withClassLoader(new FilteredClassLoader(DataSource.class))
+        runner.withClassLoader(new FilteredClassLoader(JdbcTemplate.class))
               .withPropertyValues("shop.audit.target=JDBC")
               .run(context -> {
                   assertThat(context).hasNotFailed();     // 不能因為缺少類別就啟動失敗

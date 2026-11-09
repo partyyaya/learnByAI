@@ -9,11 +9,12 @@ const { data: post, error } = await useFetch(`/api/posts/${route.params.id}`, {
   key: `post-${route.params.id}`,
 })
 
+// fatal: true → 首次載入與站內切頁都會顯示 error.vue
 if (error.value) {
-  throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  throw createError({ status: 404, message: '找不到文章', fatal: true })
 }
 
-// SEO 跟著文章內容變（因為上面已 await，SSR 端就是正確值）
+// SEO 跟著文章內容變（SSR 會等 useFetch 抓完，所以 server 端就是正確值）
 useSeoMeta({
   title: () => post.value?.title,
   description: () => post.value?.content?.slice(0, 80),
@@ -29,7 +30,7 @@ useSeoMeta({
     <h1>{{ post.title }}</h1>
     <p class="meta muted">
       作者：{{ post.author?.name || '站長' }} ·
-      {{ new Date(post.createdAt).toLocaleString('zh-TW') }}
+      {{ new Date(post.createdAt).toLocaleString('zh-TW', { timeZone: 'Asia/Taipei' }) }}
     </p>
     <p style="white-space: pre-wrap; margin-top: 16px">{{ post.content }}</p>
   </article>

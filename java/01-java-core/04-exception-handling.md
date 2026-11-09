@@ -2243,6 +2243,7 @@ public class InMemoryTodoRepository implements TodoRepository {
                 throw new java.io.IOException("Disk quota exceeded");
             }
             storage.put(todo.id(), todo);
+            sequence = Math.max(sequence, todo.id()); // 也支援直接匯入既有 id
             return todo;
         } catch (java.io.IOException e) {
             // ✅ Repository 的職責：包成統一例外，保留 cause 與上下文

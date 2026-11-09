@@ -89,13 +89,14 @@
 
 | 服務 | 主版本數 | 存在多久 |
 |---|---|---|
-| **Stripe** | 從 2011 年至今**沒有 v2** | 13+ 年 —— 全靠日期版本 + Expand-Contract |
+| **Stripe** | `/v1` 與 `/v2` 命名空間共存 | 日期版本與新命名空間並用；不是每個變更都建立新主版本 |
 | **Twilio** | `/2010-04-01/` 用到現在 | 14+ 年沒換過路徑版本 |
 | **GitHub REST** | v3 用了十年，v4 是 GraphQL（不是 REST v4） | — |
 | **Slack** | 沒有版本號 | 靠「只加不改」 |
 
-**這些是全世界最複雜、consumer 最多的 API，而它們幾乎不出新主版本。**
-不是因為它們不變 —— 是因為它們用 6.7 的手法變。
+**大型 API 會結合相容演進與必要的新介面，而非每次變更都複製一個主版本。**
+Stripe 現行 `/v1`／`/v2` 共存可參見 [官方 API v2 說明](https://docs.stripe.com/api-v2-overview)；
+日期版本與 6.7 的 Expand–Contract 仍是降低既有 consumer 遷移成本的方法。
 
 ### 6.2.3 為什麼語意化版本（SemVer）不適用於 API
 
@@ -1344,6 +1345,9 @@ oasdiff changelog openapi-base.yaml openapi-revision.yaml --format markdown
 name: API 相容性檢查
 
 on: [pull_request]
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   breaking-change:
@@ -1352,25 +1356,56 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
-      - name: 取出 base 分支的契約
-        run: git show origin/${{ github.base_ref }}:api/orders-api.yaml > /tmp/base.yaml
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
 
-      - name: 產生本次的契約
-        run: ./mvnw -q spring-boot:run &
-             sleep 30
-             curl -s localhost:8080/v3/api-docs.yaml > /tmp/head.yaml
+      - name: 取出並打包 base 版本的完整契約
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          base_dir=$(mktemp -d "$RUNNER_TEMP/api-base.XXXXXX")
+          git archive "$BASE_SHA" api | tar -x -C "$base_dir"
+          npx --yes @redocly/cli@1.34.23 bundle "$base_dir/api/orders-api.yaml" -o /tmp/base.yaml
+
+      - uses: actions/setup-java@v4
+        with: { java-version: '21', distribution: temurin, cache: maven }
+
+      - name: 產生本次實作的契約
+        run: |
+          set -euo pipefail
+          ./mvnw -q spring-boot:run -Dspring-boot.run.profiles=contract-check &
+          app_pid=$!
+          trap 'kill "$app_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for i in {1..60}; do
+            if curl -fsS --max-time 2 localhost:8080/actuator/health >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          [ "$ready" = true ] || { echo '應用程式未就緒'; exit 1; }
+          curl -fsS --max-time 10 localhost:8080/v3/api-docs.yaml > /tmp/generated.yaml
+          npx --yes @redocly/cli@1.34.23 bundle /tmp/generated.yaml -o /tmp/head.yaml
 
       - name: 檢查破壞性變更
         run: |
-          docker run --rm -v /tmp:/specs tufin/oasdiff breaking \
-            /specs/base.yaml /specs/head.yaml --fail-on ERR
+          python3 scripts/build-oasdiff-ignore.py api/breaking-changes-allowlist.json /tmp
+          docker run --rm -v /tmp:/specs:ro tufin/oasdiff:v1.35.0 breaking \
+            /specs/base.yaml /specs/head.yaml --fail-on ERR \
+            --err-ignore /specs/oasdiff-err-ignore.txt --warn-ignore /specs/oasdiff-warn-ignore.txt
 
       - name: 產生變更報告（貼到 PR）
         if: always()
         run: |
-          docker run --rm -v /tmp:/specs tufin/oasdiff changelog \
+          [ -s /tmp/base.yaml ] && [ -s /tmp/head.yaml ] || exit 0
+          docker run --rm -v /tmp:/specs:ro tufin/oasdiff:v1.35.0 changelog \
             /specs/base.yaml /specs/head.yaml --format markdown > /tmp/changelog.md
-          gh pr comment ${{ github.event.number }} --body-file /tmp/changelog.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/changelog.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.number }}
 ```
 
 **「貼變更報告到 PR」比「只擋住」有用得多**：
@@ -1395,25 +1430,79 @@ reviewer 可以直接看到「這個 PR 對契約做了什麼」。
 **有時候你真的要做破壞性變更**（例如修一個資安漏洞）。
 CI 不能只是「擋住然後沒辦法」。
 
-```yaml
-# api/breaking-changes-allowlist.yaml
-# 每一筆都要有 PR 連結、理由、核准人、以及通知記錄
-allowed:
-  - id: 2026-08-19-remove-idnumber
-    change: "response-property-removed: CustomerDetail.idNumber"
-    reason: "個資外洩修補（資安事件 SEC-2026-014）。此欄位本不該回傳。"
-    approvedBy: ["tech-lead@shop.example", "dpo@shop.example"]
-    prUrl: "https://github.com/shop/api/pull/1842"
-    consumersNotified: true
-    notifiedAt: "2026-08-18T09:00:00Z"
-    expiresAt: "2026-09-19"          # ★ allowlist 條目要過期，避免永久累積
+allowlist 採 JSON，讓產生器只需 Python 標準函式庫。先執行固定版本
+`oasdiff breaking --format singleline`，再取診斷中的「HTTP method + API path + 原始描述」
+作為 `ignoreLine`，保留描述的反引號，不自行拼接規則名稱與 DTO 欄位。
+**不要複製 `error at /specs/head.yaml, in API` 前綴、尾端 `[check-id].` 或統計行**：
+原生 ignore parser 會把第一個 `/...` 當成 API 路徑，檔案路徑會使匹配失效。
+下例已依實測格式撰寫；實際使用仍需改成自己契約的診斷。
+
+```json
+{
+  "allowed": [{
+    "id": "2026-08-19-remove-idnumber",
+    "level": "ERR",
+    "ignoreLine": "GET /customers/{customerId} removed the required property `idNumber` from the response with the `200` status",
+    "reason": "個資外洩修補（SEC-2026-014）",
+    "approvedBy": ["tech-lead@shop.example", "dpo@shop.example"],
+    "prUrl": "https://github.com/shop/api/pull/1842",
+    "consumersNotified": true,
+    "notifiedAt": "2026-08-18T09:00:00Z",
+    "expiresAt": "2026-09-19"
+  }]
+}
 ```
 
 ```bash
-oasdiff breaking /tmp/base.yaml /tmp/head.yaml \
-  --fail-on ERR \
-  --exclude-elements $(yq -r '.allowed[].change' api/breaking-changes-allowlist.yaml | tr '\n' ',')
+# 先取得實際診斷行，由 reviewer 核准精確例外
+docker run --rm -v /tmp:/specs:ro tufin/oasdiff:v1.35.0 breaking \
+  /specs/base.yaml /specs/head.yaml --format singleline > /tmp/breaking-singleline.txt
+python3 scripts/build-oasdiff-ignore.py api/breaking-changes-allowlist.json /tmp
+docker run --rm -v /tmp:/specs:ro tufin/oasdiff:v1.35.0 breaking \
+  /specs/base.yaml /specs/head.yaml --fail-on ERR \
+  --err-ignore /specs/oasdiff-err-ignore.txt --warn-ignore /specs/oasdiff-warn-ignore.txt
 ```
+
+```python
+# scripts/build-oasdiff-ignore.py
+import json
+import re
+import sys
+from datetime import date
+from pathlib import Path
+
+source, output = Path(sys.argv[1]), Path(sys.argv[2])
+today = date.today()   # CI 使用 UTC；expiresAt 當日即視為過期
+manifest = json.loads(source.read_text()) if source.exists() else {"allowed": []}
+ignores = {"ERR": [], "WARN": []}
+ids = set()
+for entry in manifest["allowed"]:
+    identifier = entry["id"]
+    if not identifier or identifier in ids:
+        raise SystemExit("例外 id 不可空白或重複")
+    ids.add(identifier)
+    expiry = entry["expiresAt"]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", expiry) or date.fromisoformat(expiry) <= today:
+        raise SystemExit(f"例外 {identifier} 已過期或日期錯誤")
+    if not (entry.get("reason") and entry.get("approvedBy") and entry.get("prUrl")
+            and entry.get("consumersNotified") is True and entry.get("notifiedAt")):
+        raise SystemExit(f"例外 {identifier} 缺少核准／通知紀錄")
+    line, level = entry["ignoreLine"], entry["level"]
+    if level not in ignores or not isinstance(line, str) or not line.strip() or "\n" in line or "\r" in line:
+        raise SystemExit(f"例外 {identifier} 的等級／診斷行錯誤")
+    if not re.match(r"^(?:(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE) /\S+ |components )", line):
+        raise SystemExit(f"例外 {identifier} 必須使用 API 路徑與原始描述，不含檔案路徑前綴")
+    ignores[level].append(line)
+output.mkdir(parents=True, exist_ok=True)
+for level, lines in ignores.items():
+    (output / f"oasdiff-{level.lower()}-ignore.txt").write_text(
+        "\n".join(lines) + ("\n" if lines else ""))
+```
+
+`--exclude-elements` 用來排除 description／examples 等元素類別，不能作為個別變更的 allowlist。
+ignore 檔的診斷文字與工具版本有關，升版時必須重新檢查；核准人名只是紀錄，實際審核仍由
+PR 權限／review 流程執行。規則測試必須涵蓋「核准項通過、到期被擋、另一個破壞仍被擋」。
+官方介面：[oasdiff ignore changes](https://github.com/oasdiff/oasdiff/blob/main/docs/BREAKING-CHANGES.md#ignoring-specific-breaking-changes)。
 
 **`expiresAt` 很重要**：allowlist 沒有過期機制的話，
 三年後會有 200 條「當初核准過」的例外，然後 CI 檢查形同虛設。
@@ -1779,7 +1868,7 @@ Day 270  410 → 404
 
 **誤區 1：「有需求就開 v2」**
 6.2.1：一個 v2 的一次性成本 14～36 人天，持續成本是每次變更 +30～60%。
-Stripe 13 年沒有 v2。
+Stripe 以日期版本維持長期相容，也有並存的 /v1 與 /v2；不能推論「永遠不需新版本」。
 
 **誤區 2：「API 版本要用 SemVer」**
 6.2.3：`MINOR` / `PATCH` 對 consumer 不可見。只有 `MAJOR` 或日期有意義。
@@ -2908,7 +2997,7 @@ export default {
 ## 6.14 驗收清單
 
 - [ ] 我能算出「開一個 v2」的一次性與持續成本，並說明為什麼它是最後手段。
-- [ ] 我知道 Stripe 13 年沒有 v2、Twilio 14 年沒換路徑版本，也知道它們是怎麼做到的。
+- [ ] 我能區分 Stripe 的日期版本與 /v1、/v2 命名空間，並說明相容演進和新版本各適用何時。
 - [ ] 我知道 SemVer 不適用於 API 的外部版本（`MINOR`/`PATCH` 對 consumer 不可見）。
 - [ ] 我能用判定表在 30 秒內判斷任何變更是不是破壞性的。
 - [ ] 我能說出三種最危險的變更（型別、單位／語意、分頁基準／排序），並解釋它們為什麼「靜默」。

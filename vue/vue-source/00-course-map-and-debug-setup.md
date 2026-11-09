@@ -48,18 +48,30 @@ Vue 3 是 monorepo，核心在 `packages` 下。你先抓這些包就好：
 ### 1) 取得與安裝
 
 ```bash
-git clone https://github.com/vuejs/core.git
+# 鎖定本課對應的 3.5.x tag；main 分支日後會換成 3.6（響應式核心改寫），與本課對不上
+git clone --depth 1 --branch v3.5.41 https://github.com/vuejs/core.git
 cd core
-pnpm install
+corepack enable   # 使用 package.json 指定的 pnpm 版本；Node 需 >= 20
+pnpm install      # 倉庫限定 pnpm，用 npm／yarn 安裝會被 preinstall 擋下
 ```
 
-### 2) 啟動對應 playground / 測試命令
+### 2) 選一種方式下斷點
 
 ```bash
-# 依你習慣選擇：跑測試或跑 playground
+# A. 單元測試（最方便）：vitest 直接跑 packages/*/src 的 TS 原始碼
+#    在 VS Code 的「JavaScript Debug Terminal」執行，就能停在原始碼斷點（或在原始碼加 debugger）
 pnpm test reactivity
-pnpm dev
+
+# B. 瀏覽器
+pnpm dev     # 只會以 watch 模式產生 packages/vue/dist/vue.global.js（含 sourcemap），不會開伺服器
+pnpm serve   # 另開終端，瀏覽 http://localhost:3000/packages/vue/examples/composition/ 下的範例，
+             # 在 DevTools 依 sourcemap 對原始碼下斷點
+
+# C. 追 SFC 編譯時：本機 SFC Playground
+pnpm dev-sfc
 ```
+
+> `pnpm dev` 不是 playground：它只負責持續重建 `vue.global.js`。範例 HTML（如 `packages/vue/examples/composition/todomvc.html`）以 `<script src="../../dist/vue.global.js">` 載入它，你也可以照這個寫法自己放一個最小案例 HTML。
 
 ### 3) 建立最小追蹤案例
 

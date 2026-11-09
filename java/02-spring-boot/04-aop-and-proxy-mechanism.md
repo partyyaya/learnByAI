@@ -2781,7 +2781,7 @@ public void save(Item item) {
 
 需求：
 
-1. 自訂註解 `@RateLimit(permitsPerSecond = 10, key = "'user:' + #userId")`。
+1. 自訂註解 `@RateLimit(key = "'user:' + #userId")`，速率與突發容量沿用第 02 章全域設定。
 2. `key` 用 SpEL 解析，支援引用方法參數。
 3. 超過速率時拋 `RateLimitExceededException`。
 4. 用第 02 章寫的 `RateLimiter` 介面。
@@ -2810,9 +2810,6 @@ public @interface RateLimit {
      */
     String key() default "";
 
-    /** 每秒允許次數。0 表示用全域預設值。 */
-    double permitsPerSecond() default 0;
-
     /** 被擋下時的錯誤訊息 */
     String message() default "請求過於頻繁，請稍後再試";
 }
@@ -2837,6 +2834,7 @@ public class RateLimitExceededException extends RuntimeException {
 ```java
 package com.example.shop.ratelimit;
 
+import com.example.ratelimit.RateLimiter;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
@@ -2933,6 +2931,7 @@ public class OrderController {
 ```java
 package com.example.shop.ratelimit;
 
+import com.example.ratelimit.RateLimiter;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.aop.AopAutoConfiguration;
@@ -3011,7 +3010,7 @@ class RateLimitAspectTest {
             assertThatThrownBy(() -> service.doSomething(1L))
                     .isInstanceOf(RateLimitExceededException.class);
 
-            assertThat(service.executed).isZero();        // ★ 驗證「沒有發生」★
+            assertThat(service.getExecutedCount()).isZero();        // ★ 驗證「沒有發生」★
         });
     }
 
@@ -3037,6 +3036,8 @@ class RateLimitAspectTest {
 
         @RateLimit
         public void globalLimited() { executed++; }
+
+        public int getExecutedCount() { return executed; }
     }
 
     @Configuration(proxyBeanMethods = false)

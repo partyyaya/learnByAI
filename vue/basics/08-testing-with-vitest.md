@@ -63,7 +63,7 @@ Vitest 是 Vite 官方的測試框架——**跟 Vite 共用同一份設定與�
 npm install -D vitest @vue/test-utils jsdom
 ```
 
-> 建專案時如果 `npm create vue@latest` 那步選了 `Add Vitest for unit testing? › Yes`（第 1 章我們選 No），這些就已經裝好了，可直接跳到寫測試。
+> 建專案時如果在 `npm create vue@latest` 的功能清單勾了 Vitest（第 1 章我們沒勾），這三個套件已經裝好，`environment: 'jsdom'` 也設在獨立的 `vitest.config.js` 裡（下面改 `vite.config.js` 那步可以跳過）。但它產生的腳本叫 `test:unit`，請照下方補上 `test` / `test:run` / `coverage` 三個腳本；之後裝 `@vitest/coverage-v8` 時，版本要跟專案裡的 `vitest` 一致（先 `npm ls vitest` 看版號，再裝同版號的 `@vitest/coverage-v8`）。
 
 在 `vite.config.js` 加上 `test` 區塊。注意 `defineConfig` 要從 `vitest/config` 匯入，才有 `test` 的型別與行為：
 
@@ -635,7 +635,7 @@ describe('useFetch', () => {
     expect(loading.value).toBe(true) // 同步階段就已經開始載入
     await flushPromises() // 等所有 pending 的 promise 跑完
 
-    // useFetch 現在會多帶一個 { signal }（競態保護），所以用 objectContaining 比對
+    // useFetch 會帶 { signal }（競態保護），所以用 objectContaining 比對
     expect(fetch).toHaveBeenCalledWith('/api/posts', expect.objectContaining({ signal: expect.anything() }))
     expect(data.value).toEqual([{ id: 1, title: 'Hello' }])
     expect(error.value).toBe(null)
@@ -709,7 +709,7 @@ describe('useFetch', () => {
 - **`vi.stubGlobal('fetch', ...)`**：把全域的 `fetch` 換成假的；`afterEach` 用 `vi.unstubAllGlobals()` 還原，避免污染其他測試檔。
 - **`flushPromises()`**：等掉所有排隊中的 Promise 與 Vue 更新。測非同步時比 `nextTick` 好用（`nextTick` 只等一輪畫面更新，不等你的 `await fetch`）。
 
-最後一個測試特別有價值：它驗證的是**「url 傳 getter 就會自動重抓」這個第 7 章 `PostDetail` 賴以運作的行為**。手動測要開瀏覽器點兩篇文章，自動化測只要幾行——這正是測試划算的地方。
+倒數第二個測試特別有價值：它驗證的是**「url 傳 getter 就會自動重抓」這個第 7 章 `PostDetail` 賴以運作的行為**。手動測要開瀏覽器點兩篇文章，自動化測只要幾行——這正是測試划算的地方。
 
 > 想連 `fetch` 這層都不自己接？實務常見的做法是用 [MSW](https://mswjs.io/) 在網路層攔截請求，測試裡就能寫「假的後端」。本課先用最小成本的 `vi.stubGlobal`，概念是一樣的：**把不受你控制的東西換成你控制得了的**。
 
@@ -868,7 +868,7 @@ describe('UserBar', () => {
 
 第 7 章的守衛「未登入不准進 `/admin`」是很值得測的邏輯：它牽涉路由、store 兩邊，手動測要開無痕視窗試，自動化測則是幾行。
 
-測試環境沒有瀏覽器網址列，所以用 **`createMemoryHistory()`**（把歷史紀錄放記憶體）：
+第 7 章的 `src/router/index.js` 匯出了 `routes` 與 `authGuard`，測試直接 import 它們——測的就是正式程式，有人改壞守衛，這裡就會紅燈。要換掉的只有 history：測試環境沒有瀏覽器網址列，所以用 **`createMemoryHistory()`**（把歷史紀錄放記憶體），而且每個測試都建一個新的 router（不用匯出的 `router`，它是整個 app 共用的單例，測試之間會互相污染）：
 
 ```js
 // src/router/router.spec.js
@@ -877,35 +877,18 @@ import { mount } from '@vue/test-utils'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { createPinia, setActivePinia } from 'pinia'
 import { useAuthStore } from '../stores/auth'
+import { routes, authGuard } from './index'
 import PostCard from '../components/PostCard.vue'
 
-// 測試用的極簡頁面元件：測路由時我們只在意「跑到哪一頁」，不在意頁面長什麼樣
-const Page = (name) => ({ template: `<div>${name}</div>` })
-
-// 路由表與守衛跟第 7 章的 src/router/index.js 一致，只有 history 與頁面元件換掉
+// 路由表與守衛都來自第 7 章的 src/router/index.js，只把 history 換成 memory history
 function createTestRouter() {
   const router = createRouter({
     // 測試環境沒有真的瀏覽器網址列，用 memory history
     history: createMemoryHistory(),
-    routes: [
-      { path: '/', name: 'home', component: Page('PostList') },
-      { path: '/posts/:id', name: 'post', component: Page('PostDetail') },
-      { path: '/login', name: 'login', component: Page('Login') },
-      {
-        path: '/admin',
-        name: 'admin',
-        component: Page('Admin'),
-        meta: { requiresAuth: true },
-      },
-    ],
+    routes,
   })
 
-  router.beforeEach((to) => {
-    const auth = useAuthStore()
-    if (to.meta.requiresAuth && !auth.isLoggedIn) {
-      return { name: 'login', query: { redirect: to.fullPath } }
-    }
-  })
+  router.beforeEach(authGuard)
 
   return router
 }
@@ -970,23 +953,36 @@ npm install -D @vitest/coverage-v8
 npm run coverage
 ```
 
+下面是章末最後範例專案（Vitest 3.2.7）跑出來的報告：
+
 ```text
  % Coverage report from v8
-------------------|---------|----------|---------|---------|
-File              | % Stmts | % Branch | % Funcs | % Lines |
-------------------|---------|----------|---------|---------|
-All files         |     100 |    98.55 |   94.73 |     100 |
- components       |     100 |    96.42 |    87.5 |     100 |
-  LoginForm.vue   |     100 |      100 |      80 |     100 |
-  PostCard.vue    |     100 |     87.5 |     100 |     100 |
- composables      |     100 |      100 |     100 |     100 |
-  useFetch.js     |     100 |      100 |     100 |     100 |
-  useForm.js      |     100 |      100 |     100 |     100 |
-  validators.js   |     100 |      100 |     100 |     100 |
- stores           |     100 |      100 |     100 |     100 |
-  auth.js         |     100 |      100 |     100 |     100 |
-------------------|---------|----------|---------|---------|
+------------------|---------|----------|---------|---------|-------------------
+File              | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s 
+------------------|---------|----------|---------|---------|-------------------
+All files         |     100 |    97.53 |   95.65 |     100 |                   
+ components       |     100 |    96.42 |    87.5 |     100 |                   
+  LoginForm.vue   |     100 |      100 |      80 |     100 |                   
+  PostCard.vue    |     100 |     87.5 |     100 |     100 | 13                
+  SearchInput.vue |     100 |      100 |     100 |     100 |                   
+  UserBar.vue     |     100 |      100 |     100 |     100 |                   
+ composables      |     100 |    97.67 |     100 |     100 |                   
+  useFetch.js     |     100 |    91.66 |     100 |     100 | 30                
+  useForm.js      |     100 |      100 |     100 |     100 |                   
+  validators.js   |     100 |      100 |     100 |     100 |                   
+ pages            |     100 |      100 |     100 |     100 |                   
+  Admin.vue       |     100 |      100 |     100 |     100 |                   
+  Login.vue       |     100 |      100 |     100 |     100 |                   
+  PostDetail.vue  |     100 |      100 |     100 |     100 |                   
+  PostList.vue    |     100 |      100 |     100 |     100 |                   
+ router           |     100 |      100 |     100 |     100 |                   
+  index.js        |     100 |      100 |     100 |     100 |                   
+ stores           |     100 |      100 |     100 |     100 |                   
+  auth.js         |     100 |      100 |     100 |     100 |                   
+------------------|---------|----------|---------|---------|-------------------
 ```
+
+> 注意 `pages/` 那四個頁面：沒有任何測試掛載它們，報告卻是 100%。這是 Vitest 3 預設的 v8 覆蓋率把 `.vue` 檔對回原始碼時不夠精確——檔案只要被 import 過，沒執行到的 `setup` 也可能被算成已覆蓋。加上 `npm run coverage -- --coverage.experimentalAstAwareRemapping=true`（Vitest 3.2 起提供）重跑，四個頁面就會正確顯示 0%；Vitest 4 起這已是預設行為，不用加。
 
 怎麼看它：**低覆蓋率是明確的壞消息，高覆蓋率不是明確的好消息**。80% 的專案裡那 20% 沒測到的通常正是錯誤處理分支（最容易出事的地方），值得補；但 100% 覆蓋率完全可以由一堆沒有斷言的爛測試堆出來。把它當「找沒測到的角落」的地圖，不要當 KPI。
 
@@ -1003,7 +999,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - run: npm ci
       - run: npm run test:run
 ```
@@ -1038,7 +1034,7 @@ jobs:
 2. **`toBe` 拿來比物件**：`expect({a:1}).toBe({a:1})` 必失敗，物件／陣列要用 `toEqual`。
 3. **測試之間互相污染**：Pinia 沒在 `beforeEach` 重建、`vi.stubGlobal` 沒還原、模組層級的變數被改到——症狀是「單獨跑會過、一起跑就失敗」（或反過來）。
 4. **斷言內部狀態而非畫面**：`expect(wrapper.vm.count).toBe(1)` 能過，但重構就壞，而且沒保證使用者看到 1。測 `wrapper.text()`。
-5. **忘了裝 plugin**：元件用到 store 或 router 卻沒給 `global.plugins`，會噴 `getActivePinia was called with no active Pinia` 或 `Failed to resolve component: router-link`。
+5. **忘了裝 plugin**：元件用到 store 或 router 卻沒給 `global.plugins`，會噴 `"getActivePinia()" was called but there was no active Pinia`（前提是當下沒有任何 active pinia；`beforeEach` 已經 `setActivePinia` 的話，store 這邊不會報錯）或 `Failed to resolve component: router-link`。
 6. **真的打了 API**：測試裡出現 `fetch('https://...')` 就是紅旗——測試會慢、會因為網路而隨機失敗。一律 mock。
 7. **測 `computed` 卻等 `nextTick`**：值是同步重算的，不用等；要等的是 DOM。搞混會讓你以為「響應式壞了」。
 8. **用 CSS class 或 DOM 結構當選擇器**：改樣式就壞。用 `data-testid`。
@@ -1077,8 +1073,13 @@ vue-test-lab/
    │  ├─ useFetch.js        + useFetch.spec.js
    │  ├─ useForm.js         + useForm.spec.js
    │  └─ validators.js      + validators.spec.js
+   ├─ pages/                ← 第 7 章 capstone 的四個頁面（路由表會 import）
+   │  ├─ PostList.vue
+   │  ├─ PostDetail.vue
+   │  ├─ Login.vue
+   │  └─ Admin.vue
    ├─ router/
-   │  └─ router.spec.js
+   │  └─ index.js           + router.spec.js
    └─ stores/
       └─ auth.js            + auth.spec.js
 ```
@@ -1245,6 +1246,151 @@ export const useAuthStore = defineStore('auth', () => {
 
   return { user, isLoggedIn, login, logout }
 })
+```
+
+路由與四個頁面（與第 7 章 capstone 相同，這裡再列一次）：`router.spec.js` 會 import 這份 `router/index.js` 的 `routes` 與 `authGuard`，路由表又 import 了頁面元件，所以頁面檔也要在。
+
+```js
+// src/router/index.js
+import { createRouter, createWebHistory } from 'vue-router'
+import PostList from '../pages/PostList.vue'
+import { useAuthStore } from '../stores/auth'
+
+// routes 與 authGuard 都匯出：第 8 章的測試會直接 import 它們，測的就是這份正式程式
+export const routes = [
+  { path: '/', name: 'home', component: PostList },
+  {
+    path: '/posts/:id',
+    name: 'post',
+    component: () => import('../pages/PostDetail.vue'),
+  },
+  { path: '/login', name: 'login', component: () => import('../pages/Login.vue') },
+  {
+    path: '/admin',
+    name: 'admin',
+    component: () => import('../pages/Admin.vue'),
+    meta: { requiresAuth: true },
+  },
+]
+
+// 登入守衛：沒登入不准進 requiresAuth 的頁
+export function authGuard(to) {
+  const auth = useAuthStore()
+  if (to.meta.requiresAuth && !auth.isLoggedIn) {
+    return { name: 'login', query: { redirect: to.fullPath } }
+  }
+}
+
+export const router = createRouter({
+  history: createWebHistory(),
+  routes,
+})
+
+router.beforeEach(authGuard)
+```
+
+```vue
+<!-- src/pages/PostList.vue -->
+<script setup>
+import { useFetch } from '../composables/useFetch'
+
+const { data: posts, loading, error } = useFetch(
+  'https://jsonplaceholder.typicode.com/posts?_limit=10'
+)
+</script>
+
+<template>
+  <section>
+    <h1>文章列表</h1>
+    <p v-if="loading">載入中…</p>
+    <p v-else-if="error">載入失敗：{{ error.message }}</p>
+    <template v-else>
+      <article v-for="post in posts" :key="post.id" class="card">
+        <router-link :to="{ name: 'post', params: { id: post.id } }">
+          <strong>{{ post.title }}</strong>
+        </router-link>
+      </article>
+    </template>
+  </section>
+</template>
+```
+
+```vue
+<!-- src/pages/PostDetail.vue -->
+<script setup>
+import { useRoute, useRouter } from 'vue-router'
+import { useFetch } from '../composables/useFetch'
+
+const route = useRoute()
+const router = useRouter()
+
+// url 寫成 getter：route.params.id 一變，useFetch 內的 watchEffect 自動重抓
+const { data: post, loading, error } = useFetch(
+  () => `https://jsonplaceholder.typicode.com/posts/${route.params.id}`
+)
+</script>
+
+<template>
+  <section>
+    <button class="ghost" @click="router.back()">← 返回</button>
+    <p v-if="loading">載入中…</p>
+    <p v-else-if="error">載入失敗：{{ error.message }}</p>
+    <article v-else class="card">
+      <h1>{{ post.title }}</h1>
+      <p>{{ post.body }}</p>
+    </article>
+  </section>
+</template>
+```
+
+```vue
+<!-- src/pages/Login.vue -->
+<script setup>
+import { ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useAuthStore } from '../stores/auth'
+
+const name = ref('')
+const auth = useAuthStore()
+const route = useRoute()
+const router = useRouter()
+
+function submit() {
+  if (!name.value.trim()) return
+  auth.login(name.value.trim())
+  // 登入後導回原本想去的頁（守衛存在 query.redirect），沒有就回首頁
+  router.push(route.query.redirect || '/')
+}
+</script>
+
+<template>
+  <section>
+    <h1>登入</h1>
+    <p v-if="route.query.redirect">
+      登入後將帶你回：<code>{{ route.query.redirect }}</code>
+    </p>
+    <form class="card" @submit.prevent="submit">
+      <input v-model="name" placeholder="輸入暱稱即可（示範）" />
+      <button type="submit">登入</button>
+    </form>
+  </section>
+</template>
+```
+
+```vue
+<!-- src/pages/Admin.vue -->
+<script setup>
+import { useAuthStore } from '../stores/auth'
+const auth = useAuthStore()
+</script>
+
+<template>
+  <section>
+    <h1>後台（需登入）</h1>
+    <p>只有登入者看得到這頁。目前登入者：<strong>{{ auth.user.name }}</strong></p>
+    <p>直接在網址列輸入 <code>/admin</code> 未登入時，會被守衛導去登入頁。</p>
+  </section>
+</template>
 ```
 
 三個元件（`PostCard.vue` 見第 7 節、`SearchInput.vue` 見第 9 節、`UserBar.vue` 見第 11 節，內容相同，這裡再列一次）：
@@ -1446,22 +1592,22 @@ $ npm run test:run
 
  RUN  v3.2.7 /path/to/vue-test-lab
 
- ✓ src/stores/auth.spec.js (4 tests) 5ms
- ✓ src/composables/useFetch.spec.js (5 tests) 20ms
- ✓ src/components/SearchInput.spec.js (3 tests) 25ms
- ✓ src/components/UserBar.spec.js (3 tests) 23ms
- ✓ src/components/PostCard.spec.js (5 tests) 40ms
- ✓ src/components/LoginForm.spec.js (5 tests) 36ms
- ✓ src/router/router.spec.js (4 tests) 78ms
- ✓ src/composables/validators.spec.js (11 tests) 3ms
- ✓ src/composables/useForm.spec.js (6 tests) 3ms
+ ✓ src/composables/useForm.spec.js (6 tests) 6ms
+ ✓ src/composables/useFetch.spec.js (5 tests) 13ms
+ ✓ src/components/SearchInput.spec.js (3 tests) 30ms
+ ✓ src/components/PostCard.spec.js (5 tests) 34ms
+ ✓ src/components/UserBar.spec.js (3 tests) 35ms
+ ✓ src/components/LoginForm.spec.js (5 tests) 49ms
+ ✓ src/router/router.spec.js (4 tests) 77ms
+ ✓ src/composables/validators.spec.js (11 tests) 2ms
+ ✓ src/stores/auth.spec.js (4 tests) 4ms
 
  Test Files  9 passed (9)
       Tests  46 passed (46)
-   Duration  1.52s
+   Duration  1.65s
 ```
 
-**46 個測試、1.5 秒。** 手動點完這些情境（四種表單狀態、收藏切換、v-model 雙向、五種請求結果含競態、登入登出、三種守衛情境）至少要好幾分鐘，而且你不會每次改程式都重點一遍——但機器會。
+**46 個測試、1.7 秒。** 手動點完這些情境（四種表單狀態、收藏切換、v-model 雙向、五種請求結果含競態、登入登出、三種守衛情境）至少要好幾分鐘，而且你不會每次改程式都重點一遍——但機器會。
 
 ---
 

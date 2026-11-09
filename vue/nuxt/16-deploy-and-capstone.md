@@ -28,10 +28,10 @@ npm run build
 node .output/server/index.mjs   # 預設監聽 3000
 ```
 
-或用 Nuxt 內建預覽：
+直接用 `node` 啟動**不會讀 `.env`**：`NUXT_SESSION_PASSWORD`、`DATABASE_URL` 這些要先 export 進環境變數（正式環境則在平台設定，見第 3 節），否則登入會失敗。本機只是想看看 build 結果，用 Nuxt 內建預覽比較省事，它會讀 `.env`：
 
 ```bash
-npm run preview                  # 等同跑起 .output 來看
+npm run preview                  # 等同跑起 .output 來看（會讀 .env）
 ```
 
 ---
@@ -53,7 +53,7 @@ Nitro 最強的地方是**同一份程式可以打包成不同平台的格式**�
 ```ts
 // nuxt.config.ts
 export default defineNuxtConfig({
-  nitro: { preset: 'node-server' }, // 或 'vercel'、'cloudflare-pages'…（注意是連字號，不是底線）
+  nitro: { preset: 'node-server' }, // 或 'vercel'、'cloudflare-pages'…
 })
 ```
 
@@ -78,6 +78,7 @@ NUXT_PUBLIC_SITE_URL=https://your-domain.com    # 公開設定
 - `NUXT_SESSION_PASSWORD` 正式環境**務必**換成強隨機值。
 - 私密值（DB 密碼、金鑰）只放在平台環境變數，**永遠不進版控**。
 - `runtimeConfig.public.*` 會進前端，別放機密。
+- 正式站要走 **HTTPS**：`nuxt-auth-utils` 的 session cookie 預設帶 `Secure`，用 http 開的站（`localhost` 除外）瀏覽器不會存這個 cookie，登入會像沒反應。
 
 ---
 
@@ -85,7 +86,7 @@ NUXT_PUBLIC_SITE_URL=https://your-domain.com    # 公開設定
 
 本課開發用 SQLite（單檔），方便學習。但**多數 Serverless/邊緣平台的檔案系統是唯讀或不持久**的，SQLite 檔會遺失。正式環境建議：
 
-- 換成**託管資料庫**：PostgreSQL（Supabase、Neon）、MySQL（PlanetScale）等。只要改 `schema.prisma` 的 `provider` 與 `DATABASE_URL`，程式碼幾乎不動。
+- 換成**託管資料庫**：PostgreSQL（Supabase、Neon）、MySQL（PlanetScale）等。只要改 `schema.prisma` 的 `provider` 與 `DATABASE_URL`，程式碼幾乎不動。但 migration 檔是照原本的資料庫產生的（`prisma/migrations/migration_lock.toml` 會記住 provider），換 provider 後要刪掉 `prisma/migrations`、對新資料庫重新 `npx prisma migrate dev` 產生一份，否則 `migrate deploy` 會因 provider 不符而失敗。
 - 部署流程要跑 **migration**（把資料表建到正式 DB）：
 
 ```bash
@@ -103,6 +104,7 @@ npx prisma generate         # 產生 client（通常 build 前跑）
 
 - [ ] `npm run build` 沒有錯誤，`npm run preview` 功能正常。
 - [ ] 正式環境變數都設好（`NUXT_SESSION_PASSWORD`、`DATABASE_URL`…）。
+- [ ] 正式網域走 HTTPS（session cookie 預設 `Secure`）。
 - [ ] 資料庫已 `migrate deploy`。
 - [ ] SEO：`site.url` 指向正式網域，`/sitemap.xml`、`/robots.txt` 正常（第 12 章）。
 - [ ] 受保護 API 都有 `requireUserSession`（第 11 章），別只靠前端守衛。
@@ -125,8 +127,8 @@ npx prisma generate         # 產生 client（通常 build 前跑）
 4. **後台** `/admin`：登入才能進（路由中介層 + 伺服器守衛），發表/刪除文章，只能刪自己的（第 9、11 章）。
 5. **API + 資料庫**：Nitro `server/api` + Prisma/SQLite CRUD（第 8、10 章）。
 6. **版面**：`default` 與 `admin` 兩種 layout（第 3 章）。
-7. **狀態**：登入者資訊用 session composable、UI 狀態用 `useState`（第 7 章）。
-8. **打磨**：錯誤處理（第 13 章）、可加 Tailwind/圖片（第 14 章）、快取與測試（第 5、15 章）。
+7. **狀態**：登入者資訊用 `useUserSession()`（第 11 章；它底層就是第 7 章的 `useState`）。
+8. **打磨**：錯誤頁（第 3、13 章）、單元與 E2E 測試（第 15 章）。樣式框架、圖片最佳化、快取（第 5、14、15 章）是選做——`blog-demo` 只用一支全域 CSS，沒有加這些。
 
 ### 章節能力對照
 
@@ -152,6 +154,7 @@ npx prisma generate         # 產生 client（通常 build 前跑）
 ```bash
 cd blog-demo
 npm install
+cp .env.example .env                 # .env 不進版控，先從範本複製
 npx prisma migrate dev --name init   # 建 SQLite 資料表
 npm run dev
 ```
@@ -162,7 +165,7 @@ npm run dev
 
 - 文章加分類/標籤與篩選。
 - 留言功能（關聯 User 與 Post）。
-- 草稿/發布狀態（用到 `published` 欄位）與分頁。
+- 編輯文章頁面（後端可沿用第 11 章受保護的 `[id].put.js`）與分頁。
 - 換成 PostgreSQL 並部署到 Vercel/Cloudflare。
 - 幫關鍵路徑補 E2E 測試（第 15 章）。
 

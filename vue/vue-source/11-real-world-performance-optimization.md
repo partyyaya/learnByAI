@@ -24,7 +24,7 @@ Vue 應用的執行成本，幾乎都落在這三層。優化前先判斷你卡�
 | 層級 | 成本來源 | 對應源碼 | 典型症狀 |
 |---|---|---|---|
 | 響應式層 | 依賴收集、trigger 過多 effect | `track` / `trigger` / `effect` | 改一個值卻觸發一堆無關更新 |
-| 更新/渲染層 | re-render、patch、diff | `renderEffect` / `patch` / `patchKeyedChildren` | 列表卡頓、輸入延遲、滾動掉幀 |
+| 更新/渲染層 | re-render、patch、diff | `setupRenderEffect` / `patch` / `patchKeyedChildren` | 列表卡頓、輸入延遲、滾動掉幀 |
 | 編譯/載入層 | bundle 過大、首屏載入慢 | `compiler` 輸出、Vite chunk | 首屏白屏久、TTI 高 |
 
 > 黃金原則：**先量測，再優化**。沒有數據支撐的優化，常常是浪費時間或反向劣化（見 11.13）。
@@ -37,7 +37,7 @@ Vue 應用的執行成本，幾乎都落在這三層。優化前先判斷你卡�
 
 `reactive` 支援**深層**響應式，但巢狀 Proxy 通常在讀取該屬性時才建立，並會快取重用，不是在初始化時遍歷整棵樹。當 render 或其他 effect 大量讀取巢狀資料時，代理存取與依賴收集仍會有成本；若資料只會整包替換，可以考慮淺層 API。
 
-> 特別注意：`ref(物件)` **不會**比較省。`ref` 內部會對物件呼叫 `toReactive`（即 `reactive`），所以 `ref(hugeJson)` 和 `reactive(hugeJson)` 的深層代理成本幾乎一樣（細節見 11.3.3）。要省，得用 `shallowRef` / `shallowReactive`。
+> 特別注意：`ref(物件)` **不會**比較省。`ref` 內部會對物件呼叫 `toReactive`（即 `reactive`），所以 `ref(hugeJson)` 和 `reactive(hugeJson)` 的深層代理成本幾乎一樣（見下方「對應源碼」）。要省，得用 `shallowRef` / `shallowReactive`。
 
 ```js
 // 比較兩種深層模式：在 effect 中大量存取巢狀資料時會產生追蹤成本
@@ -171,7 +171,18 @@ watchDebounced(() => keyword.value, fetchResults, { debounce: 300 })
 </tr>
 ```
 
-對應源碼：`v-memo` 編譯成 `withMemo`，會比較依賴陣列，命中就回傳上一次的 vnode，直接省掉建立與 patch。
+對應源碼：`v-memo` 會比較依賴陣列，命中就回傳上一次的 vnode，直接省掉建立與 patch。與 `v-for` 同用時（如上例），編譯器把判斷寫進 `renderList` 的 callback，用 `isMemoSame` 比對；單獨使用時才編成 `withMemo`：
+
+```js
+// 上例的 3.5.41 實際輸出（節錄 renderList callback）
+(item, __, ___, _cached) => {
+  const _memo = ([item.id, item.selected])
+  if (_cached && _cached.el && _cached.key === item.id && _isMemoSame(_cached, _memo)) return _cached
+  const _item = (_openBlock(), _createElementBlock("tr", { key: item.id }, [ /* … */ ]))
+  _item.memo = _memo
+  return _item
+}
+```
 
 > 注意：`v-memo` 是進階工具，依賴陣列寫錯會導致「該更新卻沒更新」的 bug。先確定有效能問題再用。
 
@@ -183,7 +194,10 @@ watchDebounced(() => keyword.value, fetchResults, { debounce: 300 })
 
 ### 11.6.1 小心「內容會變的」inline 物件 / 陣列字面量
 
-先破除一個很常見的誤解：**純常數的字面量其實不用擔心**。編譯器看得出 `{ color: 'red' }`、`[1, 2, 3]` 裡面沒有任何動態值，會把這個 vnode 判定為靜態——**不給 patch flag、不收進 block 的 `dynamicChildren`**，父層重繪時根本不會走到它：
+先破除一個很常見的誤解：**純常數的字面量其實不用擔心**（前提是 template 在建置期編譯，例如 SFC + Vite）。編譯器看得出 `{ color: 'red' }`、`[1, 2, 3]` 裡面沒有任何動態值：
+
+- 用在一般元素上（如 `<div :style="{ color: 'red' }">static</div>`），只要元素沒有其他動態內容，整個元素會被當成靜態節點快取進 `_cache`，父層重繪時直接略過。
+- 用在元件上（如下例），這個 prop 不會產生 patch flag。元件 vnode 一律會收進 block 的 `dynamicChildren`，父層重繪時仍會走到它，但 `shouldUpdateComponent` 看到沒有 flag 就直接判定不需更新，子元件不會重新 render。
 
 ```vue
 <!-- 😐 看起來像反面教材，實際上沒問題：整個字面量都是常數 -->
@@ -206,7 +220,7 @@ const opts = computed(() => ({ a: n.value, b: 'fixed' }))
 
 注意解法是 **`computed`**，不是「提到外面變成模組常數」——會變的東西本來就沒辦法寫成常數。
 
-實測（父層因無關狀態重繪一次，數的是子元件 render 次數）：
+實測（SFC 方式編譯；父層因無關狀態重繪一次，數的是子元件 render 次數）：
 
 | 寫法 | 掛載後 | 父層重繪後 |
 |---|---|---|
@@ -216,7 +230,9 @@ const opts = computed(() => ({ a: n.value, b: 'fixed' }))
 
 成本來源：子組件收到的 prop 每次引用都變 → 即使值一樣也會觸發子組件更新；對 `:style` / `:class` 也會走較重的比對路徑。
 
-> 想自己量：用 `@vue/compiler-dom` 的 `compile()` 看有沒有生出 patch flag——**沒有 flag 就代表這個節點是靜態的、不必擔心**。
+> 想自己量：用 `@vue/compiler-dom` 的 `compile()`（加上 `mode: 'module', prefixIdentifiers: true`，與 SFC 相同）看有沒有生出 patch flag——**元件上沒有 flag，代表 props 不會觸發子元件更新**。
+>
+> 若 template 是在瀏覽器執行期才編譯（例如用 `template` 選項搭配含編譯器的 Vue build），編譯器無法分析運算式，常數字面量也會被標成 `8 /* PROPS */`，子元件照樣重繪；這時同樣要自己保持引用穩定。
 
 ### 11.6.2 行內函式也是新引用
 
@@ -247,7 +263,7 @@ Vue 的更新粒度是**組件**：一個組件內任何被模板用到的響應
 ✅ 把 timer 抽成 <Clock/> 子組件 → 只有 <Clock/> 每秒 re-render，其餘不受影響
 ```
 
-對應源碼：每個組件有自己的 `renderEffect`（第 04 章），trigger 只會喚醒「依賴了該資料」的那個 effect。
+對應源碼：每個組件有自己的 render effect（`instance.effect`，由 `setupRenderEffect` 建立，第 04 章），trigger 只會喚醒「依賴了該資料」的那個 effect。
 
 ### 11.7.2 保持 props 穩定，必要時 `keepalive`
 
@@ -300,15 +316,23 @@ const Dashboard = () => import('./Dashboard.vue')
 
 ### 11.9.2 `defineAsyncComponent` + `Suspense`
 
-對「進入畫面後才需要」的重組件（圖表、編輯器、地圖）做非同步載入，並用 `Suspense`（第 08 章）統一處理 loading：
+對「進入畫面後才需要」的重組件（圖表、編輯器、地圖）做非同步載入。loading 狀態有兩種管法，二選一：
 
 ```js
 import { defineAsyncComponent } from 'vue'
 
-const HeavyChart = defineAsyncComponent({
-  loader: () => import('./HeavyChart.vue'),
-  delay: 200,
-  timeout: 8000,
+// A. 交給上層 <Suspense>（第 08 章）統一處理。
+//    async component 預設 suspensible: true：祖先有 <Suspense> 時，
+//    自己的 loadingComponent／delay／timeout 都會被忽略（載入失敗時仍會顯示 errorComponent）
+const HeavyChart = defineAsyncComponent(() => import('./HeavyChart.vue'))
+
+// B. 自己管 loading：設 suspensible: false（或上層沒有 Suspense），以下選項才生效
+const HeavyEditor = defineAsyncComponent({
+  loader: () => import('./HeavyEditor.vue'),
+  loadingComponent: EditorSkeleton,
+  delay: 200,      // 200ms 內載完就不顯示 loading，避免閃一下（預設值即 200）
+  timeout: 8000,   // 超時視為載入失敗，有 errorComponent 就顯示它
+  suspensible: false,
 })
 ```
 

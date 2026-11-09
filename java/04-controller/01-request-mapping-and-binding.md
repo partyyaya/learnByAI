@@ -23,7 +23,7 @@
 - 知道 Spring Boot 3 的**尾斜線行為改變**，並選一種處理方式。
 - 完整說明 `@PathVariable` / `@RequestParam` / `@RequestBody` / `@RequestHeader` / `@CookieValue` 的行為與陷阱。
 - 解釋 `required`、`defaultValue`、`Optional` 三者的交互作用，並知道哪三種組合是 bug。
-- 把 14 個查詢參數綁成**一個物件**（`OrderFilter`），而不是 14 個方法參數。
+- 把查詢參數綁成**一個物件**（`OrderFilter`），並保留參數是否送出的資訊。
 - 處理列舉綁定：大小寫、未知值、以及「怎麼回 422 而不是 500」。
 - 用 `JsonNullable` 表達 `PATCH` 的三態語意（缺欄位 / `null` / 有值）。
 - 註冊自訂 `Converter` 處理 API 專屬的型別（`Cursor`、`SortSpec`、`Money`）。
@@ -1339,17 +1339,18 @@ public void webhook(@RequestBody String rawBody,
 
 這一節解決 `GET /orders` 的實際問題。
 
-### 1.7.1 問題：12 個參數的方法簽章
+### 1.7.1 問題：查詢參數很多的方法簽章
 
-依 03-rest-api 第 05 章 5.12 的規格，`GET /orders` 有這些參數：
+以 03-rest-api 第 07 章的現行 OpenAPI 為準，`GET /orders` 有這些參數：
 
 ```
-page, size, cursor, sort,
-status, customerId, createdFrom, createdTo, minAmount, maxAmount,
-hasAssignee, keyword, paymentMethod, includeCancelled
+page, size, cursor, limit, sort（可重複最多 3 次）,
+status, statusCategory, customerId, orderNumber, createdFrom, createdTo, updatedFrom,
+amountFrom, amountTo, hasCoupon, hasShipment, q, include, asOf
+（客服另有 assigneeId、hasAssignee、allRegions，授權由 Service 檢查）
 ```
 
-**14 個。** 直接寫成方法參數：
+參數一多，直接寫在方法簽章會難以維護。以下節錄部分欄位；完整重複 sort 的綁定見下一節：
 
 ```java
 // ❌ 沒人想維護這個
@@ -1363,12 +1364,11 @@ public PageResponse<OrderSummary> list(
         @RequestParam(name = "customerId", required = false) List<String> customerId,
         @RequestParam(name = "createdFrom", required = false) Instant createdFrom,
         @RequestParam(name = "createdTo", required = false) Instant createdTo,
-        @RequestParam(name = "minAmount", required = false) BigDecimal minAmount,
-        @RequestParam(name = "maxAmount", required = false) BigDecimal maxAmount,
+        @RequestParam(name = "amountFrom", required = false) BigDecimal amountFrom,
+        @RequestParam(name = "amountTo", required = false) BigDecimal amountTo,
         @RequestParam(name = "hasAssignee", required = false) Boolean hasAssignee,
-        @RequestParam(name = "keyword", required = false) String keyword,
-        @RequestParam(name = "paymentMethod", required = false) List<String> paymentMethod,
-        @RequestParam(name = "includeCancelled", defaultValue = "false") Boolean includeCancelled) {
+        @RequestParam(name = "q", required = false) String q,
+        @RequestParam(name = "hasCoupon", required = false) Boolean hasCoupon) {
     ...
 }
 ```
@@ -1377,8 +1377,8 @@ public PageResponse<OrderSummary> list(
 
 | 問題 | 說明 |
 |---|---|
-| **不能做跨欄位驗證** | 「`minAmount` 不能大於 `maxAmount`」沒地方寫 |
-| **不能重用** | `GET /customers/{id}/orders` 也要同一組參數 → 複製 14 行 |
+| **不能做跨欄位驗證** | 「`amountFrom` 不能大於 `amountTo`」沒地方寫 |
+| **不能重用** | `GET /customers/{id}/orders` 也要同一組參數 → 複製整串參數 |
 | **不能做正規化** | `status` 沒送時是 `null`，每個用到的地方都要判斷 |
 | **測試麻煩** | 要測「日期範圍互斥」得發 HTTP 請求 |
 
@@ -1389,121 +1389,69 @@ package example.shop.order.web.dto;
 
 import example.shop.common.validation.SortWhitelist;
 import jakarta.validation.constraints.*;
-
 import java.math.BigDecimal;
-import java.time.Instant;
-import java.util.List;
-import java.util.Set;
+import java.time.*;
+import java.util.*;
 
-/**
- * GET /orders 的查詢參數。對照 03-rest-api 第 05 章 5.12 的規格。
- *
- * <p>綁定方式：直接宣告為 Controller 方法參數（不需要 @ModelAttribute），
- * Spring 會用「非簡單型別 → ModelAttributeMethodProcessor」的規則處理。
- * record 的 constructor binding 需要 Spring Framework 6.1+（Boot 3.2+）。
- */
+/** GET /orders；保留 null 與空字串的差別，完成綁定後才套用分頁預設值。 */
 public record OrderFilter(
-
-    // ── 分頁 ──────────────────────────────────────────
-    @Min(value = 0, message = "page 不可小於 0")
-    Integer page,
-
-    @Min(value = 1, message = "size 最小為 1")
-    @Max(value = 100, message = "size 最大為 100")
-    Integer size,
-
-    @Size(max = 512)
-    String cursor,
-
-    @SortWhitelist({"createdAt", "updatedAt", "totalAmount", "orderNumber", "status"})
-    String sort,
-
-    // ── 篩選 ──────────────────────────────────────────
-    List<@Pattern(regexp = "^[A-Z_]{1,32}$") String> status,
-
-    List<@Size(max = 64) String> customerId,
-
-    // ⚠️ 刻意【沒有】@DateTimeFormat —— 它對 Instant 完全無效（1.9.3）。
-    //    Instant 的解析由 06 章 6.6.1 的 StringToInstantConverter 負責。
-    Instant createdFrom,
-
-    Instant createdTo,
-
-    @DecimalMin(value = "0", message = "金額不可為負") 
-    @Digits(integer = 12, fraction = 2)
-    BigDecimal minAmount,
-
-    @DecimalMin(value = "0") 
-    @Digits(integer = 12, fraction = 2)
-    BigDecimal maxAmount,
-
-    Boolean hasAssignee,
-
-    @Size(max = 100, message = "關鍵字最長 100 字")
-    String keyword,
-
-    List<@Pattern(regexp = "^[A-Z_]{1,32}$") String> paymentMethod,
-
-    Boolean includeCancelled
-
+    @Min(0) Integer page,
+    @Min(1) @Max(100) Integer size,
+    @Size(max = 512) @Pattern(regexp = "^[A-Za-z0-9_-]*$") String cursor,
+    @Min(1) @Max(100) Integer limit,
+    @Size(max = 3) List<@SortWhitelist({"createdAt", "updatedAt", "totalAmount", "orderNumber", "status"}) String> sort,
+    @Size(max = 10) List<@Pattern(regexp = "^[A-Z_]{1,32}$") String> status,
+    List<@Pattern(regexp = "^(IN_PROGRESS|DONE|CANCELLED)$") String> statusCategory,
+    @Size(max = 50) List<@Size(max = 64) String> customerId,
+    @Pattern(regexp = "^ORD-[0-9]{8}-[0-9]{4}$") String orderNumber,
+    Instant createdFrom, Instant createdTo, Instant updatedFrom,
+    @DecimalMin("0") @Digits(integer = 12, fraction = 2) BigDecimal amountFrom,
+    @DecimalMin("0") @Digits(integer = 12, fraction = 2) BigDecimal amountTo,
+    Boolean hasCoupon, Boolean hasShipment,
+    @Size(min = 1, max = 100) String q,
+    @Size(max = 2) List<@Pattern(regexp = "^(totalCount|aggregates)$") String> include,
+    Instant asOf,
+    @Size(max = 64) String assigneeId, Boolean hasAssignee, Boolean allRegions
 ) {
-    /** 集中管理預設值與正規化，讓後續程式碼永遠不用判斷 null。 */
     public OrderFilter {
-        page = (page == null) ? 0 : page;
-        size = (size == null) ? 20 : size;
-        sort = (sort == null || sort.isBlank()) ? "createdAt,desc" : sort.trim();
-
-        status        = normalizeUpper(status);
-        customerId    = normalize(customerId);
-        paymentMethod = normalizeUpper(paymentMethod);
-        keyword       = blankToNull(keyword);
-        includeCancelled = (includeCancelled != null) && includeCancelled;
+        // 不把 page 預先設為 0：必須能拒絕顯式 page=0 與 cursor 同時出現。
+        sort = sort == null || sort.isEmpty() ? List.of("createdAt,desc") : List.copyOf(sort);
+        status = normalizeUpper(status);
+        statusCategory = normalizeUpper(statusCategory);
+        customerId = customerId == null ? List.of() : List.copyOf(customerId);
+        q = q == null ? null : q.trim();
+        // include 是 explode:false 的 CSV；sort/status 是重複 query key，不能用同一套拆法。
+        include = include == null ? List.of() : include.stream()
+                .flatMap(value -> Arrays.stream(value.split(",", -1)))
+                .map(String::trim).distinct().toList();
     }
-
-    // ── 跨欄位驗證：用 @AssertTrue 是最輕量的做法 ─────────────
-
-    @AssertTrue(message = "minAmount 不可大於 maxAmount")
-    public boolean isAmountRangeValid() {
-        return minAmount == null || maxAmount == null
-                || minAmount.compareTo(maxAmount) <= 0;
-    }
-
-    @AssertTrue(message = "createdFrom 不可晚於 createdTo")
-    public boolean isDateRangeValid() {
-        return createdFrom == null || createdTo == null
-                || !createdFrom.isAfter(createdTo);
-    }
-
-    @AssertTrue(message = "page 與 cursor 不可同時使用")
+    public int effectivePage() { return page == null ? 0 : page; }
+    public int effectiveSize() { return size != null ? size : limit != null ? limit : 20; }
+    public boolean usesCursor() { return cursor != null; } // cursor= 是 cursor 第一頁
+    @AssertTrue(message = "page 與 cursor 不可同時使用，cursor 與 q 不可同時使用")
     public boolean isPaginationModeValid() {
-        return cursor == null || page == 0;      // page 有預設值 0，所以用 0 當「沒指定」
+        return cursor == null || (page == null && q == null);
     }
-
-    @AssertTrue(message = "查詢區間不可超過 366 天")
-    public boolean isDateRangeWithinLimit() {
-        if (createdFrom == null || createdTo == null) return true;
-        return createdFrom.plus(java.time.Duration.ofDays(366)).isAfter(createdTo);
+    @AssertTrue(message = "size 與 limit 同時提供時必須一致")
+    public boolean isPageSizeValid() { return size == null || limit == null || size.equals(limit); }
+    @AssertTrue(message = "amountFrom 不可大於 amountTo")
+    public boolean isAmountRangeValid() {
+        return amountFrom == null || amountTo == null || amountFrom.compareTo(amountTo) <= 0;
     }
-
-    // ── 便利方法 ─────────────────────────────────────
-
-    public boolean usesCursor() { return cursor != null; }
-
-    private static List<String> normalize(List<String> v) {
-        return (v == null) ? List.of()
-                : v.stream().filter(s -> s != null && !s.isBlank()).map(String::trim).distinct().toList();
+    @AssertTrue(message = "日期區間必須遞增且不超過 366 天")
+    public boolean isDateRangeValid() {
+        return createdFrom == null || createdTo == null || (!createdFrom.isAfter(createdTo)
+                && Duration.between(createdFrom, createdTo).compareTo(Duration.ofDays(366)) <= 0);
     }
-    private static List<String> normalizeUpper(List<String> v) {
-        return normalize(v).stream().map(s -> s.toUpperCase(java.util.Locale.ROOT)).toList();
-    }
-    private static String blankToNull(String s) {
-        return (s == null || s.isBlank()) ? null : s.trim();
+    private static List<String> normalizeUpper(List<String> values) {
+        return values == null ? List.of() : values.stream()
+                .map(v -> v.trim().toUpperCase(Locale.ROOT)).distinct().toList();
     }
 }
 ```
 
 ```java
-// Controller：從 14 個參數變成 1 個
+// Controller：從 多個參數變成 1 個
 @GetMapping
 public PageResponse<OrderSummary> list(@Valid OrderFilter filter,
                                        @AuthenticationPrincipal CurrentUser user) {
@@ -1517,8 +1465,26 @@ public PageResponse<OrderSummary> list(@Valid OrderFilter filter,
 （`isAmountRangeValid` → `amountRangeValid`）。
 前端拿到 `field: "amountRangeValid"` 完全不知道要標哪個輸入框。
 
-02 章 2.7 會用自訂 class-level validator + `addPropertyNode()` 把它修正成 `minAmount`。
+02 章 2.7 會用自訂 class-level validator + `addPropertyNode()` 把它修正成 `amountFrom`。
 **現在先知道這個限制存在。**
+
+**保留重複 sort 的每個值**：`sort=createdAt,desc` 裡的逗號屬於排序語法，
+不能讓預設 String→Collection converter 把它拆成兩個元素。
+以下 `@InitBinder` 放進 OrderController（對該 Controller 的 List query 值保留原文）；
+`include` 的 CSV 由 record 自己拆解。多值請用重複 key，與 OpenAPI explode 契約一致。
+
+```java
+    @org.springframework.web.bind.annotation.InitBinder
+    public void preserveRepeatedQueryValues(org.springframework.web.bind.WebDataBinder binder) {
+        binder.registerCustomEditor(java.util.List.class,
+                new org.springframework.beans.propertyeditors.CustomCollectionEditor(java.util.List.class) {
+                    @Override public void setAsText(String text) { setValue(java.util.List.of(text)); }
+                });
+    }
+```
+
+mapper 應讀 `effectivePage()` / `effectiveSize()`；原始 `page()` / `size()` 保留是否送出，
+不可當作永遠非 null。需要篩選的權限與 sort 的索引條件由查詢服務驗證。
 
 ### 1.7.3 綁定規則：什麼時候需要 `@ModelAttribute`
 
@@ -1601,37 +1567,49 @@ public PageResponse<OrderSummary> list(@Valid @ModelAttribute OrderFilter filter
                                        @AuthenticationPrincipal CurrentUser user) {
     var query = mapper.toQuery(filter, user.actor());
 
-    // OrderFilter 的 @AssertTrue 已經保證兩者不會同時出現
+    // OrderFilter 的 @AssertTrue 已保證 page/cursor 與 q/cursor 不會混用
     return filter.usesCursor()
             ? mapper.toCursorPage(orderService.scroll(query))
             : mapper.toOffsetPage(orderService.search(query));
 }
 ```
 
-⚠️ 兩種分頁的回應**外殼不同**（cursor 版沒有 `totalElements`，有 `nextCursor`）。
+⚠️ 兩種分頁的回應**metadata 不同**（cursor 使用 limit、hasMore、nextCursor；offset 使用 number、size、hasMore）。
 03-rest-api 第 05 章 5.7 的決定是用同一個 `PageResponse<T>`，
-裡面的 `page` 物件依模式帶不同欄位：
+裡面的 `page.mode` 是 OFFSET / CURSOR / NONE 判別欄位，與前站 OpenAPI 一致：
 
 ```java
-public record PageResponse<T>(List<T> items, PageInfo page) {
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.List;
 
-    /** 依分頁模式帶不同欄位；null 的欄位由 Jackson 的 non_null 省略。 */
-    public record PageInfo(
-        Integer number,          // offset 模式
-        Integer size,
-        Long totalElements,      // offset 模式且未關閉 count 時
-        Integer totalPages,
-        String nextCursor,       // cursor 模式
-        String prevCursor,
-        Boolean hasNext
-    ) {
-        public static PageInfo offset(int number, int size, Long total) {
-            Integer pages = (total == null) ? null : (int) Math.ceil((double) total / size);
-            return new PageInfo(number, size, total, pages, null, null, null);
+public record PageResponse<T>(List<T> items, PageInfo page) {
+    public enum CountRelation { EQUAL, GREATER_THAN_OR_EQUAL }
+    public sealed interface PageInfo permits OffsetPageInfo, CursorPageInfo, NoPageInfo {
+        @JsonProperty("mode") String mode();
+        static OffsetPageInfo offset(int number, int size, Long total, CountRelation relation,
+                                     boolean hasMore, int maxAccessibleElements) {
+            Integer pages = total == null ? null : Math.toIntExact((total + size - 1) / size);
+            return new OffsetPageInfo(number, size, hasMore, total, total == null ? null : relation,
+                    pages, pages == null ? null : relation, maxAccessibleElements);
         }
-        public static PageInfo cursor(int size, String next, String prev, boolean hasNext) {
-            return new PageInfo(null, size, null, null, next, prev, hasNext);
+        static CursorPageInfo cursor(int limit, String next, String prev, boolean hasMore) {
+            return new CursorPageInfo(limit, hasMore, next, prev);
         }
+        static NoPageInfo none(long total) { return new NoPageInfo(total); }
+    }
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    public record OffsetPageInfo(int number, int size, boolean hasMore, Long totalElements,
+            CountRelation totalElementsRelation, Integer totalPages,
+            CountRelation totalPagesRelation, int maxAccessibleElements) implements PageInfo {
+        @Override @JsonProperty("mode") public String mode() { return "OFFSET"; }
+    }
+    public record CursorPageInfo(int limit, boolean hasMore, String nextCursor,
+                                 String prevCursor) implements PageInfo {
+        @Override @JsonProperty("mode") public String mode() { return "CURSOR"; }
+    }
+    public record NoPageInfo(long totalElements) implements PageInfo {
+        @Override @JsonProperty("mode") public String mode() { return "NONE"; }
     }
 }
 ```
@@ -1648,6 +1626,7 @@ Spring **不會**幫你檢查未知的查詢參數（不像 `fail-on-unknown-pro
 ```java
 package example.shop.common.web;
 
+import example.shop.common.error.UnknownParameterException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.core.MethodParameter;
 import org.springframework.web.method.HandlerMethod;
@@ -1743,9 +1722,10 @@ public class WebMvcConfig implements WebMvcConfigurer {
   "code": "UNKNOWN_PARAMETER",
   "userMessage": "查詢條件有誤，請重新整理頁面後再試。",
   "unknownParameters": ["statuss"],
-  "supportedParameters": ["createdFrom", "createdTo", "cursor", "customerId",
-                          "hasAssignee", "includeCancelled", "keyword", "maxAmount",
-                          "minAmount", "page", "paymentMethod", "size", "sort", "status"],
+  "supportedParameters": ["allRegions", "amountFrom", "amountTo", "asOf", "assigneeId",
+                          "createdFrom", "createdTo", "cursor", "customerId", "hasAssignee",
+                          "hasCoupon", "hasShipment", "include", "limit", "orderNumber",
+                          "page", "q", "size", "sort", "status", "statusCategory", "updatedFrom"],
   "traceId": "4f2c8a1e9b7d3f60"
 }
 ```
@@ -3866,7 +3846,7 @@ public record AddCartItemRequest(
 - [ ] 我能用 `JsonNullable` 表達 `PATCH` 的三態，也知道 `isPresent()` 問的是「有沒有出現」。
 - [ ] 我知道 `fail-on-unknown-properties: true` 的好處與三個代價。
 - [ ] 我知道 webhook 驗簽必須用**原始 body**，不能反序列化再重新序列化。
-- [ ] 我能把 14 個查詢參數綁成一個 record，並在裡面做正規化與跨欄位驗證。
+- [ ] 我能把契約中的查詢參數綁成一個 record，並在裡面做正規化與跨欄位驗證。
 - [ ] 我知道 record 的 constructor binding 需要 Spring 6.1（Boot 3.2）+。
 - [ ] 我知道 `@AssertTrue` 產生的 `field` 是屬性名，前端無法定位，02 章要修。
 - [ ] 我知道 Spring 不檢查未知的查詢參數，也知道自己做的方式與「先觀察再強制」的上線流程。

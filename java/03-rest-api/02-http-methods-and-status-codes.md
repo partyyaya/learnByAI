@@ -676,10 +676,11 @@ DELETE /me/addresses/addr_1/note                ← 或用專用端點清空
 | 情境 | 選擇 |
 |---|---|
 | 可為 `null` 的選填欄位（`note`、`internalNote`、`line2`） | 解法 1（`JsonNullable`） |
-| 不可為 `null` 的欄位（`phone`、`recipient`） | 普通型別 + `@NotBlank`（送 `null` 就是驗證錯誤，回 `422`） |
+| 不可為 `null` 的欄位（`phone`、`recipient`） | 同樣使用 `JsonNullable<String>`；只在 present 時驗證不可為 null／空白，缺少時不修改（見第 03 章 3.4.4） |
 | 複雜的巢狀 patch | 解法 3（`ObjectNode` 手動） |
 
-並在 OpenAPI 裡對每個可清空的欄位標 `nullable: true`。
+OpenAPI 3.1 的可清空字串使用 `type: [string, "null"]`；是否必須出現由 `required` 控制。
+普通 `String` + `@NotBlank` 無法分辨缺少與明確 null，不能直接用於這種部分更新。
 
 ### 2.5.5 `PATCH` 可以做成冪等的
 

@@ -29,7 +29,7 @@ async function submit() {
     await refreshSession() // 重抓 session，讓 loggedIn/user 更新
     await navigateTo(route.query.redirect || '/admin')
   } catch (e) {
-    err.value = e.data?.statusMessage || '操作失敗，請重試'
+    err.value = e.data?.message || '操作失敗，請重試'
   } finally {
     loading.value = false
   }

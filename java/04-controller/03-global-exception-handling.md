@@ -2359,6 +2359,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             HandlerMethodValidationException ex, HttpHeaders headers,
             HttpStatusCode status, WebRequest request) {
 
+        if (ex.isForReturnValue()) {
+            Problem problem = problems.from(ErrorCode.INTERNAL_ERROR, instanceOf(request), null);
+            errorLog.logServerError(ex, problem, servletRequestOf(request), null, "return-value-validation");
+            return new ResponseEntity<>(problem, problemHeaders(headers), HttpStatus.INTERNAL_SERVER_ERROR);
+        }
         List<FieldViolation> violations = validationErrors.fromHandlerMethod(ex);
         Problem problem = problems.validationFailed(
                 instanceOf(request), violations, violations.size());
@@ -3198,7 +3203,7 @@ public class ApiErrorController implements ErrorController {
 
         int status = statusOf(request);
         String originalUri = (String) request.getAttribute(
-                RequestDispatcher.FORWARD_REQUEST_URI);
+                RequestDispatcher.ERROR_REQUEST_URI);
         Throwable ex = (Throwable) request.getAttribute(
                 RequestDispatcher.ERROR_EXCEPTION);
 
@@ -3223,7 +3228,7 @@ public class ApiErrorController implements ErrorController {
         // ★ 走到這裡代表 advice 沒接到 —— 記一個明顯的 log 以便修補
         errorLog.logErrorControllerFallback(status, originalUri, ex);
 
-        return ResponseEntity.status(status)
+        return ResponseEntity.status(problem.status())
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .cacheControl(org.springframework.http.CacheControl.noStore())
                 .body(problem);
@@ -3236,6 +3241,11 @@ public class ApiErrorController implements ErrorController {
     }
 }
 ```
+
+未登記的容器狀態會正規化成已登記的 `INTERNAL_ERROR`（500）或
+`MALFORMED_REQUEST`（400）；HTTP status 一律跟隨 Problem.status，避免 504/500 等矛盾。
+原始狀態仍進 fallback log。若產品需要原樣保留 408/504，先在 ErrorCode 與 OpenAPI
+登記該語意，再加入 switch，不可只改 HTTP status。
 
 ⚠️ **注意 `produces` 只宣告 `application/problem+json`。**
 這代表瀏覽器帶 `Accept: text/html` 來時會**內容協商失敗**。
@@ -5276,13 +5286,13 @@ public class UnknownParameterException extends BusinessException {
     /** 只對第一個未知參數給建議（多給反而讓訊息難讀）。 */
     private static String suggestFor(List<String> unknown, Set<String> supported) {
         if (unknown.isEmpty()) return null;
-        return example.shop.common.web.DidYouMean.closest(
+        return example.shop.common.util.DidYouMean.closest(
                 unknown.get(0), List.copyOf(supported));
     }
 }
 ```
 
-⚠️ **`UnknownParameterException` 在 `common.error` 卻 import 了 `common.web.DidYouMean`** ——
+⚠️ **早期版本曾讓 `UnknownParameterException` 從 `common.error` import `common.web.DidYouMean`** ——
 這是一個小的分層違規。**兩個修法**：
 
 | 修法 | 取捨 |

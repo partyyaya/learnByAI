@@ -1,0 +1,2 @@
+package example.shop.order.service;
+public interface OrderExportRepository {java.util.List<OrderExportJob>findSucceededBefore(java.time.Instant cutoff,int limit);void markExpiredAndRevokeTokens(String id);java.util.List<OrderExportJob>findExpiredWithPendingCleanup(int limit);void markStorageDeleted(String id,java.time.Instant at);java.util.List<OrderExportJob>findRunningWithHeartbeatBefore(java.time.Instant cutoff,int limit);void markFailed(String id,String code,String message);}

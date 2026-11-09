@@ -101,6 +101,8 @@ export const getRates = defineCachedFunction(
 )
 ```
 
+> Nitro 快取預設 `swr: true`：過了 `maxAge` 之後，第一個請求仍會先拿到舊值、同時在背景重算，下一個請求才拿到新值。想要「一過期就等新值」可以加 `swr: false`。
+
 > `routeRules` 的 `swr`（第 5 章）是快取**整頁 HTML**；`defineCachedEventHandler` 是快取**單支 API 的回傳**。前者給頁面、後者給資料端點，常一起用。
 
 ---
@@ -159,7 +161,7 @@ export default defineVitestConfig({
 **測 composable**（純邏輯，最好測）：
 
 ```js
-// tests/useCounter.spec.js
+// tests/unit/useCounter.spec.js
 import { describe, it, expect } from 'vitest'
 import { useCounter } from '~/composables/useCounter'
 
@@ -175,7 +177,7 @@ describe('useCounter', () => {
 **測元件**：用 `mountSuspended`（支援 async setup 與自動匯入）：
 
 ```js
-// tests/PostCard.spec.js
+// tests/unit/PostCard.spec.js
 import { describe, it, expect } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import PostCard from '~/components/PostCard.vue'
@@ -217,9 +219,9 @@ describe('首頁 (E2E)', async () => {
     expect(Array.isArray(posts)).toBe(true)
   })
 
-  it('未登入拿不到需要權限的資料', async () => {
-    // requireUserSession 會丟 401，$fetch 收到非 2xx 就 reject
-    await expect($fetch('/api/posts?all=true')).rejects.toThrow()
+  it('不存在的文章回 404', async () => {
+    // $fetch 收到非 2xx 就 reject；錯誤物件上的 statusCode 就是 HTTP 狀態碼
+    await expect($fetch('/api/posts/999999')).rejects.toMatchObject({ statusCode: 404 })
   })
 })
 ```
@@ -227,22 +229,24 @@ describe('首頁 (E2E)', async () => {
 三個常見卡點：
 
 1. **少了 `// @vitest-environment node`**：這支檔案會用到第 6 節設定的模擬瀏覽器環境，伺服器起不來。
-2. **`setup()` vs `setup({ dev: true })`**：預設會先完整打包再啟動（慢，而且**不會自動讀 `.env`**，環境變數要自己 export）。`dev: true` 起 dev 伺服器，快又會讀 `.env`，本機開發最順手；想驗「正式打包後也 OK」再用預設。
+2. **`setup()` vs `setup({ dev: true })`**：預設會先完整打包（輸出到 `.nuxt/test/` 底下，不用自己先 `npm run build`）再用 node 啟動，慢很多。`dev: true` 起 dev 伺服器，快，本機開發最順手；想驗「正式打包後也 OK」再用預設。兩種都會讀專案的 `.env`。
 3. **資料庫沒建**：測到會查 DB 的 API 之前，要先 `npx prisma migrate dev`（第 10 章）。
 
 > 分工：**單元測試**跑得快，測邏輯與單一元件；**E2E** 較慢，測「SSR 是否真的輸出正確、API 是否真的通、權限是否真的擋得住」。日常多寫單元、關鍵路徑補 E2E。
 
 ### 特別值得寫 E2E 的：安全性
 
-第 11 章講過「前端藏按鈕不是安全」。這件事用 E2E 測最直接——**不帶 cookie 打 API，伺服器就該回 401/403**：
+第 11 章講過「前端藏按鈕不是安全」。這件事用 E2E 測最直接——**不帶 cookie 打 API，伺服器就該回 401**：
 
 ```js
 it('未登入發文會被伺服器擋下來', async () => {
   await expect(
     $fetch('/api/posts', { method: 'POST', body: { title: '偷發的', content: 'x' } })
-  ).rejects.toThrow()
+  ).rejects.toMatchObject({ statusCode: 401 })
 })
 ```
+
+斷言要寫到狀態碼：只寫 `rejects.toThrow()` 的話，伺服器自己壞掉回 500 也會「通過」，測試就失去意義了。
 
 這種測試的價值很高：它保證的是「有人拿掉前端限制也進不來」，而這正是手動測試最容易漏掉的一類 bug。
 
@@ -289,7 +293,7 @@ const { data, refresh } = await useFetch('/api/stats')
     <h1>My Blog</h1>
     <p>統計計算時間：<code>{{ data.computedAt }}</code></p>
     <button @click="refresh()">重新抓取</button>
-    <p class="hint">10 秒內連按「重新抓取」，時間不會變（吃 Nitro 快取）；過 10 秒才更新。</p>
+    <p class="hint">10 秒內連按「重新抓取」，時間不會變（吃 Nitro 快取）；過了 10 秒，第一次按仍是舊值（背景重算中），再按一次才更新。</p>
   </main>
 </template>
 
@@ -337,7 +341,7 @@ describe('stats API', async () => {
 
 跑起來後：
 
-- 首頁連按「重新抓取」，`computedAt` 在 10 秒內不變（Nitro 快取命中）。
+- 首頁連按「重新抓取」，`computedAt` 在 10 秒內不變（Nitro 快取命中）；過期後第一次仍拿到舊值、下一次才更新（預設 `swr: true`）。
 - `npm run test:e2e` → 兩個 E2E 測試通過，證明 API 正常且快取生效。
 
 ---
@@ -349,6 +353,7 @@ describe('stats API', async () => {
 ```bash
 cd blog-demo
 npm install
+cp .env.example .env                 # .env 不進版控，先從範本複製
 npx prisma migrate dev --name init   # E2E 要查資料庫，先建表
 npm run test        # 單元測試：16 個，約 1 秒
 npm run test:e2e    # E2E：6 個，會真的起一個 Nuxt
@@ -358,7 +363,7 @@ npm run test:e2e    # E2E：6 個，會真的起一個 Nuxt
 |---|---|---|
 | [tests/unit/format.spec.js](./blog-demo/tests/unit/format.spec.js) | `app/utils/format.js` 三個純函式：正常值、邊界（剛好 60 字）、空值不爆 | 第 7 節 |
 | [tests/unit/PostCard.spec.js](./blog-demo/tests/unit/PostCard.spec.js) | `mountSuspended` 掛元件：標題、摘要截斷、草稿標籤、`NuxtLink` 的 href、無作者掛「站長」 | 第 7 節 |
-| [tests/e2e/blog.spec.js](./blog-demo/tests/e2e/blog.spec.js) | 首頁 SSR、`/api/posts` 只回已發佈、未登入拿全部／發文被擋、不存在的文章 404 | 第 8 節 |
+| [tests/e2e/blog.spec.js](./blog-demo/tests/e2e/blog.spec.js) | 首頁 SSR、`/api/posts` 只回已發佈、未登入拿後台列表／發文被擋（斷言 401）、不存在的文章 404 | 第 8 節 |
 
 注意那支 `format.spec.js` 對應的原始碼——**`PostCard` 裡「摘要截斷」「日期格式化」的邏輯被抽成 `app/utils/format.js` 的純函式**，才變得這麼好測（不用掛元件、不用 mock、一個 `expect` 一行）。這是實務上很划算的一個習慣：**把邏輯從元件裡擠出來，測試成本立刻降一個量級**。
 

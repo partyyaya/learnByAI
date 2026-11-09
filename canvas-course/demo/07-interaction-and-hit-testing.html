@@ -13,7 +13,7 @@ window.CH = {
   md: '../07-interaction-and-hit-testing.md',
   W: 400, H: 280,
   presets: [
-{ id:'pointer-coords', label:'7.1 沒有落點 click:只能拿畫布座標', code:
+{ id:'pointer-coords', label:'7.1 沒有「點到圓」的事件:只拿得到畫布座標', code:
 `// 互動:滑鼠移到畫布上。Canvas 不會告訴你「點到圓」,只給你畫布座標,其餘自己算
 let mx = -99, my = -99;
 function draw() {
@@ -31,7 +31,7 @@ canvas.addEventListener('pointermove', function (e) {
   draw();
 });
 draw();` },
-{ id:'math-hit', label:'7.2 數學命中:圓用距離、矩形用 AABB', code:
+{ id:'math-hit', label:'7.3 數學命中:圓用距離、矩形用 AABB', code:
 `// 互動:滑鼠移上去會變色。圓內 = 距離平方 <= 半徑平方;矩形內 = 座標落在範圍
 const circle = { x: 110, y: 150, r: 55 };
 const rect = { x: 220, y: 100, w: 140, h: 110 };
@@ -50,6 +50,7 @@ function draw() {
 canvas.addEventListener('pointermove', function (e) {
   const r = canvas.getBoundingClientRect(); m.x = e.clientX - r.left; m.y = e.clientY - r.top; draw();
 });
+canvas.addEventListener('pointerleave', function () { m.x = m.y = -99; draw(); });   // 離開畫布:清掉 hover(7.8)
 draw();` },
 { id:'is-point-in-path', label:'7.4 isPointInPath + Path2D(懶得算數學)', code:
 `// 互動:複雜形狀懶得算數學?用 Path2D + isPointInPath,讓瀏覽器判斷命中
@@ -72,9 +73,12 @@ function draw() {
 }
 canvas.addEventListener('pointermove', function (e) {
   const r = canvas.getBoundingClientRect();
+  // isPointInPath(path, x, y) → x, y 是緩衝區像素、不受變換影響。playground 畫布是 1:1、沒做 dpr 縮放,
+  // 所以 CSS 座標剛好等於緩衝區像素;自己的 HiDPI 頁面要乘 dpr,或照 7.4 暫時 setTransform 成單位矩陣
   hover = ctx.isPointInPath(star, e.clientX - r.left, e.clientY - r.top);  // 問瀏覽器:點在路徑內?
   draw();
 });
+canvas.addEventListener('pointerleave', function () { hover = false; draw(); });   // 離開畫布:清掉 hover(7.8)
 draw();` },
 { id:'reverse-hit', label:'7.5 反序命中:重疊時只選最上層', code:
 `// 互動:繪製正向(後畫的在上),命中反向(從最後畫的開始測),重疊處只選一個
@@ -102,61 +106,78 @@ canvas.addEventListener('pointermove', function (e) {
   }
   draw();
 });
-draw();` },
-{ id:'drag', label:'7.5 拖曳:記住偏移才不會跳', code:
-`// 互動:按住方塊拖曳。記住「游標與方塊原點的偏移」,拖起來才不會瞬移
-const box = { x: 175, y: 120, w: 90, h: 70 };
-let dragging = false, ox = 0, oy = 0;
-function pos(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
-function draw() {
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = dragging ? '#e63946' : '#457b9d';
-  ctx.fillRect(box.x, box.y, box.w, box.h);
-  ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('按住方塊拖曳', 12, 22);
-}
-canvas.addEventListener('pointerdown', function (e) {
-  const p = pos(e);
-  if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
-    dragging = true; ox = p.x - box.x; oy = p.y - box.y;   // 記住偏移
-  }
-  draw();
-});
-canvas.addEventListener('pointermove', function (e) {
-  if (!dragging) return; const p = pos(e); box.x = p.x - ox; box.y = p.y - oy; draw();
-});
-canvas.addEventListener('pointerup', function () { dragging = false; draw(); });
+canvas.addEventListener('pointerleave', function () { hi = -1; draw(); });   // 離開畫布:清掉 hover(7.8)
 draw();` },
 { id:'color-picking', label:'7.6 隱藏色彩緩衝 color picking', code:
 `// 互動:離屏畫布把每個圓塗成「ID 顏色」,讀滑鼠那 1 像素反推是哪個 → 免寫幾何命中
+// ID 色隨機、不連號,讀回先檢查 alpha = 255 再查表:抗鋸齒關不掉,邊緣混色不能被當成別的圓(7.6)
 const shapes = [
   { x: 80,  y: 90,  r: 45, c: '#e63946', id: 1 },
   { x: 200, y: 160, r: 55, c: '#457b9d', id: 2 },
   { x: 320, y: 100, r: 40, c: '#2a9d8f', id: 3 },
 ];
+const colorToShape = new Map();                        // 顏色整數 0xRRGGBB → 圓
+shapes.forEach(function (s) {
+  let key;
+  do { key = (Math.random() * 0xFFFFFF) | 0; } while (key === 0 || colorToShape.has(key));   // 0 留給「空白」
+  colorToShape.set(key, s);
+  s.hitColor = '#' + key.toString(16).padStart(6, '0');
+});
 const hit = document.createElement('canvas'); hit.width = W; hit.height = H;
-const hctx = hit.getContext('2d');
+const hctx = hit.getContext('2d', { willReadFrequently: true });   // 頻繁 getImageData 的提示(第 05 章)
 function paint(c, useId) {
   c.clearRect(0, 0, W, H);
   shapes.forEach(function (s) {
-    c.fillStyle = useId ? ('rgb(' + s.id + ',0,0)') : s.c;   // ID 存在 R 通道
+    c.fillStyle = useId ? s.hitColor : s.c;            // 離屏用 ID 色,主畫布用真正顏色
     c.beginPath(); c.arc(s.x, s.y, s.r, 0, Math.PI * 2); c.fill();
   });
 }
 let picked = 0;
 function draw() {
   paint(ctx, false);   // 主畫布:真正顏色
-  paint(hctx, true);   // 離屏:ID 顏色
   ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
   ctx.fillText('滑鼠移到圓上:讀離屏像素反推 id = ' + picked, 12, 22);
 }
+paint(hctx, true);     // 離屏:ID 顏色(圓不會動,畫一次就好)
 canvas.addEventListener('pointermove', function (e) {
   const r = canvas.getBoundingClientRect();
   const px = Math.floor(e.clientX - r.left), py = Math.floor(e.clientY - r.top);
-  const p = hctx.getImageData(px, py, 1, 1).data;   // 讀那一點的 ID 顏色
-  picked = p[0];       // R 通道就是 id(0 = 空白)
+  const p = hctx.getImageData(px, py, 1, 1).data;      // 讀那一點的 ID 顏色 [r, g, b, a]
+  const s = p[3] === 255 ? colorToShape.get((p[0] << 16) | (p[1] << 8) | p[2]) : null;   // 半透明 = 抗鋸齒邊緣,不可信
+  picked = s ? s.id : 0;                               // 0 = 空白(或查不到的混色)
   draw();
 });
+canvas.addEventListener('pointerleave', function () { picked = 0; draw(); });   // 離開畫布:清掉(7.8)
+draw();` },
+{ id:'drag', label:'7.8 拖曳:記住偏移、補齊 pointer 細節', code:
+`// 互動:按住方塊拖曳。記住「游標與方塊原點的偏移」,拖起來才不會瞬移;pointer 細節照 7.8 補齊
+// (觸控拖曳需要 touch-action: none:playground.css 已替畫布設好,自己的頁面要記得加)
+const box = { x: 175, y: 120, w: 90, h: 70 };
+let dragging = false, activeId = null, ox = 0, oy = 0;
+function pos(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = dragging ? '#e63946' : '#457b9d';
+  ctx.fillRect(box.x, box.y, box.w, box.h);
+  ctx.fillStyle = '#333'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText('按住方塊拖曳(拖到畫布外放開也不會卡住)', 12, 22);
+}
+canvas.addEventListener('pointerdown', function (e) {
+  if (activeId !== null || e.button !== 0) return;     // 已有指標在拖 / 不是主按鍵 → 不理
+  const p = pos(e);
+  if (p.x >= box.x && p.x <= box.x + box.w && p.y >= box.y && p.y <= box.y + box.h) {
+    dragging = true; activeId = e.pointerId; ox = p.x - box.x; oy = p.y - box.y;   // 記住偏移與指標
+    canvas.setPointerCapture(e.pointerId);             // 拖出畫布、在外面放開也收得到事件
+  }
+  draw();
+});
+canvas.addEventListener('pointermove', function (e) {
+  if (!dragging || e.pointerId !== activeId) return;   // 別根手指的移動不理
+  const p = pos(e); box.x = p.x - ox; box.y = p.y - oy; draw();
+});
+function endDrag(e) { if (e.pointerId !== activeId) return; dragging = false; activeId = null; draw(); }
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);     // 被系統手勢打斷時只有它,沒有 pointerup
 draw();` },
 { id:'homework', label:'💡 動手作業:可點選的圖形編輯器雛形', code:
 `// 第 07 章作業:20 個圓,hover 變亮、點擊選取(畫外框)、拖曳移動。挑戰題:勾選改用 7.6 隱藏色彩緩衝命中
@@ -165,7 +186,7 @@ const stage = canvas.parentNode; stage.style.flexDirection = 'column';
 const bar = document.createElement('label'); bar.className = 'demo-inject';
 bar.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:13px;color:#666;';
 const colorHitBox = document.createElement('input'); colorHitBox.type = 'checkbox';
-bar.append(colorHitBox, document.createTextNode(' 用 7.6 的隱藏色彩緩衝做命中(取代數學命中,手感應一模一樣)'));
+bar.append(colorHitBox, document.createTextNode(' 用 7.6 的隱藏色彩緩衝做命中(取代數學命中,手感應幾乎一樣)'));
 stage.insertBefore(bar, canvas);
 window.__demoCleanup = () => { stage.style.flexDirection = ''; };
 
@@ -179,7 +200,7 @@ for (let i = 0; i < 20; i++) {
   circles.push({ x: 40 + Math.random() * (W - 80), y: 40 + Math.random() * (H - 80),
     r: 14 + Math.random() * 14, hue: i * 18 });   // 色相均分,保證 20 個顏色都不同
 }
-let hovered = null, selected = null, dragging = null, dragOffset = { x: 0, y: 0 };
+let hovered = null, selected = null, dragging = null, dragOffset = { x: 0, y: 0 }, activeId = null;
 let dirty = true; function invalidate() { dirty = true; }   // 第 06 章:按需渲染
 
 function eventToWorld(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
@@ -188,35 +209,47 @@ function hitTestMath(p) {                              // 反向遍歷,從最上
   for (let i = circles.length - 1; i >= 0; i--) if (pointInCircle(p, circles[i])) return circles[i];
   return null;
 }
-function idToColor(id) { return 'rgb(' + ((id >> 16) & 255) + ',' + ((id >> 8) & 255) + ',' + (id & 255) + ')'; }
-function renderHitCanvas() {                            // 7.6:把 index 編碼成顏色畫到隱藏畫布
-  hitCtx.clearRect(0, 0, W, H); hitCtx.imageSmoothingEnabled = false;   // 關平滑,否則邊緣混色讓 ID 算錯
-  for (let i = 0; i < circles.length; i++) {
-    hitCtx.fillStyle = idToColor(i + 1);                // i+1:留 0 當「空白」
-    hitCtx.beginPath(); hitCtx.arc(circles[i].x, circles[i].y, circles[i].r, 0, Math.PI * 2); hitCtx.fill();
+const colorToCircle = new Map();                        // 7.6:每個圓配一個隨機、不重複的 ID 色,用 Map 反查
+for (const c of circles) {
+  let key;
+  do { key = (Math.random() * 0xFFFFFF) | 0; } while (key === 0 || colorToCircle.has(key));   // 0 留給「空白」
+  colorToCircle.set(key, c); c.hitColor = '#' + key.toString(16).padStart(6, '0');   // 不連號:混色才不會剛好是別的圓
+}
+function renderHitCanvas() {                            // 用 ID 色把同樣的圓畫到隱藏畫布
+  hitCtx.clearRect(0, 0, W, H);                         // 清成透明,alpha 讀回 0 = 空白
+  for (const c of circles) {
+    hitCtx.fillStyle = c.hitColor;
+    hitCtx.beginPath(); hitCtx.arc(c.x, c.y, c.r, 0, Math.PI * 2); hitCtx.fill();   // 由下往上疊,z-order 自動正確
   }
 }
-function hitTestColor(p) {                              // 命中 = 讀 1 個像素
+function hitTestColor(p) {                              // 命中 = 讀 1 個像素再查表
   const d = hitCtx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
-  const id = (d[0] << 16) | (d[1] << 8) | d[2];
-  return id === 0 ? null : circles[id - 1];
+  if (d[3] !== 255) return null;                        // 半透明 = 抗鋸齒邊緣,不可信(抗鋸齒關不掉)
+  return colorToCircle.get((d[0] << 16) | (d[1] << 8) | d[2]) ?? null;   // 查不到 = 混色,當沒命中
 }
-function hitTest(p) { return colorHitBox.checked ? hitTestColor(p) : hitTestMath(p); }   // 開關切換,行為應一致
+function hitTest(p) { return colorHitBox.checked ? hitTestColor(p) : hitTestMath(p); }   // 開關切換,行為應幾乎一樣
 
 canvas.addEventListener('pointermove', (e) => {
+  if (activeId !== null && e.pointerId !== activeId) return;   // 拖曳中,別根手指的移動不理(7.8)
   const p = eventToWorld(e);
   if (dragging) { dragging.x = p.x - dragOffset.x; dragging.y = p.y - dragOffset.y; invalidate(); return; }   // 拖曳移動
   const hit = hitTest(p);
   if (hit !== hovered) { hovered = hit; canvas.style.cursor = hit ? 'grab' : 'default'; invalidate(); }        // hover 回饋
 });
 canvas.addEventListener('pointerdown', (e) => {
+  if (activeId !== null || e.button !== 0) return;      // 已有指標在拖 / 不是主按鍵 → 不理(7.8)
   const p = eventToWorld(e); const hit = hitTest(p);
   selected = hit;                                       // 點擊選取(點空白 = 取消)
-  if (hit) { dragging = hit; dragOffset = { x: p.x - hit.x, y: p.y - hit.y }; canvas.style.cursor = 'grabbing'; canvas.setPointerCapture(e.pointerId); }
+  if (hit) { dragging = hit; activeId = e.pointerId; dragOffset = { x: p.x - hit.x, y: p.y - hit.y }; canvas.style.cursor = 'grabbing'; canvas.setPointerCapture(e.pointerId); }
   invalidate();
 });
-canvas.addEventListener('pointerup', (e) => {
-  if (!dragging) return; dragging = null; canvas.style.cursor = hovered ? 'grab' : 'default'; canvas.releasePointerCapture(e.pointerId);
+function endDrag(e) {                                   // pointerup 與 pointercancel 共用(7.8)
+  if (e.pointerId !== activeId) return; dragging = null; activeId = null; canvas.style.cursor = hovered ? 'grab' : 'default';
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+canvas.addEventListener('pointerleave', () => {         // 離開畫布:清掉 hover 高亮(7.8)
+  if (dragging || !hovered) return; hovered = null; canvas.style.cursor = 'default'; invalidate();
 });
 function render() {
   ctx.clearRect(0, 0, W, H);

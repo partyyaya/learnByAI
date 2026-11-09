@@ -19,57 +19,117 @@ ctx.fillStyle = '#f8f9fa'; ctx.fillRect(0, 0, W, H);
 
 ctx.fillStyle = '#1d3557';
 ctx.font = 'bold 30px system-ui, sans-serif';   // 先設字型(像 CSS 的 font 簡寫)
-ctx.fillText('Hello Canvas', 30, 70);           // 在 (30,70) 填色畫字
+ctx.fillText('Hello Canvas', 20, H * 0.3);      // 在 (20, H*0.3) 填色畫字
 
 ctx.lineWidth = 1;
 ctx.strokeStyle = '#e63946';
 ctx.font = 'bold 42px system-ui, sans-serif';
-ctx.strokeText('Outline', 30, 140);             // 空心字
+ctx.strokeText('Outline', 20, H * 0.6);         // 空心字
 
 ctx.fillStyle = '#457b9d';
 ctx.font = '15px system-ui, sans-serif';
-ctx.fillText('font / fillStyle 都是狀態,設了會一直生效', 30, 190);` },
+ctx.fillText('font、fillStyle 都是狀態', 20, H * 0.85);` },
 { id:'align-baseline', label:'4.2 textAlign / textBaseline 對齊', code:
 `// textAlign 決定 x 對到文字左/中/右;textBaseline 決定 y 對到文字哪條線
 ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
 const cx = W / 2;
 
-ctx.strokeStyle = '#e63946';                     // 垂直參考線 x = 中線
-ctx.beginPath(); ctx.moveTo(cx, 20); ctx.lineTo(cx, 150); ctx.stroke();
-ctx.fillStyle = '#1d3557'; ctx.font = '20px system-ui, sans-serif';
-ctx.textAlign = 'left';   ctx.fillText('left',   cx, 50);
-ctx.textAlign = 'center'; ctx.fillText('center', cx, 85);
-ctx.textAlign = 'right';  ctx.fillText('right',  cx, 120);
+// 上半:textAlign(紅色垂直參考線 x = 中線)
+ctx.strokeStyle = '#e63946';
+ctx.beginPath(); ctx.moveTo(cx, 4); ctx.lineTo(cx, H * 0.36); ctx.stroke();
+ctx.fillStyle = '#1d3557'; ctx.font = '14px system-ui, sans-serif';
+ctx.textAlign = 'left';   ctx.fillText('left',   cx, H * 0.12);
+ctx.textAlign = 'center'; ctx.fillText('center', cx, H * 0.24);
+ctx.textAlign = 'right';  ctx.fillText('right',  cx, H * 0.36);
 
-ctx.textAlign = 'left';
-ctx.strokeStyle = '#2a9d8f';                     // 水平參考線 y = 210
-ctx.beginPath(); ctx.moveTo(20, 215); ctx.lineTo(W - 20, 215); ctx.stroke();
-const bases = ['top', 'middle', 'alphabetic', 'bottom'];
-bases.forEach(function (b, i) {
-  ctx.textBaseline = b; ctx.fillStyle = '#457b9d';
-  ctx.fillText(b, 25 + i * 100, 215);
+// 下半:textBaseline。同一串 'Ag中' 用不同基線畫在綠色參考線上
+const rows = [['top', 'middle', 'alphabetic'], ['bottom', 'ideographic']];
+const colW = (W - 20) / 3;
+rows.forEach(function (row, r) {
+  const lineY = H * (r === 0 ? 0.58 : 0.92);       // 這一列的參考線 y
+  ctx.strokeStyle = '#2a9d8f';
+  ctx.beginPath(); ctx.moveTo(10, lineY); ctx.lineTo(W - 10, lineY); ctx.stroke();
+  row.forEach(function (b, i) {
+    const x = 14 + i * colW;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = '#999'; ctx.font = '11px system-ui, sans-serif';
+    ctx.fillText(b, x, lineY - 24);                // 小標:基線名稱
+    ctx.textBaseline = b;                          // ★ 換基線
+    ctx.fillStyle = '#457b9d'; ctx.font = '18px system-ui, sans-serif';
+    ctx.fillText('Ag中', x, lineY);
+  });
 });` },
-{ id:'measure', label:'4.3 measureText 量文字寬度', code:
-`// measureText 先量出寬度,才能畫「剛好包住文字」的底色框
+{ id:'measure', label:'4.3 measureText:width、actualBoundingBox、fontBoundingBox', code:
+`// actualBoundingBox = 這串字的墨跡(內容不同就不同);fontBoundingBox = 字型固定上下界(跟內容無關)
 ctx.fillStyle = '#1d3557'; ctx.fillRect(0, 0, W, H);
-ctx.font = 'bold 28px system-ui, sans-serif';
-ctx.textBaseline = 'alphabetic';
-const text = 'Canvas 排版';
-const m = ctx.measureText(text);                 // m.width = 文字像素寬
-const x = 40, y = 120, padX = 14, padY = 12;
-const asc = m.actualBoundingBoxAscent || 22;
-const desc = m.actualBoundingBoxDescent || 6;
+ctx.font = 'bold 36px system-ui, sans-serif';
+ctx.textBaseline = 'alphabetic';                  // 上下方向的量測值都相對目前的基線
+const y = H * 0.5;
+['ace', 'Ág中'].forEach(function (text, i) {
+  const x = 24 + i * (W / 2);
+  const m = ctx.measureText(text);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(text, x, y);
+  // 黃框:fontBoundingBox(兩個字串一樣高)
+  ctx.strokeStyle = '#ffd166'; ctx.lineWidth = 1;
+  ctx.strokeRect(x, y - m.fontBoundingBoxAscent, m.width, m.fontBoundingBoxAscent + m.fontBoundingBoxDescent);
+  // 綠框:actualBoundingBox(墨跡,'ace' 矮、'Ág中' 高)
+  ctx.strokeStyle = '#2ec4b6'; ctx.lineWidth = 2;
+  ctx.strokeRect(x - m.actualBoundingBoxLeft, y - m.actualBoundingBoxAscent,
+                 m.actualBoundingBoxLeft + m.actualBoundingBoxRight, m.actualBoundingBoxAscent + m.actualBoundingBoxDescent);
+  ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = '#a8dadc';
+  ctx.fillText('width=' + m.width.toFixed(1), x, y + 34);
+  ctx.font = 'bold 36px system-ui, sans-serif';
+});
+ctx.font = '12px system-ui, sans-serif'; ctx.fillStyle = '#ffd166';
+ctx.fillText('黃框:fontBoundingBox', 24, H - 28);
+ctx.fillStyle = '#2ec4b6';
+ctx.fillText('綠框:actualBoundingBox', 24, H - 10);` },
+{ id:'wrap', label:'4.3 自動換行 wrapText(移動滑鼠改寬度)', code:
+`// 互動:滑鼠的 x 決定 maxWidth,看 wrapText 怎麼重新斷行(中英混排、emoji 都不能切壞)
+const text = '換行要自己寫:Canvas 不會幫你排版,emoji 😀 和 café 也不能被切壞。Hello world, 中英混排 OK!';
+const x0 = 14, y0 = 40, lineHeight = 20;
+let maxWidth = Math.min(260, W - 2 * x0);
+canvas.style.touchAction = 'none';
 
-ctx.fillStyle = '#ffd166';                        // 用量到的尺寸畫背景膠囊
-ctx.fillRect(x - padX, y - asc - padY, m.width + padX * 2, asc + desc + padY * 2);
-ctx.fillStyle = '#1d3557';
-ctx.fillText(text, x, y);
+function wrapText(text, x, y, maxWidth, lineHeight) {
+  // 漢字逐字可斷、拉丁單字整塊、其餘(標點/空白/emoji)各自一塊;u 旗標讓 emoji 不被切成兩半
+  const tokens = text.match(/\\p{Script=Han}|[\\p{Script=Latin}\\p{N}'’]+|\\s|\\S/gu) || [];
+  let line = '';
+  for (const tk of tokens) {
+    const testLine = line + tk;
+    if (ctx.measureText(testLine).width > maxWidth && line.trim() !== '') {
+      ctx.fillText(line.trimEnd(), x, y);  // 這一行滿了,畫出來(去掉行尾空白)
+      line = tk.trim() === '' ? '' : tk;   // 換行;行首不留空白
+      y += lineHeight;
+    } else {
+      line = testLine;
+    }
+  }
+  if (line) ctx.fillText(line.trimEnd(), x, y);
+}
 
-ctx.font = '15px system-ui, sans-serif'; ctx.fillStyle = '#a8dadc';
-ctx.fillText('文字寬度 = ' + m.width.toFixed(1) + ' px', 40, 185);` },
+function render() {
+  ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = '#e63946';                      // maxWidth 參考線
+  ctx.beginPath(); ctx.moveTo(x0 + maxWidth, 4); ctx.lineTo(x0 + maxWidth, H - 4); ctx.stroke();
+  ctx.fillStyle = '#1d3557'; ctx.font = '15px system-ui, sans-serif'; ctx.textBaseline = 'alphabetic';
+  wrapText(text, x0, y0, maxWidth, lineHeight);
+  ctx.fillStyle = '#e63946'; ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText('maxWidth = ' + maxWidth.toFixed(0), x0, 14);
+}
+canvas.addEventListener('pointermove', (e) => {
+  const r = canvas.getBoundingClientRect();
+  maxWidth = Math.max(40, Math.min(e.clientX - r.left - x0, W - 2 * x0));
+  render();
+});
+render();` },
 { id:'drawimage-3', label:'4.4 drawImage 三種簽名', code:
 `// drawImage 三種簽名,來源都用 sampleImage(220x150 的離屏圖)
 ctx.fillStyle = '#f1faee'; ctx.fillRect(0, 0, W, H);
+const k = Math.min(1, W / 380, H / 240);   // 畫布太小時整體縮小(用的正是第 03 章的 scale)
+ctx.scale(k, k);
 
 ctx.drawImage(sampleImage, 10, 30);                          // ① (圖, dx, dy):原尺寸
 ctx.drawImage(sampleImage, 250, 30, 90, 60);                 // ② (圖, dx, dy, dw, dh):縮放
@@ -79,53 +139,110 @@ ctx.fillStyle = '#1d3557'; ctx.font = '12px system-ui, sans-serif';
 ctx.fillText('① 原尺寸', 10, 24);
 ctx.fillText('② 縮放', 250, 24);
 ctx.fillText('③ 裁切放大', 250, 104);` },
+{ id:'loading', label:'4.5 非同步載入:沒載完就畫 = 什麼都沒有', code:
+`// 用 sampleImage 做出一個真的需要「載入」的 <img>:canvas → Blob → blob: 網址
+ctx.fillStyle = '#f1faee'; ctx.fillRect(0, 0, W, H);
+ctx.fillStyle = '#1d3557'; ctx.font = '12px system-ui, sans-serif';
+const half = W / 2;
+const dw = Math.min(half - 20, 160), dh = dw * 150 / 220;
+
+sampleImage.toBlob(function (blob) {               // toBlob(callback) → 非同步把畫布編碼成 PNG
+  const url = URL.createObjectURL(blob);
+  const img = new Image();
+  img.src = url;
+
+  // ❌ 設完 src 立刻畫:圖還在載入,drawImage 什麼都不畫,也不報錯
+  ctx.drawImage(img, 10, 40, dw, dh);
+  ctx.strokeStyle = '#e63946'; ctx.strokeRect(10, 40, dw, dh);
+  ctx.fillText('❌ 立刻畫', 10, 16);
+  ctx.fillText('complete=' + img.complete, 10, 32);
+
+  // ✅ 等 decode():下載 + 解碼都完成才畫
+  img.decode().then(function () {
+    ctx.drawImage(img, half + 10, 40, dw, dh);
+    ctx.fillStyle = '#1d3557';
+    ctx.fillText('✅ decode() 後', half + 10, 16);
+    ctx.fillText('complete=' + img.complete, half + 10, 32);
+    URL.revokeObjectURL(url);                      // 用完釋放 blob: 網址
+  });
+});` },
 { id:'smoothing', label:'4.7 imageSmoothingEnabled:放大要不要平滑', code:
 `// 放大點陣圖:關平滑 = 銳利大像素(像素藝術);開平滑(預設)= 插值變糊
 ctx.fillStyle = '#22223b'; ctx.fillRect(0, 0, W, H);
+// 邊長取 16 的整數倍,每個像素才會一樣大
+const s = 16 * Math.max(4, Math.floor(Math.min((W - 60) / 2, H - 70) / 16));
+const x2 = W / 2 + 10;
 
 ctx.imageSmoothingEnabled = false;
-ctx.drawImage(pixelArt, 30, 55, 150, 150);   // 16x16 放大成 150x150
+ctx.drawImage(pixelArt, 20, 50, s, s);   // 16x16 放大成 s×s
 
 ctx.imageSmoothingEnabled = true;
-ctx.drawImage(pixelArt, 240, 55, 150, 150);
+ctx.drawImage(pixelArt, x2, 50, s, s);
 
 ctx.fillStyle = '#f2e9e4'; ctx.font = '14px system-ui, sans-serif';
-ctx.fillText('smoothing 關 → 銳利', 30, 42);
-ctx.fillText('smoothing 開 → 糊', 240, 42);` },
-{ id:'pattern', label:'4.5 createPattern 重複貼磚', code:
+ctx.fillText('關平滑 → 銳利', 20, 38);
+ctx.fillText('開平滑 → 糊', x2, 38);` },
+{ id:'pattern', label:'延伸(第 02 章):createPattern 重複貼磚', code:
 `// createPattern:用一張小圖當「重複貼磚」填滿(repeat/repeat-x/repeat-y/no-repeat)
+// pattern 也是圖像取樣:放大貼磚時一樣受 imageSmoothingEnabled 影響(4.7)
 const pat = ctx.createPattern(pixelArt, 'repeat');
-ctx.fillStyle = pat;                          // pattern 也是一種 fillStyle
+pat.setTransform(new DOMMatrix().scaleSelf(2));   // 貼磚放大 2 倍(座標會跟著 fill 當下的變換走,第 03 章 3.4)
+ctx.imageSmoothingEnabled = false;                // 關平滑 → 放大後仍是清楚的方塊像素
+ctx.fillStyle = pat;                              // pattern 也是一種 fillStyle
 ctx.fillRect(0, 0, W, H);
 
 ctx.fillStyle = 'rgba(0,0,0,.55)';
 ctx.fillRect(0, H - 42, W, 42);
 ctx.fillStyle = '#fff'; ctx.font = '14px system-ui, sans-serif';
-ctx.fillText('createPattern(圖, repeat) → 背景紋理', 12, H - 16);` },
-{ id:'card', label:'4.8 綜合:使用者卡片(圓角 + 頭像 clip + 文字)', code:
-`// 綜合:圓角底 + 圓形頭像(clip)+ 文字
+ctx.fillText('createPattern → 背景紋理', 12, H - 16);` },
+{ id:'card', label:'4.8 綜合:使用者卡片(圓角 + 頭像 clip + 自動換行)', code:
+`// 綜合:圓角底 + 圓形頭像(clip)+ 標題 + 自動換行的內文。繪製函式保持同步,圖片已就緒(sampleImage)
 ctx.fillStyle = '#e9ecef'; ctx.fillRect(0, 0, W, H);
-ctx.save();
-ctx.translate(60, 70);
 
-ctx.fillStyle = '#fff';                        // 卡片底:roundRect(x, y, 寬, 高, 圓角半徑)
-ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 1;
-ctx.beginPath();
-ctx.roundRect(0, 0, 300, 130, 14);
-ctx.fill(); ctx.stroke();
+function wrapText(text, x, y, maxWidth, lineHeight) {   // 4.3 的 wrapText
+  const tokens = text.match(/\\p{Script=Han}|[\\p{Script=Latin}\\p{N}'’]+|\\s|\\S/gu) || [];
+  let line = '';
+  for (const tk of tokens) {
+    const testLine = line + tk;
+    if (ctx.measureText(testLine).width > maxWidth && line.trim() !== '') {
+      ctx.fillText(line.trimEnd(), x, y);
+      line = tk.trim() === '' ? '' : tk;
+      y += lineHeight;
+    } else {
+      line = testLine;
+    }
+  }
+  if (line) ctx.fillText(line.trimEnd(), x, y);
+}
 
-ctx.save();                                     // 圓形頭像:先 clip 成圓再貼圖
- ctx.beginPath();
-ctx.arc(65, 65, 40, 0, Math.PI * 2);
-ctx.clip();
-ctx.drawImage(sampleImage, 25, 25, 80, 80);
-ctx.restore();
+function drawCard(x, y, w, avatar, name, bio) {
+  ctx.save();
+  ctx.translate(x, y);                          // 第 03 章:把座標系挪到卡片左上
 
-ctx.fillStyle = '#1d3557'; ctx.font = 'bold 20px system-ui, sans-serif';
-ctx.fillText('Gary Cai', 125, 55);
-ctx.fillStyle = '#6c757d'; ctx.font = '14px system-ui, sans-serif';
-ctx.fillText('Canvas 課學員', 125, 82);
-ctx.restore();` },
+  ctx.fillStyle = '#fff';                       // 卡片底:roundRect(x, y, 寬, 高, 圓角半徑)
+  ctx.strokeStyle = '#dee2e6'; ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(0, 0, w, 120, 12);
+  ctx.fill(); ctx.stroke();
+
+  ctx.save();                                   // 圓形頭像:先填底色再 clip 成圓、貼圖
+  ctx.beginPath();
+  ctx.arc(50, 60, 32, 0, Math.PI * 2);
+  ctx.fillStyle = '#f0f0f0'; ctx.fill();        // 底色:圖有透明區時不會開天窗
+  ctx.clip();
+  ctx.drawImage(avatar, 18, 28, 64, 64);
+  ctx.restore();
+
+  ctx.textBaseline = 'top';                     // 4.2:用左上對齊最直覺
+  ctx.fillStyle = '#222'; ctx.font = 'bold 18px system-ui, sans-serif';
+  ctx.fillText(name, 100, 22);
+  ctx.fillStyle = '#666'; ctx.font = '13px system-ui, sans-serif';
+  wrapText(bio, 100, 48, w - 110, 18);          // 內文自動換行(4.3)
+  ctx.restore();
+}
+
+const cw = Math.min(300, W - 20);               // 卡片寬依畫布大小
+drawCard((W - cw) / 2, (H - 120) / 2, cw, sampleImage, 'Gary Cai', 'Canvas 課學員,正在學怎麼自己換行');` },
 { id:'homework', label:'💡 動手作業:迷因產生器', code:
 `// 第 04 章作業:上下置中、帶黑邊的白色粗體字;過長先縮字級,縮到下限仍塞不下才換行。改上面輸入框看即時效果
 // 注入兩個輸入框(playground 沒有工具列 DOM;離開這個範例會自動清掉)
@@ -154,15 +271,15 @@ const baseImage = makeBaseImage(W, H);
 
 // 跟 4.3 的 wrapText 同一套量測邏輯,但「只切行、先不畫」(底部文字要從最後一行往上排)
 function layoutLines(text, maxWidth) {
-  const tokens = text.match(/[一-鿿]|[A-Za-z0-9]+|\\s|\\S/g) || [];
+  const tokens = text.match(/\\p{Script=Han}|[\\p{Script=Latin}\\p{N}'’]+|\\s|\\S/gu) || [];
   const lines = []; let line = '';
   for (const tk of tokens) {
     const test = line + tk;
     if (ctx.measureText(test).width > maxWidth && line.trim() !== '') {
-      lines.push(line); line = tk.trim() === '' ? '' : tk;   // 換行,行首不留空白
+      lines.push(line.trimEnd()); line = tk.trim() === '' ? '' : tk;   // 換行:去掉行尾空白(置中才不會偏),行首不留空白
     } else { line = test; }
   }
-  if (line) lines.push(line);
+  if (line) lines.push(line.trimEnd());
   return lines;
 }
 // 過長先縮小字級,縮到下限仍塞不下才換行

@@ -1545,7 +1545,7 @@ sum = 0+8+5+9+5+4+2+7 = 40 → 40 % 5 == 0 ✅
 01 章用 `@AssertTrue` 做跨欄位驗證：
 
 ```java
-@AssertTrue(message = "minAmount 不可大於 maxAmount")
+@AssertTrue(message = "amountFrom 不可大於 amountTo")
 public boolean isAmountRangeValid() { ... }
 ```
 
@@ -1680,7 +1680,7 @@ import jakarta.validation.Constraint;
 import jakarta.validation.Payload;
 import java.lang.annotation.*;
 
-/** 排序參數的白名單。值格式：`field,asc;field2,desc`。 */
+/** 單個排序項的白名單。多欄排序使用 ?sort=field,asc&sort=field2,desc。 */
 @Documented
 @Constraint(validatedBy = SortWhitelistValidator.class)
 @Target({ElementType.FIELD, ElementType.PARAMETER, ElementType.RECORD_COMPONENT,
@@ -1689,8 +1689,6 @@ import java.lang.annotation.*;
 public @interface SortWhitelist {
     /** 允許的排序欄位（API 欄位名，不是資料庫欄位名）。 */
     String[] value();
-    /** 最多幾個排序欄位。 */
-    int maxFields() default 3;
     String message() default "{example.shop.validation.SortWhitelist.message}";
     Class<?>[] groups() default {};
     Class<? extends Payload>[] payload() default {};
@@ -1704,16 +1702,15 @@ import jakarta.validation.ConstraintValidator;
 import jakarta.validation.ConstraintValidatorContext;
 import java.util.Arrays;
 import java.util.Set;
+import org.hibernate.validator.constraintvalidation.HibernateConstraintValidatorContext;
 
 public class SortWhitelistValidator implements ConstraintValidator<SortWhitelist, CharSequence> {
 
     private Set<String> allowed;
-    private int maxFields;
 
     @Override
     public void initialize(SortWhitelist annotation) {
         this.allowed = Set.of(annotation.value());
-        this.maxFields = annotation.maxFields();
     }
 
     @Override
@@ -1723,14 +1720,12 @@ public class SortWhitelistValidator implements ConstraintValidator<SortWhitelist
         // ★ 長度上限：擋掉 "a,asc;a,asc;a,asc;…" 重複一萬次的輸入
         if (value.length() > 200) return fail(ctx, "排序參數過長");
 
-        String[] tokens = value.toString().split(";");
-        if (tokens.length > maxFields) {
-            return fail(ctx, "排序欄位最多 " + maxFields + " 個");
-        }
+        if (value.toString().contains(";")) return fail(ctx, "多欄排序請重複 sort query key");
+        String[] tokens = { value.toString() };
 
         for (String token : tokens) {
-            String[] parts = token.trim().split(",");
-            if (parts.length > 2) return fail(ctx, "排序格式錯誤：" + token.trim());
+            String[] parts = token.trim().split(",", -1);
+            if (parts.length > 2) return fail(ctx, "排序格式錯誤");
 
             String field = parts[0].trim();
             if (!allowed.contains(field)) {
@@ -1752,9 +1747,9 @@ public class SortWhitelistValidator implements ConstraintValidator<SortWhitelist
     private boolean fail(ConstraintValidatorContext ctx, String message) {
         ctx.disableDefaultConstraintViolation();
         // ★ 用 addMessageParameter 而不是把文字直接插進 template（見 2.8.4 的 EL 注入）
-        ctx.buildConstraintViolationWithTemplate("{detail}")
-           .addMessageParameter("detail", message)
-           .addConstraintViolation();
+        var hibernate = ctx.unwrap(HibernateConstraintValidatorContext.class);
+        hibernate.addMessageParameter("detail", message)
+                .buildConstraintViolationWithTemplate("{detail}").addConstraintViolation();
         return false;
     }
 }
@@ -2038,7 +2033,7 @@ jakarta.validation.constraints.AssertTrue.message=條件不符
 | `{min}`、`{max}` | `@Size` / `@Min` 的屬性 | `長度必須在 {min} 到 {max} 之間` |
 | `{value}` | `@Min` / `@Max` / `@DecimalMin` | `不可小於 {value}` |
 | `{regexp}` | `@Pattern` | 通常不要放（洩漏內部規則且沒人看得懂） |
-| 任何屬性名 | 自訂註解的屬性 | `@SortWhitelist` 的 `{maxFields}` |
+| 任何屬性名 | 自訂註解的屬性 | `@Size` 的 `{max}` |
 | `${validatedValue}` | **實際輸入值**（EL） | ⚠️ **絕對不要用**（2.8.4） |
 
 ### 2.8.4 EL 注入：`${validatedValue}` 為什麼危險 ★

@@ -93,7 +93,7 @@ onMounted(() => console.log('已掛載'))
 
 ## 3. 生命週期 hooks
 
-在 `<script setup>` 裡，直接從 `vue` import 對應的 hook 並傳入一個回呼即可。它們必須在 `setup` 同步執行期間註冊（不能包在 `setTimeout` 或 `await` 之後）。
+在 `<script setup>` 裡，直接從 `vue` import 對應的 hook 並傳入一個回呼即可。它們必須在 `setup` 執行期間註冊：不能放進 `setTimeout`、事件回呼，也不能放在一般 async 函式的 `await` 之後。（`<script setup>` 頂層的 `await` 是例外：編譯器會在 `await` 之後還原元件實例，但元件也因此變成非同步元件，需要包在 `<Suspense>` 裡。）
 
 | Hook | 觸發時機 | 典型用途 |
 |------|---------|---------|
@@ -477,7 +477,7 @@ watchEffect(() => {
 
 1. **在 `setup` 同步階段就想讀 DOM / template ref**：此時 DOM 還沒建立，`inputRef.value` 是 `null`。要放到 `onMounted` 裡。
 2. **忘了清理副作用**：`onMounted` 起了 `setInterval`、`addEventListener`，卻沒在 `onUnmounted` 清掉。元件切走後計時器還在跑、監聽還在，造成記憶體洩漏。把「起」和「清」寫成一對，或直接抽成 composable 讓它自己管。
-3. **在條件式或非同步後註冊生命週期 hook**：`if (x) onMounted(...)` 或 `await something(); onMounted(...)` 都會失效。hook 必須在 `setup` 同步流程中無條件註冊。
+3. **在非同步回呼裡註冊生命週期 hook**：`setTimeout(() => onMounted(...))`，或在一般 async 函式裡 `await something(); onMounted(...)`，都會失效（Vue 會警告「onMounted is called when there is no active component instance」）。hook 要在 `setup` 執行期間註冊。條件式註冊（`if (x) onMounted(...)`）則沒問題：條件不成立就只是不註冊。
 4. **改完資料立刻讀 DOM 尺寸**：因為 DOM 更新是非同步的，會讀到舊值。需要就 `await nextTick()`。
 5. **想操控子元件卻忘了 `defineExpose`**：`<script setup>` 的子元件預設封閉，父層透過 ref 拿到的實例上什麼都沒有，除非子元件 `defineExpose` 開放。
 6. **把 composable 當成「只是個工具函式」**：composable 的價值在於「回傳的是響應式狀態」。如果你的函式只是純計算、不涉及 `ref`/生命週期，那它就是普通 util，不用叫 `useXxx`。
@@ -496,7 +496,7 @@ watchEffect(() => {
 
 ## 最後範例：碼表元件（生命週期 + composable + template ref）
 
-把本章觀念整合成一個可跑的碼表：邏輯抽成 `useStopwatch` composable（自帶清理），畫面用 template ref 做「重置後自動聚焦備註欄」。原樣建立以下檔案即可跑（第 1 章已教過 `npm create vue@latest` 建專案）。
+把本章觀念整合成一個可跑的碼表：邏輯抽成 `useStopwatch` composable（自帶清理），畫面用 template ref 做「記錄一段後自動把焦點放回備註欄」。原樣建立以下檔案即可跑（第 1 章已教過 `npm create vue@latest` 建專案）。
 
 ### `src/composables/useStopwatch.js`
 
@@ -553,7 +553,8 @@ import { useStopwatch } from './composables/useStopwatch'
 const { display, running, start, pause, reset } = useStopwatch()
 
 const laps = ref([])
-const noteRef = useTemplateRef('note')
+// template ref 的名稱別跟下面存備註文字的 note 撞名
+const noteRef = useTemplateRef('noteInput')
 const note = ref('')
 
 async function recordLap() {
@@ -579,7 +580,7 @@ async function recordLap() {
       </div>
 
       <div class="row">
-        <input ref="note" v-model="note" placeholder="這一段在做什麼？" />
+        <input ref="noteInput" v-model="note" placeholder="這一段在做什麼？" />
         <button @click="recordLap">記錄一段</button>
       </div>
 
@@ -617,7 +618,7 @@ button.ghost { background: #fff; color: #111827; border-color: #d1d5db; }
 
 ---
 
-你已經掌握「在對的時機做事」與「把邏輯抽成 composable 重用」。下一章我們把這套能力用在**表單**上：`v-model` 全套、修飾符、手寫驗證，並把驗證邏輯抽成 `useForm`/`useField` composable。
+你已經掌握「在對的時機做事」與「把邏輯抽成 composable 重用」。下一章我們把這套能力用在**表單**上：`v-model` 全套、修飾符、手寫驗證，並把驗證邏輯抽成 `useForm` composable。
 
 ---
 

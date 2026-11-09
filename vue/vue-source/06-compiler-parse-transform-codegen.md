@@ -94,7 +94,8 @@ transform 會做三類事情：
 
 - `helpers`：收集 render 需要的 helper（如 `toDisplayString`）
 - `components` / `directives`：記錄 template 使用到的元件與指令
-- `hoists`：可提升的靜態節點
+- `hoists`：要提升到模組層級的常數（3.5 起主要是靜態 props 物件，例如 `const _hoisted_1 = { class: "box" }`）
+- `cached`：要快取進 render 參數 `_cache[n]` 的運算式（3.5 起靜態節點、事件處理器、`v-once` 都走這裡，見 07 章）
 - `scopes`：v-for / v-slot 等作用域計數
 - `currentNode` / `parent`：遍歷時上下文
 
@@ -134,13 +135,13 @@ _createVNode(MyInput, {
 
 具名 `v-model:title="x"` 則展開成 `title` + `onUpdate:title`。這正是 `defineModel()`（見 09 章）背後對應的協定。
 
-**用在原生表單元素上**（由 `compiler-dom` 覆寫的 `transformModel` 接手）→ 展開成 **value 綁定 + input 事件**，並掛上對應的 runtime directive：
+**用在原生表單元素上**（由 `compiler-dom` 覆寫的 `transformModel` 接手）→ 移除 `modelValue`，只留 **`onUpdate:modelValue` 事件 prop**，再掛上對應的 runtime directive（`vModelText`、`vModelCheckbox`、`vModelSelect`…）；設定 `el.value` 與監聽 input／change 都由指令在執行期完成：
 
 ```js
-// <input v-model="msg" /> 編譯後（概念）
-_withDirectives(_createElementVNode("input", {
-  "onUpdate:modelValue": $event => (_ctx.msg = $event)
-}, null, 512 /* NEED_PATCH */), [
+// <input v-model="msg" />（3.5.41 實際輸出，render 回傳的部分）
+_withDirectives((_openBlock(), _createElementBlock("input", {
+  "onUpdate:modelValue": _cache[0] || (_cache[0] = $event => ((_ctx.msg) = $event))
+}, null, 512 /* NEED_PATCH */)), [
   [_vModelText, _ctx.msg]   // vModelText 負責設 el.value 並監聽 input 事件
 ])
 ```
@@ -166,20 +167,31 @@ slots 分兩端編譯。
 
 ```js
 // <slot name="header" :item="item" />
-_renderSlot(_ctx.$slots, "header", { item: item })
+_renderSlot(_ctx.$slots, "header", { item: _ctx.item })
 ```
 
 **插槽內容**（使用元件時的 `<template #name>`）→ 由 `buildSlots` 編成一個 slots 物件，每個具名 slot 都用 `withCtx` 包起來（保留正確的 render 上下文），scoped slot 的參數就是 callback 的參數：
 
 ```js
 // <Comp><template #header="{ item }">{{ item.name }}</template></Comp>
-_createVNode(Comp, null, {
-  header: _withCtx(({ item }) => [ _toDisplayString(item.name) ]),
+(_openBlock(), _createBlock(_component_Comp, null, {
+  header: _withCtx(({ item }) => [
+    _createTextVNode(_toDisplayString(item.name), 1 /* TEXT */)
+  ]),
   _: 1 /* STABLE */
-})
+}))
 ```
 
-若 slot 內容是**條件/動態產生**的（`v-if`、`v-for` 包住 `<template #x>`），`buildSlots` 無法靜態確定 slot 集合，會標上 **`DYNAMIC_SLOTS`** flag（輸出 `_: 2`），runtime 就會走較保守的 slot 更新路徑（見 07 章 patch flags）。
+若 slot 內容是**條件/動態產生**的（`v-if`、`v-for` 包住 `<template #x>`），`buildSlots` 無法靜態確定 slot 集合，輸出會同時帶兩個不同的標記：slots 物件上的 SlotFlags `_: 2 /* DYNAMIC */`（改用 `_createSlots` 組出），以及元件 vnode 上的 patch flag `1024 /* DYNAMIC_SLOTS */`。runtime 看到後就會走較保守的 slot 更新路徑（見 07 章 patch flags）：
+
+```js
+// <Comp><template v-if="ok" #header>hi</template></Comp>（3.5.41 實際輸出，精簡 fn 內容）
+(_openBlock(), _createBlock(_component_Comp, null, _createSlots({ _: 2 /* DYNAMIC */ }, [
+  (_ctx.ok)
+    ? { name: "header", fn: _withCtx(() => [/* … */]), key: "0" }
+    : undefined
+]), 1024 /* DYNAMIC_SLOTS */))
+```
 
 ---
 
@@ -241,7 +253,7 @@ function render(_ctx, _cache) {
 建議順序：
 
 1. `baseCompile`
-2. `baseParse` 及 parse children/element/interpolation 邏輯
+2. `baseParse`（`parser.ts`）及它交給 `Tokenizer` 的 callbacks（`onopentagname`、`ontext`、`oninterpolation`、`onclosetag`…）
 3. `transform` 主流程與 context
 4. 常見 node transform（element、text、if、for）
 5. `generate` 與輸出函式
@@ -290,4 +302,4 @@ transform 結果是否正確，最終要看 codegen 輸出與 runtime 行為。
 ## 6.14 下一章預告
 
 下一章會深挖編譯器最佳化：  
-`hoistStatic`、block tree、patch flags 如何直接決定 runtime 更新成本。
+靜態節點的提升與快取（`hoistStatic` 選項，3.5 起由 `cacheStatic` 實作）、block tree、patch flags 如何直接決定 runtime 更新成本。

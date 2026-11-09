@@ -35,103 +35,140 @@ function loop(t) {
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);` },
-{ id:'sprite-cache', label:'9.2 sprite 快取:貴的圖形只畫一次', code:
-`// 把「畫一次很貴」的圖示預先烤進離屏 canvas,主迴圈只 drawImage(便宜),畫 300 個
+{ id:'layering', label:'9.3 技巧一 分層:兩張疊放的 canvas', code:
+`// 分層:背景格線畫在「底下那張」canvas,只畫一次;上面這張每幀只清掉、重畫會動的球
+// 點畫布切換基準組:不分層,每幀在同一張上重畫整片背景 + 球
+const stage = canvas.parentNode;
+stage.style.position = 'relative';             // 先設好,下面量 offsetLeft/Top 才是相對 stage
+const bg = document.createElement('canvas');
+bg.className = 'demo-inject';                  // 離開範例會自動移除
+bg.width = W; bg.height = H;
+bg.style.cssText = 'position:absolute;left:' + canvas.offsetLeft + 'px;top:' + canvas.offsetTop + 'px;width:' + W + 'px;height:' + H + 'px;border-radius:4px;';
+stage.insertBefore(bg, canvas);
+canvas.style.position = 'relative';            // 上層要疊在 bg 之上
+canvas.style.background = 'transparent';       // playground 預設給畫布白底,要透明才看得到底層
+window.__demoCleanup = () => { stage.style.position = ''; };
+function paintBg(g) {
+  g.fillStyle = '#1d3557'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = 'rgba(255,255,255,.08)';
+  for (let x = 0; x < W; x += 24) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+  for (let y = 0; y < H; y += 24) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+}
+paintBg(bg.getContext('2d'));                  // 背景層:只畫這一次
+let layered = true;
+canvas.addEventListener('click', () => { layered = !layered; });
+let a = 0;
+function loop() {
+  a += 0.03;
+  ctx.clearRect(0, 0, W, H);                   // 上層清成透明,底下的背景層自然露出來
+  if (!layered) paintBg(ctx);                  // 基準組:每幀在同一張上重畫整片背景
+  const x = W / 2 + Math.cos(a) * 150, y = H / 2 + Math.sin(a) * 90;
+  ctx.fillStyle = '#e63946'; ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#a8dadc'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText(layered ? '分層:背景在底下那張,只畫一次' : '不分層:每幀重畫整片背景(基準)', 10, 20);
+  ctx.fillText('點畫布切換', 10, 38);
+  requestAnimationFrame(loop);
+}
+loop();` },
+{ id:'sprite-cache', label:'9.3 技巧二 離屏快取:貴的圖形只畫一次', code:
+`// 把「畫一次很貴」的圖示(陰影 + 多次旋轉)預先烤進離屏 canvas,主迴圈只 drawImage
+// 點畫布切換基準組「每幀現畫」,比較 FPS 與 JS 時間(JS 時間只量到錄指令,見 9.1 盲點①)
 const S = 48;
-const sprite = document.createElement('canvas'); sprite.width = S; sprite.height = S;
-(function bake() {
-  const g = sprite.getContext('2d');
-  g.translate(S / 2, S / 2);
+function drawIcon(g) {
+  g.save();
   g.shadowColor = 'rgba(0,0,0,.4)'; g.shadowBlur = 6;   // 陰影很貴
   g.fillStyle = '#e63946';
-  for (let i = 0; i < 8; i++) { g.rotate(Math.PI / 4); g.fillRect(8, -3, 12, 6); }  // 多次旋轉也貴
+  for (let i = 0; i < 8; i++) { g.rotate(Math.PI / 4); g.fillRect(8, -3, 12, 6); }
   g.fillStyle = '#ffd166'; g.beginPath(); g.arc(0, 0, 9, 0, Math.PI * 2); g.fill();
-})();
+  g.restore();
+}
+const sprite = document.createElement('canvas'); sprite.width = S; sprite.height = S;
+{ const g = sprite.getContext('2d'); g.translate(S / 2, S / 2); drawIcon(g); }   // 只烤這一次
 const items = [];
 for (let i = 0; i < 300; i++) items.push({ x: Math.random()*W, y: Math.random()*H, vx: (Math.random()-.5)*2, vy: (Math.random()-.5)*2 });
-let frames = 0, fps = 0, acc = 0, last = 0;
+let useCache = true, frames = 0, fps = 0, acc = 0, last = 0, jsMs = 0;
+canvas.addEventListener('click', () => { useCache = !useCache; });
 function loop(t) {
   const dt = last ? (t - last) / 1000 : 0; last = t; acc += dt; frames++;
   if (acc >= 0.5) { fps = Math.round(frames / acc); frames = 0; acc = 0; }
+  const t0 = performance.now();
   ctx.clearRect(0, 0, W, H);
   items.forEach(function (o) {
     o.x += o.vx; o.y += o.vy;
     if (o.x < 0 || o.x > W) o.vx *= -1;
     if (o.y < 0 || o.y > H) o.vy *= -1;
-    ctx.drawImage(sprite, o.x - S / 2, o.y - S / 2);   // 只貼快取好的圖
+    if (useCache) ctx.drawImage(sprite, o.x - S / 2, o.y - S / 2);           // 只貼快取好的圖
+    else { ctx.save(); ctx.translate(o.x, o.y); drawIcon(ctx); ctx.restore(); }   // 基準組:每幀現畫
   });
-  ctx.fillStyle = '#000'; ctx.font = 'bold 15px system-ui, sans-serif';
-  ctx.fillText('300 個快取 sprite · FPS ' + fps, 12, 22);
+  jsMs = jsMs * 0.9 + (performance.now() - t0) * 0.1;   // 平滑後的每幀 JS 時間
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 40);
+  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText((useCache ? '快取 sprite' : '每幀現畫(基準)') + ' × 300 · FPS ' + fps + ' · JS ' + jsMs.toFixed(2) + 'ms', 8, 16);
+  ctx.fillText('點畫布切換', 8, 33);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);` },
-{ id:'culling', label:'9.3 視口裁剪 culling:畫面外不畫', code:
+{ id:'batch-style', label:'9.3 技巧三 減少狀態切換:依樣式分組畫', code:
+`// 依顏色分組畫:同色只設一次 fillStyle。點畫布切換基準組「每個都切一次顏色」
+// 方塊會重疊:分組後疊放順序跟著變(9.3 ⚠️ z-order)。把 N 改大,看差距在你的瀏覽器上有多少
+const N = 600;
+const cols = ['#e63946', '#457b9d', '#2a9d8f', '#ffd166'];
+const items = [];
+for (let i = 0; i < N; i++) items.push({ x: Math.random()*W, y: 40 + Math.random()*(H-40), c: i % 4 });
+const groups = cols.map((_, c) => items.filter(o => o.c === c));   // 啟動時分組一次
+let grouped = true, frames = 0, fps = 0, acc = 0, last = 0, jsMs = 0;
+canvas.addEventListener('click', () => { grouped = !grouped; });
+function loop(t) {
+  const dt = last ? (t - last) / 1000 : 0; last = t; acc += dt; frames++;
+  if (acc >= 0.5) { fps = Math.round(frames / acc); frames = 0; acc = 0; }
+  const t0 = performance.now();
+  ctx.clearRect(0, 0, W, H);
+  if (grouped) {
+    for (let c = 0; c < cols.length; c++) {
+      ctx.fillStyle = cols[c];               // 一組只切一次狀態
+      for (const o of groups[c]) ctx.fillRect(o.x, o.y, 7, 7);
+    }
+  } else {
+    for (const o of items) { ctx.fillStyle = cols[o.c]; ctx.fillRect(o.x, o.y, 7, 7); }   // 基準組:每個都切顏色
+  }
+  jsMs = jsMs * 0.9 + (performance.now() - t0) * 0.1;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 40);
+  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
+  ctx.fillText((grouped ? '依顏色分組' : '逐個切顏色(基準)') + ' × ' + N + ' · FPS ' + fps + ' · JS ' + jsMs.toFixed(2) + 'ms', 8, 16);
+  ctx.fillText('點畫布切換', 8, 33);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);` },
+{ id:'culling', label:'9.3 技巧六 視口剔除:畫面外不畫', code:
 `// 世界有 2000 個物件,相機只看得到一小塊;畫面外的直接跳過(culling)
+// 點畫布切換基準組「全部都畫」,比較實際畫了幾個與 JS 時間
 const WORLD = 2000, N = 2000;
 const world = [];
 for (let i = 0; i < N; i++) world.push({ x: Math.random()*WORLD, y: Math.random()*WORLD, r: 6 + Math.random()*8, c: 'hsl(' + Math.floor(Math.random()*360) + ',70%,55%)' });
 const cam = { x: 0, y: 0 };
-let t = 0;
+let t = 0, cull = true, jsMs = 0;
+canvas.addEventListener('click', () => { cull = !cull; });
 function loop() {
   t += 0.01;
   cam.x = (WORLD - W) / 2 + Math.cos(t) * ((WORLD - W) / 2);   // 相機在世界裡繞
   cam.y = (WORLD - H) / 2 + Math.sin(t * 0.7) * ((WORLD - H) / 2);
+  const t0 = performance.now();
   ctx.clearRect(0, 0, W, H);
   let drawn = 0;
   for (const o of world) {
     const sx = o.x - cam.x, sy = o.y - cam.y;
-    if (sx + o.r < 0 || sx - o.r > W || sy + o.r < 0 || sy - o.r > H) continue;  // 視口外 → 跳過
+    if (cull && (sx + o.r < 0 || sx - o.r > W || sy + o.r < 0 || sy - o.r > H)) continue;  // 視口外 → 跳過
     ctx.fillStyle = o.c; ctx.beginPath(); ctx.arc(sx, sy, o.r, 0, Math.PI * 2); ctx.fill();
     drawn++;
   }
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 22);
+  jsMs = jsMs * 0.9 + (performance.now() - t0) * 0.1;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 40);
   ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('實際畫 ' + drawn + ' / 共 ' + N + ' 個(畫面外都被 culling 跳過)', 8, 16);
+  ctx.fillText((cull ? '剔除' : '全部都畫(基準)') + ':實際畫 ' + drawn + ' / ' + N + ' 個 · JS ' + jsMs.toFixed(2) + 'ms', 8, 16);
+  ctx.fillText('點畫布切換', 8, 33);
   requestAnimationFrame(loop);
 }
 loop();` },
-{ id:'layering', label:'9.5 分層:靜態背景只畫一次', code:
-`// 分層:靜態背景畫「一次」到離屏層,每幀只貼背景 + 重畫動態物件
-// (真實情境用兩個疊放的 <canvas>;這裡用一張離屏層示意)
-const bg = document.createElement('canvas'); bg.width = W; bg.height = H;
-(function paintBg() {
-  const g = bg.getContext('2d');
-  g.fillStyle = '#1d3557'; g.fillRect(0, 0, W, H);
-  g.strokeStyle = 'rgba(255,255,255,.08)';
-  for (let x = 0; x < W; x += 24) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
-  for (let y = 0; y < H; y += 24) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
-  g.fillStyle = '#a8dadc'; g.font = '13px system-ui, sans-serif';
-  g.fillText('靜態背景層:只畫一次(格線不每幀重算)', 10, 20);
-})();
-let a = 0;
-function loop() {
-  a += 0.03;
-  ctx.drawImage(bg, 0, 0);   // 每幀只「貼」背景層
-  const x = W / 2 + Math.cos(a) * 150, y = H / 2 + Math.sin(a) * 90;
-  ctx.fillStyle = '#e63946'; ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.fill();
-  requestAnimationFrame(loop);
-}
-loop();` },
-{ id:'batch-style', label:'9.6 減少狀態切換:依樣式分組畫', code:
-`// 600 個方塊,依顏色分組畫:同色只設一次 fillStyle,少切狀態 = 更快
-const cols = ['#e63946', '#457b9d', '#2a9d8f', '#ffd166'];
-const items = [];
-for (let i = 0; i < 600; i++) items.push({ x: Math.random()*W, y: Math.random()*H, c: i % 4 });
-let frames = 0, fps = 0, acc = 0, last = 0;
-function loop(t) {
-  const dt = last ? (t - last) / 1000 : 0; last = t; acc += dt; frames++;
-  if (acc >= 0.5) { fps = Math.round(frames / acc); frames = 0; acc = 0; }
-  ctx.clearRect(0, 0, W, H);
-  for (let c = 0; c < cols.length; c++) {
-    ctx.fillStyle = cols[c];               // 一組只切一次狀態
-    for (const o of items) { if (o.c !== c) continue; ctx.fillRect(o.x, o.y, 7, 7); }
-  }
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, 22);
-  ctx.fillStyle = '#fff'; ctx.font = '13px system-ui, sans-serif';
-  ctx.fillText('600 方塊依顏色分組畫(少切 fillStyle) · FPS ' + fps, 8, 16);
-  requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);` },
 { id:'homework', label:'💡 動手作業:10000 粒子壓力測試', code:
 `// 第 09 章作業:由基準開始,逐個打開優化、看 FPS 變化,親手量出哪個最有效
 // 注入控制面板(playground 沒有這排 checkbox;離開範例會自動清掉)
@@ -178,7 +215,7 @@ function update(dt) {
 }
 function render() {
   ctx.clearRect(0, 0, W, H);
-  if (optSprite.checked) {                            // 優化①:每幀只 drawImage,比 10000 次 arc+fill 快很多
+  if (optSprite.checked) {                            // 優化①:每幀只 drawImage——小圓的快取不一定比 arc+fill 快,量量看
     for (const p of particles) ctx.drawImage(sprites[p.colorIndex], p.x - R, p.y - R);
   } else if (optBatch.checked) {                      // 優化②:同色排一起,fillStyle 一種顏色只設一次
     for (let c = 0; c < COLORS.length; c++) {
@@ -195,7 +232,7 @@ function frame(now) {
   frames++;
   if (now - lastFpsTime >= 1000) { fpsEl.textContent = frames; frames = 0; lastFpsTime = now; }   // 顯示在 DOM,才不會被按需渲染凍住
   update(dt);
-  if (!optOnDemand.checked || dirty) { render(); dirty = false; }      // 優化③:按需渲染,靜止時整個 render 被跳過
+  if (!optOnDemand.checked || dirty) { render(); dirty = false; }      // 優化③:按需渲染,靜止時整個 render 被跳過(為了數 FPS 讓 rAF 一直轉)
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);` }

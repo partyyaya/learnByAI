@@ -192,7 +192,7 @@ export const useCartStore = defineStore('cart', {
 
 **hydration 自動搞定**：`@pinia/nuxt` 會把伺服器端 store 的 state 序列化進 payload，client 端自動接上，你什麼都不用做——這正是用官方模組（而非自己 `new Pinia()`）的好處。
 
-**持久化到 localStorage**：Pinia 的 state 預設不會存，重整就沒了。要保留（例如購物車、主題），裝 `pinia-plugin-persistedstate`。**注意它是一個 Nuxt 模組，光 `npm install` 不會生效**——一定要把模組註冊起來：
+**持久化**：Pinia 的 state 預設不會存，重整就沒了。要保留（例如購物車、主題），裝 `pinia-plugin-persistedstate`。**注意它是一個 Nuxt 模組，光 `npm install` 不會生效**——一定要把模組註冊起來：
 
 ```bash
 npx nuxi module add pinia-plugin-persistedstate
@@ -217,13 +217,22 @@ export default defineNuxtConfig({
 export const useCartStore = defineStore('cart', () => {
   /* ...同上... */
 }, {
-  persist: true, // 自動存 localStorage、重整還在
+  persist: true, // 預設存在 cookie：重整還在，SSR 也讀得到
+})
+```
+
+Nuxt 版的預設儲存位置是 **cookie**（不是 localStorage）：伺服器渲染時就讀得到，SSR 產出的 HTML 已經是還原後的狀態，畫面不會閃。代價是 cookie 有約 4KB 上限、每個請求都會帶上——購物車這種小資料剛好；資料大、或不需要送回伺服器，再改存 localStorage：
+
+```js
+}, {
+  // piniaPluginPersistedstate 由模組自動匯入
+  persist: { storage: piniaPluginPersistedstate.localStorage() },
 })
 ```
 
 > ⚠️ 最常見的坑：只跑了 `npm install pinia-plugin-persistedstate` 沒註冊模組，就寫 `persist: true`——這時 `persist` 會被**默默忽略**（不會報錯），重整資料照樣消失，很難察覺。看到「加了 `persist` 卻沒效果」，先檢查模組有沒有進 `modules`。
 >
-> ⚠️ `localStorage` 只有瀏覽器有。持久化插件會在 client 端補水，這是預期行為；但別在 store 初始值裡直接讀 `localStorage`（SSR 會炸），交給插件處理。
+> ⚠️ `localStorage` 只有瀏覽器有：伺服器渲染時讀不到，SSR 產出的是初始值（例如購物車 0 件），瀏覽器還原後才變成真正的值。如果這個值會顯示在畫面上（像頁首的購物車數量），就會出現第 4 章講的 hydration mismatch——這種顯示要包進 `<ClientOnly>`，或乾脆用預設的 cookie。也別在 store 初始值裡直接讀 `localStorage`（SSR 會炸），交給插件處理。
 
 ---
 

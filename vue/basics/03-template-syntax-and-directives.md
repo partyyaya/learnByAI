@@ -58,7 +58,7 @@ const rawHtml = ref('<strong>粗體</strong>')
 </template>
 ```
 
-> ⚠️ **XSS 警告**：`v-html` 會原樣執行裡面的 HTML，若內容含使用者輸入或不可信來源，攻擊者可塞入 `<script>` 或惡意 `onerror` 竊取資料。**永遠不要對「使用者可控的內容」用 `v-html`**；非用不可時，先用可信的淨化庫（如 DOMPurify）清洗。
+> ⚠️ **XSS 警告**：`v-html` 會把字串原樣當 HTML 插進頁面（等同設定 `innerHTML`）。插進去的 `<script>` 標籤不會執行，但 `<img src="x" onerror="...">` 這類事件屬性、`<a href="javascript:...">` 連結照樣能跑腳本——若內容含使用者輸入或不可信來源，攻擊者就能藉此竊取資料。**永遠不要對「使用者可控的內容」用 `v-html`**；非用不可時，先用可信的淨化庫（如 DOMPurify）清洗。
 
 ---
 
@@ -246,7 +246,7 @@ const user = ref({ name: 'Gary', age: 30, city: 'Taipei' })
 </li>
 ```
 
-問題在於「誰先執行」不直覺，且每次渲染都會先跑完整個 `v-for` 再逐一判斷，浪費且易錯。正確做法有兩種：
+問題在於「誰先執行」：Vue 3 裡同一個元素上 **`v-if` 比 `v-for` 先執行**，所以 `v-if` 拿不到迴圈變數 `lesson`，上面這段會直接丟 `Cannot read properties of undefined (reading 'published')`（Vue 2 則相反，是先跑完整個 `v-for` 再逐一判斷）。正確做法有兩種：
 
 ```vue
 <script setup>
@@ -266,7 +266,7 @@ const publishedLessons = computed(() => lessons.value.filter(l => l.published))
     <li v-for="lesson in publishedLessons" :key="lesson.id">{{ lesson.title }}</li>
   </ul>
 
-  <!-- 做法 B：用一個 <template> 包一層，把 v-if 移到外面（不產生額外 DOM） -->
+  <!-- 做法 B：把 v-for 移到外層的 <template>（不產生額外 DOM），v-if 留在 <li> 上 -->
   <ul>
     <template v-for="lesson in lessons" :key="lesson.id">
       <li v-if="lesson.published">{{ lesson.title }}</li>
@@ -453,7 +453,7 @@ const agree = ref(false)
 
 1. **對使用者內容用 `v-html`**：等於開 XSS 大門。使用者可控的內容一律不要 `v-html`，非用不可先淨化。
 2. **`v-for` 沒加 `:key` 或用 `index` 當 key**：列表增刪 / 排序時 DOM 狀態會錯置。用資料的穩定 id。
-3. **`v-for` 與 `v-if` 同層**：改用 `computed` 先過濾，或用 `<template>` 包一層把 `v-if` 移出去。
+3. **`v-for` 與 `v-if` 同層**：Vue 3 會先跑 `v-if`，拿不到迴圈變數而報錯。改用 `computed` 先過濾，或把 `v-for` 移到外層 `<template>`、`v-if` 留在裡面的元素上。
 4. **該用 `v-show` 卻用 `v-if`（或反之）**：頻繁切換用 `v-show`，很少切換或初始不需要用 `v-if`。
 5. **在表單 `submit` 忘了 `.prevent`**：預設會刷新整頁，SPA 幾乎一定要 `@submit.prevent`。
 6. **`{{ }}` 裡放陳述式**：插值只能放「運算式」，不能放 `if`／`for`／宣告，複雜邏輯請移到 `computed` 或函式。

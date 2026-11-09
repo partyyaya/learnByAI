@@ -15,7 +15,7 @@
 
 ---
 
-## 7.2 static hoist：把不會變的提到外面
+## 7.2 static hoist：不會變的只建立一次
 
 ### 問題背景
 
@@ -23,9 +23,9 @@
 
 ### 核心做法
 
-編譯器把可判定為靜態的節點提到 render 外層，生成 hoisted 常量。
+編譯器把可判定為靜態的節點標出來，只建立一次、之後重複使用。3.4（含）以前是提升成 render 外的模組層級常數；3.5 起改為快取在 render 的 `_cache` 裡。
 
-概念示意：
+`<div><h1>Title</h1><span>{{ msg }}</span></div>` 的編譯結果（省略 import 行）：
 
 ```ts
 // Vue 3.5 實際輸出：靜態節點快取在 render function 的 _cache 陣列裡
@@ -39,7 +39,19 @@ function render(_ctx, _cache) {
 
 結果：靜態節點只建立一次，之後每次 render 都從 `_cache` 取回同一個 vnode，並帶著 `-1 /* CACHED */` 讓 diff 直接略過。
 
-> ⚠️ **版本註記（很多教學還停在舊樣式）**：3.3 以前靜態提升是產生**模組層級常數** `const _hoisted_1 = /*#__PURE__*/ _createElementVNode(...)`，render function 裡直接引用它。**3.5 已全面改成 `_cache[n]` 形式**（`_cache` 由 `render(_ctx, _cache)` 帶入、跨 render 保留），所以你在 3.5 的輸出裡**找不到 `_hoisted_1`**。
+> ⚠️ **版本註記（很多教學還停在舊樣式）**：3.4（含）以前，靜態**節點**是提升成**模組層級常數** `const _hoisted_1 = /*#__PURE__*/_createElementVNode("h1", null, "Title", -1 /* HOISTED */)`，render function 裡直接引用它。**3.5 起靜態節點改成 `_cache[n]` 形式**（`_cache` 由 `render(_ctx, _cache)` 帶入、跨 render 保留），flag 也改名為 `CACHED`；對應的 transform 從 `transforms/hoistStatic.ts` 改名為 `transforms/cacheStatic.ts`（編譯選項仍叫 `hoistStatic`）。
+>
+> 但 3.5 的輸出裡**仍會看到 `_hoisted_N`**：靜態的 **props 物件**照樣提升到模組層級。例如 `<div><div class="a">{{ msg }}</div></div>`：
+>
+> ```js
+> const _hoisted_1 = { class: "a" }
+>
+> export function render(_ctx, _cache) {
+>   return (_openBlock(), _createElementBlock("div", null, [
+>     _createElementVNode("div", _hoisted_1, _toDisplayString(_ctx.msg), 1 /* TEXT */)
+>   ]))
+> }
+> ```
 >
 > 自己驗證（不用建專案）：
 >
@@ -96,7 +108,7 @@ patch flag 是編譯期給 runtime 的提示位元。
 | `STYLE` | 4 | 只有 style 變化 |
 | `PROPS` | 8 | 部分（已知）props 動態，附 `dynamicProps` 清單 |
 | `FULL_PROPS` | 16 | props 含動態 key，需完整比對 |
-| `NEED_HYDRATION` | 32 | 需在水合時特別處理（如綁事件）；**3.5 前名為 `HYDRATE_EVENTS`** |
+| `NEED_HYDRATION` | 32 | 需在水合時特別處理（如綁事件）；**3.3.9 前名為 `HYDRATE_EVENTS`** |
 | `STABLE_FRAGMENT` | 64 | fragment 子節點順序不變 |
 | `KEYED_FRAGMENT` | 128 | 有 key 的 fragment |
 | `UNKEYED_FRAGMENT` | 256 | 無 key 的 fragment |
@@ -144,7 +156,7 @@ runtime 可直接走「只更新文字」或「只更新 class」等窄路徑。
 你可以用下面方法自我驗證：
 
 1. 準備同等 UI 的兩種模板（動態點多 vs 少）
-2. 檢查編譯輸出中的 hoisted 節點數量與 patch flag
+2. 檢查編譯輸出中被快取的靜態節點（`_cache[n]`、`-1 /* CACHED */`）、`_hoisted_N` 數量與 patch flag
 3. 在更新熱路徑記錄 patch 次數與耗時
 4. 比較是否出現顯著差異
 
@@ -183,7 +195,7 @@ hoist 只優化靜態部分，動態密集場景仍主要靠 scheduler 與 diff�
 
 建議追這些點：
 
-1. transform 階段的 hoist 決策
+1. transform 階段的靜態判定與快取決策（3.5：`transforms/cacheStatic.ts` 的 `cacheStatic`、`getConstantType`；3.4 以前在 `hoistStatic.ts`）
 2. block 建立與 dynamicChildren 收集流程
 3. patch flag 生成點（元素/fragment/指令場景）
 4. runtime 中如何利用 patch flag 與 block 走快路徑
@@ -195,7 +207,7 @@ hoist 只優化靜態部分，動態密集場景仍主要靠 scheduler 與 diff�
 ### 必做
 
 - 找 3 段模板，對照編譯輸出標出：
-  - 哪些被 hoist
+  - 哪些被快取（`_cache`）或提升（`_hoisted_N`）
   - 哪些有 patch flag
   - 是否形成 block/dynamicChildren
 - 對其中 1 段做改寫，觀察輸出差異

@@ -25,6 +25,8 @@
 一句話：  
 `key` 是 diff 階段識別「同一個節點」的最重要資訊之一。
 
+具體來說，`v-for` 沒寫 key 時，編譯器會標上 `256 /* UNKEYED_FRAGMENT */`，runtime 改走 `patchUnkeyedChildren`：只按位置逐一原地 patch，完全不看身份（見 5.3）。
+
 ---
 
 ## 5.3 `patchChildren` 分流（先看全貌）
@@ -34,9 +36,12 @@ children 更新通常先進入 `patchChildren`，再視情況分支：
 - text -> text：改文字
 - array -> text：卸載舊 children，設文字
 - text -> array：清文字，掛載新 children
-- array -> array：可能進入 `patchKeyedChildren`
+- array -> array：
+  - 編譯器標了 `KEYED_FRAGMENT`（`v-for` 有 key）→ `patchKeyedChildren`
+  - 編譯器標了 `UNKEYED_FRAGMENT`（`v-for` 沒 key）→ `patchUnkeyedChildren`：前 `min(舊長度, 新長度)` 個依索引原地 patch，多出的新節點掛載、多出的舊節點卸載
+  - 沒有這兩個提示（例如手寫 render 回傳的陣列）→ 一律走 `patchKeyedChildren` 做完整 diff
 
-你這章聚焦最後一條。
+你這章聚焦 `patchKeyedChildren`。
 
 ---
 
@@ -113,24 +118,26 @@ new: [a, b, e, c, d, h, g]   // 頭尾各有不動、中段重排 + 增刪
 
 ## 5.7 一個手算案例（建議你自己再算一次）
 
-假設中段經映射後得到：
+沿用 5.4 的例子：頭尾同步後，舊亂序區是 `c, d, e, f`（舊索引 2～5），新亂序區是 `e, c, d, h`。映射後得到：
 
 ```text
 newIndexToOldIndexMap = [5, 3, 4, 0]
 ```
 
-含義（簡化）：
+含義（存的是「舊索引 + 1」）：
 
-- 新位置 0 對應舊索引 5
-- 新位置 1 對應舊索引 3
-- 新位置 2 對應舊索引 4
-- 新位置 3 是新節點（0）
+- 新位置 0（`e`）存 5 → 舊索引 4
+- 新位置 1（`c`）存 3 → 舊索引 2
+- 新位置 2（`d`）存 4 → 舊索引 3
+- 新位置 3（`h`）存 0 → 新節點
+- `f` 在新區間找不到，建表時已 `unmount`
 
 對非 0 部分做 LIS：
 
-- 序列 5,3,4 的 LIS 可能是 3,4（長度 2）
-- 代表對應節點可保持不動
-- 其餘節點需要 move，0 則需要 insert
+- 序列 5,3,4 的 LIS 是 3,4（長度 2）；`getSequence` 回傳的是**索引** `[1, 2]`，也就是 `c`、`d` 可保持不動
+- 倒序走訪新區間：`h`（0）掛載到 `g` 前；`d`、`c` 在 LIS 上不動；`e` 移到 `c` 前
+
+實際 DOM 操作依序是：`remove f` → `insert h before g` → `insert e before c`，只動了一次 move。
 
 ---
 

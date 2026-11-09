@@ -747,7 +747,7 @@ protected void handleTextMessage(WebSocketSession session, TextMessage message) 
 | 東西 | 為什麼不在 | 怎麼辦 |
 |---|---|---|
 | `SecurityContextHolder` | `SecurityContextPersistenceFilter` 在**握手**那次請求結束時就清掉了 | 握手時把 `Principal` 放進 session attributes（8.8.3），或用 `ChannelInterceptor`（8.8.4） |
-| MDC 的 `traceId` | 04 章 4.5 的 `MdcFilter` 在請求結束時 `MDC.clear()` | 8.12.4 會寫一個 `ChannelInterceptor` 版本 |
+| MDC 的 `traceId` | 04 章 4.5 的 `MdcFilter` 在請求結束時 `MDC.clear()` | 8.12.4 以 `ExecutorChannelInterceptor` 在 handler 執行緒套用並還原 |
 | `@Transactional` / lazy 關聯 | 沒有交易、沒有 `EntityManager` | 呼叫 Service 層方法（讓交易在那裡開始），**不要在 handler 裡碰 entity** |
 
 > **這和 05 章 5.9.3 是同一個問題**：`StreamingResponseBody` 跑在 async executor 上，
@@ -802,6 +802,14 @@ content-type:application/json
 package example.shop.chat.web.ws;
 
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.messaging.context.SecurityContextChannelInterceptor;
+import org.springframework.web.socket.*;
+import org.springframework.web.socket.handler.WebSocketHandlerDecorator;
+import example.shop.chat.ChatProperties;
 import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
@@ -813,15 +821,24 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @Configuration
 @EnableWebSocketMessageBroker
+@EnableScheduling
+@EnableMethodSecurity
+@EnableConfigurationProperties(ChatProperties.class)
 public class StompConfig implements WebSocketMessageBrokerConfigurer {
 
     private final StompAuthChannelInterceptor authInterceptor;     // 8.8.4
     private final StompMdcChannelInterceptor mdcInterceptor;       // 8.12.4
+    private final SubscriptionAuthorizationInterceptor authorization;
+    private final WebSocketSessionRegistry sessions;
     private final ChatProperties properties;                       // 8.12.3
 
     public StompConfig(StompAuthChannelInterceptor authInterceptor,
                        StompMdcChannelInterceptor mdcInterceptor,
-                       ChatProperties properties) {
+                       ChatProperties properties,
+                       SubscriptionAuthorizationInterceptor authorization,
+                       WebSocketSessionRegistry sessions) {
+        this.authorization = authorization;
+        this.sessions = sessions;
         this.authInterceptor = authInterceptor;
         this.mdcInterceptor = mdcInterceptor;
         this.properties = properties;
@@ -836,8 +853,8 @@ public class StompConfig implements WebSocketMessageBrokerConfigurer {
                 // ⚠️⚠️ 絕對不能用 setAllowedOrigins("*")（8.8.6）
                 // WebSocket 不受同源政策保護，這一行是唯一的來源防線
                 .setAllowedOrigins(properties.allowedOrigins().toArray(String[]::new))
-                // ★ 交出一個 HandshakeHandler 來決定 Principal 從哪來（8.8.3）
-                .setHandshakeHandler(new PrincipalHandshakeHandler());
+                // 此設定採 CONNECT Bearer（8.8.4），握手可無 Principal；session 替代方案見 8.8.3
+                .setHandshakeHandler(new org.springframework.web.socket.server.support.DefaultHandshakeHandler());
         // ⚠️ 刻意【不】啟用 SockJS：
         //    .withSockJS() 會多出 /info 端點與 xhr-streaming 等後備傳輸，
         //    在需要支援 IE / 極舊瀏覽器時才有意義。它會讓 8.11 的代理設定變複雜一倍。
@@ -854,9 +871,9 @@ public class StompConfig implements WebSocketMessageBrokerConfigurer {
         registry.enableSimpleBroker("/topic", "/queue")
                 // ★ 心跳協商（8.9.3）。兩個值分別是
                 //   [0] 伺服器多久送一次心跳、[1] 伺服器期望客戶端多久送一次（毫秒）
-                .setHeartbeatValue(new long[]{10_000, 10_000})
-                // ⚠️ setHeartbeatValue 沒有搭配 taskScheduler 的話【完全不會生效】
-                //    Spring 會安靜地忽略它 —— 這是一個沒有任何警告的設定陷阱
+                .setHeartbeatValue(new long[]{properties.heartbeatInterval().toMillis(),
+                        properties.heartbeatInterval().toMillis()})
+                // 非零 heartbeat 必須搭配 scheduler，否則啟動 broker 時會失敗
                 .setTaskScheduler(heartbeatScheduler());
 
         // ② 【客戶端→伺服器】這個前綴的 destination 交給 @MessageMapping 處理
@@ -873,11 +890,28 @@ public class StompConfig implements WebSocketMessageBrokerConfigurer {
     public void configureWebSocketTransport(WebSocketTransportRegistration registration) {
         registration
                 // 單一訊息的大小上限。⚠️ 預設 64 KB
-                .setMessageSizeLimit(64 * 1024)
+                .setMessageSizeLimit(Math.toIntExact(properties.messageSizeLimit().toBytes()))
                 // 單一連線的待送佇列上限 —— slow consumer 的防線（8.6.3）
-                .setSendBufferSizeLimit(512 * 1024)
+                .setSendBufferSizeLimit(Math.toIntExact(properties.sendBufferSizeLimit().toBytes()))
                 // 單則訊息送出的時間上限
-                .setSendTimeLimit(5_000);
+                .setSendTimeLimit(Math.toIntExact(properties.sendTimeLimit().toMillis()))
+                .addDecoratorFactory(delegate -> new WebSocketHandlerDecorator(delegate) {
+                    @Override
+                    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+                        if (!sessions.register(session)) {
+                            session.close(new CloseStatus(4029, "capacity reached"));
+                            return;
+                        }
+                        try { super.afterConnectionEstablished(session); }
+                        catch (Exception ex) { sessions.remove(session.getId()); throw ex; }
+                    }
+                    @Override
+                    public void afterConnectionClosed(WebSocketSession session, CloseStatus status)
+                            throws Exception {
+                        try { super.afterConnectionClosed(session, status); }
+                        finally { sessions.remove(session.getId()); }
+                    }
+                });
     }
 
     /**
@@ -891,14 +925,15 @@ public class StompConfig implements WebSocketMessageBrokerConfigurer {
      */
     @Override
     public void configureClientInboundChannel(ChannelRegistration registration) {
-        registration.interceptors(authInterceptor, mdcInterceptor);
+        registration.interceptors(authInterceptor,
+                new SecurityContextChannelInterceptor(), authorization, mdcInterceptor);
     }
 
-    private ThreadPoolTaskScheduler heartbeatScheduler() {
+    @Bean
+    public ThreadPoolTaskScheduler heartbeatScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
         scheduler.setThreadNamePrefix("ws-heartbeat-");
-        scheduler.initialize();
         return scheduler;
     }
 }
@@ -994,8 +1029,7 @@ public class ChatStompController {
                 conversationId, principal.getName(), request.text()));
 
         // ★ 為什麼用 template 而不是 @SendTo：
-        //   @SendTo 的 destination 是【編譯期常數】，無法帶 conversationId。
-        //   需要動態 destination 時一律用 SimpMessagingTemplate。
+        //   @SendTo 也支援 destination template；這裡用 template 明確控制廣播時間與目的地。
         template.convertAndSend("/topic/conversations/" + conversationId, saved);
     }
 
@@ -1268,7 +1302,7 @@ public class PrincipalHandshakeHandler extends DefaultHandshakeHandler {
             return null;    // 交給 8.8.4 的 CONNECT 認證，或直接被 Security 擋在外面
         }
         // ★ 把 Principal 的 name 正規化成 userId
-        return new ChatPrincipal(CurrentUser.idOf(principal), principal);
+        return principal; // session 認證時，Principal.getName() 必須已是 userId
     }
 }
 ```
@@ -1282,6 +1316,9 @@ package example.shop.chat.web.ws;
 
 import example.shop.security.JwtVerifier;
 import example.shop.security.VerifiedToken;
+import example.shop.security.TokenExpiredException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.messaging.Message;
@@ -1307,7 +1344,7 @@ import org.springframework.stereotype.Component;
  *
  * <p>⚠️⚠️ <b>這個決定的代價：token 過期後連線仍然有效。</b>
  * 一條連線可能活 8 小時，而 access token 只有 15 分鐘。
- * 處理方式見下面的 {@code expiresAt} 與 8.12.4 的 {@code TokenExpiryReaper} ——
+ * 處理方式見下面的 {@code expiresAt} 與 8.12.4 的 {@code WebSocketSessionRegistry.reapExpiredTokens()} ——
  * <b>絕對不能就這樣算了</b>，否則登出 / 停權的使用者可以繼續收訊息到連線斷掉為止。
  */
 @Component
@@ -1317,7 +1354,9 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
 
     private final JwtVerifier jwtVerifier;
 
-    public StompAuthChannelInterceptor(JwtVerifier jwtVerifier) {
+    private final WebSocketSessionRegistry sessions;
+    public StompAuthChannelInterceptor(JwtVerifier jwtVerifier, WebSocketSessionRegistry sessions) {
+        this.sessions = sessions;
         this.jwtVerifier = jwtVerifier;
     }
 
@@ -1327,7 +1366,8 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
         StompHeaderAccessor accessor =
                 MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
 
-        if (accessor == null || !StompCommand.CONNECT.equals(accessor.getCommand())) {
+        if (accessor == null || !(StompCommand.CONNECT.equals(accessor.getCommand())
+                || StompCommand.STOMP.equals(accessor.getCommand()))) {
             return message;     // 只處理 CONNECT，其他 frame 直接放行
         }
 
@@ -1337,7 +1377,7 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
         if (authorization == null || !authorization.startsWith("Bearer ")) {
             // ⚠️ 這裡【必須】丟例外。回傳 null 會讓訊息被安靜丟棄，
             //    而客戶端會一直等 CONNECTED frame 等到逾時 —— 症狀是「轉圈圈」。
-            throw new StompAuthenticationException(4002, "缺少認證資訊");
+            throw failure(accessor, 4002, "缺少認證資訊");
         }
 
         VerifiedToken token;
@@ -1346,24 +1386,53 @@ public class StompAuthChannelInterceptor implements ChannelInterceptor {
         } catch (TokenExpiredException ex) {
             // ★ 4001 與 4002 分開（8.4.4）：前端對「過期」要刷新後重連，
             //   對「無效」要導向登入頁【不要】重連。
-            throw new StompAuthenticationException(4001, "token 已過期");
+            throw failure(accessor, 4001, "token 已過期");
         } catch (Exception ex) {
             log.warn("STOMP CONNECT 的 token 驗證失敗", ex);
-            throw new StompAuthenticationException(4002, "token 無效");
+            throw failure(accessor, 4002, "token 無效");
         }
 
         // ★★ setUser() 設定的 Principal 會跟著【整條連線】，
         //    之後每個 @MessageMapping 方法的 Principal 參數都從這裡來。
         //    name 必須是 userId —— 8.7.5 的約定。
-        accessor.setUser(new ChatPrincipal(token.userId(), token.authorities()));
+        if (!sessions.authenticate(accessor.getSessionId(), token.userId(), token.expiresAt())) {
+            throw failure(accessor, 4029, "user capacity reached or session closed");
+        }
+        var authorities = token.authorities().stream()
+                .map(role -> new SimpleGrantedAuthority(role.startsWith("ROLE_") ? role : "ROLE_" + role))
+                .toList();
+        accessor.setUser(UsernamePasswordAuthenticationToken.authenticated(
+                token.userId(), "N/A", authorities));
 
-        // ⚠️ 把過期時間放進 session attributes，讓 TokenExpiryReaper 能掃（8.12.4）
-        accessor.getSessionAttributes().put("tokenExpiresAt", token.expiresAt());
+        // reaper 讀取前面已更新的 registry；attribute 只供觀測。
+        if (accessor.getSessionAttributes() != null)
+            accessor.getSessionAttributes().put("tokenExpiresAt", token.expiresAt());
 
         log.debug("STOMP CONNECT 認證成功 userId={} sessionId={}",
                 token.userId(), accessor.getSessionId());
         return message;
     }
+    private StompAuthenticationException failure(StompHeaderAccessor accessor, int code, String reason) {
+        // 自訂例外欄位不會自動成為 transport close code；明確關閉已登錄的 socket。
+        sessions.close(accessor.getSessionId(), new org.springframework.web.socket.CloseStatus(code, reason));
+        return new StompAuthenticationException(code, reason);
+    }
+
+}
+```
+
+例外只是應用層資訊；真正的 4001/4002 由 registry 關閉 socket。
+若只丟例外而不轉譯，Spring 預設會送 STOMP ERROR 並以 1002 關閉，
+瀏覽器不會自動收到例外裡的 closeCode。
+
+```java
+package example.shop.chat.web.ws;
+public class StompAuthenticationException extends RuntimeException {
+    private final int closeCode;
+    public StompAuthenticationException(int closeCode, String reason) {
+        super(reason); this.closeCode = closeCode;
+    }
+    public int closeCode() { return closeCode; }
 }
 ```
 
@@ -1388,20 +1457,23 @@ stompClient.subscribe('/topic/conversations/conv-9999', (msg) => {
 **第一層：`@MessageMapping` 的方法層權限**（只擋 `SEND`，不擋 `SUBSCRIBE`）
 
 ```java
-@PreAuthorize("@conversationGuard.canAccess(#conversationId, principal)")
+@PreAuthorize("@conversationGuard.canAccess(#conversationId, authentication.name)")
 @MessageMapping("/conversations/{conversationId}/messages")
 public void postMessage(@DestinationVariable String conversationId, ...) { ... }
 ```
 
-⚠️ 要讓 `@PreAuthorize` 在訊息層生效，需要 `@EnableWebSocketSecurity`
-（Spring Security 6）或 `AbstractSecurityWebSocketMessageBrokerConfigurer`（舊版）。
-**光有 `@EnableMethodSecurity` 是不夠的**——那只掛在 MVC 的 AOP 上。
+`@EnableMethodSecurity` 會代理 Spring bean，不限 MVC。
+本例由 `SecurityContextChannelInterceptor` 把 CONNECT 建立的 Authentication
+帶進 handler 執行緒，讓方法授權能取得身分；`@EnableWebSocketSecurity`
+則是另一套訊息授權／CSRF 設定，不能與方法授權混為一談。
+此例用下面的 channel 白名單保護 SEND 與 SUBSCRIBE，Service 仍需驗證操作權限。
 
 **第二層：攔截 `SUBSCRIBE` frame** ★（這才是真正擋住偷看的那一層）
 
 ```java
 package example.shop.chat.web.ws;
 
+import example.shop.chat.service.ConversationGuard;
 import org.springframework.messaging.Message;
 import org.springframework.messaging.MessageChannel;
 import org.springframework.messaging.simp.stomp.StompCommand;
@@ -1424,8 +1496,8 @@ import java.util.regex.Pattern;
  *
  * <p>⚠️ 這個 interceptor 每次 SUBSCRIBE 都會查一次資料庫。
  * 訂閱是低頻動作（一個對話視窗開啟一次），所以可以接受；
- * 但<b>不要</b>把同樣的邏輯放到 SEND 上（那是高頻的）——
- * SEND 用 {@code @PreAuthorize} + 快取，或乾脆信任「已訂閱」這件事。
+ * SEND 同樣要驗證目的地與成員權限；不能把「已訂閱」當成寫入權限。
+ * guard 可採有期限的快取，但 Service 仍要守住持久操作的授權。
  */
 @Component
 public class SubscriptionAuthorizationInterceptor implements ChannelInterceptor {
@@ -1433,6 +1505,8 @@ public class SubscriptionAuthorizationInterceptor implements ChannelInterceptor 
     private static final Pattern CONVERSATION_TOPIC =
             Pattern.compile("^/topic/conversations/([A-Za-z0-9_-]{1,64})(/typing)?$");
 
+    private static final Pattern APPLICATION_SEND =
+            Pattern.compile("^/app/conversations/([A-Za-z0-9_-]{1,64})/(messages|typing)$");
     private final ConversationGuard guard;
 
     public SubscriptionAuthorizationInterceptor(ConversationGuard guard) {
@@ -1441,39 +1515,24 @@ public class SubscriptionAuthorizationInterceptor implements ChannelInterceptor 
 
     @Override
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
-
-        StompHeaderAccessor accessor =
-                MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
-
-        if (accessor == null || !StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
-            return message;
-        }
-
+        var accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
+        if (accessor == null) throw new ChatAccessDeniedException(null, "Missing STOMP headers");
+        StompCommand command = accessor.getCommand();
+        if (command != StompCommand.SEND && command != StompCommand.SUBSCRIBE) return message;
         String destination = accessor.getDestination();
-        if (destination == null) {
-            throw new ChatAccessDeniedException(null, "SUBSCRIBE 缺少 destination");
-        }
-
-        // ★ /user/** 由 Spring 改寫成只屬於這條 session 的 destination（8.7.5），
-        //   它天生就不可能被別人訂到 —— 直接放行。
-        if (destination.startsWith("/user/")) {
-            return message;
-        }
-
-        Matcher matcher = CONVERSATION_TOPIC.matcher(destination);
-        if (!matcher.matches()) {
-            // ⚠️ 白名單而不是黑名單：不認得的 destination 一律拒絕。
-            //    否則哪天有人加了 /topic/admin/** 就直接開放給全世界。
-            throw new ChatAccessDeniedException(destination, "不允許的 destination");
-        }
-
-        String conversationId = matcher.group(1);
         Principal principal = accessor.getUser();
+        if (principal == null || destination == null)
+            throw new ChatAccessDeniedException(destination, "Authentication and destination required");
 
-        if (principal == null || !guard.canAccess(conversationId, principal.getName())) {
-            throw new ChatAccessDeniedException(conversationId, "沒有這個對話的存取權限");
-        }
-        return message;
+        if (command == StompCommand.SUBSCRIBE && (destination.equals("/user/queue/notifications")
+                || destination.equals("/user/queue/errors")))
+            return message; // 只開放本章定義的 user destination，不開放任意 /user/**
+
+        Pattern pattern = command == StompCommand.SUBSCRIBE ? CONVERSATION_TOPIC : APPLICATION_SEND;
+        Matcher matcher = pattern.matcher(destination);
+        if (!matcher.matches() || !guard.canAccess(matcher.group(1), principal.getName()))
+            throw new ChatAccessDeniedException(destination, "Destination denied");
+        return message; // broker 前綴的 SEND 永遠不匹配 APPLICATION_SEND
     }
 }
 ```
@@ -1647,39 +1706,43 @@ shop-service 的路徑：瀏覽器 → CloudFront → ALB → Nginx → Tomcat
  * ⚠️ 無腦重連 = 8.4.4 說的無限迴圈（每 3 秒一次完整握手 + DB 查詢）
  */
 const NO_RETRY_CODES = new Set([
+  1002,   // 協定／通道授權錯誤，先處理原因，不自動重送同一組訂閱
   1000,   // 正常關閉（是我們自己呼叫 close 的）
   4002,   // token 無效 → 導向登入頁
   4003,   // 被踢下線（同帳號在別處登入）→ 顯示提示，不要搶連線
 ]);
 
 let attempt = 0;
+let stoppedByUser = false; // 關分頁／主動登出時先設 true，再 deactivate client
 
-function scheduleReconnect(closeEvent) {
-  if (NO_RETRY_CODES.has(closeEvent.code)) {
+async function scheduleReconnect(closeEvent) {
+  if (stoppedByUser || NO_RETRY_CODES.has(closeEvent.code)) {
     handleTerminal(closeEvent.code);
     return;
   }
 
   if (closeEvent.code === 4001) {         // token 過期
-    await refreshAccessToken();           // ★ 先換 token 再重連，否則一定再被踢一次
+    try { await refreshAccessToken(); }
+    catch { handleTerminal(4002); return; }
     attempt = 0;
   }
 
   // 指數退避 + jitter
   // ⚠️ jitter 不是可選的：沒有它，一次 pod 重啟會讓 8,000 個客戶端
   //    在【同一秒】重連 —— 剛起來的 pod 直接被打掛（thundering herd）
-  const base = Math.min(1000 * 2 ** attempt, 30_000);
+  const floor = closeEvent.code === 4029 ? 60_000 : closeEvent.code === 1011 ? 10_000 : 1_000;
+  const base = Math.min(floor * 2 ** attempt, 60_000);
   const delay = base * (0.5 + Math.random() * 0.5);
-  attempt += 1;
+  attempt = Math.min(attempt + 1, 6);
 
-  setTimeout(connect, delay);
+  setTimeout(() => { if (!stoppedByUser) connect(); }, delay);
 }
 ```
 
 | 事件 | 正確反應 |
 |---|---|
 | `1000` 正常關閉 | 不重連 |
-| `1001` 端點離開 | 不重連（是使用者自己關分頁） |
+| `1001` 端點離開 | 伺服器重啟時退避重連；使用者主動關閉由 stoppedByUser 阻止 |
 | `1006` 異常關閉 | **重連**（最常見的情況：網路斷了） |
 | `1011` 伺服器錯誤 | 重連，但退避要長 |
 | `4001` token 過期 | **先刷新 token**，再重連 |
@@ -2287,115 +2350,117 @@ public record ChatProperties(
 }
 ```
 
+排程與 ChatProperties 在 StompConfig 啟用。若專案尚無 Clock bean，提供：
+
+```java
+package example.shop.chat.web.ws;
+@org.springframework.context.annotation.Configuration
+public class ChatClockConfig {
+    @org.springframework.context.annotation.Bean
+    public java.time.Clock clock() { return java.time.Clock.systemUTC(); }
+}
+```
+
+專案已有 Clock 時沿用同一顆，測試以固定 Clock 取代。
+
 ### 8.12.4 連線登錄簿與兩個 reaper ★
 
 ```java
 package example.shop.chat.web.ws;
 
+import example.shop.chat.ChatProperties;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.availability.AvailabilityChangeEvent;
+import org.springframework.boot.availability.ReadinessState;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.web.socket.CloseStatus;
-import org.springframework.web.socket.WebSocketSession;
+import org.springframework.web.socket.*;
+import java.time.*;
+import java.util.*;
 
-import java.time.Clock;
-import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
-/**
- * 本機連線登錄簿 —— 對照 05 章 5.11.6 的 {@code SseEmitterRegistry}。
- *
- * <p>★★ <b>為什麼需要它，明明 Spring 已經有 {@code SimpUserRegistry}</b>：
- * {@code SimpUserRegistry} 只給你「誰在線上」，但不給你
- * (a) 這條連線什麼時候建立的、(b) token 什麼時候過期、(c) 主動關閉它的能力。
- * 8.8.2 的未認證連線、8.8.4 的 token 過期、8.11.3 的分批關機都需要那三樣。
- *
- * <p>⚠️ 一樣只知道<b>本機</b>的連線（8.10.1）。它不是 8.2.1 的解法，
- * 它是「管理本機資源」的工具。跨 pod 的事情由 {@link example.shop.chat.service.ChatBroadcaster} 負責。
- */
+/** StompConfig 的 transport decorator 負責 register/remove，CONNECT 更新認證與到期時間。 */
 @Component
 public class WebSocketSessionRegistry {
-
     private static final Logger log = LoggerFactory.getLogger(WebSocketSessionRegistry.class);
-
-    private final Map<String, SessionEntry> sessions = new ConcurrentHashMap<>();
+    private final Map<String, SessionEntry> sessions = new HashMap<>();
     private final ChatProperties properties;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
+    private boolean accepting = true;
 
-    public WebSocketSessionRegistry(ChatProperties properties,
-                                    Clock clock,
-                                    MeterRegistry meterRegistry) {
-        this.properties = properties;
-        // ★ 注入 Clock 而不是用 Instant.now() —— 07 章 7.4.4 的結論，測試才固定得住
-        this.clock = clock;
-
-        // ★★ 這個指標是 8.2.3 事故的早期警報：
-        //    「單調遞增而且從不下降」就是半開連線堆積。
-        //    ⚠️ 光看它不夠，要同時看 rate(closed) —— 只增不減才是問題。
-        Gauge.builder("chat.websocket.sessions.active", sessions, Map::size)
-                .description("本機目前的 WebSocket 連線數")
-                .register(meterRegistry);
+    public WebSocketSessionRegistry(ChatProperties properties, Clock clock,
+                                    MeterRegistry meters, ApplicationEventPublisher events) {
+        this.properties = properties; this.clock = clock; this.events = events;
+        Gauge.builder("chat.websocket.sessions.active", this, WebSocketSessionRegistry::size).register(meters);
     }
-
-    public record SessionEntry(WebSocketSession session,
-                               String userId,
-                               Instant connectedAt,
-                               Instant tokenExpiresAt,
-                               boolean authenticated) {
+    public record SessionEntry(WebSocketSession session, String userId, Instant connectedAt,
+                               Instant tokenExpiresAt, boolean authenticated) {}
+    public synchronized int size() { return sessions.size(); }
+    public synchronized boolean register(WebSocketSession session) {
+        if (!accepting || sessions.size() >= properties.maxSessionsPerNode()) return false;
+        if (sessions.containsKey(session.getId())) return false;
+        sessions.put(session.getId(), new SessionEntry(session, null, clock.instant(), null, false));
+        return true;
     }
-
-    /**
-     * 8.8.2 ⚠️ 建立了連線但一直不送 CONNECT 的，踢掉。
-     *
-     * <p>沒有這個的話，攻擊者可以只做握手（那是 permitAll 的）就佔住 connection slot，
-     * 用 8,000 條未認證連線把 {@code max-connections} 吃光 —— 一種很便宜的 DoS。
-     */
-    @Scheduled(fixedDelay = 5_000)
+    public synchronized boolean authenticate(String id, String user, Instant expiresAt) {
+        var entry = sessions.get(id);
+        if (entry == null || entry.authenticated() || expiresAt == null || !expiresAt.isAfter(clock.instant()))
+            return false;
+        long count = sessions.values().stream().filter(e -> e.authenticated() && user.equals(e.userId())).count();
+        if (count >= properties.maxSessionsPerUser()) return false;
+        sessions.put(id, new SessionEntry(entry.session(), user, entry.connectedAt(), expiresAt, true));
+        return true;
+    }
+    public synchronized void remove(String id) { sessions.remove(id); }
+    public void close(String id, CloseStatus status) {
+        SessionEntry entry;
+        synchronized (this) { entry = sessions.remove(id); }
+        if (entry != null) closeEntry(entry, status);
+    }
+    @Scheduled(fixedDelay = 5_000, scheduler = "heartbeatScheduler")
     public void reapUnauthenticated() {
-        Instant deadline = clock.instant().minus(properties.connectTimeout());
-        sessions.values().removeIf(entry -> {
-            if (entry.authenticated() || entry.connectedAt().isAfter(deadline)) {
-                return false;
-            }
-            close(entry, new CloseStatus(4002, "未完成認證"));
-            return true;
-        });
-    }
-
-    /**
-     * 8.8.4 ★★ token 過期後把連線踢掉。
-     *
-     * <p><b>這是 8.8.4「只在 CONNECT 驗一次」那個決定的必要配套。</b>
-     * 沒有它的話，一個已經登出 / 被停權的使用者可以繼續收訊息好幾個小時。
-     *
-     * <p>★ 送 4001（過期）而不是 4002（無效）—— 8.9.4 的前端會刷新 token 後重連，
-     * 使用者完全無感。
-     */
-    @Scheduled(fixedDelay = 30_000)
-    public void reapExpiredTokens() {
-        Instant now = clock.instant();
-        sessions.values().removeIf(entry -> {
-            if (entry.tokenExpiresAt() == null || entry.tokenExpiresAt().isAfter(now)) {
-                return false;
-            }
-            log.debug("token 過期，關閉連線 userId={}", entry.userId());
-            close(entry, new CloseStatus(4001, "token 已過期"));
-            return true;
-        });
-    }
-
-    private void close(SessionEntry entry, CloseStatus status) {
-        try {
-            entry.session().close(status);
-        } catch (Exception ex) {
-            // ⚠️ 關閉失敗是正常的（對方可能已經不在了）。不要用 error 等級，
-            //    否則半開連線會在關機時刷出幾千行 ERROR
-            log.debug("關閉連線失敗 id={}", entry.session().getId(), ex);
+        List<SessionEntry> expired = new ArrayList<>();
+        synchronized (this) {
+            Instant deadline = clock.instant().minus(properties.connectTimeout());
+            sessions.values().removeIf(e -> {
+                if (e.authenticated() || e.connectedAt().isAfter(deadline)) return false;
+                expired.add(e); return true;
+            });
         }
+        expired.forEach(e -> closeEntry(e, new CloseStatus(4002, "CONNECT timeout")));
+    }
+    @Scheduled(fixedDelay = 30_000, scheduler = "heartbeatScheduler")
+    public void reapExpiredTokens() {
+        List<SessionEntry> expired = new ArrayList<>();
+        synchronized (this) {
+            sessions.values().removeIf(e -> {
+                if (e.tokenExpiresAt() == null || e.tokenExpiresAt().isAfter(clock.instant())) return false;
+                expired.add(e); return true;
+            });
+        }
+        expired.forEach(e -> closeEntry(e, new CloseStatus(4001, "token expired")));
+    }
+    public void markNotReady() {
+        synchronized (this) { accepting = false; }
+        AvailabilityChangeEvent.publish(events, this, ReadinessState.REFUSING_TRAFFIC);
+    }
+    public void closeAllInBatches(int batchSize, long intervalMs, CloseStatus status)
+            throws InterruptedException {
+        if (batchSize < 1 || intervalMs < 0) throw new IllegalArgumentException("invalid batch settings");
+        List<SessionEntry> snapshot;
+        synchronized (this) { accepting = false; snapshot = List.copyOf(sessions.values()); sessions.clear(); }
+        for (int i = 0; i < snapshot.size(); i++) {
+            closeEntry(snapshot.get(i), status);
+            if ((i + 1) % batchSize == 0 && i + 1 < snapshot.size()) Thread.sleep(intervalMs);
+        }
+    }
+    private void closeEntry(SessionEntry entry, CloseStatus status) {
+        try { entry.session().close(status); }
+        catch (Exception ex) { log.debug("關閉連線失敗 id={}", entry.session().getId(), ex); }
     }
 }
 ```
@@ -2406,48 +2471,45 @@ public class WebSocketSessionRegistry {
 package example.shop.chat.web.ws;
 
 import org.slf4j.MDC;
-import org.springframework.messaging.Message;
-import org.springframework.messaging.MessageChannel;
+import org.springframework.messaging.*;
 import org.springframework.messaging.simp.stomp.StompHeaderAccessor;
-import org.springframework.messaging.support.ChannelInterceptor;
-import org.springframework.messaging.support.MessageHeaderAccessor;
+import org.springframework.messaging.support.*;
 import org.springframework.stereotype.Component;
+import java.util.*;
 
-import java.util.UUID;
-
-/**
- * 讓每則 STOMP 訊息都有 traceId —— 04 章 4.5 的 {@code MdcFilter} 在訊息層的對應物。
- *
- * <p>★★ 為什麼非做不可：8.6.4 說過回呼不在請求執行緒上，MDC 是空的。
- * 沒有這個 interceptor 的話，聊天相關的日誌<b>完全無法和 HTTP 請求的日誌關聯</b> ——
- * 出事時你有一堆「送出失敗」但不知道是哪個使用者的哪一次操作。
- *
- * <p>⚠️ {@code afterSendCompletion} 的清理<b>不能省</b>：
- * 訊息通道用的是執行緒池，執行緒會被重用。
- * 不清的話下一則訊息會沿用上一則的 traceId ——
- * 症狀是「日誌裡兩個不相干的使用者共用同一個 traceId」，而且極難發現。
- */
+/** preSend 只帶 metadata；MDC 必須在實際 handler 執行緒套用與還原。 */
 @Component
-public class StompMdcChannelInterceptor implements ChannelInterceptor {
+public class StompMdcChannelInterceptor implements ExecutorChannelInterceptor {
+    private static final String CONTEXT = "shop.ws.mdc";
+    private final ThreadLocal<Deque<Map<String, String>>> previous = ThreadLocal.withInitial(ArrayDeque::new);
 
     @Override
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
-        StompHeaderAccessor accessor =
-                MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
-        if (accessor != null) {
-            MDC.put("traceId", UUID.randomUUID().toString().replace("-", "").substring(0, 16));
-            MDC.put("wsSessionId", String.valueOf(accessor.getSessionId()));
-            if (accessor.getUser() != null) {
-                MDC.put("userId", accessor.getUser().getName());
-            }
-        }
+        var stomp = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
+        if (stomp == null) return message;
+        Map<String, String> context = new HashMap<>();
+        context.put("traceId", UUID.randomUUID().toString().replace("-", "").substring(0, 16));
+        context.put("wsSessionId", String.valueOf(stomp.getSessionId()));
+        if (stomp.getUser() != null) context.put("userId", stomp.getUser().getName());
+        var accessor = MessageHeaderAccessor.getMutableAccessor(message);
+        accessor.setHeader(CONTEXT, Map.copyOf(context));
+        return MessageBuilder.createMessage(message.getPayload(), accessor.getMessageHeaders());
+    }
+    @Override
+    @SuppressWarnings("unchecked")
+    public Message<?> beforeHandle(Message<?> message, MessageChannel channel, MessageHandler handler) {
+        var old = MDC.getCopyOfContextMap();
+        previous.get().push(old == null ? Map.of() : old);
+        var context = (Map<String, String>) message.getHeaders().get(CONTEXT);
+        MDC.setContextMap(context == null ? Map.of() : context);
         return message;
     }
-
     @Override
-    public void afterSendCompletion(Message<?> message, MessageChannel channel,
-                                    boolean sent, Exception ex) {
-        MDC.clear();     // ⚠️ 見上面的 javadoc
+    public void afterMessageHandled(Message<?> message, MessageChannel channel,
+                                    MessageHandler handler, Exception ex) {
+        Deque<Map<String, String>> stack = previous.get();
+        MDC.setContextMap(stack.pop());
+        if (stack.isEmpty()) previous.remove();
     }
 }
 ```
@@ -2513,9 +2575,10 @@ import static org.mockito.Mockito.when;
  */
 class StompAuthChannelInterceptorTest {
 
+    private final WebSocketSessionRegistry sessions = mock(WebSocketSessionRegistry.class);
     private final JwtVerifier jwtVerifier = mock(JwtVerifier.class);
     private final StompAuthChannelInterceptor interceptor =
-            new StompAuthChannelInterceptor(jwtVerifier);
+            new StompAuthChannelInterceptor(jwtVerifier, sessions);
 
     /** 自己組一個 CONNECT frame —— 這是整個手法的關鍵。 */
     private Message<byte[]> connectFrame(String authorization) {
@@ -2530,6 +2593,9 @@ class StompAuthChannelInterceptorTest {
 
     @Test
     void 有效的_token_會設定_principal_而且_name_是_userId() {
+        when(sessions.authenticate(org.mockito.ArgumentMatchers.eq("sess-1"),
+                org.mockito.ArgumentMatchers.eq("agent-17"), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(true);
         when(jwtVerifier.verify("good"))
                 .thenReturn(new VerifiedToken("agent-17", java.util.Set.of("AGENT"),
                         java.time.Instant.parse("2026-09-16T05:00:00Z")));

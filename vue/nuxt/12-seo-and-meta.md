@@ -85,7 +85,7 @@ const route = useRoute()
 const { data: post } = await useFetch(`/api/posts/${route.params.id}`)
 
 useSeoMeta({
-  // 用函式，post 一有值就更新（SSR 已 await，所以 server 端就正確）
+  // 用函式，post 一有值就更新（SSR 會等 useFetch 抓完，所以 server 端就正確）
   title: () => post.value?.title,
   description: () => post.value?.content?.slice(0, 80),
   ogTitle: () => post.value?.title,
@@ -94,11 +94,19 @@ useSeoMeta({
 </script>
 ```
 
-> 因為前面 `await useFetch`，SSR 會等資料到才產 HTML，所以爬蟲拿到的就是**正確的文章標題**，不是預設值。這正是 Nuxt 做內容型 SEO 的正解。
+> SSR 會等 `useFetch` 抓完才產 HTML（第 6 章），所以爬蟲拿到的就是**正確的文章標題**，不是預設值。這正是 Nuxt 做內容型 SEO 的正解。
 
-### 效能小技巧：`useServerSeoMeta`
+### 效能小技巧：只在伺服器輸出的 meta
 
-如果某些 meta 不需要在瀏覽器端反應（多數 SEO meta 都是這樣），可用 `useServerSeoMeta`——它只在伺服器產出，不佔用瀏覽器 runtime，稍微更快。用法與 `useSeoMeta` 相同。
+有些 meta 只給爬蟲與社群預覽看、站內切頁時不需要更新（例如 `ogType`、`twitterCard`），可以把 `useSeoMeta` 包在 `if (import.meta.server)` 裡，這段程式就不會進瀏覽器的 bundle：
+
+```js
+if (import.meta.server) {
+  useSeoMeta({ ogType: 'article', twitterCard: 'summary_large_image' })
+}
+```
+
+`title` 不要這樣放——它只在伺服器設定，站內切頁時瀏覽器分頁的標題就不會跟著換。（舊的 `useServerSeoMeta` 在 Nuxt 4 已標為 deprecated，官方建議改成這種寫法。）
 
 ---
 
@@ -156,6 +164,10 @@ export default defineNuxtConfig({
     url: 'https://example.com',
     name: 'My Blog',
   },
+  sitemap: {
+    // 動態路由的網址來源（端點寫法見下方）
+    sources: ['/api/__sitemap__/urls'],
+  },
 })
 ```
 
@@ -165,12 +177,13 @@ export default defineNuxtConfig({
 - **自動產生 `/robots.txt`**。
 - **canonical、og:url 自動補**。
 
-**動態路由**（`/posts/[id]`）sitemap 不會自己知道有哪些 id，要提供來源。用一支 server 端點回傳所有網址：
+**動態路由**（`/posts/[id]`）sitemap 不會自己知道有哪些 id，要提供來源。用一支 server 端點回傳所有網址，再把它加進上面 `sitemap.sources`（沒註冊的端點不會被讀取）：
 
 ```js
 // server/api/__sitemap__/urls.js
 export default defineSitemapEventHandler(async () => {
-  const posts = await prisma.post.findMany({ select: { id: true, createdAt: true } })
+  // 只收已發佈的文章，草稿不該出現在 sitemap
+  const posts = await prisma.post.findMany({ where: { published: true }, select: { id: true, createdAt: true } })
   return posts.map((p) => ({
     loc: `/posts/${p.id}`,
     changefreq: 'weekly',
@@ -179,7 +192,7 @@ export default defineSitemapEventHandler(async () => {
 })
 ```
 
-> 注意 API 名稱是 **`defineSitemapEventHandler`**（`@nuxtjs/sitemap` 提供，`@nuxtjs/seo` 已內含），不是 `defineSitemapUrls`——後者並不存在，寫錯會直接跑不起來。`@nuxtjs/seo` 版本演進較快，實際設定以你安裝版本的文件為準；核心觀念不變：**告訴它 `site.url`，並提供動態路由清單**。
+> `defineSitemapEventHandler` 由 `@nuxtjs/sitemap` 提供（`@nuxtjs/seo` 已內含），它就是有型別的 `defineEventHandler`，回傳值是網址清單。`@nuxtjs/seo` 版本演進較快，實際設定以你安裝版本的文件為準；核心觀念不變：**告訴它 `site.url`，並在 `sitemap.sources` 註冊動態路由清單**。
 
 ---
 
@@ -195,12 +208,21 @@ export default defineSitemapEventHandler(async () => {
 
 ## 最後範例：有完整 SEO 的部落格
 
-> 在第 10/11 章的部落格上補齊 SEO：全站標題模板、首頁 meta、文章詳情動態 meta + OG。原樣建立以下檔案即可（後端沿用前面章節的 `/api/posts`）。
+> 在第 10/11 章的部落格上補齊 SEO：全站標題模板、首頁 meta、文章詳情動態 meta + OG。`nuxt.config.ts` 是在既有設定裡**加入** `app.head`，其餘檔案原樣建立即可（後端沿用前面章節的 `/api/posts`）。
 
-### `nuxt.config.ts`
+### `nuxt.config.ts`（加入 app.head）
+
+別整份覆蓋：第 11 章的文章 API 用到 `getUserSession`，它是 `nuxt-auth-utils` 提供的，拿掉這個模組 `/api/posts` 就會直接回 500。加完後的完整內容如下：
 
 ```ts
 export default defineNuxtConfig({
+  compatibilityDate: '2025-07-01',
+  devtools: { enabled: true },
+  // 第 7、11 章用 nuxi module add 加進來的，保留；安裝 @nuxtjs/seo 後再加上 '@nuxtjs/seo'
+  modules: ['@pinia/nuxt', 'nuxt-auth-utils'],
+  // runtimeConfig、routeRules 等前面章節的設定若還在，照舊保留
+
+  // 本章新增
   app: {
     head: {
       htmlAttrs: { lang: 'zh-Hant' },
@@ -208,8 +230,8 @@ export default defineNuxtConfig({
     },
   },
   // 安裝 @nuxtjs/seo 後啟用：
-  // modules: ['@nuxtjs/seo'],
   // site: { url: 'https://example.com', name: 'My Blog' },
+  // sitemap: { sources: ['/api/__sitemap__/urls'] },
 })
 ```
 
@@ -295,9 +317,10 @@ const route = useRoute()
 const { data: post, error } = await useFetch(`/api/posts/${route.params.id}`, {
   key: `post-${route.params.id}`,
 })
-if (error.value) throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+// fatal: true → 首次載入與站內切頁都會顯示 error.vue（第 13 章）
+if (error.value) throw createError({ status: 404, message: '找不到文章', fatal: true })
 
-// 動態 SEO：跟著文章內容變。因為上面已 await，SSR 端就是正確值
+// 動態 SEO：跟著文章內容變。SSR 會等 useFetch 抓完，所以 server 端就是正確值
 useSeoMeta({
   title: () => post.value?.title,
   description: () => post.value?.content?.slice(0, 80),

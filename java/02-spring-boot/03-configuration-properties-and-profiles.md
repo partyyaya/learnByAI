@@ -280,8 +280,8 @@ Spring Boot 3 的順序（節錄常用的）：
    │  ⑨  ★ 作業系統環境變數（SERVER_PORT=9090）
    │  ⑩  RandomValuePropertySource（${random.int}）
    │  ⑪  ★ jar 外部的 application-{profile}.yml
-   │  ⑫  ★ jar 內部的 application-{profile}.yml
-   │  ⑬  ★ jar 外部的 application.yml
+   │  ⑫  ★ jar 外部的 application.yml
+   │  ⑬  ★ jar 內部的 application-{profile}.yml
    │  ⑭  ★ jar 內部的 application.yml
    │  ⑮  @PropertySource
 低 └─ ⑯  SpringApplication.setDefaultProperties()
@@ -292,8 +292,9 @@ Spring Boot 3 的順序（節錄常用的）：
 ```
 命令列參數  >  系統屬性(-D)  >  環境變數  >  外部設定檔  >  jar 內設定檔
 
-而且：application-{profile}.yml  永遠贏過  application.yml
-      jar 外部的                永遠贏過  jar 內部的
+預設 Config Data 搜尋順序下，由高到低：
+外部 profile 檔 > 外部一般檔 > 內部 profile 檔 > 內部一般檔
+同一位置內，profile 專屬檔覆寫一般檔；自訂 location groups 時另依群組與宣告順序判斷。
 ```
 
 ### 用實驗驗證
@@ -354,12 +355,12 @@ $ java -jar shop.jar
 $ curl -s localhost:8080/probe | jq
 { "greeting": "來自 application.yml", "port": "8080", "activeProfiles": [] }
 
-# 實驗 2：啟用 dev profile（⑫ 勝過 ⑭）
+# 實驗 2：啟用 dev profile（⑬ 勝過 ⑭）
 $ java -jar shop.jar --spring.profiles.active=dev
 $ curl -s localhost:8080/probe | jq
 { "greeting": "來自 application-dev.yml", "port": "8080", "activeProfiles": ["dev"] }
 
-# 實驗 3：環境變數（⑨ 勝過 ⑫）
+# 實驗 3：環境變數（⑨ 勝過 ⑬）
 $ SHOP_GREETING="來自環境變數" java -jar shop.jar --spring.profiles.active=dev
 { "greeting": "來自環境變數", ... }
 
@@ -372,7 +373,7 @@ $ SHOP_GREETING="來自環境變數" java -Dshop.greeting="來自 -D" -jar shop.
     --spring.profiles.active=dev --shop.greeting="來自命令列"
 { "greeting": "來自命令列", ... }
 
-# 實驗 6：jar 外部的 application.yml（⑬ 勝過 ⑭，也勝過 jar 內的 dev profile ⑫）
+# 實驗 6：jar 外部的 application.yml（⑫ 勝過 ⑭，也勝過 jar 內的 dev profile ⑬）
 $ echo 'shop:
   greeting: "來自 jar 外部檔案"' > application.yml
 $ java -jar shop.jar --spring.profiles.active=dev
@@ -1530,7 +1531,7 @@ import org.springframework.core.env.ConfigurableEnvironment;
 public class ProfileGuard implements ApplicationListener<ApplicationEnvironmentPreparedEvent> {
 
     private static final java.util.Set<String> KNOWN_PROFILES =
-            java.util.Set.of("local", "dev", "test", "staging", "prod");
+            java.util.Set.of("local", "dev", "test", "staging", "prod", "batch");
 
     @Override
     public void onApplicationEvent(ApplicationEnvironmentPreparedEvent event) {
@@ -1546,7 +1547,7 @@ public class ProfileGuard implements ApplicationListener<ApplicationEnvironmentP
                     請用環境變數 SPRING_PROFILES_ACTIVE 指定執行環境，例如：
                         SPRING_PROFILES_ACTIVE=prod java -jar shop-service.jar
 
-                    可用的 profile：local / dev / test / staging / prod
+                    可用的 profile：local / dev / test / staging / prod；batch 為第 06 章的一次性批次模式
 
                     （這個檢查是刻意的：曾經發生過正式環境誤用預設設定的事故）
                     ================================================================
@@ -2546,8 +2547,8 @@ SHOP_TIMEOUT=30s java -Dserver.port=8082 -jar shop.jar \
 | **⑧ 系統屬性 `-Dserver.port`** | **8082** | **← 獲勝** |
 | ⑨ 環境變數 | — | 沒設 |
 | ⑪ jar 外 `application-prod.yml` | — | 檔案不存在 |
-| ⑬ jar 外 `./config/application.yml` | — | 沒設 port |
-| ⑫ jar 內 `application-prod.yml` | 8081 | 被蓋 |
+| ⑫ jar 外 `./config/application.yml` | — | 沒設 port |
+| ⑬ jar 內 `application-prod.yml` | 8081 | 被蓋 |
 | ⑭ jar 內 `application.yml` | 8080 | 被蓋 |
 
 `shop.timeout`：
@@ -2557,8 +2558,8 @@ SHOP_TIMEOUT=30s java -Dserver.port=8082 -jar shop.jar \
 | **④ 命令列 `--shop.timeout=40s`** | **40s** | **← 獲勝** |
 | ⑧ 系統屬性 | — | 沒設 |
 | ⑨ 環境變數 `SHOP_TIMEOUT=30s` | 30s | 被蓋 |
-| ⑬ jar 外 `./config/application.yml` | 20s | 被蓋 |
-| ⑫ jar 內 `application-prod.yml` | 10s | 被蓋 |
+| ⑫ jar 外 `./config/application.yml` | 20s | 被蓋 |
+| ⑬ jar 內 `application-prod.yml` | 10s | 被蓋 |
 | ⑭ jar 內 `application.yml` | 5s | 被蓋 |
 
 **額外提醒**：`./config/application.yml`（20s）**會蓋過 jar 內的 `application-prod.yml`**（10s）。
@@ -2868,7 +2869,7 @@ management:
 - **ConfigMap 掛載成檔案，但路徑不在 Spring 的搜尋範圍**
   → 用 `spring.config.additional-location` 明確指定。
 - **有更高優先序的來源蓋過它**——例如 deployment 裡的 `env` 直接設了同一個屬性
-  （環境變數 ⑨ 贏過外部設定檔 ⑪⑬）。
+  （環境變數 ⑨ 贏過外部設定檔 ⑪⑫）。
   ```bash
   curl -s localhost:8081/actuator/env/該屬性 | jq
   ```

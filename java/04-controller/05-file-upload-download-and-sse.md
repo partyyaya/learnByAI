@@ -3134,103 +3134,102 @@ api:
 
 ```java
     // 04 章的做法（適用於 JSON）
-    String fingerprint = sha256(cachedBody.getBytes());
+    String fingerprint = sha256(cachedBody);
 ```
 
-**對 multipart 有三個問題**：
-
-| 問題 | 說明 |
-|---|---|
-| 1. body 是 10 MB | `CachedBodyFilter` 的上限是 256 KB（04 章 4.4.6）→ 被截斷 → 指紋算在截斷的資料上 |
-| 2. boundary 每次不同 | 客戶端重送時 boundary 是隨機的 → **同樣的檔案算出不同的指紋** 🔴 |
-| 3. 算 SHA-256 要 CPU | 10 MB 約 25 ms，但要在 Interceptor（綁定之前）做，那時還沒解析 multipart |
-
-⚠️ **第二個問題會讓冪等完全失效**：使用者重送同一張圖，
-指紋不同 → 被判定為「同 key 不同內容」→ 回 `IDEMPOTENCY_KEY_REUSED`（409）。
-**使用者永遠傳不上去。**
-
-**shop-service 的解法：multipart 端點用「不含 body 的指紋」。**
+multipart 的 boundary 每次可能不同，不能直接 hash 整段 wire body。
+本節的最終版以 SHA-256 計算 method、**實際 URI**、query、表單欄位與檔案內容；
+長度前綴避免逗號、`&` 等字元造成歧義。檔案逐塊讀取，不全部載入記憶體，
+但會多讀一次暫存檔；檔案大小與 multipart 總量限制仍須先由容器落實。
+不同商品 ID、不同檔案、不同表單值不可回放彼此的結果。
 
 ```java
 package example.shop.common.web;
 
+import example.shop.common.error.IdempotencyBodyTooLargeException;
 import jakarta.servlet.http.HttpServletRequest;
-import org.springframework.util.DigestUtils;
-
+import jakarta.servlet.http.Part;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.security.*;
+import java.util.*;
 
-/**
- * 冪等請求指紋的計算（04 章 4.9.4 的最終版）。
- *
- * <p>★ 指紋的目的是偵測「同一個 Idempotency-Key 被用在不同的請求上」——
- * 這是客戶端的 bug（例如把 key 寫死），而回 409 是為了讓它被發現。
- *
- * <p>對不同的 content type 用不同的策略：
- * <table>
- *   <tr><th>Content-Type</th><th>指紋</th><th>理由</th></tr>
- *   <tr><td>application/json</td><td>method + 路徑模板 + body 的 SHA-256</td>
- *       <td>body 是穩定的（同樣的 JSON → 同樣的 bytes）</td></tr>
- *   <tr><td>multipart/*</td><td>method + 路徑模板 + 非檔案欄位的 SHA-256</td>
- *       <td>⚠️ boundary 每次隨機，含 body 會讓同樣的請求算出不同指紋</td></tr>
- *   <tr><td>無 body（DELETE）</td><td>method + 路徑模板</td><td>沒有 body 可算</td></tr>
- * </table>
- */
+/** 04 章指紋的最終版；template 只供觀測，請求身分必須使用實際資源 URI。 */
 public final class IdempotencyFingerprint {
-
-    public static String compute(HttpServletRequest request,
-                                 String endpointTemplate,
-                                 byte[] cachedBody,
-                                 boolean bodyTruncated) {
-
-        String contentType = request.getContentType();
-        StringBuilder material = new StringBuilder(256);
-        material.append(request.getMethod()).append('\n')
-                .append(endpointTemplate).append('\n');
-
-        if (contentType != null && contentType.toLowerCase().startsWith("multipart/")) {
-            // ── multipart：只用「非檔案的表單欄位」★ ─────────────
-            // ⚠️ 這代表「同一個 key，換了檔案但其他欄位一樣」不會被偵測到。
-            //    這是一個刻意的取捨：
-            //      · 偽陽性（同樣的請求被判定為不同）會讓功能壞掉 → 不可接受
-            //      · 偽陰性（不同的請求被判定為相同）會回放上一次的結果 → 對使用者
-            //        來說是「我上傳了但看到舊的那張」，可以用「重新整理」解決
-            //    偽陽性比偽陰性嚴重得多，所以往偽陰性那邊靠。
-            material.append(sortedFormParams(request));
-
-        } else if (cachedBody != null && cachedBody.length > 0) {
-            if (bodyTruncated) {
-                // ⚠️ body 被截斷時不能算指紋 —— 那會讓「前 256 KB 相同、
-                //    後面不同」的兩個請求被誤判為相同。
-                //    這種情況下我們選擇「不做指紋比對」而不是「用錯的指紋」。
-                material.append("<truncated:").append(cachedBody.length).append('>');
+    public static String compute(HttpServletRequest request, String endpointTemplate,
+                                 byte[] cachedBody, boolean bodyTruncated) {
+        if (bodyTruncated) throw new IdempotencyBodyTooLargeException();
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            var out = new DataOutputStream(new DigestOutputStream(OutputStream.nullOutputStream(), digest));
+            field(out, request.getMethod());
+            field(out, request.getRequestURI()); // /products/A/images 不等於 /products/B/images
+            field(out, Objects.toString(request.getQueryString(), ""));
+            String contentType = Objects.toString(request.getContentType(), "").toLowerCase(Locale.ROOT);
+            if (contentType.startsWith("multipart/")) {
+                var entries = new TreeMap<>(request.getParameterMap());
+                out.writeInt(entries.size());
+                for (var entry : entries.entrySet()) {
+                    field(out, entry.getKey());
+                    out.writeInt(entry.getValue().length);
+                    for (String value : entry.getValue()) field(out, value);
+                }
+                // 欄位由 getParameterMap 處理；檔案依 part 名穩定排序，同名檔保留送出順序。
+                var files = request.getParts().stream()
+                        .filter(part -> part.getSubmittedFileName() != null)
+                        .sorted(Comparator.comparing(Part::getName)).toList();
+                out.writeInt(files.size());
+                for (Part part : files) {
+                    field(out, part.getName());
+                    field(out, part.getSubmittedFileName());
+                    field(out, Objects.toString(part.getContentType(), ""));
+                    MessageDigest fileHash = MessageDigest.getInstance("SHA-256");
+                    try (var in = new DigestInputStream(part.getInputStream(), fileHash)) {
+                        in.transferTo(OutputStream.nullOutputStream());
+                    }
+                    out.write(fileHash.digest()); // 固定 32 bytes，不受 boundary 影響
+                }
             } else {
-                material.append(DigestUtils.md5DigestAsHex(cachedBody));
+                if (cachedBody == null && (contentType.contains("json") || request.getContentLengthLong() > 0))
+                    throw new IllegalStateException("Missing cached body for idempotent request");
+                byte[] body = cachedBody == null ? new byte[0] : cachedBody;
+                out.writeInt(body.length);
+                out.write(body);
             }
+            out.flush();
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (IOException | jakarta.servlet.ServletException ex) {
+            throw new IllegalStateException("Cannot fingerprint request", ex);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 unavailable", ex);
         }
-
-        return DigestUtils.md5DigestAsHex(material.toString().getBytes(StandardCharsets.UTF_8));
     }
 
-    /**
-     * 取出已排序的表單參數。
-     *
-     * <p>⚠️ 這裡呼叫 {@code getParameterMap()} 會觸發 multipart 解析 ——
-     * 而那正是 Interceptor 階段（綁定之前）我們想避免的。
-     *
-     * <p><b>但這個成本是不可避免的</b>：Tomcat 無論如何都要解析 multipart，
-     * 差別只是「現在」還是「等 ArgumentResolver 時」。
-     * 而且 Tomcat 有內部快取，第二次呼叫不會重新解析。
-     */
-    private static String sortedFormParams(HttpServletRequest request) {
-        return request.getParameterMap().entrySet().stream()
-                .sorted(java.util.Map.Entry.comparingByKey())
-                .map(e -> e.getKey() + "=" + String.join(",", e.getValue()))
-                .reduce("", (a, b) -> a + "&" + b);
+    private static void field(DataOutputStream out, String value) throws IOException {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        out.writeInt(bytes.length);
+        out.write(bytes);
     }
-
     private IdempotencyFingerprint() {}
 }
 ```
+
+採用本節最終版時，也要替換 04 章 `IdempotencyInterceptor.fingerprintOf`，
+不是只新增 helper。Security 可能再包 request，所以必須往內找 wrapper：
+
+```java
+    private String fingerprintOf(HttpServletRequest request) {
+        var cached = org.springframework.web.util.WebUtils.getNativeRequest(
+                request, CachedBodyRequestWrapper.class);
+        return IdempotencyFingerprint.compute(request,
+                String.valueOf(request.getAttribute(
+                        org.springframework.web.servlet.HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE)),
+                cached == null ? null : cached.cachedBody(),
+                cached != null && cached.isTruncated());
+    }
+```
+
+這裡的 query 使用原始編碼，欄位順序不同會保守回 409；客戶端重試應保持原請求。
 
 ⚠️ **`CachedBodyFilter` 也要跳過 multipart**（04 章 4.4.6 的補正）：
 
@@ -6660,6 +6659,7 @@ public class ExportProgressReporter {
 ```java
 package example.shop.order.service;
 
+import example.shop.common.upload.ObjectStorage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -6680,7 +6680,7 @@ import java.time.Instant;
  *   <li>只刪物件 → 使用者點下載得到 500（紀錄說 SUCCEEDED 但檔案不在）。</li>
  *   <li>只改狀態 → 物件永遠留著（花錢 + 個資風險）。</li>
  * </ul>
- * 所以順序是：<b>先改狀態（讓下載端點回 410），再刪物件</b>。
+ * 所以順序是：<b>同一交易標記 EXPIRED 並撤銷 token，再重試刪除物件</b>。
  * 反過來的話中間那段時間會回 500。
  */
 @Component
@@ -6714,24 +6714,23 @@ public class ExportRetentionSweeper {
 
     private void expireOldFiles() {
         Instant cutoff = Instant.now().minus(SUCCESS_RETENTION);
-        var expired = repository.findSucceededBefore(cutoff, 500);
-
-        for (var job : expired) {
+        for (var job : repository.findSucceededBefore(cutoff, 500)) {
             try {
-                // ★ 順序：先標記，再刪檔（見類別 javadoc）
-                repository.markExpired(job.exportId());
-                if (job.storageKey() != null) {
-                    storage.delete(job.storageKey());
-                }
-                // 一併撤銷還沒過期的下載 token
-                repository.revokeDownloadTokens(job.exportId());
-            } catch (Exception e) {
-                // ★ 單筆失敗不能中斷整批（下一輪會再試）
-                log.warn("清理匯出檔案失敗 exportId={}", job.exportId(), e);
+                // 單一 DB 交易：下載回 410、撤銷 token、設定 storage_deleted_at=NULL。
+                repository.markExpiredAndRevokeTokens(job.exportId());
+            } catch (Exception ex) {
+                log.warn("標記匯出過期失敗 exportId={}", job.exportId(), ex);
             }
         }
-        if (!expired.isEmpty()) {
-            log.info("清理過期匯出 count={}", expired.size());
+        // 另查 EXPIRED 且尚未刪成功者，不能只掃 SUCCEEDED。
+        for (var job : repository.findExpiredWithPendingCleanup(500)) {
+            try {
+                if (job.storageKey() != null) storage.delete(job.storageKey());
+                // ObjectStorage.delete 必須對「已不存在」成功；崩潰後可重試。
+                repository.markStorageDeleted(job.exportId(), Instant.now());
+            } catch (Exception ex) {
+                log.warn("刪除匯出物件失敗，保留待刪狀態 exportId={}", job.exportId(), ex);
+            }
         }
     }
 
@@ -6763,6 +6762,12 @@ public class ExportRetentionSweeper {
     }
 }
 ```
+
+持久層增加 `storage_deleted_at TIMESTAMP NULL`。`markExpiredAndRevokeTokens`
+以同一交易更新狀態與 token；`findExpiredWithPendingCleanup` 掃描尚未刪除的 EXPIRED。
+刪物件成功但回寫前崩潰時，下次重試刪除應視為成功，然後補上時間。
+不能只靠 catch 註解宣稱「下一輪重試」。
+
 
 ⚠️ **`lastHeartbeatAt` 是必要的欄位**。用 `startedAt` 判斷卡住是錯的：
 
@@ -7424,231 +7429,89 @@ SSE / WebSocket 都一樣。純增量的系統一定會發散。
 ```java
 package example.shop.order.service;
 
+import example.shop.order.web.SseProperties;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
-
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * 本機的 SSE 訂閱登錄簿。
- *
- * <p>★ 為什麼需要一個 registry：
- * 事件的來源是「訂單狀態改變」，而那發生在 Service 層
- * （一個完全不知道 HTTP 存在的地方）。
- * registry 是「領域事件」與「HTTP 連線」之間的橋。
- *
- * <p>⚠️ 這個類別只知道<b>本機</b>的連線。多實例部署下必須搭配 5.11.6 的 pub/sub。
- */
+/** 本機 registry；配額與三份索引由同一個 monitor 保護，廣播使用快照。 */
 @Component
 public class SseEmitterRegistry {
-
     private static final Logger log = LoggerFactory.getLogger(SseEmitterRegistry.class);
-
-    /**
-     * 連線數上限 —— <b>從設定讀，不是寫死的常數</b>。
-     *
-     * <p>★ 為什麼必須有上限：每條連線佔用
-     * (a) 一個 Tomcat 的 NIO connection（受 {@code server.tomcat.max-connections} 限制）
-     * (b) 一個 {@code SseEmitter} 物件與其回呼（約 1 KB）
-     * (c) 一個 async context
-     *
-     * <p>沒有上限的話，一個惡意客戶端開 10 萬條連線就能耗盡
-     * {@code max-connections}（預設 8192）→ <b>正常請求完全無法進來</b>。
-     *
-     * <p>⚠️⚠️ <b>為什麼不是 {@code private static final int}</b>（這一節原本就是這樣寫的）：
-     *
-     * <p>5.12.2 的 {@code application.yml} 有
-     * {@code api.sse.max-total-connections: 5000} 與
-     * {@code max-connections-per-actor: 10} —— 而如果程式碼用的是寫死的常數，
-     * <b>那兩行設定就是死的</b>。
-     *
-     * <p>症狀：改設定沒反應、而且 07 章 7.11.4 的
-     * 「超過連線上限回 503」測試沒辦法用
-     * {@code @SpringBootTest(properties = "api.sse.max-total-connections=3")}
-     * 把上限調低 —— 於是那個測試必須真的開 5,000 條連線（不可行）。
-     *
-     * <p>★ <b>一般規則：任何「運維可能想調」的數字都必須是設定，不是常數。</b>
-     * 而「怎麼知道運維想調？」——<b>如果它出現在 application.yml 裡，答案就是「想」。</b>
-     */
     private final int maxTotal;
-
-    /** 每個 actor 的連線上限（防單一使用者耗盡配額）。 */
     private final int maxPerActor;
-
-    /** orderId → 該訂單的所有訂閱。 */
-    private final Map<String, List<Subscription>> byOrder = new ConcurrentHashMap<>();
-
-    /** subscriptionId → 訂閱（用於 O(1) 移除）。 */
-    private final Map<String, Subscription> bySubscription = new ConcurrentHashMap<>();
-
-    /** actorId → 連線數。 */
-    private final Map<String, java.util.concurrent.atomic.AtomicInteger> byActor =
-            new ConcurrentHashMap<>();
-
+    private final Map<String, List<Subscription>> byOrder = new HashMap<>();
+    private final Map<String, Subscription> bySubscription = new HashMap<>();
+    private final Map<String, Integer> byActor = new HashMap<>();
     private final AtomicLong subscriptionCounter = new AtomicLong();
+    private boolean closing;
 
-    public SseEmitterRegistry(MeterRegistry meterRegistry, SseProperties properties) {
-        this.maxTotal = properties.maxTotalConnections();
-        this.maxPerActor = properties.maxConnectionsPerActor();
-
-        // ★ 把連線數做成指標 —— 這是唯一能看出「連線洩漏」的方式
-        Gauge.builder("shop.sse.connections", this, SseEmitterRegistry::size)
-                .description("目前的 SSE 連線數")
-                .register(meterRegistry);
-        // ★ 上限也做成指標 —— 沒有它的話，看到「4,900 條連線」不知道那是不是快滿了
-        Gauge.builder("shop.sse.connections.max", this, r -> r.maxTotal)
-                .description("SSE 連線數上限")
-                .register(meterRegistry);
+    public SseEmitterRegistry(MeterRegistry meters, SseProperties properties) {
+        maxTotal = properties.maxTotalConnections();
+        maxPerActor = properties.maxConnectionsPerActor();
+        Gauge.builder("shop.sse.connections", this, SseEmitterRegistry::size).register(meters);
+        Gauge.builder("shop.sse.connections.max", this, r -> r.maxTotal).register(meters);
     }
-
     public String nextSubscriptionId() {
-        return "sub_%d_%d".formatted(System.currentTimeMillis(),
-                                     subscriptionCounter.incrementAndGet());
+        return "sub_%d_%d".formatted(System.currentTimeMillis(), subscriptionCounter.incrementAndGet());
     }
-
-    /**
-     * 註冊一條連線。
-     *
-     * @throws TooManySseConnectionsException 超過上限
-     */
-    public void register(String subscriptionId, String orderId, String actorId,
-                         SseEmitter emitter) {
-
-        if (bySubscription.size() >= maxTotal) {
-            // ★ 回 503 + Retry-After，而不是靜默拒絕
+    public synchronized void register(String id, String orderId, String actorId, SseEmitter emitter) {
+        Objects.requireNonNull(emitter);
+        if (bySubscription.containsKey(id)) throw new IllegalArgumentException("duplicate subscriptionId");
+        if (closing || bySubscription.size() >= maxTotal)
             throw new TooManySseConnectionsException(maxTotal, "server");
-        }
-
-        var actorCount = byActor.computeIfAbsent(actorId,
-                k -> new java.util.concurrent.atomic.AtomicInteger());
-        if (actorCount.incrementAndGet() > maxPerActor) {
-            actorCount.decrementAndGet();
-            throw new TooManySseConnectionsException(maxPerActor, "actor");
-        }
-
-        var subscription = new Subscription(subscriptionId, orderId, actorId, emitter);
-        bySubscription.put(subscriptionId, subscription);
-        // ★ CopyOnWriteArrayList：讀多寫少（心跳與事件廣播都是讀），
-        //   而且走訪時不會有 ConcurrentModificationException
-        byOrder.computeIfAbsent(orderId, k -> new CopyOnWriteArrayList<>())
-               .add(subscription);
+        int count = byActor.getOrDefault(actorId, 0);
+        if (count >= maxPerActor) throw new TooManySseConnectionsException(maxPerActor, "actor");
+        var subscription = new Subscription(id, orderId, actorId, emitter);
+        bySubscription.put(id, subscription);
+        byOrder.computeIfAbsent(orderId, key -> new ArrayList<>()).add(subscription);
+        byActor.put(actorId, count + 1);
     }
-
-    /**
-     * 移除一條連線。
-     *
-     * <p>★ 這個方法必須是<b>冪等</b>的：
-     * {@code onCompletion} 與心跳的失敗處理可能都會呼叫它。
-     */
-    public void unregister(String subscriptionId) {
-        Subscription removed = bySubscription.remove(subscriptionId);
-        if (removed == null) return;                  // 已經移除過了
-
-        List<Subscription> list = byOrder.get(removed.orderId());
-        if (list != null) {
-            list.remove(removed);
-            // ⚠️ 空的 list 要移除，否則 byOrder 會無限成長
-            //    （每個曾經被訂閱過的 orderId 都留一個空 list）
-            //    ★ 這裡有一個競態：remove 與 computeIfAbsent 之間可能插入新訂閱。
-            //      用 compute 讓檢查與移除是原子的。
-            byOrder.compute(removed.orderId(),
-                    (k, v) -> (v == null || v.isEmpty()) ? null : v);
-        }
-        var count = byActor.get(removed.actorId());
-        if (count != null && count.decrementAndGet() <= 0) {
-            byActor.remove(removed.actorId(), count);
-        }
+    public synchronized void unregister(String id) {
+        Subscription removed = bySubscription.remove(id);
+        if (removed == null) return; // completion、timeout 與心跳清理可重複呼叫
+        var list = byOrder.get(removed.orderId());
+        list.remove(removed);
+        if (list.isEmpty()) byOrder.remove(removed.orderId());
+        int count = byActor.get(removed.actorId()) - 1;
+        if (count == 0) byActor.remove(removed.actorId());
+        else byActor.put(removed.actorId(), count);
     }
-
-    /** 某個訂單的所有訂閱（本機）。 */
-    public List<Subscription> forOrder(String orderId) {
-        return byOrder.getOrDefault(orderId, List.of());
+    public synchronized List<Subscription> forOrder(String orderId) {
+        return List.copyOf(byOrder.getOrDefault(orderId, List.of()));
     }
-
-    public Collection<Subscription> all() {
-        return bySubscription.values();
+    public synchronized Collection<Subscription> all() {
+        return List.copyOf(bySubscription.values());
     }
+    public synchronized int size() { return bySubscription.size(); }
+    /** 測試以唯一 actor 計數，避免把其他平行測試的訂閱算進來。 */
+    public synchronized int countFor(String actorId) { return byActor.getOrDefault(actorId, 0); }
 
-    /** 本機的總連線數。 */
-    public int size() {
-        return bySubscription.size();
-    }
-
-    /**
-     * <b>某一個 actor</b> 的本機連線數。
-     *
-     * <p>★★ 這個方法有兩個用途，而第二個是它真正被加進來的原因：
-     *
-     * <ol>
-     *   <li><b>正式碼</b>：{@code register()} 的 {@code maxPerActor} 檢查
-     *       （原本用 {@code byActor} 的 {@code AtomicInteger} 直接判斷，
-     *       但外部也需要讀得到這個數字 —— 例如
-     *       「你目前開了 3 條連線，上限 10」這種提示）。</li>
-     *   <li><b>測試</b>：SSE 的整合測試不可以用 {@link #size()} 當基準線。 ★★
-     *       <pre>
-     *       int before = registry.size();          // 🔴 全域的
-     *       …開一條連線…
-     *       await().until(() -> registry.size() == before + 1);
-     *       …斷線…
-     *       await().until(() -> registry.size() == before);   // 🔴 別的測試類別的連線也在裡面
-     *       </pre>
-     *       07 章 7.13.2 讓<b>測試類別之間平行執行</b>，而 registry 是
-     *       整個 context 共用的 singleton ——
-     *       於是這個測試在「另一個 SSE 測試剛好同時開著連線」時會失敗。
-     *       症狀是「本機從不失敗、CI 約 1/15 失敗」（07 章練習 4）。
-     *
-     *       <p>★ 改成 {@code countFor(唯一的 actorId)} 就完全不受干擾 ——
-     *       每個測試用自己的 actorId，共用的有狀態元件就不需要重設。</li>
-     * </ol>
-     *
-     * <p>⚠️ 它只算<b>本機</b>的連線。多實例部署下「這個使用者總共開了幾條」
-     * 需要 5.11.6 的 pub/sub 或一個共用的計數器 ——
-     * 而 shop-service 刻意<b>不</b>做那件事：per-actor 的上限只是「防單一使用者
-     * 耗盡單一 pod 的配額」，不需要全域精確。
-     */
-    public int countFor(String actorId) {
-        var count = byActor.get(actorId);
-        return (count == null) ? 0 : Math.max(0, count.get());
-    }
-
-    /**
-     * 優雅關閉：通知所有客戶端「我要重啟了」。
-     *
-     * <p>★ 為什麼要做：不做的話部署時所有連線會硬斷，
-     * 瀏覽器立刻同時重連 → <b>新 pod 剛起來就被 5000 條連線打爆</b>。
-     *
-     * <p>送一個帶隨機 {@code retry} 的事件，讓重連時間分散（jitter）。
-     */
     @jakarta.annotation.PreDestroy
     public void shutdown() {
-        log.info("關閉所有 SSE 連線 count={}", bySubscription.size());
-        var random = new java.util.Random();
-        for (var subscription : List.copyOf(bySubscription.values())) {
+        List<Subscription> snapshot;
+        synchronized (this) {
+            closing = true;
+            snapshot = List.copyOf(bySubscription.values());
+            bySubscription.clear(); byOrder.clear(); byActor.clear();
+        }
+        // send/complete 可能回呼 registry；不得在持鎖時做網路 I/O。
+        log.info("關閉 SSE 連線 count={}", snapshot.size());
+        var random = new Random();
+        for (var subscription : snapshot) {
             try {
-                // ★ 1～15 秒的隨機重連間隔 —— 讓 5000 條連線分散在 15 秒內回來
-                subscription.emitter().send(SseEmitter.event()
-                        .name("stream.reconnect")
+                subscription.emitter().send(SseEmitter.event().name("stream.reconnect")
                         .reconnectTime(1_000L + random.nextInt(14_000))
                         .data(Map.of("reason", "SERVER_SHUTDOWN")));
                 subscription.emitter().complete();
-            } catch (Exception ignored) {
-                // 已斷線 —— 沒關係
-            }
+            } catch (Exception ignored) { }
         }
-        bySubscription.clear();
-        byOrder.clear();
-        byActor.clear();
     }
-
     public record Subscription(String subscriptionId, String orderId,
                                String actorId, SseEmitter emitter) {}
 }
@@ -9488,7 +9351,11 @@ public interface OrderExportRepository {
 
     void markFailed(String exportId, String errorCode, String userMessage);
 
-    void markExpired(String exportId);
+    /** 同一交易：標記 EXPIRED、撤銷下載 token，保留待刪狀態。 */
+    void markExpiredAndRevokeTokens(String exportId);
+    /** WHERE state='EXPIRED' AND storage_deleted_at IS NULL。 */
+    List<OrderExportJob> findExpiredWithPendingCleanup(int limit);
+    void markStorageDeleted(String exportId, Instant at);
 
     /** 撤銷這個匯出所有還沒過期的下載 token（5.10.8）。 */
     void revokeDownloadTokens(String exportId);

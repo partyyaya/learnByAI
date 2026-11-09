@@ -140,12 +140,13 @@ function useBlogSkin() {
 </script>
 ```
 
-也可以直接在 `app.vue` 用 `<NuxtLayout name="...">` 指定，或用 `:name` 綁一個響應式值：
+也可以直接在 `app.vue` 用 `<NuxtLayout name="...">` 指定，或用 `:name` 綁一個響應式值。但要注意：**只要 `name` 有值，就會蓋過所有頁面的 `definePageMeta({ layout })` 與 `setPageLayout()`**。所以綁響應式值時，讓它預設是 `undefined`（交回各頁決定），真的要全站強制換版面時才填值：
 
 ```vue
 <!-- app/app.vue -->
 <script setup>
-const layoutName = ref('default')
+// undefined → 由各頁的 definePageMeta 決定；設成 'blog' 等字串 → 全站強制用那個版面
+const layoutName = ref()
 </script>
 
 <template>
@@ -168,7 +169,7 @@ const layoutName = ref('default')
 <script setup>
 // Nuxt 會把錯誤物件透過 error prop 傳進來
 const props = defineProps({
-  error: Object, // { statusCode, statusMessage, message, ... }
+  error: Object, // { status, statusText, message, ... }
 })
 
 // 清掉錯誤並導回某頁（不呼叫的話會一直停在錯誤畫面）
@@ -179,8 +180,8 @@ function handleClear() {
 
 <template>
   <div class="error-page">
-    <h1>{{ error.statusCode }}</h1>
-    <p>{{ error.statusMessage || '發生了一點問題' }}</p>
+    <h1>{{ error.status }}</h1>
+    <p>{{ error.message || '發生了一點問題' }}</p>
     <button @click="handleClear">回首頁</button>
   </div>
 </template>
@@ -189,10 +190,25 @@ function handleClear() {
 重點：
 
 - `error.vue` **不會**套用你的 layout（它是完全獨立的畫面），所以頁首頁尾要自己補。
-- `error.statusCode` 常見是 `404`（找不到）或 `500`（伺服器錯誤）。
+- `error.status` 常見是 `404`（找不到）或 `500`（伺服器錯誤）；`error.message` 是給人看的說明文字。
 - 一定要提供 `clearError()` 的出口，否則使用者會卡在錯誤頁。`clearError({ redirect: '/' })` 會清掉錯誤並導到指定網址。
 
-> 想主動丟出錯誤（例如查無資料時回 404），用 `throw createError({ statusCode: 404, statusMessage: '找不到文章' })`。這個第 6、13 章抓資料時會大量用到，這裡先知道錯誤最後會落在 `error.vue`。
+### 主動丟錯誤：`createError`
+
+想主動丟出錯誤（例如查無資料時回 404），在頁面的 `<script setup>` 裡：
+
+```js
+throw createError({ status: 404, message: '找不到文章', fatal: true })
+```
+
+- `status`：HTTP 狀態碼。
+- `message`：給人看的說明，中文放這裡。需要 HTTP 狀態文字時另加 `statusText`，只能用 ASCII（例如 `'Not Found'`）。
+- `fatal: true`：**一定要加**。直接輸入網址或重整（SSR）時，有沒有 `fatal` 都會顯示 `error.vue`；但在**站內切頁**（點 `<NuxtLink>`）時，非 fatal 的錯誤不會切到 `error.vue`，頁面只會渲染失敗、在 console 留下錯誤。加了 `fatal: true`，兩種情況都會顯示錯誤頁。
+- 丟錯誤的頁面，模板裡用到那筆資料的地方要用 `v-if` 保護（例如 `<div v-if="post">`）。站內切頁時，`setup` 丟錯後 Vue 仍會試著渲染這頁的模板，若模板直接讀 `post.title` 就會再出錯，錯誤頁反而出不來。
+
+> 你在網路上常看到的 `statusCode` / `statusMessage` 是舊名，Nuxt 4.4 已標為 deprecated；而且 `statusMessage` 會被當成 HTTP 狀態列文字，中文在狀態列會被濾掉，h3 也會印警告（將來會預設整個濾掉），說明文字一律放 `message`。加了 `fatal: true` 的錯誤在 SSR 時，終端機會印出一段 `[request error] [fatal]` 紀錄，這是正常的。
+
+`createError` 第 6、13 章抓資料時會大量用到，這裡先知道錯誤最後會落在 `error.vue`。
 
 ---
 
@@ -312,8 +328,8 @@ function handleClear() {
 
 <template>
   <div class="error-page">
-    <h1>{{ error.statusCode }}</h1>
-    <p>{{ error.statusMessage || '發生了一點問題' }}</p>
+    <h1>{{ error.status }}</h1>
+    <p>{{ error.message || '發生了一點問題' }}</p>
     <button @click="handleClear">回首頁</button>
   </div>
 </template>
@@ -373,14 +389,15 @@ definePageMeta({
 const route = useRoute()
 const post = findPost(route.params.id)
 
-// 查無此文 → 主動丟 404，最後會落在 app/error.vue
+// 查無此文 → 主動丟 404，最後會落在 app/error.vue（fatal: true 讓站內切頁時也會顯示）
 if (!post) {
-  throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  throw createError({ status: 404, message: '找不到文章', fatal: true })
 }
 </script>
 
 <template>
-  <div>
+  <!-- v-if 保護：查無此文時不渲染，讓 error.vue 順利接手 -->
+  <div v-if="post">
     <p><NuxtLink to="/posts" class="back">← 回列表</NuxtLink></p>
     <h1>{{ post.title }}</h1>
     <p>{{ post.body }}</p>

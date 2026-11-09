@@ -158,11 +158,13 @@
 
 | 你的情況 | 選什麼 |
 |---|---|
-| 新專案，可自由選 | **21 或 25**（Spring Boot 3.2+ 兩者都支援） |
+| 新專案，可自由選 | 優先 **21**；選 25 時須確認具體 Spring Boot 版本的相容範圍（不能一概套用到 3.2+） |
 | 公司專案在 Spring Boot 3.x | 至少 17，建議 21 |
 | 公司專案在 Spring Boot 2.7 或更舊 | 卡在 8 或 11，升級前先讀第 12 章了解你錯過什麼 |
 | 學這門課 | **21**（本課所有範例以 21 驗證，會標註需要 17 / 25 的地方） |
 
+> **相容性要看完整版本**：例如 [Spring Boot 3.2.12 官方需求](https://docs.spring.io/spring-boot/docs/3.2.12/reference/html/getting-started.html#getting-started.system-requirements) 列到 Java 23，不能據此推論它也支援 Java 25。
+>
 > **本課約定**：預設 JDK 21。用到 Java 21 以後才有的語法，我會標 `【Java 25】`；只有 8 有的舊寫法，我會標 `【Java 8 舊寫法】`。
 
 ---

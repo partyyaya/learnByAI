@@ -1,0 +1,1905 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f4ef">
+  <meta name="description" content="CUBE / LAB — 純 CSS 3D、可互動的三階魔方實驗室。拖曳探索，逐步轉動。">
+  <title>CUBE / LAB — 魔方實驗室</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f5f4ef;
+      --ink: #242824;
+      --muted: #777c72;
+      --line: #dfdfd5;
+      --accent: #d65b35;
+      --green: #50775b;
+      --mono: ui-monospace, SFMono-Regular, Consolas, monospace
+    }
+
+    * {
+      box-sizing: border-box
+    }
+
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Arial, "PingFang TC", "Microsoft JhengHei", sans-serif;
+      font-size: 14px;
+      -webkit-font-smoothing: antialiased
+    }
+
+    button,
+    input {
+      font: inherit
+    }
+
+    button {
+      cursor: pointer
+    }
+
+    button:focus-visible,
+    input:focus-visible {
+      outline: 3px solid #da794c;
+      outline-offset: 5px
+    }
+
+    button {
+      color: inherit;
+      -webkit-tap-highlight-color: transparent
+    }
+
+    button:disabled {
+      cursor: wait;
+      opacity: .5
+    }
+
+    button svg {
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.6;
+      stroke-linecap: round;
+      stroke-linejoin: round
+    }
+
+    button:hover {
+      --hover: 1
+    }
+
+    button:active {
+      translate: 0 1px
+    }
+
+    .topbar {
+      height: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 4.2%;
+      border-bottom: 1px solid var(--line)
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px
+    }
+
+    .brand-icon {
+      width: 34px;
+      height: 38px;
+      stroke: var(--ink);
+      fill: none;
+      stroke-width: 1.3
+    }
+
+    .wordmark {
+      font-size: 25px;
+      letter-spacing: -1.3px;
+      font-weight: 800
+    }
+
+    .wordmark span {
+      font-weight: 300;
+      color: #92978c;
+      padding: 0 5px
+    }
+
+    .edition {
+      margin: 7px 0 0;
+      font: 9px var(--mono);
+      letter-spacing: 2px;
+      color: var(--muted)
+    }
+
+    .top-note {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font: 10px var(--mono);
+      letter-spacing: 1.5px;
+      color: var(--muted)
+    }
+
+    .live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #739375;
+      box-shadow: 0 0 0 4px #73937510
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: 65fr 35fr;
+      min-height: calc(100svh - 144px)
+    }
+
+    .stage {
+      position: relative;
+      min-width: 0;
+      min-height: 710px;
+      overflow: hidden;
+      border-right: 1px solid var(--line);
+      background: radial-gradient(ellipse at 50% 44%, #fffffb90, transparent 65%)
+    }
+
+    .stage-header {
+      position: absolute;
+      top: 34px;
+      left: 6.5%;
+      right: 6.5%;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      z-index: 2;
+      pointer-events: none
+    }
+
+    .eyebrow {
+      margin: 0;
+      font: 10px var(--mono);
+      letter-spacing: 2px;
+      color: var(--muted)
+    }
+
+    .stage-header h1 {
+      font-size: 23px;
+      font-weight: 500;
+      letter-spacing: -.7px;
+      margin: 11px 0 8px
+    }
+
+    .stage-header p:last-child {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0;
+      line-height: 1.8
+    }
+
+    .stage-index {
+      font: 11px var(--mono);
+      color: #9b9e94;
+      padding-top: 2px
+    }
+
+    .viewport {
+      position: absolute;
+      inset: 115px 0 125px;
+      perspective: 1400px;
+      touch-action: none;
+      cursor: grab;
+      user-select: none;
+      -webkit-user-select: none
+    }
+
+    .viewport.dragging {
+      cursor: grabbing
+    }
+
+    .floor {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 440px;
+      height: 440px;
+      transform: translate(-50%, -22%) rotateX(72deg) rotateZ(-12deg);
+      border: 1px solid #d9dacc70;
+      border-radius: 50%;
+      pointer-events: none;
+      background: repeating-radial-gradient(ellipse at center, transparent 0, transparent 72px, #dfdfd340 73px, transparent 74px)
+    }
+
+    .shadow {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 300px;
+      height: 105px;
+      transform: translate(-50%, 136px);
+      background: radial-gradient(ellipse, #272d2547 0, #272d2522 38%, #272d2508 65%, transparent 73%);
+      filter: blur(13px);
+      pointer-events: none
+    }
+
+    .scene {
+      position: absolute;
+      left: 50%;
+      top: 46%;
+      width: 0;
+      height: 0;
+      transform: scale(var(--cube-scale, 1.12));
+      transform-style: preserve-3d
+    }
+
+    .view,
+    .cube,
+    .cubie {
+      position: absolute;
+      width: 0;
+      height: 0;
+      transform-style: preserve-3d
+    }
+
+    .view {
+      transform: rotateX(-27deg) rotateY(-35deg)
+    }
+
+    .cubie {
+      width: 79px;
+      height: 79px;
+      left: -39.5px;
+      top: -39.5px;
+      will-change: transform
+    }
+
+    .face {
+      position: absolute;
+      inset: 0;
+      border-radius: 8px;
+      background: #161a19;
+      border: 1px solid #303431;
+      backface-visibility: hidden;
+      box-shadow: inset 0 0 0 1px #0008, inset 2px 2px 2px #ffffff24, inset -2px -2px 2px #0009;
+      transform-style: preserve-3d
+    }
+
+    .face::before {
+      content: "";
+      position: absolute;
+      inset: 1px;
+      border-radius: 2px;
+      background: #141817;
+      transform: translateZ(-.7px)
+    }
+
+    .face::after {
+      content: "";
+      position: absolute;
+      inset: -.3px;
+      border-radius: 8px;
+      background: #080e12;
+      opacity: var(--shade, .15);
+      pointer-events: none;
+      transform: translateZ(.9px)
+    }
+
+    .sticker {
+      position: absolute;
+      inset: 6px;
+      border-radius: 6px;
+      background: var(--color);
+      box-shadow: inset 0 0 0 1px #ffffff35, inset 1px 2px 2px #ffffff50, inset -1px -2px 2px #00000028, 0 1px 2px #0008;
+      transform: translateZ(.4px);
+      overflow: hidden;
+      cursor: pointer
+    }
+
+    .sticker::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(138deg, #ffffff26, transparent 48%, #00000009)
+    }
+
+    .face:has(.sticker:hover) {
+      border-color: #a4aaa1
+    }
+
+    .sticker:hover {
+      box-shadow: inset 0 0 0 2px #ffffffa0, 0 0 8px #ffffff30
+    }
+
+    .center-mark {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font: bold 11px var(--mono);
+      color: #29332c66;
+      letter-spacing: -1px
+    }
+
+    .view-reset {
+      position: absolute;
+      right: 6.5%;
+      bottom: 120px;
+      display: flex;
+      gap: 7px;
+      align-items: center;
+      border: 0;
+      background: transparent;
+      font-size: 11px;
+      color: var(--muted);
+      padding: 8px
+    }
+
+    .view-reset:hover {
+      color: var(--ink)
+    }
+
+    .axis-key {
+      position: absolute;
+      left: 6.5%;
+      bottom: 132px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font: 9px var(--mono);
+      color: #90958b;
+      letter-spacing: 1px
+    }
+
+    .axis-triad {
+      position: relative;
+      width: 28px;
+      height: 28px
+    }
+
+    .axis-triad i {
+      position: absolute;
+      width: 20px;
+      height: 1px;
+      left: 6px;
+      top: 20px;
+      transform-origin: left;
+      background: #acafa4
+    }
+
+    .axis-triad i:nth-child(1) {
+      transform: rotate(-90deg);
+      background: #729d7e
+    }
+
+    .axis-triad i:nth-child(2) {
+      transform: rotate(25deg);
+      background: #b07966
+    }
+
+    .axis-triad i:nth-child(3) {
+      transform: rotate(-28deg);
+      background: #6f8fa6
+    }
+
+    .stage-bottom {
+      position: absolute;
+      bottom: 30px;
+      left: 6.5%;
+      right: 6.5%;
+      border-top: 1px solid var(--line);
+      padding-top: 23px
+    }
+
+    .gesture-note {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      font-size: 12px;
+      color: #60675d;
+      margin-bottom: 18px
+    }
+
+    .gesture-note svg {
+      width: 16px;
+      height: 16px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.3
+    }
+
+    .key-hints {
+      display: flex;
+      justify-content: center;
+      gap: 22px;
+      color: var(--muted);
+      font-size: 10px;
+      flex-wrap: wrap
+    }
+
+    .key-hints span {
+      display: flex;
+      align-items: center;
+      gap: 6px
+    }
+
+    kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 20px;
+      height: 20px;
+      padding: 0 5px;
+      border: 1px solid #d6d8cc;
+      border-radius: 3px;
+      background: #fafaf5;
+      color: #62695e;
+      font: 10px var(--mono);
+      box-shadow: 0 1px 0 #d6d8cc
+    }
+
+    .console {
+      padding: 34px 9% 28px;
+      min-width: 0;
+      background: #fafaf680
+    }
+
+    .section-label {
+      font: 9px var(--mono);
+      color: #858a7d;
+      letter-spacing: 1.7px
+    }
+
+    .console-heading {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px
+    }
+
+    .console-heading h2 {
+      font-size: 16px;
+      font-weight: 500;
+      margin: 0
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      font-size: 10px;
+      border: 1px solid #cfdacb;
+      background: #edf2e9;
+      color: #5d7957;
+      border-radius: 20px;
+      padding: 6px 10px
+    }
+
+    .status::before {
+      content: "";
+      width: 5px;
+      height: 5px;
+      background: currentColor;
+      border-radius: 50%
+    }
+
+    .status[data-mode="mixed"] {
+      background: #f6ede0;
+      color: #ab7c37;
+      border-color: #e8d9c0
+    }
+
+    .status[data-mode="turning"] {
+      background: #e9edf1;
+      color: #617787;
+      border-color: #d4dfe6
+    }
+
+    .metrics {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      padding: 30px 0 24px
+    }
+
+    .count {
+      font: normal 62px/.95 var(--mono);
+      letter-spacing: -5px;
+      font-variant-numeric: tabular-nums
+    }
+
+    .count-label {
+      margin-top: 11px;
+      font-size: 11px;
+      color: var(--muted)
+    }
+
+    .queue-info {
+      text-align: right;
+      padding-bottom: 2px
+    }
+
+    .queue-value {
+      font: 18px var(--mono);
+      margin-bottom: 9px
+    }
+
+    .queue-info .section-label {
+      font-size: 8px;
+      letter-spacing: 1px
+    }
+
+    .primary-actions {
+      display: grid;
+      grid-template-columns: 1.22fr 1fr;
+      gap: 9px
+    }
+
+    .action {
+      min-height: 45px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 9px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      font-size: 12px;
+      background: transparent;
+      transition: background .15s
+    }
+
+    .action:hover {
+      background: #edeee4
+    }
+
+    .action.primary {
+      background: var(--ink);
+      color: #f6f7ed;
+      border-color: var(--ink)
+    }
+
+    .action.primary:hover {
+      background: #414a3d
+    }
+
+    .action kbd {
+      background: transparent;
+      color: inherit;
+      border-color: #ffffff35;
+      width: 17px;
+      height: 17px;
+      font-size: 8px;
+      min-width: 17px;
+      box-shadow: none;
+      margin-left: 4px
+    }
+
+    .control-section {
+      border-top: 1px solid var(--line);
+      margin-top: 27px;
+      padding-top: 22px
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 17px
+    }
+
+    .section-head h3 {
+      font-size: 12px;
+      font-weight: 500;
+      margin: 0
+    }
+
+    .direction {
+      font: 9px var(--mono);
+      color: var(--muted)
+    }
+
+    .face-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 9px
+    }
+
+    .face-button {
+      position: relative;
+      min-height: 67px;
+      background: #f8f8f1;
+      border: 1px solid #dddfd2;
+      border-radius: 5px;
+      padding: 11px 10px;
+      text-align: left;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      transition: background .16s, border-color .16s
+    }
+
+    .face-button:hover {
+      background: white;
+      border-color: #afb5a3
+    }
+
+    .face-button.active {
+      border-color: #78856d;
+      background: #e8eddf
+    }
+
+    .swatch {
+      width: 8px;
+      height: 25px;
+      background: var(--color);
+      border-radius: 2px;
+      box-shadow: inset 0 0 0 1px #00000012
+    }
+
+    .face-letter {
+      display: block;
+      font: 17px/1.2 var(--mono)
+    }
+
+    .face-name {
+      display: block;
+      font-size: 9px;
+      color: var(--muted);
+      margin-top: 4px
+    }
+
+    .face-shortcut {
+      position: absolute;
+      right: 8px;
+      top: 9px;
+      color: #9da392;
+      font: 9px var(--mono)
+    }
+
+    .reverse-switch {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-top: 15px;
+      min-height: 28px
+    }
+
+    .reverse-button {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: none;
+      padding: 3px 0;
+      border: 0;
+      font-size: 10px;
+      color: #747c6c
+    }
+
+    .switch-track {
+      width: 25px;
+      height: 14px;
+      background: #d6dacd;
+      border-radius: 12px;
+      position: relative;
+      transition: background .15s
+    }
+
+    .switch-track::after {
+      content: "";
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #fff;
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: transform .15s
+    }
+
+    .reverse-button[aria-pressed="true"] .switch-track {
+      background: #718268
+    }
+
+    .reverse-button[aria-pressed="true"] .switch-track::after {
+      transform: translateX(11px)
+    }
+
+    .shift-note {
+      font-size: 9px;
+      color: #979d8e;
+      white-space: nowrap
+    }
+
+    .speed-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 18px;
+      font-size: 10px;
+      color: var(--muted)
+    }
+
+    .speed-row input {
+      flex: 1;
+      min-width: 20px;
+      accent-color: #78856d;
+      height: 3px;
+      cursor: pointer
+    }
+
+    .speed-row output {
+      font: 9px var(--mono);
+      min-width: 37px;
+      text-align: right
+    }
+
+    .history-head {
+      margin-bottom: 13px
+    }
+
+    .history-head span {
+      font: 8px var(--mono);
+      color: #969c8f
+    }
+
+    .history {
+      display: flex;
+      align-content: flex-start;
+      gap: 6px;
+      flex-wrap: wrap;
+      min-height: 83px;
+      max-height: 121px;
+      overflow: auto;
+      padding: 1px
+    }
+
+    .history-empty {
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #989d91;
+      font-size: 11px;
+      gap: 8px
+    }
+
+    .history-empty span {
+      font: 9px var(--mono);
+      letter-spacing: .4px;
+      color: #a8ac9f
+    }
+
+    .history-token {
+      height: 29px;
+      min-width: 32px;
+      border: 1px solid #e0e3d6;
+      background: #f4f5ec;
+      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font: 11px var(--mono);
+      color: #7c8570
+    }
+
+    .history-token:last-child {
+      background: #e8eddd;
+      border-color: #bcc6ad;
+      color: #415536
+    }
+
+    .console-note {
+      display: flex;
+      gap: 8px;
+      margin-top: 20px;
+      color: #939989;
+      font-size: 10px;
+      line-height: 1.8
+    }
+
+    .console-note span:first-child {
+      color: #a3aa97;
+      font: 13px var(--mono)
+    }
+
+    .footer {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 4.2%;
+      border-top: 1px solid var(--line);
+      color: #8a9081;
+      font: 8px var(--mono);
+      letter-spacing: 1px
+    }
+
+    .footer-left {
+      display: flex;
+      gap: 20px
+    }
+
+    .footer-right {
+      color: #9ca18f
+    }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+      white-space: nowrap
+    }
+
+    @media(min-width:1600px) {
+      .console {
+        padding-left: 12%;
+        padding-right: 12%
+      }
+
+      .stage {
+        min-height: 790px
+      }
+
+      .viewport {
+        inset: 125px 0 140px
+      }
+    }
+
+    @media(max-width:1050px) {
+      .console {
+        padding-left: 7%;
+        padding-right: 7%
+      }
+
+      .workspace {
+        grid-template-columns: 65fr 35fr
+      }
+
+      .key-hints {
+        gap: 12px
+      }
+
+      .face-button {
+        gap: 7px;
+        padding: 10px 8px
+      }
+
+      .topbar {
+        height: 85px
+      }
+
+      .workspace {
+        min-height: calc(100svh - 129px)
+      }
+    }
+
+    @media(max-width:760px) {
+      .topbar {
+        height: 78px;
+        padding: 0 6%
+      }
+
+      .wordmark {
+        font-size: 22px
+      }
+
+      .brand-icon {
+        width: 29px
+      }
+
+      .edition {
+        font-size: 8px;
+        letter-spacing: 1.4px
+      }
+
+      .top-note {
+        font-size: 8px;
+        letter-spacing: .7px
+      }
+
+      .workspace {
+        display: block
+      }
+
+      .stage {
+        min-height: 590px;
+        border-right: 0;
+        border-bottom: 1px solid var(--line)
+      }
+
+      .stage-header {
+        top: 26px
+      }
+
+      .stage-header h1 {
+        font-size: 20px
+      }
+
+      .viewport {
+        inset: 110px 0 120px
+      }
+
+      .console {
+        padding: 28px 6% 30px
+      }
+
+      .metrics {
+        padding-top: 25px
+      }
+
+      .face-button {
+        min-height: 65px
+      }
+
+      .history {
+        min-height: 65px
+      }
+
+      .control-section {
+        margin-top: 24px
+      }
+
+      .footer {
+        padding: 13px 6%;
+        gap: 12px;
+        font-size: 7px;
+        line-height: 1.8
+      }
+
+      .footer-left {
+        gap: 10px
+      }
+
+      .footer-right {
+        max-width: 120px;
+        text-align: right
+      }
+
+      .stage-bottom {
+        bottom: 25px
+      }
+
+      .view-reset {
+        bottom: 118px
+      }
+
+      .axis-key {
+        bottom: 130px
+      }
+
+      .key-hints {
+        gap: 13px;
+        font-size: 9px
+      }
+    }
+
+    @media(prefers-reduced-motion:reduce) {
+
+      button,
+      .switch-track,
+      .switch-track::after {
+        transition: none
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar">
+    <div class="brand"><svg class="brand-icon" viewBox="0 0 36 40" aria-hidden="true">
+        <path
+          d="M18 2 34 11v18L18 38 2 29V11Z M2 11l16 9 16-9 M18 20v18 M10 6.5l16 9v18 M26 6.5l-16 9v18 M2 20l16 9 16-9" />
+      </svg>
+      <div>
+        <div class="wordmark">CUBE <span>/</span> LAB</div>
+        <p class="edition">AN INTERACTIVE CUBE EXPERIMENT</p>
+      </div>
+    </div>
+    <div class="top-note"><span class="live-dot"></span>EXPERIMENT № 001</div>
+  </header>
+  <main class="workspace">
+    <section class="stage" aria-label="3D 魔方舞台">
+      <div class="stage-header">
+        <div>
+          <p class="eyebrow">THE PLAYGROUND</p>
+          <h1>轉動，讓思緒歸位。</h1>
+          <p>一個魔方，43,252,003,274,489,856,000 種可能。</p>
+        </div><span class="stage-index">3 × 3 × 3</span>
+      </div>
+      <div class="viewport" id="viewport" aria-label="拖曳旋轉視角，點擊貼紙轉動該面">
+        <div class="floor"></div>
+        <div class="shadow"></div>
+        <div class="scene" id="scene">
+          <div class="view" id="view">
+            <div class="cube" id="cube"></div>
+          </div>
+        </div>
+      </div>
+      <div class="axis-key" aria-hidden="true">
+        <div class="axis-triad"><i></i><i></i><i></i></div>FREE ORBIT
+      </div>
+      <button class="view-reset" id="view-reset" title="回到初始觀察角度"><svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" />
+        </svg>重設視角</button>
+      <div class="stage-bottom">
+        <div class="gesture-note"><svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m8 11 1-7c.3-2 3-2 3 0v6l3-1 5 4-2 8H9l-5-7c-1-2 1-3 2-2l3 3" />
+          </svg>拖曳探索視角<span aria-hidden="true"> · </span>點擊色塊轉動</div>
+        <div class="key-hints">
+          <span><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd>轉層</span><span><kbd>Shift</kbd>反向</span><span><kbd>R</kbd>打亂</span><span><kbd>Space</kbd>復原</span>
+        </div>
+      </div>
+    </section>
+    <aside class="console" aria-label="魔方控制台">
+      <div class="console-heading">
+        <h2>實驗控制台</h2><span class="status" id="status" data-mode="solved">已復原</span>
+      </div>
+      <div class="metrics">
+        <div>
+          <div class="count" id="move-count">000</div>
+          <div class="count-label">轉動步數 <span class="section-label">/ MOVES</span></div>
+        </div>
+        <div class="queue-info">
+          <div class="queue-value" id="queue-count">00</div>
+          <div class="section-label">待執行 / QUEUE</div>
+        </div>
+      </div>
+      <div class="primary-actions">
+        <button class="action primary" id="scramble"><svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 7h3c5 0 6 10 11 10h4m-4-4 4 4-4 4M3 17h3c2 0 3-2 4-4m4-2c1-2 2-4 4-4h3m-4-4 4 4-4 4" />
+          </svg>隨機打亂<kbd>R</kbd></button>
+        <button class="action" id="reset"><svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" />
+          </svg>瞬時復原</button>
+      </div>
+      <section class="control-section" aria-labelledby="face-title">
+        <div class="section-head">
+          <h3 id="face-title">面向控制 <span class="section-label">/ ROTATE</span></h3><span class="direction"
+            id="direction">↻ CW · 90°</span>
+        </div>
+        <div class="face-grid" id="face-controls">
+          <button class="face-button" data-face="U" style="--color:#f2f0df" aria-label="轉動上面 U，方向鍵上"><span
+              class="swatch"></span><span><b class="face-letter">U</b><span class="face-name">上面</span></span><span
+              class="face-shortcut">↑</span></button>
+          <button class="face-button" data-face="D" style="--color:#f4c844" aria-label="轉動下面 D，方向鍵下"><span
+              class="swatch"></span><span><b class="face-letter">D</b><span class="face-name">下面</span></span><span
+              class="face-shortcut">↓</span></button>
+          <button class="face-button" data-face="F" style="--color:#369477" aria-label="轉動前面 F，F 鍵"><span
+              class="swatch"></span><span><b class="face-letter">F</b><span class="face-name">前面</span></span><span
+              class="face-shortcut">F</span></button>
+          <button class="face-button" data-face="L" style="--color:#ed853f" aria-label="轉動左面 L，方向鍵左"><span
+              class="swatch"></span><span><b class="face-letter">L</b><span class="face-name">左面</span></span><span
+              class="face-shortcut">←</span></button>
+          <button class="face-button" data-face="R" style="--color:#d94e41" aria-label="轉動右面 R，方向鍵右"><span
+              class="swatch"></span><span><b class="face-letter">R</b><span class="face-name">右面</span></span><span
+              class="face-shortcut">→</span></button>
+          <button class="face-button" data-face="B" style="--color:#477fbd" aria-label="轉動後面 B，B 鍵"><span
+              class="swatch"></span><span><b class="face-letter">B</b><span class="face-name">後面</span></span><span
+              class="face-shortcut">B</span></button>
+        </div>
+        <div class="reverse-switch"><button class="reverse-button" id="reverse" aria-pressed="false"><span
+              class="switch-track" aria-hidden="true"></span>反向旋轉</button><span class="shift-note">或按住 Shift</span>
+        </div>
+        <label class="speed-row" for="speed">轉動節奏<input id="speed" type="range" min="160" max="600" value="340"
+            step="20" aria-label="每次轉動毫秒數"><output id="speed-value" for="speed">340ms</output></label>
+      </section>
+      <section class="control-section" aria-labelledby="history-title">
+        <div class="section-head history-head">
+          <h3 id="history-title">轉動軌跡 <span class="section-label">/ HISTORY</span></h3><span>最近 18 步</span>
+        </div>
+        <div class="history" id="history"></div>
+      </section>
+      <div class="console-note"><span>↳</span><span id="activity">從任意一面開始，探索你的第一步。<br>打亂會執行 20 步隨機轉動。</span></div>
+      <div class="sr-only" id="announcement" role="status" aria-live="polite" aria-atomic="true"></div>
+    </aside>
+  </main>
+  <footer class="footer">
+    <div class="footer-left"><span>BUILT WITH CSS 3D</span><span>27 CUBIES · 54 STICKERS</span></div><span
+      class="footer-right">NO TEXTURES. JUST PERSPECTIVE.</span>
+  </footer>
+  <script>
+    'use strict';
+    /* 函數式核心：資料與 DOM 分離。所有數學運算及 reducer 都是純函數；
+       render / animate / event 函數集中處理副作用，不修改模型內的陣列與矩陣。
+       數學座標為右手系 +Y 向上；CSS 座標以 S = diag(1,-1,1) 轉換。 */
+    const IDENTITY = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
+    const PITCH = 83;
+    const FACES = {
+      U: {
+        axis: 1,
+        layer: 1,
+        normal: [0, 1, 0],
+        color: "#f2f0df",
+        css: "rotateX(90deg)",
+        name: "上面",
+      },
+      D: {
+        axis: 1,
+        layer: -1,
+        normal: [0, -1, 0],
+        color: "#f4c844",
+        css: "rotateX(-90deg)",
+        name: "下面",
+      },
+      L: {
+        axis: 0,
+        layer: -1,
+        normal: [-1, 0, 0],
+        color: "#ed853f",
+        css: "rotateY(-90deg)",
+        name: "左面",
+      },
+      R: {
+        axis: 0,
+        layer: 1,
+        normal: [1, 0, 0],
+        color: "#d94e41",
+        css: "rotateY(90deg)",
+        name: "右面",
+      },
+      F: {
+        axis: 2,
+        layer: 1,
+        normal: [0, 0, 1],
+        color: "#369477",
+        css: "rotateY(0deg)",
+        name: "前面",
+      },
+      B: {
+        axis: 2,
+        layer: -1,
+        normal: [0, 0, -1],
+        color: "#477fbd",
+        css: "rotateY(180deg)",
+        name: "後面",
+      },
+    };
+    const FACE_KEYS = Object.keys(FACES);
+    const KEY_FACES = {
+      ArrowUp: "U",
+      ArrowDown: "D",
+      ArrowLeft: "L",
+      ArrowRight: "R",
+      u: "U",
+      d: "D",
+      l: "L",
+      f: "F",
+      b: "B",
+    };
+    const nodes = {};
+    const cubieNodes = new Map();
+    const faceNodes = [];
+    let state = createInitialState();
+    let camera = { x: -27, y: -35 };
+    let gesture = null;
+    let reverseEnabled = false;
+    let shiftHeld = false;
+    let animation = null;
+    let animationFrame = 0;
+    let finishTimer = 0;
+    let animationEpoch = 0;
+
+    /** 純函數：計算兩個三維向量的內積。 */
+    function dot(a, b) {
+      return a.reduce(
+        /** 累加各軸乘積。 */
+        (sum, value, index) => sum + value * b[index],
+        0,
+      );
+    }
+    /** 純函數：把矩陣作用到向量，返回新的向量。 */
+    function transformVector(matrix, vector) {
+      return matrix.map(
+        /** 計算每一列與向量的內積。 */
+        (row) => dot(row, vector)
+      );
+    }
+    /** 純函數：計算 3×3 矩陣乘積，保持整數朝向不累積浮點誤差。 */
+    function multiplyMatrices(a, b) {
+      return a.map(
+        /** 建立乘積的每一列。 */
+        (row) =>
+          b[0].map(
+            /** 建立該列的每一個元素。 */
+            (_, column) =>
+              dot(
+                row,
+                b.map(
+                  /** 取出右矩陣的一欄。 */
+                  (line) => line[column]
+                ),
+              ),
+          ),
+      );
+    }
+    /** 純函數：依旋轉軸與正負四分之一圈產生精確旋轉矩陣。 */
+    function quarterMatrix(axis, sign) {
+      if (axis === 0)
+        return [
+          [1, 0, 0],
+          [0, 0, -sign],
+          [0, sign, 0],
+        ];
+      if (axis === 1)
+        return [
+          [0, 0, sign],
+          [0, 1, 0],
+          [-sign, 0, 0],
+        ];
+      return [
+        [0, -sign, 0],
+        [sign, 0, 0],
+        [0, 0, 1],
+      ];
+    }
+    /** 純函數：產生動畫中任意角度的連續旋轉矩陣，僅用於照明。 */
+    function continuousMatrix(axis, angle) {
+      const c = Math.cos(angle),
+        s = Math.sin(angle);
+      if (axis === 0)
+        return [
+          [1, 0, 0],
+          [0, c, -s],
+          [0, s, c],
+        ];
+      if (axis === 1)
+        return [
+          [c, 0, s],
+          [0, 1, 0],
+          [-s, 0, c],
+        ];
+      return [
+        [c, -s, 0],
+        [s, c, 0],
+        [0, 0, 1],
+      ];
+    }
+    /** 純函數：建立單個小塊的初始座標、朝向與外部貼紙資料。 */
+    function createCubie(index) {
+      const position = [
+        Math.floor(index / 9) - 1,
+        (Math.floor(index / 3) % 3) - 1,
+        (index % 3) - 1,
+      ];
+      const stickers = FACE_KEYS.filter(
+        /** 只在原始外表面放置貼紙。 */
+        (key) =>
+          position[FACES[key].axis] === FACES[key].layer,
+      );
+      return { id: index, position, orientation: IDENTITY, stickers };
+    }
+    /** 純函數：建立完整且已復原的初始模型。 */
+    function createInitialState() {
+      return {
+        cubies: Array.from(
+          { length: 27 },
+          /** 每個索引對應唯一小塊。 */
+          (_, index) => createCubie(index),
+        ),
+        moves: 0,
+        history: [],
+        queue: [],
+        current: null,
+      };
+    }
+    /** 純函數：把面名與反向設定轉換為數學旋轉指令；順時針以面外側視角定義。 */
+    function createMove(face, inverse = false, source = "manual") {
+      const definition = FACES[face];
+      return {
+        face,
+        axis: definition.axis,
+        layer: definition.layer,
+        sign: -definition.layer * (inverse ? -1 : 1),
+        inverse,
+        source,
+      };
+    }
+    /** 純函數：判斷小塊是否屬於指定轉層。 */
+    function belongsToLayer(cubie, move) {
+      return cubie.position[move.axis] === move.layer;
+    }
+    /** 純函數：旋轉指定層中的單個小塊，返回新座標與新朝向。 */
+    function rotateCubie(cubie, move) {
+      if (!belongsToLayer(cubie, move)) return cubie;
+      const rotation = quarterMatrix(move.axis, move.sign);
+      return {
+        ...cubie,
+        position: transformVector(rotation, cubie.position),
+        orientation: multiplyMatrices(rotation, cubie.orientation),
+      };
+    }
+    /** 純函數：生成標準轉動記號，撇號代表逆時針。 */
+    function moveNotation(move) {
+      return move.face + (move.inverse ? "′" : "");
+    }
+    /** 純函數：統一處理隊列、轉動提交與復原，不產生 DOM 或計時器副作用。 */
+    function reduceState(previous, action) {
+      switch (action.type) {
+        case "QUEUE":
+          return { ...previous, queue: [...previous.queue, ...action.moves] };
+        case "START":
+          return {
+            ...previous,
+            current: previous.queue[0],
+            queue: previous.queue.slice(1),
+          };
+        case "FINISH":
+          return {
+            ...previous,
+            cubies: previous.cubies.map(
+              /** 提交當前轉層的精確整數狀態。 */
+              (cubie) =>
+                rotateCubie(cubie, previous.current),
+            ),
+            moves: previous.moves + 1,
+            history: [...previous.history, moveNotation(previous.current)].slice(
+              -18,
+            ),
+            current: null,
+          };
+        case "RESET":
+          return createInitialState();
+        default:
+          return previous;
+      }
+    }
+    /** 純函數：逐一比較貼紙的世界法線，判斷六面是否復原；不誤判中心塊自轉。 */
+    function isSolved(cubies) {
+      return cubies.every(
+        /** 每個小塊的外部貼紙都必須面向原本的世界面。 */
+        (cubie) =>
+          cubie.stickers.every(
+            /** 比較貼紙法線，不要求無意義的中心塊朝向完全一致。 */
+            (key) =>
+              dot(
+                transformVector(cubie.orientation, FACES[key].normal),
+                FACES[key].normal,
+              ) === 1,
+          ),
+      );
+    }
+    /** 純函數：以 S·O·S 轉換朝向，並按 CSS column-major 順序產生 matrix3d。 */
+    function cubieTransform(cubie) {
+      const o = cubie.orientation,
+        p = cubie.position,
+        s = [1, -1, 1];
+      return `matrix3d(${[o[0][0], -o[1][0], o[2][0], 0, -o[0][1], o[1][1], -o[2][1], 0, o[0][2], -o[1][2], o[2][2], 0, ...p.map(
+        /** 座標由數學空間轉為 CSS 空間。 */
+        (value, index) => value * s[index] * PITCH
+      ), 1].join(",")})`;
+    }
+    /** 純函數：建立與 matrix3d 同構的外層 rotate3d，讓位置和朝向同時走圓弧。 */
+    function rotationPrefix(move, progress) {
+      const axis = [0, 1, 2].map(
+        /** 反射 Y 軸後的旋轉軸；反射造成的角度反號在下行處理。 */
+        (index) =>
+          index === move.axis ? (index === 1 ? -1 : 1) : 0,
+      );
+      return `rotate3d(${axis.join(",")},${-move.sign * 90 * progress}deg) `;
+    }
+    /** 純函數：計算 cubic-bezier(.4,0,.2,1) 的進度，讓光影與 CSS 過渡同步。 */
+    function easedProgress(progress) {
+      let low = 0,
+        high = 1;
+      for (let i = 0; i < 16; i++) {
+        const t = (low + high) / 2,
+          x =
+            3 * (1 - t) * (1 - t) * t * 0.4 + 3 * (1 - t) * t * t * 0.2 + t * t * t;
+        if (x < progress) low = t;
+        else high = t;
+      }
+      const t = (low + high) / 2;
+      return 3 * (1 - t) * t * t + t * t * t;
+    }
+    /** 純函數：把數學世界法線轉入相機空間，計算固定光源造成的陰影強度。 */
+    function faceShade(normal, view) {
+      const cssNormal = [normal[0], -normal[1], normal[2]];
+      const afterY = transformVector(
+        continuousMatrix(1, (view.y * Math.PI) / 180),
+        cssNormal,
+      );
+      const screenNormal = transformVector(
+        continuousMatrix(0, (view.x * Math.PI) / 180),
+        afterY,
+      );
+      const brightness = Math.max(0, dot(screenNormal, [-0.38, -0.62, 0.686]));
+      return 0.035 + (1 - brightness) * 0.4;
+    }
+    /** 純函數：建立 20 步打亂，避免連續同軸造成立即抵消；亂數以參數注入。 */
+    function createScramble(random, previousFace = null) {
+      /** 遞迴累積 20 步打亂指令，每次返回新陣列而不修改既有步驟。 */
+      const build = (moves, last) => {
+        if (moves.length === 20) return moves;
+        const choices = FACE_KEYS.filter(
+          /** 相鄰步驟使用不同軸。 */
+          (key) =>
+            last === null || FACES[key].axis !== FACES[last].axis,
+        );
+        const face = choices[Math.floor(random() * choices.length)];
+        return build(
+          [...moves, createMove(face, random() < 0.5, "scramble")],
+          face,
+        );
+      };
+      return build([], previousFace);
+    }
+    /** 副作用：保存頁面元素引用，避免每一幀重複查詢。 */
+    function collectNodes() {
+      [
+        "viewport",
+        "scene",
+        "view",
+        "cube",
+        "status",
+        "move-count",
+        "queue-count",
+        "history",
+        "activity",
+        "direction",
+        "reverse",
+        "scramble",
+        "reset",
+        "view-reset",
+        "face-controls",
+        "speed",
+        "speed-value",
+        "announcement",
+      ].forEach(
+        /** 以 id 建立節點索引。 */
+        (id) => {
+          nodes[id] = document.getElementById(id);
+        },
+      );
+    }
+    /** 副作用：建立小塊上的一張黑色面板及其可選彩色貼紙。 */
+    function mountFace(cubie, key, parent) {
+      const definition = FACES[key],
+        element = document.createElement("div");
+      element.className = "face";
+      element.style.transform = definition.css + " translateZ(39.5px)";
+      if (cubie.stickers.includes(key)) {
+        const sticker = document.createElement("div");
+        sticker.className = "sticker";
+        sticker.style.setProperty("--color", definition.color);
+        sticker.dataset.cubie = cubie.id;
+        sticker.dataset.localFace = key;
+        sticker.title = definition.name + "貼紙 · 點擊轉動目前所在面";
+        if (key === "U" && cubie.stickers.length === 1) {
+          const mark = document.createElement("span");
+          mark.className = "center-mark";
+          mark.textContent = "C / L";
+          sticker.append(mark);
+        }
+        element.append(sticker);
+      }
+      parent.append(element);
+      faceNodes.push({ element, cubieId: cubie.id, normal: definition.normal });
+    }
+    /** 副作用：一次建立 27 個小塊、162 個實體表面與 54 張外部貼紙。 */
+    function mountCube() {
+      state.cubies.forEach(
+        /** 每個小塊都是獨立的 preserve-3d 容器。 */
+        (cubie) => {
+          const element = document.createElement("div");
+          element.className = "cubie";
+          element.dataset.id = cubie.id;
+          FACE_KEYS.forEach(
+            /** 六張黑色面封住各個小塊。 */
+            (key) => mountFace(cubie, key, element),
+          );
+          cubieNodes.set(cubie.id, element);
+          nodes.cube.append(element);
+        },
+      );
+    }
+    /** 副作用：以精確矩陣更新所有小塊，清除已結束的動畫過渡。 */
+    function renderCubies() {
+      state.cubies.forEach(
+        /** 同一個同步任務內提交所有小塊，避免分幀撕裂。 */
+        (cubie) => {
+          const element = cubieNodes.get(cubie.id);
+          element.style.transition = "none";
+          element.style.transform = cubieTransform(cubie);
+        },
+      );
+    }
+    /** 副作用：依世界朝向、相機與轉層進度，更新每個面板的照明。 */
+    function renderLighting(progress = 0) {
+      const rotation = state.current
+        ? continuousMatrix(
+            state.current.axis,
+            ((state.current.sign * Math.PI) / 2) * progress,
+          )
+        : null;
+      faceNodes.forEach(
+        /** 逐面計算光照，黑色切面也參與照明。 */
+        (face) => {
+          const cubie = state.cubies[face.cubieId];
+          const normal = transformVector(cubie.orientation, face.normal);
+          const worldNormal =
+            rotation && belongsToLayer(cubie, state.current)
+              ? transformVector(rotation, normal)
+              : normal;
+          face.element.style.setProperty(
+            "--shade",
+            faceShade(worldNormal, camera).toFixed(3),
+          );
+        },
+      );
+    }
+    /** 副作用：繪製近期歷史，使用文字節點防止 HTML 插入。 */
+    function renderHistory() {
+      nodes.history.replaceChildren();
+      if (!state.history.length) {
+        const empty = document.createElement("div");
+        empty.className = "history-empty";
+        empty.textContent = "每一次轉動，都留下軌跡。";
+        const hint = document.createElement("span");
+        hint.textContent = "YOUR NEXT MOVE STARTS HERE";
+        empty.append(hint);
+        nodes.history.append(empty);
+        return;
+      }
+      state.history.forEach(
+        /** 步序由左到右，最新的一步位於末端。 */
+        (notation, index) => {
+          const token = document.createElement("span");
+          token.className = "history-token";
+          token.textContent = notation;
+          token.title =
+            "第 " + (state.moves - state.history.length + index + 1) + " 步";
+          nodes.history.append(token);
+        },
+      );
+    }
+    /** 副作用：把模型狀態同步至步數、隊列、徽章、按鈕和歷史。 */
+    function renderConsole() {
+      const solved = isSolved(state.cubies),
+        busy = Boolean(state.current);
+      nodes["move-count"].textContent = String(state.moves).padStart(3, "0");
+      nodes["queue-count"].textContent = String(state.queue.length).padStart(
+        2,
+        "0",
+      );
+      nodes.status.dataset.mode = busy ? "turning" : solved ? "solved" : "mixed";
+      nodes.status.textContent = busy ? "轉動中" : solved ? "已復原" : "探索中";
+      nodes["face-controls"]
+        .querySelectorAll("button")
+        .forEach(
+          /** 高亮正在執行的面。 */
+          (button) =>
+            button.classList.toggle(
+              "active",
+              busy && button.dataset.face === state.current.face,
+            ),
+        );
+      if (busy)
+        nodes.activity.textContent =
+          (state.current.source === "scramble" ? "隨機打亂" : "正在轉動") +
+          " · " +
+          moveNotation(state.current) +
+          "　／　空格可立即復原";
+      else if (state.moves)
+        nodes.activity.textContent = solved
+          ? "六面歸位。新的可能，從下一步開始。"
+          : "繼續探索，或按空格瞬時回到起點。";
+      else
+        nodes.activity.textContent = "從任意一面開始。隨機打亂將執行 20 步轉動。";
+      renderHistory();
+    }
+    /** 副作用：更新相機角度與相應光照，不改變魔方數學座標。 */
+    function renderCamera() {
+      nodes.view.style.transform = `rotateX(${camera.x}deg) rotateY(${camera.y}deg)`;
+      renderLighting(animation ? currentAnimationProgress() : 0);
+    }
+    /** 副作用：依舞台可用寬高調整魔方比例，防止小螢幕裁切。 */
+    function resizeScene() {
+      const rect = nodes.viewport.getBoundingClientRect();
+      nodes.scene.style.setProperty(
+        "--cube-scale",
+        Math.min(1.35, rect.width / 425, rect.height / 370),
+      );
+    }
+    /** 副作用讀取：取得目前轉層的平滑進度，供即時照明使用。 */
+    function currentAnimationProgress() {
+      return animation
+        ? easedProgress(
+            Math.min(
+              1,
+              (performance.now() - animation.started) / animation.duration,
+            ),
+          )
+        : 0;
+    }
+    /** 副作用：逐幀更新轉層照明；小塊位置由 CSS transition 統一插值。 */
+    function tickLighting() {
+      if (!animation) return;
+      renderLighting(currentAnimationProgress());
+      animationFrame = requestAnimationFrame(tickLighting);
+    }
+    /** 副作用：提交一次轉層，失效動畫回呼無法覆寫復原後的狀態。 */
+    function finishMove(epoch) {
+      if (epoch !== animationEpoch || !animation) return;
+      clearTimeout(finishTimer);
+      cancelAnimationFrame(animationFrame);
+      animation = null;
+      state = reduceState(state, { type: "FINISH" });
+      renderCubies();
+      renderLighting();
+      renderConsole();
+      if (state.queue.length) startNextMove();
+      else
+        nodes.announcement.textContent =
+          "已完成 " +
+          state.moves +
+          " 步，" +
+          (isSolved(state.cubies) ? "魔方已復原" : "魔方尚未復原");
+    }
+    /** 副作用：啟動隊首轉層，以相同 rotate3d + matrix3d 列表讓九個小塊同步走圓弧。 */
+    function startNextMove() {
+      if (animation || !state.queue.length) return;
+      state = reduceState(state, { type: "START" });
+      const move = state.current,
+        epoch = ++animationEpoch;
+      const selected = state.cubies.filter(
+        /** 同層恰好選中九個獨立小塊。 */
+        (cubie) => belongsToLayer(cubie, move),
+      );
+      const duration = matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? 100
+        : Number(nodes.speed.value);
+      selected.forEach(
+        /** 為每個小塊設置相同函數形式的起始 transform。 */
+        (cubie) => {
+          const element = cubieNodes.get(cubie.id);
+          element.style.transition = "none";
+          element.style.transform = rotationPrefix(move, 0) + cubieTransform(cubie);
+        },
+      );
+      // 強制一次樣式結算；接下來九次寫入在同一幀內共同生效。
+      void nodes.cube.offsetWidth;
+      animation = { epoch, started: performance.now(), duration };
+      selected.forEach(
+        /** 共享軸、角度、時長與曲線，外層旋轉同時作用於位置及朝向。 */
+        (cubie) => {
+          const element = cubieNodes.get(cubie.id);
+          element.style.transition = `transform ${duration}ms cubic-bezier(.4,0,.2,1)`;
+          element.style.transform = rotationPrefix(move, 1) + cubieTransform(cubie);
+        },
+      );
+      finishTimer = setTimeout(
+        /** 以 epoch 隔離被中斷的舊動畫。 */
+        () => finishMove(epoch),
+        duration + 32,
+      );
+      tickLighting();
+      renderConsole();
+    }
+    /** 副作用：把新指令加入不可變隊列並嘗試執行。 */
+    function enqueueMoves(moves) {
+      state = reduceState(state, { type: "QUEUE", moves });
+      startNextMove();
+      renderConsole();
+    }
+    /** 副作用讀取：合併觸屏反向開關與實體 Shift 按鍵。 */
+    function isReverse(event) {
+      return reverseEnabled || shiftHeld || Boolean(event && event.shiftKey);
+    }
+    /** 副作用：為單次手動轉動建立指令。 */
+    function requestTurn(face, event) {
+      enqueueMoves([createMove(face, isReverse(event))]);
+    }
+    /** 副作用：生成並加入 20 步隨機打亂。 */
+    function scrambleCube() {
+      const last = state.queue.length
+        ? state.queue[state.queue.length - 1].face
+        : state.current
+          ? state.current.face
+          : null;
+      enqueueMoves(createScramble(Math.random, last));
+    }
+    /** 副作用：中斷動畫與整個隊列，原子式恢復初始模型。 */
+    function resetCube() {
+      ++animationEpoch;
+      clearTimeout(finishTimer);
+      cancelAnimationFrame(animationFrame);
+      animation = null;
+      gesture = null;
+      nodes.viewport.classList.remove("dragging");
+      state = reduceState(state, { type: "RESET" });
+      renderCubies();
+      renderLighting();
+      renderConsole();
+      nodes.announcement.textContent = "已中斷所有轉動並瞬時復原。";
+    }
+    /** 副作用：更新觸屏反向開關及方向提示。 */
+    function renderDirection() {
+      const reverse = isReverse();
+      nodes.reverse.setAttribute("aria-pressed", String(reverse));
+      nodes.direction.textContent = reverse ? "↺ CCW · −90°" : "↻ CW · 90°";
+    }
+    /** 事件：切換持續反向模式。 */
+    function toggleReverse() {
+      reverseEnabled = !reverseEnabled;
+      renderDirection();
+    }
+    /** 事件：恢復預設相機，不影響魔方進度。 */
+    function resetCamera() {
+      camera = { x: -27, y: -35 };
+      renderCamera();
+    }
+    /** 事件：顯示節奏滑桿的毫秒值。 */
+    function updateSpeed() {
+      nodes["speed-value"].value = nodes.speed.value + "ms";
+    }
+    /** 事件：將六面按鈕的點擊委派為轉動指令。 */
+    function handleFaceButton(event) {
+      const button = event.target.closest("[data-face]");
+      if (button) requestTurn(button.dataset.face, event);
+    }
+    /** 事件：記錄按下位置、原始相機和命中貼紙，尚不觸發任何轉層。 */
+    function handlePointerDown(event) {
+      if (!event.isPrimary || event.button !== 0 || gesture) return;
+      gesture = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        camera,
+        dragged: false,
+        sticker: animation ? null : event.target.closest(".sticker"),
+        epoch: animationEpoch,
+      };
+      nodes.viewport.setPointerCapture(event.pointerId);
+    }
+    /** 事件：以相對按下點的總位移鎖定拖曳，避免慢拖因單次位移過小而誤轉。 */
+    function handlePointerMove(event) {
+      if (!gesture || gesture.id !== event.pointerId) return;
+      const dx = event.clientX - gesture.x,
+        dy = event.clientY - gesture.y;
+      if (!gesture.dragged && Math.hypot(dx, dy) > 6)
+        gesture = { ...gesture, dragged: true };
+      if (!gesture.dragged) return;
+      nodes.viewport.classList.add("dragging");
+      camera = {
+        x: Math.max(-85, Math.min(85, gesture.camera.x - dy * 0.36)),
+        y: gesture.camera.y + dx * 0.36,
+      };
+      renderCamera();
+    }
+    /** 副作用：從貼紙的當前世界法線解析面名，避免轉動後仍使用原始面名。 */
+    function faceAtSticker(sticker) {
+      const cubie = state.cubies[Number(sticker.dataset.cubie)],
+        normal = transformVector(
+          cubie.orientation,
+          FACES[sticker.dataset.localFace].normal,
+        );
+      return FACE_KEYS.find(
+        /** 六個單位法線中恰有一個同向。 */
+        (key) =>
+          dot(normal, FACES[key].normal) === 1,
+      );
+    }
+    /** 事件：只將從未跨越拖曳閾值、且期間無轉層的輕點轉為一次面旋轉。 */
+    function handlePointerUp(event) {
+      if (!gesture || gesture.id !== event.pointerId) return;
+      handlePointerMove(event);
+      const completed = gesture;
+      gesture = null;
+      nodes.viewport.classList.remove("dragging");
+      if (nodes.viewport.hasPointerCapture(event.pointerId))
+        nodes.viewport.releasePointerCapture(event.pointerId);
+      if (
+        !completed.dragged &&
+        completed.sticker &&
+        !animation &&
+        completed.epoch === animationEpoch
+      )
+        requestTurn(faceAtSticker(completed.sticker), event);
+    }
+    /** 事件：取消觸控或失去捕捉時清理手勢，絕不轉動色塊。 */
+    function cancelGesture() {
+      gesture = null;
+      nodes.viewport.classList.remove("dragging");
+    }
+    /** 事件：處理快捷鍵，同時保留輸入元件與瀏覽器組合鍵的原本行為。 */
+    function handleKeyDown(event) {
+      if (event.key === "Shift") {
+        shiftHeld = true;
+        renderDirection();
+      }
+      if (
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey ||
+        event.target.closest('input,textarea,select,[contenteditable="true"]')
+      )
+        return;
+      const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+      if (key === " ") {
+        event.preventDefault();
+        if (!event.repeat) resetCube();
+        return;
+      }
+      if (key === "r") {
+        event.preventDefault();
+        if (!event.repeat) scrambleCube();
+        return;
+      }
+      const face = KEY_FACES[key];
+      if (face) {
+        event.preventDefault();
+        if (!event.repeat) requestTurn(face, event);
+      }
+    }
+    /** 事件：在釋放 Shift 時恢復按鈕所設定的方向。 */
+    function handleKeyUp(event) {
+      if (event.key === "Shift") {
+        shiftHeld = false;
+        renderDirection();
+      }
+    }
+    /** 事件：視窗失焦時釋放 Shift 與未完成手勢，防止卡住。 */
+    function handleBlur() {
+      shiftHeld = false;
+      renderDirection();
+      cancelGesture();
+    }
+    /** 副作用：集中註冊介面事件，讓核心數學保持獨立。 */
+    function bindEvents() {
+      nodes.scramble.addEventListener("click", scrambleCube);
+      nodes.reset.addEventListener("click", resetCube);
+      nodes["view-reset"].addEventListener("click", resetCamera);
+      nodes.reverse.addEventListener("click", toggleReverse);
+      nodes.speed.addEventListener("input", updateSpeed);
+      nodes["face-controls"].addEventListener("click", handleFaceButton);
+      nodes.viewport.addEventListener("pointerdown", handlePointerDown);
+      nodes.viewport.addEventListener("pointermove", handlePointerMove);
+      nodes.viewport.addEventListener("pointerup", handlePointerUp);
+      nodes.viewport.addEventListener("pointercancel", cancelGesture);
+      nodes.viewport.addEventListener("lostpointercapture", cancelGesture);
+      document.addEventListener("keydown", handleKeyDown);
+      document.addEventListener("keyup", handleKeyUp);
+      window.addEventListener("blur", handleBlur);
+      window.addEventListener("resize", resizeScene);
+      new ResizeObserver(resizeScene).observe(nodes.viewport);
+    }
+    /** 入口副作用：掛載實體、繪製初始狀態並啟用互動。 */
+    function initialize() {
+      // 收集控制台與舞台的 DOM 元素，供後續渲染及事件處理使用。
+      collectNodes();
+      // 建立 27 個小塊、各塊的六個黑色面板，以及 54 張外部彩色貼紙。
+      mountCube();
+      // 根據初始座標與朝向矩陣，將所有小塊放到已復原的位置。
+      renderCubies();
+      // 根據各面朝向、相機角度及固定光源，設定初始明暗效果。
+      renderLighting();
+      // 顯示初始步數、待執行隊列、復原徽章與轉動歷史。
+      renderConsole();
+      // 將反向開關與 Shift 狀態同步到旋轉方向提示。
+      renderDirection();
+      // 依舞台目前的寬高計算魔方縮放比例，避免超出可視範圍。
+      resizeScene();
+      // 註冊按鈕、滑鼠、觸控、鍵盤及舞台尺寸變化的事件處理。
+      bindEvents();
+    }
+    // 執行初始化流程，啟動魔方實驗室。
+    initialize();
+  </script>
+</body>
+
+</html>

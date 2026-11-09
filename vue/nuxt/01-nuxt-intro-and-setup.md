@@ -75,10 +75,10 @@ Nuxt 4 是目前 `create nuxt` 的預設版本，API 與 Nuxt 3 **大致相容**
 
 ### 4.1 Node.js 版本
 
-Nuxt 4 需要較新的 Node，建議直接用 **Node 22 LTS 以上**（與 Vue 課一致；現在的官方腳手架多半要求 `^22.18.0 || >=24.12.0`）。確認版本：
+Nuxt 4 需要較新的 Node，建議直接用 **Node 22 LTS 以上**（與 Vue 課一致；目前的 `create nuxt` 腳手架要求 `^22.21.0 || ^24.11.0 || >=26.0.0`）。確認版本：
 
 ```bash
-node -v   # 建議 v22.18 以上
+node -v   # 建議 v22.21 以上
 npm -v
 ```
 
@@ -109,9 +109,10 @@ npm create nuxt@latest my-nuxt-course
 它會問幾個問題，本課建議這樣選：
 
 ```text
-✔ Which package manager?         › npm      （擇一即可，本課用 npm）
-✔ Initialize git repository?     › Yes
-✔ Install any modules?           › （先都不裝，後面章節需要再裝）
+✔ Which template would you like to use?           › minimal  （預設、標示 recommended 的那個）
+✔ Which package manager would you like to use?    › npm      （擇一即可，本課用 npm）
+✔ Initialize git repository?                      › Yes
+✔ Would you like to browse and install modules?   › No       （先都不裝，後面章節需要再裝）
 ```
 
 > 也可以用底層 CLI：`npx nuxi@latest init my-nuxt-course`，效果一樣。
@@ -136,7 +137,7 @@ my-nuxt-course/
 ├─ app/                 ← 你的前端原始碼都放這裡（Nuxt 4 新結構）
 │  └─ app.vue           ← App 根元件（整個 App 的最外層）
 ├─ public/              ← 靜態檔案，原樣輸出（favicon、robots.txt…）
-├─ server/              ← Nitro 伺服器程式（API、middleware，第 8 章）
+├─ server/              ← Nitro 伺服器程式（API、middleware）；腳手架不會產生，第 8 章才自己建立
 ├─ nuxt.config.ts       ← Nuxt 設定檔（模組、routeRules、runtimeConfig…）
 ├─ package.json
 └─ tsconfig.json
@@ -185,7 +186,7 @@ npm run preview    # 本機預覽 build 後的結果
 
 - **Pages**：目前所有路由
 - **Components**：元件樹與來源
-- **Composables**：這頁用到哪些 composable
+- **Imports**：自動匯入了哪些函式（composable、utils…），以及哪些有被用到
 - **Server Routes**：`server/api` 端點，可直接在裡面打 API 測試
 
 > Nuxt DevTools 是學 Nuxt 最好的地圖。每學一個新概念，就到 DevTools 對應的分頁看它實際長怎樣。

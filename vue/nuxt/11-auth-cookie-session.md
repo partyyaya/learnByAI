@@ -89,12 +89,12 @@ npx prisma migrate dev --name add-user
 export default defineEventHandler(async (event) => {
   const { email, password, name } = await readBody(event)
   if (!email || !password) {
-    throw createError({ statusCode: 400, statusMessage: 'email 與密碼必填' })
+    throw createError({ status: 400, message: 'email 與密碼必填' })
   }
 
   const exists = await prisma.user.findUnique({ where: { email } })
   if (exists) {
-    throw createError({ statusCode: 409, statusMessage: 'email 已被註冊' })
+    throw createError({ status: 409, message: 'email 已被註冊' })
   }
 
   // 密碼雜湊後才存
@@ -120,7 +120,7 @@ export default defineEventHandler(async (event) => {
   const user = await prisma.user.findUnique({ where: { email } })
   // 帳號不存在或密碼錯，都回一樣的訊息（不要洩漏是哪個錯）
   if (!user || !(await verifyPassword(user.password, password))) {
-    throw createError({ statusCode: 401, statusMessage: '帳號或密碼錯誤' })
+    throw createError({ status: 401, message: '帳號或密碼錯誤' })
   }
 
   await setUserSession(event, {
@@ -130,14 +130,9 @@ export default defineEventHandler(async (event) => {
 })
 ```
 
-### 登出：`server/api/auth/logout.post.js`
+### 登出：不用自己寫 API
 
-```js
-export default defineEventHandler(async (event) => {
-  await clearUserSession(event)
-  return { ok: true }
-})
-```
+`nuxt-auth-utils` 內建了一支 `DELETE /api/_auth/session`，裡面呼叫的就是伺服器端的 `clearUserSession(event)`。前端呼叫 `useUserSession()` 的 `clear()`（下一節）就會打這支端點，把 session cookie 清掉。只有「在伺服器端順便登出」的情境（例如刪除帳號的 API 裡）才需要自己呼叫 `clearUserSession(event)`。
 
 > 重點：session 裡**只放非機密、必要的欄位**（id、名稱、email），**絕不放密碼雜湊**。cookie 會來回傳輸，放越少越好。
 
@@ -158,8 +153,7 @@ async function login(email, password) {
 }
 
 async function logout() {
-  await $fetch('/api/auth/logout', { method: 'POST' })
-  await clear()          // 清前端 session 狀態
+  await clear()          // 打內建的 DELETE /api/_auth/session 清掉 cookie，並清空前端狀態
   await navigateTo('/login')
 }
 </script>
@@ -170,7 +164,7 @@ async function logout() {
 </template>
 ```
 
-`useUserSession()` 回傳：`loggedIn`、`user`、`session`、`ready`、`fetch()`（重抓）、`clear()`（前端登出）。
+`useUserSession()` 回傳：`loggedIn`、`user`、`session`、`ready`、`fetch()`（重抓）、`clear()`（登出：清掉伺服器端的 session cookie，也清空前端狀態）。
 
 ---
 
@@ -208,12 +202,13 @@ export default defineEventHandler(async (event) => {
   const { user } = await requireUserSession(event) // 沒登入 → 直接 401
 
   const body = await readBody(event)
-  if (!body?.title) throw createError({ statusCode: 400, statusMessage: '標題必填' })
+  if (!body?.title) throw createError({ status: 400, message: '標題必填' })
 
   return await prisma.post.create({
     data: {
       title: body.title,
       content: body.content ?? '',
+      published: body.published === true, // 沒勾「立即發佈」就存成草稿
       authorId: user.id, // 記錄作者
     },
   })
@@ -229,17 +224,84 @@ export default defineEventHandler(async (event) => {
 export default defineEventHandler(async (event) => {
   const { user } = await requireUserSession(event)
   const id = Number(getRouterParam(event, 'id'))
+  if (!Number.isInteger(id)) throw createError({ status: 404, message: '找不到文章' })
 
   const post = await prisma.post.findUnique({ where: { id } })
-  if (!post) throw createError({ statusCode: 404, statusMessage: '找不到文章' })
+  if (!post) throw createError({ status: 404, message: '找不到文章' })
 
   // 授權檢查：不是作者就擋
   if (post.authorId !== user.id) {
-    throw createError({ statusCode: 403, statusMessage: '只能刪除自己的文章' })
+    throw createError({ status: 403, message: '只能刪除自己的文章' })
   }
 
   await prisma.post.delete({ where: { id } })
   return { ok: true }
+})
+```
+
+### 授權：只有作者能改
+
+第 10 章的 `[id].put.js` 只處理了「找不到」與欄位白名單，沒有任何登入／權限檢查，任何人都能改任何文章，要換成這一版：先登入、再確認是作者，最後才用欄位白名單更新（`authorId`、`id`、`createdAt` 一律不讓請求決定）：
+
+```js
+// server/api/posts/[id].put.js
+export default defineEventHandler(async (event) => {
+  const { user } = await requireUserSession(event)
+  const id = Number(getRouterParam(event, 'id'))
+  if (!Number.isInteger(id)) throw createError({ status: 404, message: '找不到文章' })
+
+  const post = await prisma.post.findUnique({ where: { id } })
+  if (!post) throw createError({ status: 404, message: '找不到文章' })
+  if (post.authorId !== user.id) {
+    throw createError({ status: 403, message: '只能修改自己的文章' })
+  }
+
+  // 欄位白名單：只更新允許改的欄位
+  const body = await readBody(event)
+  const data = {}
+  if (typeof body?.title === 'string') data.title = body.title
+  if (typeof body?.content === 'string') data.content = body.content
+  if (typeof body?.published === 'boolean') data.published = body.published
+  if (data.title === '') throw createError({ status: 400, message: '標題必填' })
+
+  return await prisma.post.update({ where: { id }, data })
+})
+```
+
+### 授權：草稿只有作者看得到
+
+第 10 章留下的兩個讀取端點也要補上：已發佈的文章大家都能看，**草稿只回給作者本人**。列表與單篇都要擋，只擋一支等於沒擋。這兩支是公開端點，沒登入也要能用，所以用 `getUserSession`（沒登入不會丟錯，只是拿不到 `user`），而不是 `requireUserSession`：
+
+```js
+// server/api/posts.get.js
+export default defineEventHandler(async (event) => {
+  const { user } = await getUserSession(event)
+  return await prisma.post.findMany({
+    // 已發佈 + （有登入時）自己的草稿
+    where: user ? { OR: [{ published: true }, { authorId: user.id }] } : { published: true },
+    orderBy: { createdAt: 'desc' },
+    include: { author: { select: { name: true, id: true } } },
+  })
+})
+```
+
+```js
+// server/api/posts/[id].get.js
+export default defineEventHandler(async (event) => {
+  const id = Number(getRouterParam(event, 'id'))
+  if (!Number.isInteger(id)) throw createError({ status: 404, message: '找不到文章' })
+
+  const post = await prisma.post.findUnique({ where: { id } })
+  if (!post) throw createError({ status: 404, message: '找不到文章' })
+
+  // 草稿：不是作者一律當作不存在（回 404 而非 403，不洩漏草稿存在）
+  if (!post.published) {
+    const { user } = await getUserSession(event)
+    if (!user || post.authorId !== user.id) {
+      throw createError({ status: 404, message: '找不到文章' })
+    }
+  }
+  return post
 })
 ```
 
@@ -255,7 +317,7 @@ export default defineEventHandler(async (event) => {
 <script setup>
 // 一個「像 ref 的 cookie」，對應瀏覽器的 theme cookie
 const theme = useCookie('theme', {
-  sameSite: 'lax',            // CSRF 緩解：跨站請求不會自動帶這個 cookie
+  sameSite: 'lax',            // 跨站的 POST／fetch 不會帶這個 cookie
   maxAge: 60 * 60 * 24 * 365, // 存一年（單位：秒）
   default: () => 'light',
 })
@@ -315,7 +377,7 @@ export default defineEventHandler(async (event) => {
   const { email, password, name } = await readValidatedBody(event, schema.parse)
 
   const exists = await prisma.user.findUnique({ where: { email } })
-  if (exists) throw createError({ statusCode: 409, statusMessage: 'email 已被註冊' })
+  if (exists) throw createError({ status: 409, message: 'email 已被註冊' })
 
   const hashed = await hashPassword(password)
   const user = await prisma.user.create({
@@ -348,17 +410,23 @@ z.string().trim().toLowerCase().email().safeParse('  Foo@X.com  ')
 
 （登入 API 同理，也要把 email 正規化為小寫再查，否則使用者用不同大小寫登入會查不到帳號。）
 
-**CSRF 一句話**：`nuxt-auth-utils` 的 session cookie 預設是 `SameSite=Lax`，這就是**主要的 CSRF 緩解**——跨站送過來的請求不會自動帶上你的 session cookie，惡意網站因此無法「借用你的登入狀態」偷打你的 API。但若情境是**跨站表單提交**或**第三方前端**（不同網域的 SPA 來打你的 API），`SameSite=Lax` 就不夠，要另外加 CSRF token 或搭配適當的 CORS 設定。一般同源部落格（本課情境）用預設即可。
+**CSRF 一句話**：`nuxt-auth-utils` 的 session cookie 預設是 `SameSite=Lax`，這就是**主要的 CSRF 緩解**——別的網站送來的 POST／PUT／DELETE（包括跨站表單送出）與 `fetch` 都不會帶上你的 session cookie，惡意網站因此無法「借用你的登入狀態」偷打會改資料的 API。它擋不住的有三種情況：
+
+- **跨站的頂層 GET 導覽**（點連結、`<form method="get">`）仍會帶 cookie，所以**不要用 GET 做會改資料的事**。
+- **同一個網域底下的其他子網域**（例如 `evil.example.com` 對 `blog.example.com`）算「同站」，SameSite 不會擋。
+- **你自己的第三方前端**（不同網域的 SPA 要帶登入狀態來打 API）得改成 `SameSite=None; Secure`，這時就要另外加 CSRF token 並設好 CORS。
+
+一般同源部落格（本課情境）用預設即可。
 
 ---
 
 ## 10. 本章小練習
 
 1. 安裝 `nuxt-auth-utils`、設 `NUXT_SESSION_PASSWORD`、加 `User` 模型並 migrate。
-2. 做註冊/登入/登出三支 API，用 DevTools 觀察 cookie（會看到一個 `httpOnly` 的 session cookie，且 JS 讀不到）。
+2. 做註冊、登入兩支 API 與登出鈕（`clear()`），用 DevTools 觀察 cookie（會看到一個 `httpOnly` 的 session cookie，且 JS 讀不到）。
 3. 前端做登入表單與頁首的登入狀態顯示。
-4. 用 `auth` 中介層保護 `/admin`，並用 `requireUserSession` 保護新增/刪除 API。
-5. 用兩個帳號測試「只能刪自己文章」，被擋時看到 403。
+4. 用 `auth` 中介層保護 `/admin`，並用 `requireUserSession` 保護新增／修改／刪除 API。
+5. 用兩個帳號測試「只能改、刪自己的文章，也看不到別人的草稿」，被擋時分別看到 403 與 404。
 
 ---
 
@@ -366,20 +434,13 @@ z.string().trim().toLowerCase().email().safeParse('  Foo@X.com  ')
 
 > 整合第 10 章 CRUD 與本章認證。先完成第 2、3 節（裝模組、加 User 模型、migrate），再建立以下檔案即可跑。
 
-### `server/api/auth/register.post.js`、`login.post.js`、`logout.post.js`
+### `server/api/auth/register.post.js`、`login.post.js`
 
-（同第 4 節，原樣建立三支檔案。）
+（同第 4 節，原樣建立兩支檔案。登出直接用前端的 `clear()`，不用另寫 API。）
 
-### `server/api/posts.get.js`（公開讀取，附作者名）
+### `server/api/posts.get.js`、`server/api/posts/[id].get.js`（已發佈公開、草稿只給作者）
 
-```js
-export default defineEventHandler(async () => {
-  return await prisma.post.findMany({
-    orderBy: { createdAt: 'desc' },
-    include: { author: { select: { name: true, id: true } } },
-  })
-})
-```
+（同第 7 節，原樣建立，取代第 10 章的版本。）
 
 ### `server/api/posts.post.js`（要登入）
 
@@ -387,13 +448,22 @@ export default defineEventHandler(async () => {
 export default defineEventHandler(async (event) => {
   const { user } = await requireUserSession(event)
   const body = await readBody(event)
-  if (!body?.title) throw createError({ statusCode: 400, statusMessage: '標題必填' })
+  if (!body?.title) throw createError({ status: 400, message: '標題必填' })
   setResponseStatus(event, 201)
   return await prisma.post.create({
-    data: { title: body.title, content: body.content ?? '', authorId: user.id },
+    data: {
+      title: body.title,
+      content: body.content ?? '',
+      published: body.published === true,
+      authorId: user.id,
+    },
   })
 })
 ```
+
+### `server/api/posts/[id].put.js`（要登入 + 只能改自己的）
+
+（同第 7 節，原樣建立，取代第 10 章第 5 節的版本；沒做過那支就直接新增。）
 
 ### `server/api/posts/[id].delete.js`（要登入 + 只能刪自己的）
 
@@ -401,9 +471,10 @@ export default defineEventHandler(async (event) => {
 export default defineEventHandler(async (event) => {
   const { user } = await requireUserSession(event)
   const id = Number(getRouterParam(event, 'id'))
+  if (!Number.isInteger(id)) throw createError({ status: 404, message: '找不到文章' })
   const post = await prisma.post.findUnique({ where: { id } })
-  if (!post) throw createError({ statusCode: 404, statusMessage: '找不到文章' })
-  if (post.authorId !== user.id) throw createError({ statusCode: 403, statusMessage: '只能刪自己的文章' })
+  if (!post) throw createError({ status: 404, message: '找不到文章' })
+  if (post.authorId !== user.id) throw createError({ status: 403, message: '只能刪自己的文章' })
   await prisma.post.delete({ where: { id } })
   return { ok: true }
 })
@@ -441,7 +512,7 @@ async function submit() {
     await refreshSession()
     await navigateTo(route.query.redirect || '/')
   } catch (e) {
-    err.value = e.data?.statusMessage || '失敗'
+    err.value = e.data?.message || '失敗'
   }
 }
 </script>
@@ -484,11 +555,15 @@ const { data: posts, refresh } = await useFetch('/api/posts')
 
 const title = ref('')
 const content = ref('')
+const published = ref(true)
 
 async function add() {
   if (!title.value) return
-  await $fetch('/api/posts', { method: 'POST', body: { title: title.value, content: content.value } })
-  title.value = ''; content.value = ''
+  await $fetch('/api/posts', {
+    method: 'POST',
+    body: { title: title.value, content: content.value, published: published.value },
+  })
+  title.value = ''; content.value = ''; published.value = true
   await refresh()
 }
 async function remove(id) {
@@ -496,11 +571,10 @@ async function remove(id) {
     await $fetch(`/api/posts/${id}`, { method: 'DELETE' })
     await refresh()
   } catch (e) {
-    alert(e.data?.statusMessage || '刪除失敗')
+    alert(e.data?.message || '刪除失敗')
   }
 }
 async function logout() {
-  await $fetch('/api/auth/logout', { method: 'POST' })
   await clear()
   await navigateTo('/login')
 }
@@ -516,16 +590,19 @@ async function logout() {
     <form class="form" @submit.prevent="add">
       <input v-model="title" placeholder="標題" />
       <input v-model="content" placeholder="內容" />
+      <label class="pub"><input v-model="published" type="checkbox" /> 立即發佈</label>
       <button type="submit">發表</button>
     </form>
 
     <article v-for="p in posts" :key="p.id" class="card">
       <div>
         <strong>{{ p.title }}</strong>
+        <small v-if="!p.published" class="draft">草稿</small>
         <p>{{ p.content }}</p>
         <small>作者：{{ p.author?.name || '未知' }}</small>
       </div>
-      <button v-if="p.authorId === user.id" class="del" @click="remove(p.id)">刪除</button>
+      <!-- 用 user?.id：登出時 clear() 先把 user 清成 null，頁面在導走前還會重繪一次 -->
+      <button v-if="p.authorId === user?.id" class="del" @click="remove(p.id)">刪除</button>
     </article>
   </main>
 </template>
@@ -537,9 +614,12 @@ async function logout() {
 .form { display: flex; gap: 8px; margin: 16px 0; }
 .form input { flex: 1; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; }
 .form button { padding: 8px 16px; border: none; border-radius: 8px; background: #00dc82; color: #062; font-weight: 600; cursor: pointer; }
+.pub { display: flex; align-items: center; gap: 4px; white-space: nowrap; font-size: 14px; }
+.form .pub input { flex: none; padding: 0; }
 .card { display: flex; justify-content: space-between; align-items: flex-start; background: #fff; border: 1px solid #eee; border-radius: 12px; padding: 12px 16px; margin-bottom: 10px; }
 .card p { margin: 4px 0; color: #6b7280; }
 .card small { color: #9ca3af; }
+.card .draft { margin-left: 6px; color: #b45309; }
 .del { border: none; background: #fee2e2; color: #b91c1c; border-radius: 8px; padding: 6px 12px; cursor: pointer; }
 </style>
 ```
@@ -549,7 +629,8 @@ async function logout() {
 - 沒登入開任何頁 → 被 `auth` 踢到 `/login`。
 - 註冊/登入後 → 進管理頁，DevTools 的 Application → Cookies 看到 `httpOnly` 的 session cookie（`document.cookie` 讀不到）。
 - 發文成功、列表顯示作者名；**只有自己的文章才出現「刪除」鈕**。
-- 用第二個帳號登入，試著用 DevTools 直接 `$fetch` 刪別人的文章 → 伺服器回 **403**（前端藏了鈕，後端也擋住）。
+- 不勾「立即發佈」→ 存成草稿，只有你自己的列表看得到。
+- 用第二個帳號登入：看不到第一個帳號的草稿（直接打 `/api/posts/<草稿 id>` 也是 **404**）；試著用 DevTools 直接 `$fetch` 刪別人的文章 → 伺服器回 **403**（前端藏了鈕，後端也擋住）。
 
 ---
 

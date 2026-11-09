@@ -4,7 +4,7 @@
    presets: [{ id, label, code }]
    code 執行時可用的變數(環境契約):
      ctx, canvas, W, H,
-     requestAnimationFrame / cancelAnimationFrame(已託管,重跑會自動停掉舊迴圈),
+     requestAnimationFrame / cancelAnimationFrame(已託管,重跑會自動停掉舊迴圈;callback 裡的錯誤會顯示在錯誤面板),
      sampleImage(≈220×150 彩色場景離屏 canvas,可當 drawImage 來源、可 getImageData),
      pixelArt(16×16 方塊像素離屏 canvas)
    ──────────────────────────────────────────────────────────────── */
@@ -52,9 +52,29 @@
   function stopAnim() { gen++; }
   function makeRAF() {
     return function (cb) {
-      const g = gen;
-      return window.requestAnimationFrame(function (t) { if (g === gen) cb(t); });
+      const g = gen, safe = guard(cb);
+      return window.requestAnimationFrame(function (t) { if (g === gen) safe(t); });
     };
+  }
+
+  // ── 錯誤回報:rAF、canvas 事件 callback 裡丟的錯不在 run() 的 try/catch 範圍內 ──
+  // 包一層,把錯誤送到錯誤面板(直接用 file:// 開啟時,全域 error 事件只拿得到 "Script error.")
+  function guard(fn) {
+    return function () {
+      try { return fn.apply(this, arguments); }
+      catch (e) { showError(e.message); throw e; }   // 再丟出去,DevTools 仍看得到完整堆疊
+    };
+  }
+  function guardListeners(cv) {
+    if (cv.__guarded) return;
+    cv.__guarded = true;
+    const wrapped = new WeakMap();   // 原函式 → 包過的函式,removeEventListener 才找得到同一個
+    const add = cv.addEventListener, remove = cv.removeEventListener;
+    cv.addEventListener = function (type, fn, opts) {
+      if (typeof fn === 'function' && !wrapped.has(fn)) wrapped.set(fn, guard(fn));
+      return add.call(this, type, wrapped.get(fn) || fn, opts);
+    };
+    cv.removeEventListener = function (type, fn, opts) { return remove.call(this, type, wrapped.get(fn) || fn, opts); };
   }
   const managedCAF = function (id) { return window.cancelAnimationFrame(id); };
 
@@ -105,7 +125,7 @@
   let canvasEl = byId('cv');
   byId('dims').textContent = W + '×' + H;
   byId('note').innerHTML = CH.note ||
-    '<b>提示:</b>動畫/互動範例直接照書上寫 <code>requestAnimationFrame</code>、<code>canvas.addEventListener</code> 即可;重新執行會自動停掉舊迴圈、清掉舊監聽器。';
+    '<b>提示:</b>動畫/互動範例直接照書上寫 <code>requestAnimationFrame</code>、<code>canvas.addEventListener</code> 即可;重新執行會自動停掉舊迴圈。勾選「執行前清空」時會換一張新 canvas,掛在 canvas 上的舊監聽器也一併丟掉(掛在 window/document 上的不會)。';
 
   const presets = CH.presets || [];
   presets.forEach((p, i) => {
@@ -158,6 +178,7 @@
     let cv;
     if (autoClear.checked) { computeSize(); cv = freshCanvas(); }
     else { stopAnim(); cv = canvasEl; }
+    guardListeners(cv);
     const ctx = cv.getContext('2d');
     try {
       const fn = new Function(
@@ -181,6 +202,13 @@
   byId('run').addEventListener('click', run);
   byId('resetCode').addEventListener('click', () => loadPreset(+presetSel.value));
   gridChk.addEventListener('change', () => canvasEl.classList.toggle('grid', gridChk.checked));
+
+  // 其他非同步錯誤(掛在 window/document 上的監聽器、Promise)由全域事件補接;面板已有訊息就不覆蓋
+  window.addEventListener('error', (e) => {
+    if (errBox.classList.contains('show')) return;
+    showError(e.message === 'Script error.' ? '執行時發生錯誤,詳見瀏覽器 DevTools 的 Console' : e.message);
+  });
+  window.addEventListener('unhandledrejection', (e) => showError(String((e.reason && e.reason.message) || e.reason)));
 
   // 視窗大小變動 → 依新畫布區重算尺寸並重跑(debounce 避免拖曳時狂觸發)
   let resizeT;

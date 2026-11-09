@@ -36,13 +36,14 @@
 > **[blog-demo/](./blog-demo/)** — Nuxt 4 + Nitro API + Prisma/SQLite + Cookie 認證打造的全端部落格。
 
 - 檔案式路由、SSR 資料抓取、動態 SEO、`httpOnly` session 登入、後台發文（只能刪自己的）、Nitro `server/api` + Prisma CRUD。
-- `npm install && npx prisma migrate dev && npm run dev` 即可跑起，不需另外的後端。
+- `npm install && cp .env.example .env && npx prisma migrate dev && npm run dev` 即可跑起，不需另外的後端（`.env` 不進版控，先從範本複製）。
 - 附一組可直接跑的測試（第 15 章）：`npm run test` 跑單元測試、`npm run test:e2e` 真的起一個 Nuxt 測 SSR 與 API 權限。
 - 每個功能都標註對應章節，邊操作邊對照學習。詳見 [blog-demo/README.md](./blog-demo/README.md)。
 
 ```bash
 cd blog-demo
 npm install
+cp .env.example .env    # .env 不進版控，先從範本複製
 npx prisma migrate dev --name init
 npm run dev
 ```

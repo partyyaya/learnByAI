@@ -43,18 +43,40 @@
 ```java
 package com.example.shop;
 
+import com.example.shop.config.ProfileGuard;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
-@EnableScheduling                 // ★ 沒有這個，@Scheduled 完全不會執行（也不會報錯）★
 public class ShopServiceApplication {
     public static void main(String[] args) {
-        SpringApplication.run(ShopServiceApplication.class, args);
+        SpringApplication app = new SpringApplication(ShopServiceApplication.class);
+        app.addListeners(new ProfileGuard());
+        var context = app.run(args);
+        if (context.getEnvironment().matchesProfiles("batch")) {
+            // Runner 成功返回後明確關閉 context；啟動／Runner 拋例外則由 JVM 以非零碼結束。
+            int exitCode = SpringApplication.exit(context, () -> 0);
+            System.exit(exitCode);
+        }
     }
 }
 ```
+
+```java
+package com.example.shop.config;
+
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Profile;
+import org.springframework.scheduling.annotation.EnableScheduling;
+
+@Configuration(proxyBeanMethods = false)
+@Profile("!batch")
+@EnableScheduling
+public class SchedulingActivationConfiguration { }
+```
+
+一次性 `batch` 模式不啟用註解排程，避免 CronJob 又啟動 API 服務裡的所有週期任務。
+第 03 章 `ProfileGuard` 的白名單已包含 `batch`；它要與 `prod` 等環境 profile 一起使用。
 
 > **「排程沒執行」的第一個檢查點就是這個註解。**
 > 它跟第 05 章那個「`@Cacheable` 沒作用因為忘了 `@EnableCaching`」是同一類問題——
@@ -242,17 +264,18 @@ public void bad(String arg) { }        // 啟動時報錯
 @Scheduled(fixedDelay = 5000)
 public String bad2() { return "..."; } // 回傳值沒人接
 
-// ❌ 不能是 private（AOP 限制，第 04 章）
+// 一般未代理 Bean 的 private 方法可由排程處理器反射呼叫；不是 AOP 攔截。
 @Scheduled(fixedDelay = 5000)
-private void bad3() { }
+private void privateTask() { }
 
 // ✅ 正確：public void，無參數
 @Scheduled(fixedDelay = 5000)
 public void good() { }
 ```
 
-> ⚠️ 而且 **`@Scheduled` 的 Bean 一定要是單例**。
-> 如果加了 `@Scope("prototype")`，Spring 只會為第一個實例註冊排程。
+> **建議排程 Bean 用單例、方法用 public**，便於檢查與代理整合，但這是設計建議。
+> `ScheduledAnnotationBeanPostProcessor` 會為每個建立出來的 prototype 實例註冊排程，
+> 可能造成多份重複任務；它不會只處理第一個。若 Bean 另有 AOP 代理，還要確認該方法可從代理呼叫。
 
 ---
 
@@ -379,10 +402,12 @@ public class SchedulingConfig {
         scheduler.setWaitForTasksToCompleteOnShutdown(true);
         scheduler.setAwaitTerminationSeconds(60);
 
-        // 任務被拒絕時記錄下來（預設是靜靜丟棄）
-        scheduler.setRejectedExecutionHandler((task, executor) ->
-                log.error("排程任務被拒絕執行，池已滿：activeCount={} queueSize={}",
-                        executor.getActiveCount(), executor.getQueue().size()));
+        // 自訂拒絕處理；預設為 AbortPolicy，會拋例外。此處也保留失敗訊號。
+        scheduler.setRejectedExecutionHandler((task, executor) -> {
+            log.error("排程任務被拒絕：activeCount={} queueSize={}",
+                    executor.getActiveCount(), executor.getQueue().size());
+            throw new java.util.concurrent.RejectedExecutionException("排程已拒絕任務");
+        });
 
         // 排程任務拋出的例外，預設只會 log，這裡加上更明確的處理
         scheduler.setErrorHandler(t ->
@@ -410,7 +435,9 @@ spring:
 ```
 
 虛擬執行緒**沒有池的概念**——每個任務一條，數量幾乎無上限。
-所以「一個任務卡住其他任務」的問題完全消失。
+但 `SimpleAsyncTaskScheduler` 的 **fixed-delay 任務仍在同一條排程執行緒執行**，
+一個 fixed-delay 卡住仍會阻塞其他 fixed-delay 任務；cron／fixed-rate 才會分派到各自的執行執行緒。
+另外，此開關只影響可套用的自動組態，不會把前面自行宣告的 `ThreadPoolTaskScheduler` Bean 換掉。
 
 > ⚠️ **但不是萬靈丹**（6.7 會詳談）：
 > 虛擬執行緒適合 **IO 密集**的任務。如果排程任務是 **CPU 密集**（大量計算、加解密），
@@ -418,6 +445,57 @@ spring:
 > 而且失去了「用池大小限制併發度」的保護。
 
 ### 每個排程任務都該有的三件事
+
+先定義共用的時間指標：**累計次數不是上次執行時間**。
+
+```java
+package com.example.shop.batch;
+
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.stereotype.Component;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+/** 每個固定任務名稱一份狀態；不要用日期、訂單 ID 等高基數值當標籤。 */
+@Component
+public class BatchMetrics {
+    private record State(long startedAt, AtomicLong lastSuccess) { }
+    private final Map<String, State> states = new ConcurrentHashMap<>();
+    private final MeterRegistry registry;
+    private final Clock clock;
+
+    public BatchMetrics(MeterRegistry registry, Clock clock) {
+        this.registry = registry;
+        this.clock = clock;
+    }
+
+    /** 在任務 Bean 的建構子呼叫，讓「一次都沒跑」也有可查詢的序列。 */
+    public void startMonitoring(String job) {
+        states.computeIfAbsent(job, name -> {
+            State state = new State(clock.instant().getEpochSecond(), new AtomicLong());
+            Gauge.builder("shop.batch.monitor.started", state, State::startedAt)
+                    .baseUnit("seconds").tag("batch_job", name).register(registry);
+            Gauge.builder("shop.batch.last.success", state.lastSuccess(), AtomicLong::get)
+                    .baseUnit("seconds").tag("batch_job", name).register(registry);
+            return state;
+        });
+    }
+
+    public void success(String job) { successAt(job, clock.instant()); }
+
+    /** 也可載入資料庫保存的最後成功時間，讓監控跨重啟延續。 */
+    public void successAt(String job, Instant instant) {
+        startMonitoring(job);
+        states.get(job).lastSuccess().accumulateAndGet(instant.getEpochSecond(), Math::max);
+    }
+}
+```
+
 
 ```java
 package com.example.shop.batch;
@@ -439,10 +517,14 @@ public class OverdueOrderCanceller {
 
     private final OrderCancelService cancelService;
     private final MeterRegistry registry;
+    private final BatchMetrics batchMetrics;
 
-    public OverdueOrderCanceller(OrderCancelService cancelService, MeterRegistry registry) {
+    public OverdueOrderCanceller(OrderCancelService cancelService, MeterRegistry registry,
+                                 BatchMetrics batchMetrics) {
         this.cancelService = cancelService;
         this.registry = registry;
+        this.batchMetrics = batchMetrics;
+        batchMetrics.startMonitoring("cancelOverdueOrders");
     }
 
     @Scheduled(fixedDelayString = "${shop.batch.cancel-overdue-interval:PT5M}")
@@ -458,6 +540,7 @@ public class OverdueOrderCanceller {
 
         try {
             cancelled = cancelService.cancelOrdersOverdueBy(java.time.Duration.ofMinutes(30));
+            batchMetrics.success("cancelOverdueOrders");
             log.info("逾期訂單清理完成，取消 {} 筆", cancelled);
 
         } catch (Exception e) {
@@ -468,11 +551,11 @@ public class OverdueOrderCanceller {
         } finally {
             // ③ 指標：讓「任務有沒有在跑」變成可監控的事
             sample.stop(Timer.builder("shop.batch.duration")
-                    .tag("job", "cancelOverdueOrders")
+                    .tag("batch_job", "cancelOverdueOrders")
                     .tag("outcome", outcome)
                     .register(registry));
             registry.counter("shop.batch.processed",
-                    "job", "cancelOverdueOrders").increment(cancelled);
+                    "batch_job", "cancelOverdueOrders").increment(cancelled);
 
             MDC.clear();          // ★ 排程執行緒也會被重複使用 ★
         }
@@ -483,23 +566,35 @@ public class OverdueOrderCanceller {
 **對應的告警規則**（第 05 章的延伸）：
 
 ```yaml
-# 排程任務超過 15 分鐘沒有執行 → 告警
+# 最後成功時間距今超過 15 分鐘；全新監控也給 15 分鐘寬限
 - alert: ScheduledJobNotRunning
   expr: |
-    time() - max(shop_batch_duration_seconds_count{job="cancelOverdueOrders"} > 0) by (job)
-    > 900
+    (time() - max by (application, batch_job) (shop_batch_last_success_seconds{batch_job="cancelOverdueOrders"}) > 900)
+    and on (application, batch_job)
+    (
+      (max by (application, batch_job) (shop_batch_last_success_seconds{batch_job="cancelOverdueOrders"}) > 0)
+      or on (application, batch_job)
+      (time() - min by (application, batch_job) (shop_batch_monitor_started_seconds{batch_job="cancelOverdueOrders"}) > 900)
+    )
   for: 5m
   annotations:
-    summary: "排程任務 {{ $labels.job }} 超過 15 分鐘沒有執行"
+    summary: "排程任務 {{ $labels.batch_job }} 超過 15 分鐘沒有成功執行"
 
-# 排程任務失敗
+# 連監控序列都沒有時另行告警，避免空向量被誤認為正常
+- alert: ScheduledJobMetricsMissing
+  expr: absent(shop_batch_last_success_seconds{application="shop-service",batch_job="cancelOverdueOrders"})
+  for: 15m
+
 - alert: ScheduledJobFailing
-  expr: rate(shop_batch_duration_seconds_count{outcome="FAILURE"}[10m]) > 0
+  expr: rate(shop_batch_duration_seconds_count{batch_job="cancelOverdueOrders",outcome="FAILURE"}[10m]) > 0
   for: 5m
 ```
 
 > **「排程沒跑」是最難發現的故障類型**，因為它沒有錯誤、沒有異常流量、沒有任何症狀。
 > **一定要用「上次成功執行時間」做告警**，不能只監控失敗。
+> `BatchMetrics` 用 `batch_job`，避免和 Prometheus scrape 的 `job` 標籤衝突。
+> 一般任務的記憶體狀態在重啟後重新給寬限；跨重啟的 SLA 應從持久化紀錄還原時間，後面的每日匯出會示範。
+> 多實例用 `max` 取最新成功，仍需另監控 scrape target 的 `up`。
 
 ### 檢視排程任務：Actuator
 
@@ -788,7 +883,7 @@ public class DailySettlement {
 > 只有一個的 `affected rows` 會是 1。
 >
 > **不主動釋放鎖**（而是靠過期）這個決定，等同於 ShedLock 的 `lockAtLeastFor`——
-> 用犧牲一點「即時性」換取「絕對不重複執行」。
+> 降低短時間內的重複執行，但不能保證恰好一次。任務超過鎖期限、手動入口繞過鎖等情況仍可能重複；業務必須冪等。
 
 ### 方案 D：K8s CronJob（把排程移出應用程式）
 
@@ -798,7 +893,7 @@ kind: CronJob
 metadata:
   name: shop-daily-settlement
 spec:
-  schedule: "0 18 * * *"            # ⚠️ K8s 用 UTC，18:00 UTC = 台灣 02:00
+  schedule: "0 2 * * *"             # 由下行時區解讀：台灣每天 02:00
   timeZone: "Asia/Taipei"           # K8s 1.27+ 支援，可以直接寫本地時間
   concurrencyPolicy: Forbid         # ★ 上一次還沒跑完就不要再開 ★
   successfulJobsHistoryLimit: 3
@@ -839,13 +934,24 @@ public class SettlementJobRunner implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         service.runSettlement();
-        // Runner 執行完，因為 profile 沒有 web，應用程式會自然結束
+        // 成功返回後由 6.2 的 main 關閉 context 並以 0 結束；例外向外拋讓 Job 記錄失敗。
     }
 }
 ```
 
+`src/main/resources/application-batch.yml`：
+
+```yaml
+spring:
+  main:
+    web-application-type: none
+```
+
+Profile 名稱本身不會停用 Web；必須加上上述設定及 6.2 的排程開關、退出流程。
+未指定 `timeZone` 時使用 controller 的時區，不能假設所有叢集都是 UTC。
+
 > **這個方案的優點**：排程由 K8s 管（有重試、有歷史紀錄、有 `concurrencyPolicy`），
-> 不會佔用 API Pod 的資源，而且天生就不會重複執行。
+> 不會佔用 API Pod 的資源，但仍可能重複建立 Job，任務本身必須冪等。
 > **缺點**：每次都要冷啟動 JVM（幾秒鐘），排程很密集時不適合。
 
 ---
@@ -918,13 +1024,13 @@ public class BadAsyncService {
     @Async
     public void bad3() { }
 
-    // ⚠️ 回傳 Future 以外的值：值永遠是 null 或 0（因為方法還沒執行完就回傳了）
+    // ❌ 回傳 void／Future 家族以外的型別：經過代理呼叫時會拋 IllegalArgumentException
     @Async
-    public String bad4() { return "hello"; }    // 呼叫端拿到 null
+    public String bad4() { return "hello"; }    // Invalid return type for async method
 }
 ```
 
-> **最後那一項特別陰險**：程式不會報錯，你就是拿到 `null`。
+> **最後那一項會在經過非同步代理呼叫時報錯**，不是默默回傳 null 或 0。
 > **`@Async` 方法的回傳型別只能是 `void`、`Future`、`CompletableFuture`。**
 
 ### ★ 例外處理：兩種情況完全不同 ★
@@ -1278,11 +1384,11 @@ public class ExecutorConfig {
 | 策略 | 行為 | 適用 |
 |---|---|---|
 | `AbortPolicy`（**JDK 預設**） | 拋 `RejectedExecutionException` | 呼叫端需要知道失敗 |
-| `CallerRunsPolicy`（**Spring 預設**） | **在呼叫端的執行緒執行** | 形成天然的背壓（back pressure） |
+| `CallerRunsPolicy`（需明確設定） | **在呼叫端的執行緒執行** | 形成天然的背壓（back pressure） |
 | `DiscardPolicy` | 靜靜丟棄 | ❌ 幾乎不該用 |
 | `DiscardOldestPolicy` | 丟棄佇列最舊的 | 只要最新資料（例如即時報價） |
 
-> **`CallerRunsPolicy` 是 Spring 的預設值，而且通常是好選擇**：
+> **Spring 的預設值也是 `AbortPolicy`；若明確改成 `CallerRunsPolicy`，會有以下背壓效果**：
 > 佇列滿時，任務會在「提交任務的執行緒」執行——也就是 Tomcat 的請求執行緒。
 > 這會讓 API 變慢，**而變慢會自然地讓上游減少請求速率**。這叫背壓。
 >
@@ -1359,31 +1465,32 @@ public class MultiExecutorConfig {
 
 Spring Boot 會自動為 `ThreadPoolTaskExecutor` 註冊 Micrometer 指標
 （前提是它是一個 Bean 且有 `MeterRegistry`）：
+`name` 標籤取 Bean 名稱，不是執行緒名稱前綴；拒絕次數需要前面的自訂 handler 記錄。
 
 ```bash
 $ curl -s localhost:8081/actuator/prometheus | grep executor_
-executor_active_threads{name="notify-",...} 6.0
-executor_pool_size_threads{name="notify-",...} 8.0
-executor_pool_max_threads{name="notify-",...} 32.0
-executor_queued_tasks{name="notify-",...} 143.0        ← ★ 最重要的一個 ★
-executor_queue_remaining_tasks{name="notify-",...} 357.0
-executor_completed_tasks_total{name="notify-",...} 92831.0
-executor_rejected_tasks_total{name="notify-",...} 0.0  ← ★ 第二重要 ★
+executor_active_threads{name="notificationExecutor",...} 6.0
+executor_pool_size_threads{name="notificationExecutor",...} 8.0
+executor_pool_max_threads{name="notificationExecutor",...} 32.0
+executor_queued_tasks{name="notificationExecutor",...} 143.0        ← ★ 最重要的一個 ★
+executor_queue_remaining_tasks{name="notificationExecutor",...} 357.0
+executor_completed_tasks_total{name="notificationExecutor",...} 92831.0
+shop_async_rejected_total{executor="notification",...} 0.0  ← 自訂拒絕 handler 的 Counter，非標準 executor 指標
 ```
 
 ```yaml
 # 告警規則
 - alert: AsyncQueueBacklog
   expr: |
-    executor_queued_tasks{name="notify-"}
-    / (executor_queued_tasks{name="notify-"} + executor_queue_remaining_tasks{name="notify-"})
+    executor_queued_tasks{name="notificationExecutor"}
+    / (executor_queued_tasks{name="notificationExecutor"} + executor_queue_remaining_tasks{name="notificationExecutor"})
     > 0.7
   for: 5m
   annotations:
     summary: "通知佇列使用率超過 70%，任務可能開始延遲"
 
 - alert: AsyncTaskRejected
-  expr: rate(executor_rejected_tasks_total[5m]) > 0
+  expr: rate(shop_async_rejected_total{executor="notification"}[5m]) > 0
   for: 2m
   labels: { severity: critical }
   annotations:
@@ -2552,7 +2659,7 @@ class TransactionalEventTest {
 
 ### ⑥ `@Async` 回傳非 Future 的值
 
-呼叫端拿到 `null`，而且不會報錯。
+代理呼叫時會拋 `IllegalArgumentException`；改用 `void` 或 `Future` 家族。
 
 ### ⑦ `@Async` void 方法的例外消失
 
@@ -2614,33 +2721,26 @@ public class Jobs {
 
 **關鍵前提：預設池只有 1 條執行緒，所以三個任務要搶同一條。**
 
-假設 0 秒同時觸發，`a` 先搶到（實際順序不保證）：
+為了給出可比較的時間軸，假設 `a`、`b` 初次在 t=0 到期、`a` 先跑，
+`c` 的首個 cron 觸發點在 t=60；忽略註冊時的微小偏差：
 
 ```
-t=0    a 開始（執行 25 秒）        ← 佔用唯一的執行緒
-       b、c 想執行但要排隊
-t=25   a 結束，b 開始（執行 25 秒）
-       a 想在 t=10、20 執行（fixedRate），但都排隊
-t=50   b 結束，a 開始（補跑積欠的）
-t=75   a 結束，c 開始（積欠了 t=60 那次）
-t=75   c 瞬間結束，a 或 b 開始
-t=90   統計時點
+t=0    a 開始，到 t=25 結束
+t=25   b 的到期時間仍是 0，先執行，到 t=50 結束；下一次 b 在 t=60 到期
+t=50   a 原定 t=10 的那次開始，到 t=75 結束
+t=75   a 下一個原定時間是 t=20，比 b、c 的 t=60 更早，繼續執行 a
+t=90   第三次 a 還在執行；b、c 仍等待
 ```
 
-大約的執行次數：
-
-| 方法 | 次數 | 說明 |
-|---|---|---|
-| `a` | 2～3 次 | `fixedRate = 10s` 但每次要 25s，**永遠追不上**，會不斷累積積欠 |
-| `b` | 1～2 次 | `fixedDelay = 10s`，每輪 25 + 10 = 35 秒，正常應該 2 次，但被 `a` 卡住 |
-| `c` | 0～1 次 | 應該每分鐘一次（t=0、60），但幾乎沒機會執行 |
+在**這組假設**的前 90 秒內：`a` 開始 3 次、完成 2 次，`b` 開始並完成 1 次，`c` 尚未開始。
+實際次數取決於啟動的牆鐘時刻、註冊順序與耗時，不能只靠註解保證固定輸出。
 
 **重點結論：**
 
-1. **`a` 是災難**：`fixedRate` 小於執行時間，會無止盡累積積欠任務。
-   即使有足夠的執行緒，也會變成「永遠有多個 `a` 在跑」。
-2. **`c` 幾乎不執行**：一個「每分鐘要做的事」實際上可能一小時都跑不到一次。
-3. **完全沒有錯誤訊息**——這就是 6.3 那個真實案例的成因。
+1. 在 `ThreadPoolTaskScheduler` 中，同一個 fixed-rate 任務不會因為池變大就與自己重疊。
+   它會延遲並接續補跑；不是每個錯過的時間點都建立一份新的 queue 任務，但原定時間與實際時間會越落越遠。
+2. 其他任務仍可能被延遲；增加池大小可讓不同任務並行，不能讓超慢的 `a` 自動追上原定速率。
+3. 若另外加 `@Async` 或使用會分派每次觸發的 scheduler，則要重新評估重疊與併發限制。
 
 **修正：**
 
@@ -3023,119 +3123,100 @@ public record ExportRun(
 }
 ```
 
+本節替換舊版 `export_run` 範例：已有練習資料表者需一併調整 schema，
+新增 `claim_token`、改成每日期唯一，不能只替換 Java 程式碼。
+
+**防重複的依據是資料庫原子領取，不是排程方法各自的一把鎖。**
+一個日期保留一列目前狀態；`FAILED` 可重新領取同一列，`RUNNING`／`SUCCESS` 不可領取。
+若需保留每次失敗的歷史，另建 attempt 表；不要用 `UNIQUE(target_date, status)` 限制歷史紀錄。
+
 ```sql
 CREATE TABLE export_run (
     id             BIGINT AUTO_INCREMENT PRIMARY KEY,
     target_date    DATE         NOT NULL,
     status         VARCHAR(16)  NOT NULL,
+    claim_token    CHAR(36)     NOT NULL,
     record_count   INT          NOT NULL DEFAULT 0,
     file_key       VARCHAR(512),
     started_at     TIMESTAMP(3) NOT NULL,
     finished_at    TIMESTAMP(3),
     error_message  TEXT,
-    KEY idx_date_status (target_date, status),
-    -- ★ 「同一天只能有一筆 SUCCESS」用 generated column + UNIQUE 表達 ★
-    --   只有 status='SUCCESS' 時這一欄才有值，其餘是 NULL；
-    --   而 MySQL 的 UNIQUE 允許多個 NULL → FAILED 可以有很多筆（重試才跑得下去）
-    success_date DATE GENERATED ALWAYS AS
-        (CASE WHEN status = 'SUCCESS' THEN target_date END) STORED,
-    UNIQUE KEY uk_success_date (success_date)
-) ;
--- ⚠️ 千萬不要寫成 UNIQUE (target_date, status)：
---    那會讓「同一天的第二次 FAILED」insert 失敗，重試邏輯直接壞掉。
+    UNIQUE KEY uk_export_date (target_date),
+    KEY idx_status_date (status, target_date)
+);
 ```
 
 ```java
 package com.example.shop.batch;
 
-import io.micrometer.core.instrument.MeterRegistry;
-import io.micrometer.core.instrument.Timer;
-import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
-import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
+public record ExportClaim(long id, String token) { }
+```
 
-import java.time.Clock;
+```java
+package com.example.shop.batch;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Repository;
+
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.time.LocalDate;
-import java.util.UUID;
+import java.util.List;
+import java.util.Optional;
 
-@Component
-public class DailyOrderExportJob {
+/** SQL 方言：MySQL 8。由 ExportRunTracker 提供短交易邊界。 */
+@Repository
+public class ExportRunRepository {
+    private final JdbcTemplate jdbc;
 
-    private static final Logger log = LoggerFactory.getLogger(DailyOrderExportJob.class);
-    private static final String JOB_NAME = "dailyOrderExport";
+    public ExportRunRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-    private final OrderExportService exportService;
-    private final MeterRegistry registry;
-    private final Clock clock;
-
-    public DailyOrderExportJob(OrderExportService exportService,
-                               MeterRegistry registry,
-                               Clock clock) {
-        this.exportService = exportService;
-        this.registry = registry;
-        this.clock = clock;
+    public Optional<ExportClaim> tryClaim(LocalDate date, String token, Instant now) {
+        // INSERT 與 FAILED -> RUNNING 都在同一個原子 upsert 中；不做「先查再寫」。
+        // status 必須最後賦值，前面的 IF 才都以舊狀態判斷。
+        jdbc.update("""
+                INSERT INTO export_run
+                    (target_date, status, claim_token, started_at)
+                VALUES (?, 'RUNNING', ?, ?)
+                ON DUPLICATE KEY UPDATE
+                    claim_token = IF(status = 'FAILED', VALUES(claim_token), claim_token),
+                    started_at = IF(status = 'FAILED', VALUES(started_at), started_at),
+                    finished_at = IF(status = 'FAILED', NULL, finished_at),
+                    error_message = IF(status = 'FAILED', NULL, error_message),
+                    status = IF(status = 'FAILED', 'RUNNING', status)
+                """, date, token, Timestamp.from(now));
+        // 不依賴 affected rows 的 foundRows 設定；只有本次 token 能領到結果。
+        return jdbc.query("""
+                SELECT id, claim_token FROM export_run
+                WHERE target_date = ? AND status = 'RUNNING' AND claim_token = ?
+                """, (rs, row) -> new ExportClaim(rs.getLong("id"), rs.getString("claim_token")),
+                date, token).stream().findFirst();
     }
 
-    /**
-     * 需求 1（不重複執行）：@SchedulerLock
-     * 需求 4（不影響其他排程）：靠 spring.task.scheduling.pool.size &gt; 1
-     *                          + lockAtMostFor 防止鎖永久卡住
-     */
-    @Scheduled(cron = "${shop.batch.export-cron:0 0 3 * * *}", zone = "Asia/Taipei")
-    @SchedulerLock(name = JOB_NAME, lockAtMostFor = "PT2H", lockAtLeastFor = "PT5M")
-    public void exportYesterdayOrders() {
-        LocalDate target = LocalDate.now(clock).minusDays(1);
-        run(target);
-    }
-
-    /** 補跑用的入口（手動觸發或重試排程呼叫） */
-    public void run(LocalDate target) {
-        MDC.put("traceId", "job-" + UUID.randomUUID().toString().substring(0, 12));
-        MDC.put("job", JOB_NAME);
-        MDC.put("targetDate", target.toString());
-
-        Timer.Sample sample = Timer.start(registry);
-        String outcome = "SUCCESS";
-        int count = 0;
-
-        try {
-            // 需求 2（冪等）：已成功就跳過
-            if (exportService.alreadyExported(target)) {
-                log.info("{} 已匯出過，跳過", target);
-                outcome = "SKIPPED";
-                return;
-            }
-            count = exportService.export(target);
-            log.info("匯出完成，共 {} 筆", count);
-
-        } catch (Exception e) {
-            outcome = "FAILURE";
-            log.error("匯出失敗", e);
-            // 不重新拋出：讓排程機制繼續，改由重試排程處理
-
-        } finally {
-            // 需求 3（可監控）
-            sample.stop(Timer.builder("shop.batch.duration")
-                    .tag("job", JOB_NAME).tag("outcome", outcome)
-                    .publishPercentiles(0.5, 0.95)
-                    .register(registry));
-            registry.counter("shop.batch.records",
-                    "job", JOB_NAME, "outcome", outcome).increment(count);
-            MDC.clear();
+    public void finish(ExportClaim claim, ExportRun.Status status, int count,
+                       String key, String error, Instant now) {
+        if (status == ExportRun.Status.RUNNING) {
+            throw new IllegalArgumentException("完成狀態必須是 SUCCESS 或 FAILED");
         }
+        int changed = jdbc.update("""
+                UPDATE export_run
+                SET status = ?, record_count = ?, file_key = ?, error_message = ?, finished_at = ?
+                WHERE id = ? AND claim_token = ? AND status = 'RUNNING'
+                """, status.name(), count, key, error, Timestamp.from(now), claim.id(), claim.token());
+        if (changed != 1) throw new IllegalStateException("匯出領取權已失效：" + claim.id());
     }
 
-    /** 需求 2（重試）：每 30 分鐘檢查有沒有失敗的匯出要補跑 */
-    @Scheduled(fixedDelayString = "PT30M")
-    @SchedulerLock(name = JOB_NAME + "-retry", lockAtMostFor = "PT1H")
-    public void retryFailedExports() {
-        exportService.findFailedWithinDays(7).forEach(failedDate -> {
-            log.info("重試匯出 {}", failedDate);
-            run(failedDate);
-        });
+    public List<LocalDate> findFailedDatesSince(LocalDate since) {
+        return jdbc.query("""
+                SELECT target_date FROM export_run
+                WHERE status = 'FAILED' AND target_date >= ? ORDER BY target_date
+                """, (rs, row) -> rs.getDate(1).toLocalDate(), since);
+    }
+
+    public Optional<Instant> lastSuccessfulFinishedAt() {
+        return jdbc.query("SELECT MAX(finished_at) FROM export_run WHERE status = 'SUCCESS'",
+                (rs, row) -> Optional.ofNullable(rs.getTimestamp(1)).map(Timestamp::toInstant))
+                .getFirst();
     }
 }
 ```
@@ -3143,106 +3224,155 @@ public class DailyOrderExportJob {
 ```java
 package com.example.shop.batch;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Clock;
-import java.time.Instant;
+import java.time.LocalDate;
+import java.util.Optional;
+import java.util.UUID;
+
+@Service
+public class ExportRunTracker {
+    private final ExportRunRepository repository;
+    private final Clock clock;
+
+    public ExportRunTracker(ExportRunRepository repository, Clock clock) {
+        this.repository = repository;
+        this.clock = clock;
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Optional<ExportClaim> tryStart(LocalDate date) {
+        return repository.tryClaim(date, UUID.randomUUID().toString(), clock.instant());
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void finish(ExportClaim claim, ExportRun.Status status,
+                       int count, String key, String error) {
+        String shortened = error == null ? null : error.substring(0, Math.min(2000, error.length()));
+        repository.finish(claim, status, count, key, shortened, clock.instant());
+    }
+}
+```
+
+`VALUES(column)` 在較新的 MySQL 8 有棄用提示，但本課 MySQL 8.0／8.4 仍支援；
+新專案也可用對應版本的 row alias 語法。`tryStart`／`finish` 在另一個 Bean 的短交易執行，
+實際讀取與上傳不持有長交易。不要在 `OrderExportService` 用 `this.startRun()` 自呼叫交易方法。
+
+匯出依賴兩個由專案實作的邊界，以下介面要一起加入；它們不是 Spring 自動提供的功能：
+
+```java
+package com.example.shop.batch;
+
+import com.example.shop.order.Order;
 import java.time.LocalDate;
 import java.util.List;
 
+public interface ExportOrderReader {
+    /** 回傳指定業務日期、id > afterId 的資料，依唯一 id 升序，最多 limit 筆。
+     * 日期邊界採 Asia/Taipei；實作必須固定排序與資料範圍，不能以未關閉的 JPA Stream 跨交易讀取。 */
+    List<Order> readPage(LocalDate date, long afterId, int limit);
+}
+```
+
+```java
+package com.example.shop.batch;
+
+import java.io.IOException;
+import java.io.Writer;
+
+public interface ObjectStorageClient {
+    /** close 成功才代表上傳完成；失敗必須中止 multipart，不能把部分內容當成功發布。 */
+    Writer openWriter(String key) throws IOException;
+}
+```
+
+```java
+package com.example.shop.batch;
+
+import com.example.shop.order.Order;
+import org.springframework.stereotype.Service;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 @Service
 public class OrderExportService {
-
-    private static final Logger log = LoggerFactory.getLogger(OrderExportService.class);
-
-    private final ExportRunRepository runRepository;
-    private final OrderRepository orderRepository;
+    private final ExportRunTracker tracker;
+    private final ExportRunRepository runs;
+    private final ExportOrderReader orders;
     private final ObjectStorageClient storage;
     private final Clock clock;
 
-    public OrderExportService(ExportRunRepository runRepository,
-                              OrderRepository orderRepository,
-                              ObjectStorageClient storage,
-                              Clock clock) {
-        this.runRepository = runRepository;
-        this.orderRepository = orderRepository;
+    public OrderExportService(ExportRunTracker tracker, ExportRunRepository runs,
+                              ExportOrderReader orders, ObjectStorageClient storage, Clock clock) {
+        this.tracker = tracker;
+        this.runs = runs;
+        this.orders = orders;
         this.storage = storage;
         this.clock = clock;
     }
 
-    public boolean alreadyExported(LocalDate date) {
-        return runRepository.existsByTargetDateAndStatus(date, ExportRun.Status.SUCCESS);
-    }
-
     public List<LocalDate> findFailedWithinDays(int days) {
-        return runRepository.findFailedDatesSince(LocalDate.now(clock).minusDays(days));
+        return runs.findFailedDatesSince(LocalDate.now(clock).minusDays(days));
     }
 
-    /**
-     * ⚠️ 刻意「不」在整個匯出過程上加 @Transactional。
-     *
-     * <p>理由：匯出可能跑幾十分鐘，一個長交易會：
-     * ① 持有資料庫連線整段時間（連線池耗盡）
-     * ② 產生巨大的 undo log（MySQL 的 MVCC 成本，07-mysql 第 04 章）
-     * ③ 阻擋其他交易的 DDL
-     *
-     * <p>改用：短交易記錄狀態 + 交易外做實際工作。
-     */
-    public int export(LocalDate date) {
-        Long runId = startRun(date);          // 短交易 ①
+    public Optional<Instant> lastSuccessfulFinishedAt() { return runs.lastSuccessfulFinishedAt(); }
 
+    /** 所有入口共用原子領取；空值表示該日已成功或正在執行，0 則代表成功匯出零筆。 */
+    public OptionalInt export(LocalDate date) {
+        Optional<ExportClaim> acquired = tracker.tryStart(date); // 短交易，返回前已 commit
+        if (acquired.isEmpty()) return OptionalInt.empty();
+        ExportClaim claim = acquired.orElseThrow();
+        String fileKey = "orders/%s/orders-%s.csv".formatted(date.getYear(), date);
+        int count = 0;
         try {
-            // ★ 需求 2：檔名含日期，重跑會覆蓋同一個檔案，不會產生重複 ★
-            String fileKey = "orders/%s/orders-%s.csv".formatted(date.getYear(), date);
-
-            int count = 0;
+            // 讀者只消費 export_run 中 SUCCESS 的 file_key；未完成的檔案不算已發布。
             try (var writer = storage.openWriter(fileKey)) {
-                writer.write("orderId,customerId,amount,status,createdAt\n");
-
-                // ★ 需求 5：檢查中斷旗標，讓服務關閉時能安全停止 ★
-                for (Order order : orderRepository.streamByDate(date)) {
+                writer.write("orderId,customerId,amount,status,createdAt\r\n");
+                long afterId = 0;
+                while (true) {
                     if (Thread.currentThread().isInterrupted()) {
-                        throw new InterruptedException("任務被中斷（服務關閉中）");
+                        throw new InterruptedException("匯出被中斷");
                     }
-                    writer.write(toCsvLine(order));
-                    count++;
+                    List<Order> page = orders.readPage(date, afterId, 500);
+                    if (page.isEmpty()) break;
+                    for (Order order : page) {
+                        if (Thread.currentThread().isInterrupted()) {
+                            throw new InterruptedException("匯出被中斷");
+                        }
+                        writer.write(toCsvLine(order));
+                        count++;
+                    }
+                    afterId = page.getLast().id();
                 }
-            }
-
-            finishRun(runId, ExportRun.Status.SUCCESS, count, fileKey, null);   // 短交易 ②
-            return count;
-
+            } // 關閉 writer 必須代表上傳已完成；multipart 失敗時 adapter 必須中止上傳。
         } catch (Exception e) {
-            finishRun(runId, ExportRun.Status.FAILED, 0, null, e.getMessage()); // 短交易 ②'
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+            try {
+                tracker.finish(claim, ExportRun.Status.FAILED, count, null, e.getMessage());
+            } catch (RuntimeException trackingFailure) {
+                e.addSuppressed(trackingFailure); // 保留原始失敗；RUNNING 由運維確認後復原
+            }
             throw new ExportFailedException("匯出 " + date + " 失敗", e);
         }
+        // 若此處提交結果不明，不直接改 FAILED，避免誤將已提交的 SUCCESS 重新開放。
+        tracker.finish(claim, ExportRun.Status.SUCCESS, count, fileKey, null);
+        return OptionalInt.of(count);
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected Long startRun(LocalDate date) {
-        return runRepository.save(new ExportRun(
-                null, date, ExportRun.Status.RUNNING, 0, null,
-                Instant.now(clock), null, null)).id();
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    protected void finishRun(Long runId, ExportRun.Status status,
-                             int count, String fileKey, String error) {
-        runRepository.updateResult(runId, status, count, fileKey,
-                Instant.now(clock), truncate(error, 2000));
-    }
-
-    private String toCsvLine(Order o) {
-        return "%d,%s,%s,%s,%s%n".formatted(
-                o.id(), o.customerId(), o.amount(), o.status(), o.createdAt());
-    }
-
-    private String truncate(String s, int max) {
-        return s == null ? null : s.length() <= max ? s : s.substring(0, max);
+    private String toCsvLine(Order order) {
+        return Stream.of(order.id(), order.customerId(), order.amount(), order.status(), order.createdAt())
+                .map(value -> "\"" + String.valueOf(value).replace("\"", "\"\"") + "\"")
+                .collect(Collectors.joining(",")) + "\r\n";
     }
 
     public static class ExportFailedException extends RuntimeException {
@@ -3251,46 +3381,98 @@ public class OrderExportService {
 }
 ```
 
-> ⚠️ **注意 `startRun` / `finishRun` 是 `protected` 且被自呼叫——這會踩到第 04 章的自呼叫失效！**
-> 上面的寫法是**錯的**，正式版應該把它們拆到另一個 Bean：
-
 ```java
-@Service
-public class ExportRunTracker {
+package com.example.shop.batch;
 
-    private final ExportRunRepository runRepository;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.time.Clock;
+import java.time.LocalDate;
+import java.util.OptionalInt;
+import java.util.UUID;
+
+@Component
+public class DailyOrderExportJob {
+    private static final Logger log = LoggerFactory.getLogger(DailyOrderExportJob.class);
+    private static final String JOB_NAME = "dailyOrderExport";
+    private final OrderExportService service;
+    private final MeterRegistry registry;
+    private final BatchMetrics batchMetrics;
     private final Clock clock;
 
-    public ExportRunTracker(ExportRunRepository runRepository, Clock clock) {
-        this.runRepository = runRepository;
+    public DailyOrderExportJob(OrderExportService service, MeterRegistry registry,
+                               BatchMetrics batchMetrics, Clock clock) {
+        this.service = service;
+        this.registry = registry;
+        this.batchMetrics = batchMetrics;
         this.clock = clock;
+        batchMetrics.startMonitoring(JOB_NAME);
+        refreshLastSuccess();
     }
 
-    @Transactional
-    public Long start(LocalDate date) {
-        return runRepository.save(new ExportRun(
-                null, date, ExportRun.Status.RUNNING, 0, null,
-                Instant.now(clock), null, null)).id();
+    @Scheduled(cron = "${shop.batch.export-cron:0 0 3 * * *}", zone = "Asia/Taipei")
+    public void exportYesterdayOrders() {
+        run(LocalDate.now(clock.withZone(java.time.ZoneId.of("Asia/Taipei"))).minusDays(1));
     }
 
-    @Transactional
-    public void finish(Long runId, ExportRun.Status status,
-                       int count, String fileKey, String error) {
-        runRepository.updateResult(runId, status, count, fileKey, Instant.now(clock), error);
+    /** 每日排程、重試、手動補跑都必須呼叫同一個有原子領取的 service.export。 */
+    public void run(LocalDate target) {
+        var previous = MDC.getCopyOfContextMap();
+        MDC.put("traceId", "job-" + UUID.randomUUID());
+        MDC.put("job", JOB_NAME);
+        MDC.put("targetDate", target.toString());
+        Timer.Sample sample = Timer.start(registry);
+        String outcome = "FAILURE";
+        int count = 0;
+        try {
+            OptionalInt exported = service.export(target);
+            if (exported.isEmpty()) {
+                outcome = "SKIPPED";
+                log.info("{} 已成功或正在執行，跳過", target);
+            } else {
+                count = exported.getAsInt();
+                outcome = "SUCCESS";
+                log.info("{} 匯出完成，共 {} 筆", target, count);
+            }
+        } catch (Exception e) {
+            log.error("{} 匯出失敗；FAILED 可補跑，RUNNING 需確認原工作已停止後復原", target, e);
+        } finally {
+            try {
+                sample.stop(Timer.builder("shop.batch.duration")
+                        .tag("batch_job", JOB_NAME).tag("outcome", outcome).register(registry));
+                registry.counter("shop.batch.records", "batch_job", JOB_NAME,
+                        "outcome", outcome).increment(count);
+            } finally {
+                if (previous == null) MDC.clear(); else MDC.setContextMap(previous);
+            }
+        }
+    }
+
+    @Scheduled(fixedDelayString = "PT30M")
+    public void retryFailedExports() { service.findFailedWithinDays(7).forEach(this::run); }
+
+    /** 各 Pod 都定期從 DB 更新成功時間，避免只看到本 Pod 執行的工作。 */
+    @Scheduled(fixedDelayString = "PT5M")
+    public void refreshLastSuccess() {
+        service.lastSuccessfulFinishedAt().ifPresent(instant -> batchMetrics.successAt(JOB_NAME, instant));
     }
 }
 ```
 
-```java
-// OrderExportService 改為注入 tracker
-private final ExportRunTracker tracker;
+**故障邊界**：領取成功後程序若被強制終止，狀態會停在 `RUNNING`。
+這個簡化方案**不自動用時間到期搶占工作**；先確認舊 worker／上傳已停止，才由運維重設為 `FAILED` 補跑。
+`claim_token` 會阻止舊領取者更新新一輪結果，但不能單靠它阻止舊 worker 的外部寫入。
+需要自動接管時，必須另設租約、fencing 與物件儲存的條件發布協定。
+消費方只接受 `SUCCESS` 列出的 `file_key`；任務失敗時留下的未發布檔案可清理或由重試覆寫。
 
-public int export(LocalDate date) {
-    Long runId = tracker.start(date);       // ✅ 經過代理，交易生效
-    // ...
-    tracker.finish(runId, SUCCESS, count, fileKey, null);
-}
-```
+此例讓三個入口共用同一個 date claim；增加排程執行緒不會讓同一天同時取得兩份執行權。
+排程池大小只隔離有限數目的卡住工作；真正的 DB／S3 client 仍須設定 I/O 逾時。
 
 **設定：**
 
@@ -3318,26 +3500,34 @@ shop:
 ```yaml
 - alert: DailyExportMissing
   expr: |
-    absent_over_time(
-      shop_batch_duration_seconds_count{job="dailyOrderExport",outcome="SUCCESS"}[26h]
+    (time() - max by (application, batch_job) (shop_batch_last_success_seconds{batch_job="dailyOrderExport"}) > 93600)
+    and on (application, batch_job)
+    (
+      (max by (application, batch_job) (shop_batch_last_success_seconds{batch_job="dailyOrderExport"}) > 0)
+      or on (application, batch_job)
+      (time() - min by (application, batch_job) (shop_batch_monitor_started_seconds{batch_job="dailyOrderExport"}) > 93600)
     )
   annotations:
     summary: "每日訂單匯出超過 26 小時沒有成功執行"
 
+- alert: DailyExportMetricsMissing
+  expr: absent(shop_batch_last_success_seconds{application="shop-service",batch_job="dailyOrderExport"})
+  for: 26h
+
 - alert: DailyExportFailing
-  expr: increase(shop_batch_duration_seconds_count{job="dailyOrderExport",outcome="FAILURE"}[1h]) > 2
+  expr: increase(shop_batch_duration_seconds_count{batch_job="dailyOrderExport",outcome="FAILURE"}[1h]) > 2
   annotations:
-    summary: "訂單匯出連續失敗"
+    summary: "訂單匯出一小時內失敗超過兩次"
 ```
 
 **五個需求的對應總結：**
 
 | 需求 | 實作 |
 |---|---|
-| 1. 不重複執行 | `@SchedulerLock` + `lockAtLeastFor` |
-| 2. 可重試且不產生重複檔案 | `export_run` 表記錄狀態 + 檔名含日期（覆蓋而非新增）+ 重試排程 |
+| 1. 同一日期只有一個領取者 | 所有入口共用 `UNIQUE(target_date)` + 原子 upsert + claim token |
+| 2. 可補跑且不重複發布 | FAILED 原子重領 + 固定檔名 + 消費方只接受 SUCCESS；RUNNING 故障需確認後復原 |
 | 3. 可監控 | Timer + Counter + `export_run` 表 + 告警規則（含「沒執行」的告警） |
-| 4. 不影響其他排程 | 排程池 size=8 + `lockAtMostFor` 防止鎖卡死 |
+| 4. 隔離有限數量的卡住工作 | 排程池 size=8 + 真正的 I/O client 逾時；資料領取本身不佔用長交易 |
 | 5. 安全關閉 | `await-termination` + 迴圈裡檢查 `isInterrupted()` |
 
 **額外的重要設計決定**：匯出過程**不用長交易**。
@@ -3364,7 +3554,7 @@ shop:
 - [ ] 我能計算執行緒池的四個參數，並用「可接受延遲」推導佇列容量。
 - [ ] 我知道四種拒絕策略，也知道 `CallerRunsPolicy` 的背壓效果與風險。
 - [ ] 我會為不同性質的任務使用不同的執行緒池（艙壁模式）。
-- [ ] 我會監控 `executor_queued_tasks` 與 `executor_rejected_tasks_total`。
+- [ ] 我會監控 `executor_queued_tasks` 與自訂的 `shop_async_rejected_total`。
 - [ ] 我知道 `void` 方法的例外要用 `AsyncUncaughtExceptionHandler` 處理。
 - [ ] 我知道 `AsyncUncaughtExceptionHandler` 對 `CompletableFuture` 無效。
 - [ ] 我知道 `@Async` + `@Transactional` 會開新交易，且可能讀不到未 commit 的資料。

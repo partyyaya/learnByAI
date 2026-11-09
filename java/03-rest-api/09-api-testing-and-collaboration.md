@@ -925,25 +925,43 @@ class IdempotencyContractTest extends AbstractIntegrationTest {
     }
 
     @Test
-    void 5xx不記錄冪等結果讓客戶端能重試() throws Exception {
-        // ★ 第 08 章 8.2.6
+    void 已扣款但回應逾時不能直接重做() throws Exception {
         String key = newKey();
-        when(paymentGateway.charge(any())).thenThrow(new GatewayTimeoutException());
-
+        var charges = new AtomicInteger();
+        when(paymentGateway.charge(any())).thenAnswer(invocation -> {
+            charges.incrementAndGet();                // 外部副作用已發生
+            throw new GatewayTimeoutException();      // 只是回覆沒收到
+        });
         mockMvc.perform(authed(post("/v1/orders/ord_1/payments"))
                         .header("Idempotency-Key", key)
                         .contentType(APPLICATION_JSON).content(PAYMENT_JSON))
                 .andExpect(status().isGatewayTimeout());
 
-        reset(paymentGateway);
-        when(paymentGateway.charge(any())).thenReturn(SUCCESSFUL_CHARGE);
-
-        // ★ 同一個 key 重試 → 應該真的執行（不是回放 504）
+        // 同 key 重送只能查既有狀態，不能再呼叫 charge
         mockMvc.perform(authed(post("/v1/orders/ord_1/payments"))
                         .header("Idempotency-Key", key)
                         .contentType(APPLICATION_JSON).content(PAYMENT_JSON))
-                .andExpect(status().isCreated());
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("IDEMPOTENT_REQUEST_IN_PROGRESS"));
+        assertThat(charges.get()).isEqualTo(1);
+        verify(paymentGateway, times(1)).charge(any());
+
+        // 查證工作使用持久化的下游冪等鍵查詢供應商，不重新 charge
+        when(paymentGateway.findByIdempotencyKey(any())).thenReturn(SUCCESSFUL_CHARGE);
+        reconciliation.reconcilePayment(key);           // 補記業務結果與 COMPLETED
+        mockMvc.perform(authed(post("/v1/orders/ord_1/payments"))
+                        .header("Idempotency-Key", key)
+                        .contentType(APPLICATION_JSON).content(PAYMENT_JSON))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Idempotent-Replay", "true"));
+        assertThat(charges.get()).isEqualTo(1);
     }
+
+    // 另測：明確在送出前失敗且本地已 rollback，才能 releaseOwned 後安全重試。
+    // 儲存層測試：舊 owner 的 complete/release 不能覆蓋／刪除新 owner。
+    // 授權測試：首次已完成後，撤銷使用者權限，同 key 回放仍須回 403。
+    // 回放測試：首次 409／422 的第二次請求保留錯誤碼，不可變成 200。
+
 }
 ```
 
@@ -1023,8 +1041,11 @@ class RateLimitContractTest extends AbstractIntegrationTest {
 
     @Test
     void 超過配額回429且帶完整header() throws Exception {
-        for (int i = 0; i < 31; i++) {
-            authed(get("/v1/orders?q=test" + i));                     // 用完 search 桶
+        // fixture 為此測試使用獨立 consumer，清空 search 桶，並注入固定 Clock
+        resetBucket(TEST_CONSUMER_ID, "search");
+        for (int i = 0; i < 30; i++) {
+            mockMvc.perform(authed(get("/v1/orders?q=test" + i)))
+                    .andExpect(status().isOk());                    // 真的執行並扣掉 30 個令牌
         }
 
         mockMvc.perform(authed(get("/v1/orders?q=final")))
@@ -1760,15 +1781,22 @@ alerts:
  * ★ 在正式環境對「抽樣的回應」做契約驗證。
  * 這抓的是「CI 沒測到的組合」（例如特定歷史資料造成的欄位缺失）。
  */
-@Component
+@RestControllerAdvice
 @Profile("prod")
 public class ContractDriftDetector implements ResponseBodyAdvice<Object> {
 
     private static final double SAMPLE_RATE = 0.001;      // 0.1%
 
     @Override
+    public boolean supports(MethodParameter param,
+                            Class<? extends HttpMessageConverter<?>> converterType) {
+        return AbstractJackson2HttpMessageConverter.class.isAssignableFrom(converterType);
+    }
+
+    @Override
     public Object beforeBodyWrite(Object body, MethodParameter param, MediaType mt,
-                                  Class converter, ServerHttpRequest req, ServerHttpResponse res) {
+                                  Class<? extends HttpMessageConverter<?>> converter,
+                                  ServerHttpRequest req, ServerHttpResponse res) {
         if (ThreadLocalRandom.current().nextDouble() > SAMPLE_RATE) return body;
 
         try {
@@ -2100,7 +2128,7 @@ OpenAPI 驗證：   1 行斷言 × 所有 schema 規則
 | 9 | **③ 整合**（security 群組，掃所有端點） | 需要真實的完整回應（mock 的 DTO 不會有 Entity 的欄位） |
 | 10 | **⑤ E2E**（Hurl / `.http`） | 跨多個端點的流程。⚠️ 只做 happy path（錯誤分支在 ② 測） |
 | 11 | **① 單元**（`@EnumSource`） | 只需要 `MessageSource`，不需要 HTTP。一個測試涵蓋所有錯誤碼 |
-| 12 | **① 單元 + ③ 整合** | ① 測 `toExclusive("2026-08-31")` 回 `2026-08-31T16:00:00Z`<br>③ 測「真的建一筆 8/31 23:30 的訂單，查詢能撈到」<br>★ **兩層都要**：① 測轉換邏輯，③ 測 SQL 的邊界真的對 |
+| 12 | **① 單元 + ③ 整合** | ① 測 `upperBound()` 對純日期回次日 UTC 界線且 inclusive=false，時間點則 inclusive=true<br>③ 測「真的建一筆 8/31 23:30 的訂單，查詢能撈到」<br>★ **兩層都要**：① 測轉換邏輯，③ 測 SQL 的邊界真的對 |
 | 13 | **⑥ 正式環境抽樣**（9.7.3） | CI 的測試資料涵蓋不到歷史資料的邊界 |
 | 14 | **③ 整合**（用 `EXPLAIN` 斷言） | 見下 |
 
@@ -2274,16 +2302,17 @@ class CollectionNeverNullTest {
 **做法 3：在契約層面禁止（Spectral，最上游）**
 
 ```yaml
+functions: [noNullableArray, arrayFieldsAreRequired]
+functionsDir: "./spectral-functions"
 rules:
   array-must-not-be-nullable:
     description: |
       陣列型別的欄位不可為 nullable（第 03 章 3.7.2）。
       空集合請回 []，而非 null —— 否則客戶端的 items.map() 會爆掉。
     severity: error
-    given: "$.components.schemas..properties[?(@.type == 'array')]"
+    given: "$.components.schemas..properties[*]"
     then:
-      - field: nullable
-        function: falsy
+      function: noNullableArray
 
   array-must-be-required:
     description: |
@@ -2317,6 +2346,10 @@ export default function arrayFieldsAreRequired(schema, _opts, ctx) {
   return results;
 }
 ```
+
+重用第 07 章 7.9.2 的 `noNullableArray.js`；不要只檢查 3.0 的 nullable。
+規則 fixture 至少包含 3.1 type union、anyOf／oneOf、$ref 與合法的非空陣列型別。
+這是保守的結構檢查，進階 JSON Schema 仍需驗證器與 review。
 
 **三個做法的組合（shop-service 的實際配置）**
 
@@ -2999,7 +3032,7 @@ DTO 忘記正規化 → Spectral 在契約層擋住。
 - [ ] 我能測分頁的穩定性：tie-breaker、cursor 完整遍歷不重複不遺漏。
 - [ ] 我能測「`createdTo` 包含當天整天」，並知道這防止的是財務 bug。
 - [ ] 我能測冪等鍵的併發（20 個執行緒只建立一張訂單）。
-- [ ] 我能測「JSON 欄位順序不同視為相同請求」與「5xx 不記錄冪等結果」。
+- [ ] 我能測 JSON 欄位順序、錯誤回放狀態碼、已扣款後逾時的 UNKNOWN 查證與舊 owner CAS。
 - [ ] 我能寫「掃過所有端點檢查 `private`」的快取測試。
 - [ ] 我能測「不同角色的 ETag 不同」與「顧客帶客服的 ETag 不會拿到 304」。
 - [ ] 我知道資安迴歸測試是優先序最高的，也能列出它的九個項目。

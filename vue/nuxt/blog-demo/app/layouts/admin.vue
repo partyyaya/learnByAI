@@ -3,7 +3,7 @@
 const { user, clear } = useUserSession()
 
 async function logout() {
-  await $fetch('/api/auth/logout', { method: 'POST' })
+  // clear() 會打模組內建的 DELETE /api/_auth/session 清掉 session cookie，並清空前端狀態
   await clear()
   await navigateTo('/login')
 }

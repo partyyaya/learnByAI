@@ -20,9 +20,9 @@ const ctx = canvas.getContext('2d');               // 拿到「2D 繪圖環境�
 | 參數 | 你拿到的東西 | 用途 |
 |------|--------------|------|
 | `'2d'` | `CanvasRenderingContext2D` | 2D 繪圖(這門課 00~09 章) |
-| `'webgl'` / `'webgl2'` | `WebGLRenderingContext` | GPU 3D / 高效能 2D(第 10 章) |
+| `'webgl'` / `'webgl2'` | `WebGLRenderingContext` / `WebGL2RenderingContext` | GPU 3D / 高效能 2D(第 10 章) |
 | `'webgpu'` | `GPUCanvasContext` | 新一代 GPU API(第 10 章) |
-| `'bitmaprenderer'` | `ImageBitmapRenderingContext` | 把 ImageBitmap 直接貼上去(第 09 章 OffscreenCanvas 會用到) |
+| `'bitmaprenderer'` | `ImageBitmapRenderingContext` | 把 ImageBitmap 直接貼上去(`OffscreenCanvas.transferToImageBitmap()` 的搭檔,本課不會用到) |
 
 > **心智模型**:`<canvas>` 是一塊**畫框**,`getContext('2d')` 是你向它要一支「2D 畫筆組」。同一塊畫布,**一旦要過 `'2d'`,就不能再要 `'webgl'`**(會回傳 `null`)——一塊畫布一生只能綁定一種 context 類型。
 
@@ -34,9 +34,10 @@ if (!ctx) {
 ```
 
 > **進階選項**(用得到再開,一般用預設即可):
-`getContext('2d', { alpha: false })` 宣告畫布不透明,省一層合成、背景純色時更快;
-`{ desynchronized: true }` 降低繪圖延遲,適合畫筆/遊戲;
+`getContext('2d', { alpha: false })` 宣告畫布不透明,省一層合成、背景純色時更快——但這時 `clearRect` 會清成**不透明黑**,要改用 `fillRect` 蓋底色來清;
+`{ desynchronized: true }` 降低繪圖延遲,適合畫筆/遊戲(主要是 Chromium 支援);
 `{ willReadFrequently: true }` 用於頻繁 `getImageData`(第 05 章)。
+選項只在**第一次** `getContext` 時有效,之後再傳會被忽略。
 
 ---
 
@@ -55,8 +56,8 @@ if (!ctx) {
 三件事一定要記住:
 
 1. **原點 `(0,0)` 在左上角**,不是中間,也不是左下角。
-2. **x 往右increases、y 往下increases**。注意 **y 軸是往下的**——這跟你國中數學課本的座標系(y 往上)**剛好相反**。這是電腦繪圖的慣例(因為螢幕掃描是從上往下)。
-3. **單位是「CSS 像素」**(稍後 1.4 會發現這件事沒這麼單純)。
+2. **x 往右變大、y 往下變大**。注意 **y 軸是往下的**——這跟你國中數學課本的座標系(y 往上)**剛好相反**。這是電腦繪圖的慣例(因為螢幕掃描是從上往下)。
+3. **單位是「緩衝區的像素格」**:緩衝區尺寸和顯示尺寸一致時,剛好等於 1 個 CSS 像素(1.3、1.4 會看到兩者分開的情況)。
 
 > **白話翻譯**:想像你在讀一本書,從左上角開始、一行一行往右往下讀。Canvas 的座標就是這個方向。**畫東西時,「y 越大越靠下」**——很多人第一次畫圖形位置上下顛倒,就是把 y 軸想成往上了。
 
@@ -68,14 +69,17 @@ if (!ctx) {
 
 ```html
 <!-- ❌ 錯誤示範:只用 CSS 設尺寸 -->
-<canvas id="stage" style="width: 800px; height: 400px;"></canvas>
+<canvas id="stage" style="width: 800px; height: 600px;"></canvas>
 ```
 
 ```js
 const canvas = document.querySelector('#stage');
 const ctx = canvas.getContext('2d');
-ctx.fillRect(0, 0, 800, 400);   // fillRect(x, y, 寬, 高) → 想從 (0,0) 填一塊 800×400(結果見下,並沒填滿)
-// 結果:只填了左上一小塊,而且圖形被「拉伸變形」了
+ctx.fillRect(0, 0, 100, 100);            // fillRect(x, y, 寬, 高) → 想在左上角畫 100×100 的方塊
+ctx.beginPath();
+ctx.arc(400, 300, 50, 0, Math.PI * 2);   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角) → 想在畫面正中央畫圓
+ctx.fill();
+// 結果:方塊被放大成約 267×400、又糊又變形;圓完全不見
 ```
 
 **為什麼?因為 `<canvas>` 有兩個完全不同的「尺寸」:**
@@ -89,8 +93,9 @@ ctx.fillRect(0, 0, 800, 400);   // fillRect(x, y, 寬, 高) → 想從 (0,0) 填
 
 ```
 你的繪圖命令畫在 300×150 的緩衝區上
-   → 瀏覽器再把這張 300×150 的圖「拉伸」成 CSS 的 800×400 來顯示
-   → 就像把一張小照片硬撐大:模糊 + 變形
+   → (400, 300) 根本在緩衝區外面,圓被裁掉
+   → 瀏覽器再把這張 300×150 的圖「拉伸」成 CSS 的 800×600 來顯示
+   → 橫向 ×2.67、縱向 ×4:像把小照片硬撐進不同比例的相框——模糊 + 變形(比例相同就只糊不變形)
 ```
 
 > **心智模型**:把 canvas 想成一張**實體相片**。
@@ -186,26 +191,49 @@ ctx.fillStyle = '#333';
 ctx.fillRect(0, 0, 800, 400);   // fillRect(x, y, 寬, 高):填滿整塊,而且在 Retina 上清晰銳利
 ```
 
-> **心智模型**:DPR 處理就像「**幕後放大,台前不變**」。緩衝區偷偷變成 2 倍細(1600 格),`scale(2,2)` 讓你的程式碼活在原本的 800 座標世界裡,完全無感。**你寫程式照舊,清晰度免費翻倍。**
+> **心智模型**:DPR 處理就像「**幕後放大,台前不變**」。緩衝區偷偷變成 2 倍細(1600 格),`scale(2,2)` 讓你的程式碼活在原本的 800 座標世界裡,完全無感。**你寫程式照舊,清晰度翻倍,代價是 DPR² 倍的像素**(DPR=2 就是 4 倍記憶體)。
 >
-> ⚠️ 注意 `ctx.scale` 的效果會被「重設 canvas.width」清掉(見 1.3 的副作用),所以**每次 resize 重設緩衝區後,都要重新 `scale` 一次**——這就是為什麼要把它包成一個函式。
+> ⚠️ 注意 `ctx.scale` 的效果會被「重設 canvas.width」清掉(見 1.3 的副作用),所以**每次 resize 重設緩衝區後,都要重新 `scale` 一次**——這就是為什麼要把它包成一個函式。兩個延伸:
+> - `scale` 是**乘上去**的:若改成「尺寸有變才重設 `canvas.width`」,沒重設那次再 `scale` 就疊成 DPR² 倍。改用 `ctx.setTransform(dpr, 0, 0, dpr, 0, 0)` 直接「設定」縮放,呼叫幾次都一樣(第 03 章詳解)。
+> - 重設緩衝區連 `fillStyle`、`font`、`imageSmoothingEnabled` 等所有畫筆狀態都歸零,所以畫筆狀態要在每次重畫時設,別只在初始化設一次。
 
 ### 響應式:視窗變大時重新設定
 
-畫布若要跟著容器大小變,用 `ResizeObserver` 監聽容器,變動時重跑上面的設定(注意重設尺寸會清空畫布,所以設定完要立刻重畫一次):
+畫布若要跟著容器大小變,分工是:**顯示尺寸交給 CSS,JS 只把緩衝區調成「CSS 尺寸 × DPR」**。用 `ResizeObserver` 觀察 canvas 本身,變動時重設緩衝區(注意重設尺寸會清空畫布,所以設定完要立刻重畫一次):
+
+```css
+.stage-wrap { height: 60vh; }                          /* 父層要有明確高度 */
+#stage { display: block; width: 100%; height: 100%; }  /* block:去掉 inline 的基線留白 */
+```
 
 ```js
 const ro = new ResizeObserver((entries) => {
-  const { width, height } = entries[0].contentRect;
-  setupHiDPICanvas(canvas, width, height);
+  const { width, height } = entries[0].contentRect;   // canvas 的 CSS 顯示尺寸
+  if (width === 0 || height === 0) return;            // display:none/尚未排版時跳過
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * dpr);             // 只改緩衝區,不寫回 style
+  canvas.height = Math.round(height * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);             // 縮放設成 dpr 倍(見上方 ⚠️)
   render();   // render = 你的重畫函式(1.5 會寫出完整例子);緩衝區被重設清空了,馬上重畫一次
 });
-ro.observe(canvas.parentElement);
+ro.observe(canvas);
 ```
+
+> ⚠️ **別在 callback 裡改被觀察元素或它父層的 CSS 尺寸**:例如觀察父層、再把尺寸寫回 `canvas.style`,inline canvas 底下的基線留白會讓父層每幀長高幾 px,畫布無限長高;flex 版面裡,寫死的 canvas 寬度還會撐住父層,讓畫布縮不回去。
 
 > **這就是「畫完即忘」的第一次實戰**:resize 一次,畫布就空了,你必須主動重畫。retained mode 的 DOM 不會有這個問題——又一個你要自己補的洞。
 
-> ⚠️ **`devicePixelRatio` 不是常數**:把視窗從一般螢幕拖到 Retina 螢幕、或調整瀏覽器縮放,DPR 都會變。正式版要監聽它的變化、重設畫布:`matchMedia(\`(resolution: ${dpr}dppx)\`).addEventListener('change', resetCanvas)`(或每次 resize 都重讀 `devicePixelRatio`)。寫死一次 DPR 的話,跨螢幕拖動就會變糊。
+> ⚠️ **`devicePixelRatio` 不是常數**:把視窗從一般螢幕拖到 Retina 螢幕、或調整瀏覽器縮放,DPR 都會變——而這時 canvas 的 CSS 尺寸可能根本沒變,上面的 `ResizeObserver` 不會觸發。寫死一次 DPR 的話,跨螢幕拖動就會變糊。正式版要另外監聽 DPR:
+
+```js
+function watchDPR(onChange) {
+  // 這個 media query 只認「目前的 DPR 值」,所以每次變化後都要用新值重新註冊
+  const mq = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  mq.addEventListener('change', () => { onChange(); watchDPR(onChange); }, { once: true });
+}
+```
+
+DPR 是小數(Windows 125%/150%)時,`Math.round(CSS 尺寸 × DPR)` 未必等於實際裝置像素數;Chromium、Firefox 可改用 `ro.observe(canvas, { box: 'device-pixel-content-box' })` 拿到精確的裝置像素尺寸(Safari 不支援)。
 
 ---
 
@@ -217,10 +245,10 @@ ro.observe(canvas.parentElement);
 
 | | `setInterval` | `requestAnimationFrame` |
 |---|---------------|--------------------------|
-| 跟螢幕刷新同步 | ❌ 不同步,會撕裂/抖動 | ✅ 跟螢幕的 vsync 對齊 |
-| 分頁切到背景 | ❌ 照跑,浪費電、發熱 | ✅ 自動暫停,省電 |
-| 刷新率適配 | ❌ 寫死 60,在 120Hz 螢幕不對 | ✅ 自動跟著螢幕(60/90/120Hz) |
-| 掉幀行為 | 累積、越拖越糟 | 跳過、自然恢復 |
+| 跟螢幕刷新同步 | ❌ 不對齊:有的幀更新兩次、有的幀沒更新 → 抖動 | ✅ 跟螢幕的 vsync 對齊 |
+| 分頁切到背景 | ⚠️ 被節流到約每秒 1 次,但不會停 | ✅ 自動暫停,省電 |
+| 刷新率適配 | ❌ 寫死 60,在 120Hz 螢幕不對 | ✅ 多數情況自動跟著螢幕(60/90/120Hz) |
+| callback 太慢時 | 間隔被拉長,節奏忽快忽慢 | 跳過、自然恢復 |
 
 **結論:Canvas 動畫永遠用 `requestAnimationFrame`,不要用 `setInterval`。**
 
@@ -228,7 +256,8 @@ ro.observe(canvas.parentElement);
 
 ```js
 function frame(timestamp) {
-  // timestamp:瀏覽器自動傳入的「當前時間」(毫秒,高精度)
+  // timestamp:這一幀的開始時間(毫秒,和 performance.now() 同一時間原點;
+  //           同一幀的所有 callback 拿到同一個值)
   //           下一章不太用,但第 06 章做 delta-time 動畫時是主角
 
   // ... 在這裡畫一幀 ...
@@ -273,8 +302,8 @@ function frame() {
   // ---- HiDPI 設定(1.4 的函式)----
   function setupHiDPICanvas(canvas, w, h) {
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
     const ctx = canvas.getContext('2d');
@@ -292,9 +321,11 @@ function frame() {
     // 移動
     ball.x += ball.vx;
     ball.y += ball.vy;
-    // 撞牆反彈(碰到邊界就把速度反向)
-    if (ball.x - ball.r < 0 || ball.x + ball.r > W) ball.vx *= -1;
-    if (ball.y - ball.r < 0 || ball.y + ball.r > H) ball.vy *= -1;
+    // 撞牆反彈:先推回牆內,再依撞到哪面牆決定速度方向(撞左牆 → 往右,依此類推)
+    if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = Math.abs(ball.vx); }
+    else if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -Math.abs(ball.vx); }
+    if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = Math.abs(ball.vy); }
+    else if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -Math.abs(ball.vy); }
   }
 
   function render() {
@@ -316,6 +347,8 @@ function frame() {
 ```
 
 跑起來你會看到一顆紅球在框內彈來彈去。**仔細體會:畫面上那顆「球」其實不存在,只有 `ball` 這個 JS 物件存在;每一幀我們都把它「重新畫一次」在新位置。** 這就是第 00 章「畫完即忘」最直觀的證明。
+
+> 為什麼不寫成更短的 `if (碰牆) ball.vx *= -1`?球若已在牆外(畫布縮小、一幀走太遠),每幀都「碰牆」、速度來回翻轉,會卡在牆外抖動。
 
 > 💡 **試試看(埋第 06 章伏筆)**:把上面的 `vx: 4` 改大,球會變快。但這個「速度」是綁在「每一幀」上的——在 120Hz 螢幕上球會跑兩倍快!**動畫不該綁幀數,應該綁「時間」(delta-time)**。這個坑第 06 章專門解。先記著。
 
@@ -345,7 +378,9 @@ canvas.width = canvas.width;   // 故意重新賦值,觸發完整清空+狀態�
 | 填色覆蓋 | ✅ 擦成該色 | ❌ 保留 | 需要不透明底色時 |
 | `canvas.width = ...` | ✅ | ✅ **連 transform 都重置** | 想徹底重來,或 resize 時 |
 
-> **常見 bug**:有人想「順便清掉變換」就每幀用 `canvas.width = canvas.width`,結果把 1.4 設好的 `ctx.scale(dpr)` 也清掉了 → Retina 上又變糊。**記住:重設緩衝區是核彈,會清掉你所有的 context 設定(包括 HiDPI 縮放)。** 一般迴圈請老實用 `clearRect`。
+> **常見 bug**:有人想「順便清掉變換」就每幀用 `canvas.width = canvas.width`,結果把 1.4 設好的 `ctx.scale(dpr)` 也清掉了 → 之後用邏輯座標畫的東西全部縮成 1/DPR、擠在左上角(DPR=2 時只剩左上四分之一)。**記住:重設緩衝區是核彈,會清掉你所有的 context 設定(包括 HiDPI 縮放),還會重新配置整塊緩衝區。** 一般迴圈請老實用 `clearRect`;只想把狀態歸零,較新的瀏覽器有 `ctx.reset()`(不重新配置緩衝區)。
+
+> ⚠️ `clearRect` 也受 transform 與 clip 影響:清除範圍會跟著變換移動、縮放,且只清裁切區(第 02 章)以內。加上第 03 章的相機後,每幀要先 `setTransform(dpr, 0, 0, dpr, 0, 0)` 再清。
 
 ---
 
@@ -353,13 +388,13 @@ canvas.width = canvas.width;   // 故意重新賦值,觸發完整清空+狀態�
 
 Canvas 沒畫出東西時不會報錯(因為對它來說「你只是下了不產生可見像素的命令」),所以特別難 debug。畫不出來時,照這張表逐項檢查:
 
-1. **canvas 緩衝區尺寸是 0 或預設 300×150?**(忘了設 `canvas.width`,或被 CSS 擠成 0)
+1. **canvas 緩衝區尺寸是 0 或預設 300×150?**(忘了設 `canvas.width`;或在 display:none/尚未排版時量到 0 又設了回去;或 HiDPI 放大後超過行動瀏覽器的畫布上限)
 2. **CSS 把 canvas 的顯示尺寸設成 0 / display:none?**(看得到元素但畫不出)
 3. **`getContext` 拿到 `null`?**(打錯 `'2d'`、或這塊畫布已綁過別種 context)
-4. **顏色沒設、或設成跟背景同色?**(`fillStyle` 預設黑色;白底畫黑字才看得到)
+4. **顏色沒設、設成跟背景同色、或色碼寫錯?**(`fillStyle` 預設黑色;給無效色碼不會報錯,而是沿用上一個顏色)
 5. **`fill()` / `stroke()` 忘了呼叫?**(只 `arc()` 不 `fill()`,等於只「規劃路徑」沒「落筆」,見第 02 章)
 6. **忘了 `beginPath()`?**(路徑會累積到上一個,畫出莫名其妙的線,第 02 章詳述)
-7. **座標畫到畫布外?**(x/y 是負的或超過寬高,或被 transform 推出去了,第 03 章)
+7. **座標畫到畫布外、或是 `NaN`?**(x/y 是負的或超過寬高,或被 transform 推出去了,第 03 章;算出 `NaN` 的命令會被默默忽略)
 8. **被 `clearRect` 或下一幀立刻擦掉了?**(在迴圈裡畫完馬上又清)
 9. **圖片還沒載入就 `drawImage`?**(要等 `img.onload`,第 04 章)
 10. **`globalAlpha` 被設成 0、或 `clip()` 把區域裁沒了?**(狀態殘留,第 02 章)
@@ -375,7 +410,7 @@ Canvas 沒畫出東西時不會報錯(因為對它來說「你只是下了不產
 - **取得 context**:`<canvas>` 是畫框,`getContext('2d')` 是畫筆;一塊畫布只能綁一種 context。
 - **座標系**:原點左上、x 右 y **下**(跟數學課相反)。
 - **尺寸雙重性**:`width/height` 屬性(緩衝區像素)≠ CSS 尺寸(顯示大小),不匹配就拉伸糊掉。
-- **HiDPI 解法**:緩衝區 ×DPR、CSS 維持邏輯尺寸、`ctx.scale(dpr)`——幕後放大、台前不變,清晰度免費翻倍。
+- **HiDPI 解法**:緩衝區 ×DPR、CSS 維持邏輯尺寸、`ctx.scale(dpr)`——幕後放大、台前不變,清晰度翻倍(代價是 DPR² 倍的像素);DPR 會變,要監聽。
 - **渲染迴圈**:用 `requestAnimationFrame` 跑「清→算→畫」三拍子;畫面物件是錯覺,真正存在的是你維護的 JS 資料。
 - **清空的三種方式**與「重設緩衝區會連 transform 一起清掉」的陷阱。
 
@@ -405,8 +440,8 @@ Canvas 沒畫出東西時不會報錯(因為對它來說「你只是下了不產
     // ---- HiDPI 設定(1.4 的函式):緩衝區 ×DPR,CSS 維持邏輯尺寸,再 scale ----
     function setupHiDPICanvas(canvas, w, h) {
       const dpr = window.devicePixelRatio || 1;
-      canvas.width = w * dpr;
-      canvas.height = h * dpr;
+      canvas.width = Math.round(w * dpr);
+      canvas.height = Math.round(h * dpr);
       canvas.style.width = w + 'px';
       canvas.style.height = h + 'px';
       const ctx = canvas.getContext('2d');
@@ -433,9 +468,11 @@ Canvas 沒畫出東西時不會報錯(因為對它來說「你只是下了不產
       for (const b of balls) {
         b.x += b.vx;
         b.y += b.vy;
-        // 撞牆反彈:碰到邊界就把那個方向的速度反向
-        if (b.x - b.r < 0 || b.x + b.r > W) b.vx *= -1;
-        if (b.y - b.r < 0 || b.y + b.r > H) b.vy *= -1;
+        // 撞牆反彈(1.5 的寫法):先推回牆內,再依撞到哪面牆決定速度方向
+        if (b.x - b.r < 0) { b.x = b.r; b.vx = Math.abs(b.vx); }
+        else if (b.x + b.r > W) { b.x = W - b.r; b.vx = -Math.abs(b.vx); }
+        if (b.y - b.r < 0) { b.y = b.r; b.vy = Math.abs(b.vy); }
+        else if (b.y + b.r > H) { b.y = H - b.r; b.vy = -Math.abs(b.vy); }
       }
     }
 

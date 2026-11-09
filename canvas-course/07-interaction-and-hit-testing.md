@@ -32,9 +32,10 @@ canvas.addEventListener('click', (e) => {
 ```js
 function eventToWorld(canvas, camera, e) {
   // ① 視窗座標 → 畫布內 CSS 座標(減掉 canvas 在頁面的位置)
+  //    再乘「邏輯/顯示」比例:W、H = 你的邏輯尺寸;CSS 沒縮放畫布時比例就是 1(見下方地雷 2)
   const rect = canvas.getBoundingClientRect();
-  const cssX = e.clientX - rect.left;
-  const cssY = e.clientY - rect.top;
+  const cssX = (e.clientX - rect.left) * (W / rect.width);
+  const cssY = (e.clientY - rect.top)  * (H / rect.height);
 
   // ② 畫布座標 → 世界座標(套用相機逆變換,第 03 章 screenToWorld)
   return {
@@ -47,7 +48,7 @@ function eventToWorld(canvas, camera, e) {
 > ⚠️ 三個常見錯誤:
 > ① 用 `e.offsetX` 當畫布座標(看起來方便,其實有三個地雷,下面專門展開);
 > ② 忘了套相機逆變換,平移縮放後命中全亂;
-> ③ HiDPI 處理不一致(第 01 章我們在 context 上 `scale(dpr)`,所以這裡用 CSS 座標即可,不用乘 dpr——但要跟你的繪圖座標系**保持一致**)。
+> ③ HiDPI 處理不一致(第 01 章我們在 context 上 `scale(dpr)`,所以這裡用 CSS 座標即可,不用乘 dpr——但要跟你的繪圖座標系**保持一致**;例外是 `isPointInPath` 與 `getImageData`,它們吃的是緩衝區像素,見 7.4、7.6)。
 
 **之後所有命中判斷,都用這個 world point 跟物件的世界座標比。** 把它做對,後面才有意義。
 
@@ -55,7 +56,7 @@ function eventToWorld(canvas, camera, e) {
 
 `e.offsetX/Y` 的定義是「滑鼠相對**事件目標(`e.target`)**的座標」。乍看正是我們要的東西,在簡單頁面上也真的能用——但它有三個地雷,正式專案幾乎都會踩到其中一個:
 
-**地雷 1:它相對的是 `e.target`,不保證是你的 canvas。** 只要監聽器掛在父容器上(事件委派),或 canvas 上疊了別的元素(浮動工具列、tooltip、第 11 章的分層 canvas),`e.target` 就是「滑鼠底下實際壓到的那個元素」,`offsetX` 跟著變成相對那個元素的座標——滑鼠劃過工具列的瞬間,座標整組亂跳,而且時好時壞極難 debug。`e.clientX - rect.left` 則永遠是相對「你指定的那塊 canvas」在量,跟監聽器掛在哪、滑鼠底下壓到誰都無關。
+**地雷 1:它相對的是 `e.target`,不保證是你的 canvas。** 只要監聽器掛在父容器或 `window` 上(事件委派、拖曳時常見),`e.target` 就是「滑鼠底下實際壓到的那個元素」(canvas 上疊的浮動工具列、tooltip、第 11 章的分層 canvas 都可能是它),`offsetX` 跟著變成相對那個元素的座標——滑鼠劃過工具列的瞬間,座標整組亂跳,而且時好時壞極難 debug。`e.clientX - rect.left` 則永遠是相對「你指定的那塊 canvas」在量,跟監聽器掛在哪、滑鼠底下壓到誰都無關。
 
 **地雷 2:CSS 把畫布縮放顯示時,你需要 `rect` 才換算得回繪圖座標。** 本課的範例都讓「CSS 顯示尺寸 = 邏輯尺寸」,所以座標直接相減就對。但 RWD 版面常寫 `canvas { width: 100% }`——假設邏輯寬 800 的畫布被版面擠成只顯示 600px(只設 `width` 時,瀏覽器會照畫布的長寬比自動縮 `height`,屬於**等比縮放**),滑鼠點在畫布正中央:`offsetX` 回報 300(顯示尺寸的一半),但在你的繪圖座標系裡那個點是 400,全部命中判斷都會歪。正確換算需要「此刻實際顯示的尺寸」:
 
@@ -67,7 +68,7 @@ const y = (e.clientY - rect.top)  * (H / rect.height);   // 先量顯示位置,�
 
 注意公式的 x、y **各用各的比例**:等比縮放時兩個比例相同,算出來自然對;若 CSS 同時指定了 `width` 和 `height`(例如 `width: 100%; height: 300px`),畫布會被**非等比拉伸**,兩個比例就不一樣了——這個寫法連這種情況也一併算對。
 
-`rect.width/height` 就是畫布此刻實際顯示的大小(連 `transform: scale` 的效果都反映在內),縮放比例自然就有了。`offsetX` 給不了這個資訊,而且它在 CSS transform 下的行為各瀏覽器不一致,想修正也無從修起。
+`rect.width/height` 就是畫布此刻實際顯示的大小(連 `transform: scale` 的效果都反映在內),縮放比例自然就有了;`offsetX` 不會替你換算這種版面縮放。上面的 `eventToWorld` 已經把這個比例算進去。注意 rect 法只處理平移與縮放:canvas 或祖先元素有 `rotate`/`skew` 時,`getBoundingClientRect` 回傳的是**軸對齊的外框**,公式會算錯,得改用那個 transform 的逆矩陣(第 03 章 3.6 的 `DOMMatrix.inverse()`)反算。
 
 **地雷 3:border/padding 造成的偏移——兩種方法都會中,最穩是別放在 canvas 上。** canvas 的繪圖區是 content box:`offsetX` 從 padding edge 起算,canvas 有 `padding` 就偏;`rect.left` 是 border box 外緣,有 `border` 或 `padding` 就偏。與其背修正公式,**不如把框線和留白放到外層容器上**——要框線就包一層 `<div>` 讓它畫,canvas 本身保持乾淨,哪種算法都準。
 
@@ -163,14 +164,16 @@ function pointInPolygon(p, points) {   // points: 多邊形頂點 [{x,y}, ...],�
 
 如果把 p 換成 `(5, 2)`:`5 < 4` → false,交點在 p 的左邊,射線往右射就碰不到這條邊了。
 
-> **條件 1 那兩個 `>`,為什麼是 `>` 而不是 `>=`?** 指的是 `(yi > p.y)` 和 `(yj > p.y)` 這兩個比較。它們在問「這個端點在射線上方嗎」,而**當端點的 y 剛好等於 `p.y`(頂點正好落在射線上)時,用 `>` 會把它判成「不在上方」**——等於規定「剛好同高」一律算下方。這個看似隨便的選擇,是為了處理「射線剛好穿過一個頂點」這種邊界情形。
+> **條件 1 那兩個 `>`,為什麼是 `>` 而不是 `>=`?** 指的是 `(yi > p.y)` 和 `(yj > p.y)` 這兩個比較。它們在問「這個端點的 y 比射線大嗎」(Canvas 的 y 向下,也就是畫面上在射線下方),而**當端點的 y 剛好等於 `p.y`(頂點正好落在射線上)時,用 `>` 會把它判成「否」**——等於規定「剛好同高」一律歸到 y 較小的那一側。這個看似隨便的選擇,是為了處理「射線剛好穿過一個頂點」這種邊界情形。
 >
-> 為什麼會出問題?一個頂點是**兩條邊共用**的端點。射線剛好穿過它時,這兩條邊都碰到了射線——如果規則不一致,可能兩條邊各數一次(多算 2 次)、或兩條都不數,奇偶就亂了。而「同高一律算下方」這個統一約定,會讓結果永遠正確:
+> 為什麼會出問題?一個頂點是**兩條邊共用**的端點。射線剛好穿過它時,這兩條邊都碰到了射線——如果規則不一致,可能兩條邊各數一次(多算 2 次)、或兩條都不數,奇偶就亂了。而「同高一律歸到同一側」這個統一約定,會讓結果永遠正確:
 >
 > - 邊界**真的穿過**那個頂點(頂點一邊高、一邊低):只有一條邊會被數到 → 剛好算 1 次 ✓
 > - 邊界**只是碰一下就回去**(頂點是往上的尖角或往下的凹谷,兩邊同高同側):兩條邊要嘛都不數、要嘛都數 → 算 0 或 2 次(偶數,等於沒穿過)✓
 >
 > 你不用背這些情形,只要記住:**`>`(而非 `>=`)是射線法的標準約定,用來讓「射線壓到頂點」時不會重複計數,照抄即可。**
+
+> **射線法數奇偶,等於 `evenodd` 填色規則;Canvas 的 `fill()` 與 `isPointInPath()` 預設卻是 `nonzero`(第 02 章的填色規則)。** 一般多邊形兩者結果相同,差別出在**自交**的多邊形:照星形順序連起來的五角星,中央那塊 `fill()` 會填滿,射線法卻判在外——看得到卻點不到。原則跟 7.2 一樣:**畫用哪個規則,命中就用哪個規則**。要嘛畫的時候寫 `ctx.fill(path, 'evenodd')`,要嘛命中改用 `isPointInPath(path, x, y)`(第 4 個參數就是填色規則,預設 `'nonzero'`)。
 
 ### 點在「線段附近」(線/連接線的命中)
 
@@ -219,7 +222,7 @@ function pointNearSegment(p, a, b, tolerance = 5) {
 - `(p.x - a.x, p.y - a.y)` 是向量 `a→p`(從線段起點指向查詢點)
 - `(dx, dy)` 是向量 `a→b`(線段本身的方向)
 
-內積的幾何意義是「**`a→p` 有多長的影子投在線段方向上**」——想像太陽垂直照在線段上,`a→p` 這根棍子在線段上的影子有多長。影子越長,垂足離 a 越遠。
+內積的幾何意義跟「**`a→p` 有多長的影子投在線段方向上**」有關——想像太陽垂直照在線段上,`a→p` 這根棍子在線段上的影子有多長。影子越長,垂足離 a 越遠。
 
 但內積算出來的影子還帶著線段長度的倍率,不是「比例」。所以**除以 `len2`(長度平方)**把它歸一化:除一次長度把影子換成實際距離、再除一次長度換成「佔整條線段的比例」,結果就是 0~1 的 `t`(0=垂足在 a、1=在 b)。
 
@@ -231,9 +234,24 @@ function pointNearSegment(p, a, b, tolerance = 5) {
 
 再往下一行 `c = a + t×(b-a) = (0 + 0.3×10, 0) = (3, 0)`——正是 `p=(3,4)` 垂直落到線段上的點,恰好在整條線段 0.3 的位置。完全吻合。
 
-> **一句話**:內積負責「把 `a→p` 投影到線段方向、量出影子長度」,除以 `len2` 負責「把影子長度換算成 0~1 的比例」。這個「投影到某方向再化成比例」的向量手法,和 3.6 的座標換算、6.5 的 tween 進度 `t` 是同一套直覺。
+> **一句話**:內積負責「把 `a→p` 投影到線段方向」(得到影子長度 × 線段長度),除以 `len2` 負責「把它換算成 0~1 的比例」。這個「投影到某方向再化成比例」的向量手法,和 3.6 的座標換算、6.5 的 tween 進度 `t` 是同一套直覺。
+
+> **容差要以螢幕像素為準。** 預設的 `tolerance = 5` 是**世界單位**:相機 zoom = 4 時等於螢幕上 20px,zoom = 0.25 只剩 1.25px,手感忽鬆忽緊。手感一致的寫法是 `pointNearSegment(p, a, b, HIT_PX / camera.zoom + line.width / 2)`——`HIT_PX`(例如 5)是螢幕上的容差,換成世界單位要除以 zoom,再加上線本身半個線寬。
 
 > **心智模型**:幾何命中是「**用座標和半徑/邊界算數學**」。快、精確、不佔記憶體,適合形狀規則(矩形、圓、多邊形)的場景。缺點是每種形狀要寫一套,且旋轉/縮放過的形狀要先把點轉回形狀的本地座標系(用第 03 章的逆變換)再判斷。
+
+以最常見的旋轉矩形為例:
+
+```js
+function pointInRotatedRect(p, r) {                        // r: { cx, cy, w, h, angle }(中心點 + 弧度)
+  const dx = p.x - r.cx, dy = p.y - r.cy;                  // 先移到「以矩形中心為原點」
+  const c = Math.cos(-r.angle), s = Math.sin(-r.angle);    // 轉 -angle = 抵銷矩形自己的旋轉
+  const lx = dx * c - dy * s, ly = dx * s + dy * c;        // 點在矩形本地座標系裡的位置
+  return Math.abs(lx) <= r.w / 2 && Math.abs(ly) <= r.h / 2;   // 回到未旋轉矩形的判斷
+}
+```
+
+旋轉後的**軸對齊包圍盒(AABB)**也常用到(7.7 的空間索引、框選):寬 = `|w·cos θ| + |h·sin θ|`、高 = `|w·sin θ| + |h·cos θ|`,中心不變。
 
 ---
 
@@ -243,28 +261,36 @@ function pointNearSegment(p, a, b, tolerance = 5) {
 
 ```js
 ctx.beginPath();
-ctx.arc(100, 100, 40, 0, Math.PI * 2);   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角) → 在 (100,100) 畫半徑 40 的整圓
-if (ctx.isPointInPath(mouseX, mouseY)) {  // 注意:用「畫布座標」,且受當前變換影響
+ctx.arc(100, 100, 40, 0, Math.PI * 2);   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角) → 在 (100,100) 畫半徑 40 的整圓;每個點在加入當下就被「當時的矩陣」變換
+if (ctx.isPointInPath(cssX * dpr, cssY * dpr)) {  // isPointInPath(x, y) → x, y 是緩衝區像素,不受目前變換影響
   console.log('命中圓');
 }
-ctx.isPointInStroke(mouseX, mouseY);      // 是否在「描邊線」上(命中細線好用)
+ctx.isPointInStroke(cssX * dpr, cssY * dpr);      // 是否在「描邊線」上;粗細看的是目前的 lineWidth
 ```
 
-問題:每次判斷都要重建路徑,而且座標系要對。更好的做法是用 **`Path2D` 物件把路徑存起來**,重複使用:
+**座標系是這裡最常踩的坑**:傳進去的點**不吃**變換、單位是緩衝區像素(跟 7.6 的 `getImageData` 同一條規則,見第 03 章 3.4 的總表),被變換的是**路徑**。本課的畫布都 `scale(dpr)` 過,所以 CSS 座標要乘 dpr;直接傳 CSS 座標,在 dpr = 1 的外接螢幕上剛好對,一換到 Retina 就歪。
+
+另一個問題:每次判斷都要重建路徑。更好的做法是用 **`Path2D` 物件把路徑存起來**,重複使用:
 
 ```js
-// 建立時就把每個物件的路徑存成 Path2D
+// 建立時就把每個物件的路徑存成 Path2D(用世界座標)
 const circlePath = new Path2D();
 circlePath.arc(100, 100, 40, 0, Math.PI * 2);   // arc(圓心x, 圓心y, 半徑, 起始角, 結束角) → 圓心 (100,100)、半徑 40 的整圓
 
-// 畫的時候直接用
+// 畫的時候直接用(套著 dpr 與相機畫)
 ctx.fill(circlePath);
 
-// 命中判斷:傳入 Path2D,不用重建
-if (ctx.isPointInPath(circlePath, mouseX, mouseY)) { /* 命中 */ }
+// 命中判斷:傳入 Path2D,不用重建。Path2D 在「呼叫當下」才被目前矩陣變換,
+// 所以暫時重設成單位矩陣 → 路徑停在世界座標,點也直接傳世界座標(7.2 eventToWorld 的結果)
+ctx.save();
+ctx.setTransform(1, 0, 0, 1, 0, 0);       // setTransform(a,b,c,d,e,f) → 單位矩陣:dpr、相機都不參與
+const hit = ctx.isPointInPath(circlePath, world.x, world.y);   // isPointInPath(path, x, y, 填色規則) → 規則預設 'nonzero'
+ctx.restore();
 ```
 
-> **取捨**:`isPointInPath` 的好處是「畫什麼形狀就能命中什麼形狀」,不用為每種形狀寫數學;壞處是它受 context 當前變換影響(座標要對齊),且大量物件時逐一呼叫不夠快。**規則形狀用 7.3 的數學、不規則形狀用 `Path2D` + `isPointInPath`** 是常見搭配。
+`isPointInStroke` 用的是 context **目前的** `lineWidth`/`lineCap`/`lineJoin`。1px 的細線幾乎點不到,所以在同一段 `save`/`restore` 裡暫時加寬當容差:`ctx.lineWidth = line.width + 2 * HIT_PX / camera.zoom`(單位矩陣下線寬是世界單位,螢幕容差要除以 zoom,同 7.3),再呼叫 `ctx.isPointInStroke(line.path, world.x, world.y)`。
+
+> **取捨**:`isPointInPath` 的好處是「畫什麼形狀就能命中什麼形狀」,不用為每種形狀寫數學;壞處是座標系容易搞混(點不吃變換、路徑吃變換),且大量物件時逐一呼叫不夠快。**規則形狀用 7.3 的數學、不規則形狀用 `Path2D` + `isPointInPath`** 是常見搭配。
 
 ---
 
@@ -298,52 +324,64 @@ function hitTest(worldPoint, scene) {
 
 1. 開一張**離屏 canvas**(跟主畫布一樣大,但不顯示)。
 2. 把每個物件用一個**獨一無二的純色**(當作它的 ID)畫到這張離屏 canvas 上(形狀跟主畫布完全一樣)。
-3. 命中時,讀離屏 canvas 上**滑鼠螢幕位置那一點的顏色**(`getImageData` 1×1),把顏色換算回物件 ID。
+3. 命中時,讀離屏 canvas 上**滑鼠螢幕位置那一點的顏色**(`getImageData` 1×1),查表換回物件。
 
 ```js
-// 把 index 編碼成顏色(支援 ~1670 萬個物件)
-function idToColor(id) {
-  return `rgb(${(id >> 16) & 255}, ${(id >> 8) & 255}, ${id & 255})`;
+// 每個物件配一個「隨機、不重複」的顏色當 ID(24 位元,支援 ~1670 萬個物件),用 Map 反查。
+// 不用 1、2、3… 連號:抗鋸齒邊緣會把顏色混成「另一個存在的 ID」(見下方 ⚠️)
+const colorToShape = new Map();                // 顏色整數 0xRRGGBB → 物件
+function assignHitColor(shape) {
+  let key;
+  do { key = (Math.random() * 0xFFFFFF) | 0; } while (key === 0 || colorToShape.has(key));   // 0 留給「空白」
+  colorToShape.set(key, shape);
+  shape.hitColor = '#' + key.toString(16).padStart(6, '0');   // 例:0x3fa2c1 → '#3fa2c1'
 }
-function colorToId(r, g, b) {
-  return (r << 16) | (g << 8) | b;
-}
+scene.forEach(assignHitColor);
 
 // hit canvas 用「1:1 邏輯尺寸」(不做 dpr 縮放——命中不需要高解析度,還更省),
 // 但要套用「跟主畫布相同的相機」,讓每個形狀落在相同的螢幕位置。
+const hitCanvas = document.createElement('canvas');
+hitCanvas.width = W; hitCanvas.height = H;
+const hitCtx = hitCanvas.getContext('2d', { willReadFrequently: true });   // 頻繁 getImageData 的提示(第 05 章)
+
 function renderHitCanvas(hitCtx, scene) {
   hitCtx.setTransform(1, 0, 0, 1, 0, 0);      // setTransform(a,b,c,d,e,f) → 重設為單位矩陣(1:1、無縮放/旋轉/平移)
-  hitCtx.clearRect(0, 0, W, H);               // 清成透明 → RGB 讀回 0 = 空白(見下方注)
-  hitCtx.imageSmoothingEnabled = false;       // 關平滑!否則邊緣混色,ID 算錯
+  hitCtx.clearRect(0, 0, W, H);               // 清成透明 → alpha 讀回 0 = 空白
   hitCtx.save();
   applyCamera(hitCtx);                        // ★ 跟主畫布同一個相機,座標才對得上
-  scene.forEach((shape, i) => {
-    hitCtx.fillStyle = idToColor(i + 1);      // i+1:留 0 當「空白」
-    shape.drawShapeOnly(hitCtx);              // 用純色畫同樣形狀(不畫漸層/紋理)
-  });
+  for (const shape of scene) {                // 由下往上疊,上層蓋掉下層,z-order 自動正確
+    hitCtx.fillStyle = shape.hitColor;
+    shape.drawShapeOnly(hitCtx);              // 用純色畫同樣形狀(不畫漸層/紋理/陰影,globalAlpha 維持 1)
+  }
   hitCtx.restore();
 }
 
 // 注意:傳入的是「螢幕座標(CSS 像素)」,不是世界座標——
 // 因為 hit canvas 已套相機,形狀就畫在螢幕位置上。
-function hitTestByColor(hitCtx, cssX, cssY, scene) {
-  const [r, g, b] = hitCtx.getImageData(cssX, cssY, 1, 1).data;
-  const id = colorToId(r, g, b);
-  return id === 0 ? null : scene[id - 1];
+function hitTestByColor(hitCtx, cssX, cssY) {
+  const [r, g, b, a] = hitCtx.getImageData(cssX, cssY, 1, 1).data;   // getImageData(sx, sy, sw, sh) → 讀 1×1
+  if (a !== 255) return null;                 // 透明 = 空白;半透明 = 抗鋸齒邊緣,不可信
+  return colorToShape.get((r << 16) | (g << 8) | b) ?? null;   // 查不到 = 兩色混出來的,當沒命中
 }
 ```
 
+> ⚠️ **抗鋸齒關不掉**:`imageSmoothingEnabled` 只管 `drawImage`、pattern 縮放時的插值;**Canvas 2D 沒有任何開關能關掉 `fill`/`stroke` 的抗鋸齒**。所以形狀邊緣一定有半透明、顏色是混出來的像素:
+> - 邊緣貼著透明背景:顏色以預乘 alpha 存放,讀回時有捨入誤差,`rgb(0,0,2)` 的邊緣可能讀成 `(0,0,1)`——ID 連號的話,就變成另一個物件。
+> - 兩個形狀重疊的交界:像素完全不透明,顏色卻介於兩個 ID 之間,只檢查 alpha 擋不住。
+>
+> 所以上面的程式做了三件事:**alpha 必須 255**、**ID 色隨機打散**(混出來的顏色幾乎不可能剛好是另一個登記過的 ID)、**用 Map 反查**(查不到就當沒命中)。代價是形狀最外圈約 1px 判為沒命中;在意的話,對那一點退回 7.3 的幾何測試即可。WebGL 的 GPU picking 沒有這個煩惱,因為它能把 ID 畫到不做抗鋸齒的 framebuffer 上。
+
 > ⚠️ **兩個一定要對的座標細節(否則 Retina 上必踩,且會跟第 05 章打架)**:
 > ① `getImageData` 永遠用**緩衝區的物理像素**座標(第 05 章 5.4 的鐵則),不受 `ctx` 變換影響。本例把 hit canvas 設成 **1:1 邏輯尺寸**(`setTransform(1,…)`、buffer = CSS 尺寸),所以能直接用 CSS 螢幕座標讀;若你比照主畫布也 `scale(dpr)`,就得改成 `getImageData(cssX * dpr, cssY * dpr, …)`。
-> ② 讀的是**螢幕座標**而非世界座標——因為 hit canvas 套了同一個相機,形狀已落在螢幕位置。所以這裡只取到「CSS 螢幕座標」那一步(`e.clientX - rect.left`)即可,**不要**再做 7.2 的 `screenToWorld`。
+> ② 讀的是**螢幕座標**而非世界座標——因為 hit canvas 套了同一個相機,形狀已落在螢幕位置。所以這裡只取到 7.2 `eventToWorld` 第 ① 步的 `cssX`/`cssY` 即可,**不要**再套相機逆變換。
 
 | | 幾何數學(7.3) | 隱藏色彩緩衝(7.6) |
 |---|----------------|---------------------|
-| 精度 | 形狀的數學邊界 | **像素級精準**(連複雜路徑、文字邊緣都準) |
-| 複雜形狀 | 難 | **免費**(畫得出來就命中得到) |
+| 精度 | 形狀的數學邊界 | 約 1 個 CSS 像素(hit canvas 是 1:1);形狀最外圈 1px 不可靠 |
+| 複雜形狀 | 難 | **免費**(畫得出來就命中得到,連文字都行) |
 | 速度 | 視物件數 | 命中是 O(1)(只讀一個像素) |
-| 成本 | 無額外記憶體 | 多一張全尺寸 canvas + 每次變動要重畫它 |
-| 坑 | — | 必須關 `imageSmoothingEnabled`,否則抗鋸齒混色讓 ID 錯亂 |
+| 成本 | 無額外記憶體 | 多一張全尺寸 canvas + 變動後要重畫它(可等到真的要命中時才畫) |
+| 坑 | — | 抗鋸齒關不掉:要檢查 alpha = 255、ID 色隨機打散並用 Map 反查 |
 
 > **心智模型**:用「顏色」當物件的隱形指紋。你看到的是漂亮的主畫布,背後有一張「身分證畫布」每個物件塗著自己的 ID 色;點哪裡,就看背後那點是誰的顏色。WebGL 也常用這招(叫 GPU picking)。**它把「複雜形狀命中」這個難題,轉化成「讀一個像素」這個簡單操作**——非常優雅。
 
@@ -368,6 +406,8 @@ function hitTestByColor(hitCtx, cssX, cssY, scene) {
    └───────────┘
 ```
 
+實作有兩個細節常漏:① 物件要依它的 AABB(旋轉過的用 7.3 末的公式)放進**所有跨到的格子**,移動後要從舊格移除、放進新格;② 從格子撈出來的只是**候選**,已經失去 z-order——要先依繪製順序由上到下排好,再逐一做 7.3 的精確判斷,7.5「取最上層」才會成立。這種「先粗篩(broad phase)、再細判(narrow phase)」的兩段式,碰撞偵測也一樣。
+
 > **心智模型**:空間索引就像圖書館的分類——你不會把每本書都翻過才找到要的,你直接去那一櫃。**O(n) → O(log n) 或接近 O(1)**。但別過早優化:幾百個物件用 7.5 的線性掃就夠了,**先量測再決定要不要上空間索引**(呼應第 09 章「先測量」)。碰撞偵測(粒子、遊戲)也用同一套結構。
 
 ---
@@ -385,6 +425,7 @@ const W = 800, H = 500;
 const dpr = window.devicePixelRatio || 1;                 // HiDPI(第 01 章)
 canvas.width = W * dpr; canvas.height = H * dpr;
 canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
+canvas.style.touchAction = 'none';                        // 觸控拖曳不要被瀏覽器拿去捲動/縮放(見下方細節)
 ctx.scale(dpr, dpr);
 
 const camera = { x: 0, y: 0, zoom: 1 };                   // 相機(第 03 章),這裡用最單純的無平移縮放
@@ -392,7 +433,7 @@ function applyCamera(ctx) { ctx.scale(camera.zoom, camera.zoom); ctx.translate(-
 
 function eventToWorld(canvas, camera, e) {                // 7.2:事件座標 → 世界座標
   const rect = canvas.getBoundingClientRect();
-  const cssX = e.clientX - rect.left, cssY = e.clientY - rect.top;
+  const cssX = (e.clientX - rect.left) * (W / rect.width), cssY = (e.clientY - rect.top) * (H / rect.height);
   return { x: cssX / camera.zoom + camera.x, y: cssY / camera.zoom + camera.y };
 }
 
@@ -451,8 +492,10 @@ let hovered = null;
 let selected = null;
 let dragging = null;
 let dragOffset = { x: 0, y: 0 };
+let activeId = null;                            // 正在拖曳的那根指標(e.pointerId);null = 沒有
 
 canvas.addEventListener('pointermove', (e) => {
+  if (activeId !== null && e.pointerId !== activeId) return;   // 拖曳中,別根手指的移動不理
   const p = eventToWorld(canvas, camera, e);   // 7.2
 
   if (dragging) {
@@ -473,20 +516,32 @@ canvas.addEventListener('pointermove', (e) => {
 });
 
 canvas.addEventListener('pointerdown', (e) => {
+  if (activeId !== null || e.button !== 0) return;     // 已有指標在拖 / 不是主按鍵(右鍵、中鍵)→ 不理
   const p = eventToWorld(canvas, camera, e);
   const hit = hitTest(p, scene);
   selected = hit;
   if (hit) {
     dragging = hit;
+    activeId = e.pointerId;                            // 記住是哪根指標在拖
     dragOffset = { x: p.x - hit.x, y: p.y - hit.y };   // 記住「抓在物件的哪裡」
     canvas.setPointerCapture(e.pointerId);             // 拖出畫布也持續收事件
   }
   invalidate();
 });
 
-canvas.addEventListener('pointerup', (e) => {
+function endDrag(e) {                                  // pointerup 與 pointercancel 共用
+  if (e.pointerId !== activeId) return;
   dragging = null;
-  canvas.releasePointerCapture(e.pointerId);
+  activeId = null;                                     // capture 在 pointerup/cancel 後由瀏覽器自動釋放
+}
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);     // 被系統手勢、來電等打斷:沒有 pointerup,只有它
+
+canvas.addEventListener('pointerleave', () => {        // 指標離開畫布:清掉 hover,高亮才不會殘留
+  if (dragging || !hovered) return;
+  hovered = null;
+  canvas.style.cursor = 'default';
+  invalidate();
 });
 
 // render 時根據 hovered/selected 畫高亮、選取框
@@ -512,47 +567,63 @@ requestAnimationFrame(frame);
 幾個讓互動「專業」的細節:
 
 - **`dragOffset`**:記住「按下時抓在物件的哪個相對位置」,拖曳時用它,物件才不會「跳」到滑鼠正中心。
-- **`setPointerCapture`**:即使滑鼠拖出畫布外,也能持續收到 `pointermove`,拖曳不中斷。
-- **`pointer` 事件**(而非 `mouse`):同時支援滑鼠、觸控、觸控筆,一套搞定。
+- **`setPointerCapture`**:即使滑鼠拖出畫布外,也能持續收到 `pointermove` 和 `pointerup`,拖曳不中斷。
+- **`pointer` 事件**(而非 `mouse`):同時支援滑鼠、觸控、觸控筆,但要補齊四件事才真的是「一套」:
+  - **`touch-action: none`**:不設的話,觸控拖曳會被瀏覽器拿去捲動或縮放,接著送來 `pointercancel`,拖一小段就斷。
+  - **`pointercancel` 也要結束拖曳**(或統一掛 `lostpointercapture`):被打斷時不會有 `pointerup`,不處理的話狀態卡在「拖曳中」,之後指標一動物件就被帶走。
+  - **記住 `pointerId`**,拖曳中別根手指的事件不理(也可以只收 `e.isPrimary` 的指標),否則第二根手指會搶走同一個物件、兩指的位置輪流套用而來回跳。
+  - **檢查 `e.button === 0`**:右鍵、中鍵也會觸發 `pointerdown`,不該開始拖曳。
+- **`pointerleave` 清 hover**:指標離開畫布後就收不到 `pointermove`,不清的話最後一個高亮會一直留著。
 - **游標樣式**:hover 到可拖物件時 `cursor: pointer`,給使用者明確回饋。
 - **配合 dirty flag**:只在狀態變化時 `invalidate()`,靜止不重畫(第 06 章)。
+
+正式的編輯器還會再加兩個細節:
+
+- **拖曳閾值**:按下後移動超過幾個**螢幕像素**才開始拖,點一下時的手抖才不會移動物件(第 08 章做 Undo 時,也才不會每次點選都多一筆「移動」)。做法是 `pointerdown` 先記下 `e.clientX/Y`,`pointermove` 裡 `Math.hypot(e.clientX - downX, e.clientY - downY) > 4`(觸控可放寬到 8~10)才把 `dragging` 設上去。
+- **拖完仍會收到 `click`**:按下和放開都落在 canvas 上,瀏覽器照樣派發 `click`。所以選取、拖曳都放在 `pointerdown`/`pointerup` 裡判斷,別另外掛在 `click` 上;雙擊用 `dblclick` 事件,在裡面再做一次命中測定(第 11 章雙擊編輯文字就是這樣)。
+
+> **鍵盤與無障礙也是你的工作。** 命中測定補的只是「指標」這一半;DOM 免費給的焦點、鍵盤操作與無障礙樹,canvas 一樣都沒有——螢幕閱讀器看到的只是一整塊圖。規格曾有 `addHitRegion()` 把畫布區域對應到 DOM 元素,但已從規格移除,也從未在瀏覽器預設啟用。現在的做法是在 `<canvas>` 標籤裡放可聚焦的 fallback 內容(它們會進入無障礙樹),再用 `ctx.drawFocusIfNeeded(元素)` 在畫布上畫出焦點框;完整的鍵盤操作與播報見第 11 章 11.9。
 
 ---
 
 ## 7.9 效能細節:事件節流
 
-`pointermove` 觸發**非常密集**(高刷新滑鼠每秒上百次)。如果每次都做重命中 + 重繪,會卡。標準做法:**把繪製交給 rAF,事件只更新狀態**:
+滑鼠、觸控筆的硬體取樣率可以很高(電競滑鼠每秒上千次)。主流瀏覽器多半已把 `pointermove` 合併成**每幀最多派發一次**(Chromium 從 2017 年起就對齊 rAF),但別把效能押在這上面:命中測定一貴,或同一幀還有別的事件要處理,標準做法仍是**把繪製交給 rAF,事件只更新狀態**:
 
 ```js
-let pendingPoint = null;
+let pendingScreen = null;                       // 最後的螢幕位置(還沒換成世界座標)
 canvas.addEventListener('pointermove', (e) => {
-  pendingPoint = eventToWorld(canvas, camera, e);   // 事件只記座標,不立刻處理
+  pendingScreen = { clientX: e.clientX, clientY: e.clientY };   // 事件只記座標,不立刻處理
 });
 
 function frame() {
-  if (pendingPoint) {
-    handleHover(pendingPoint);   // 一幀最多處理一次,多餘的事件被「合併」
-    pendingPoint = null;
+  if (pendingScreen) {
+    handleHover(eventToWorld(canvas, camera, pendingScreen));   // 到這一幀才換算:用的是「此刻」的相機
+    pendingScreen = null;   // 一幀最多處理一次
   }
   if (dirty) { render(); dirty = false; }
   requestAnimationFrame(frame);
 }
 ```
 
-> **心智模型**:事件來得比螢幕刷新還快是浪費——一幀內來 5 個 `pointermove`,你只需要最後一個。「**事件更新狀態、rAF 負責畫**」是把高頻事件跟渲染解耦的通用模式,呼應第 06 章 update/render 分離。
+記的是**螢幕座標**而不是世界座標:事件到下一幀之間相機可能已經縮放或平移,提早換算會拿到過期的位置。同理,物件或相機在**靜止的游標底下**移動時(動畫、縮放、拖曳結束),游標沒動也該重算 hover——把最後的螢幕座標留著,在那些時機重新設回 `pendingScreen` 即可。上面用常駐迴圈示意;改成第 06 章「需要時才排 rAF」的 `invalidate()` 也一樣:事件裡記座標、呼叫 `invalidate()`,在被排到的那一幀處理。
+
+> **被合併掉的取樣沒有消失**:`e.getCoalescedEvents()` 會回傳這次派發前被合併掉的所有中間點。hover 只要最後一點,但畫筆、手繪線需要全部,否則快速劃過時線會變成折線:`for (const ce of e.getCoalescedEvents?.() ?? [e]) addPoint(ce);`。`e.getPredictedEvents()` 則給出瀏覽器預測的下幾個點,可用來縮短筆跡跟手之間的延遲。兩者的支援度不一,像上面這樣用 `?.` 做功能偵測。
+
+> **心智模型**:畫面一幀只畫一次,一幀內不管收到幾個 `pointermove`,hover 只需要最後一個位置。「**事件更新狀態、rAF 負責畫**」是把高頻事件跟渲染解耦的通用模式,呼應第 06 章 update/render 分離。
 
 ---
 
 ## 7.10 本章小結與下一步
 
 - **核心**:Canvas 沒有 per-shape 事件,「點到誰」要自己算——這是 immediate mode 最大的洞,也是本章在補的。
-- **必經第一步**:事件座標 → 世界座標(`getBoundingClientRect` + 相機逆變換),做錯則全盤皆錯。
-- **幾何數學命中**:矩形/圓/多邊形(射線法)/線段距離;快、精確、無記憶體;比平方省開根號。
-- **`isPointInPath` + `Path2D`**:不規則形狀的內建解,把路徑存成 `Path2D` 重用。
+- **必經第一步**:事件座標 → 世界座標(`getBoundingClientRect` + 顯示比例 + 相機逆變換),做錯則全盤皆錯。
+- **幾何數學命中**:矩形/圓/多邊形(射線法)/線段距離/旋轉矩形;快、精確、無記憶體;比平方省開根號;填色規則與容差要跟畫面一致。
+- **`isPointInPath` + `Path2D`**:不規則形狀的內建解,把路徑存成 `Path2D` 重用;傳入的點不吃變換、單位是緩衝區像素。
 - **多物件**:反向遍歷取最上層(由上往下找)。
-- **隱藏色彩緩衝**:用顏色當 ID,把「複雜形狀命中」變成「讀一個像素」,像素級精準、O(1)——記得關平滑。
-- **空間索引**:大量物件用網格/四叉樹避免 O(n);但先測量再優化。
-- **完整互動**:hover/選取/拖曳要有 `dragOffset`、`setPointerCapture`、pointer 事件、dirty flag、事件節流。
+- **隱藏色彩緩衝**:用顏色當 ID,把「複雜形狀命中」變成「讀一個像素」,O(1)——抗鋸齒關不掉,ID 色要隨機打散、讀回要檢查 alpha。
+- **空間索引**:大量物件用網格/四叉樹避免 O(n);候選要按 z-order 重排;但先測量再優化。
+- **完整互動**:hover/選取/拖曳要有 `dragOffset`、`setPointerCapture`、`touch-action: none`、`pointercancel`、`pointerId` 與 `button` 過濾、`pointerleave` 清 hover、dirty flag、事件節流。
 
 **下一章(08)**,我們把目前散落的物件資料,正式組織成一個 **場景圖(scene graph)**——也就是在 immediate mode 之上,親手蓋出一層 retained mode。你會發現自己重建了 Konva / Fabric 這類庫的核心,並因此解鎖三個 immediate mode 一直缺的能力:**階層/群組、Undo/Redo(兌現第 02 章伏筆)、以及序列化存檔**。引擎即將成形。
 
@@ -568,13 +639,15 @@ function frame() {
 <head><meta charset="utf-8"><title>第 07 章作業:可點選的圖形編輯器雛形</title>
 <style>
   body { font-family: sans-serif; }
-  canvas { border: 1px solid #ccc; margin-top: 8px; }
+  /* 框線畫在外層容器上,canvas 本身不加 border/padding(7.2 地雷 3) */
+  .frame { display: inline-block; border: 1px solid #ccc; margin-top: 8px; }
+  canvas { display: block; touch-action: none; }   /* block:去掉行內元素底下的空隙;touch-action:觸控拖曳不被瀏覽器手勢吃掉(7.8) */
 </style></head>
 <body>
-  <!-- 挑戰題的開關:同一套互動,底下換兩種命中測定實作,手感應該一模一樣 -->
+  <!-- 挑戰題的開關:同一套互動,底下換兩種命中測定實作,手感應該幾乎一樣(色彩法在圓的最外圈約 1px 會判為沒命中,見 7.6) -->
   <label><input type="checkbox" id="colorHit"> 用 7.6 的隱藏色彩緩衝做命中(取代數學命中)</label>
   <br>
-  <canvas id="stage"></canvas>
+  <div class="frame"><canvas id="stage"></canvas></div>
   <script>
     const canvas = document.querySelector('#stage');
     const colorHitBox = document.querySelector('#colorHit');
@@ -607,6 +680,7 @@ function frame() {
     let selected = null;                 // 點擊選取的圓
     let dragging = null;                 // 正在拖曳的圓
     let dragOffset = { x: 0, y: 0 };     // 按下時「抓在圓的哪裡」
+    let activeId = null;                 // 正在拖曳的那根指標(7.8)
     let dirty = true;                    // 第 06 章:按需渲染的 dirty flag
     function invalidate() { dirty = true; }
 
@@ -630,34 +704,38 @@ function frame() {
       return null;   // 點到空白
     }
 
-    // ---- 7.6:把 index 編碼成顏色畫到隱藏畫布,命中 = 讀 1 個像素 ----
-    function idToColor(id) {
-      return 'rgb(' + ((id >> 16) & 255) + ',' + ((id >> 8) & 255) + ',' + (id & 255) + ')';
+    // ---- 7.6:每個圓配一個隨機、不重複的 ID 色畫到隱藏畫布,命中 = 讀 1 個像素再查表 ----
+    const colorToCircle = new Map();             // 顏色整數 0xRRGGBB → 圓
+    for (const c of circles) {
+      let key;
+      do { key = (Math.random() * 0xFFFFFF) | 0; } while (key === 0 || colorToCircle.has(key));   // 0 留給「空白」
+      colorToCircle.set(key, c);
+      c.hitColor = '#' + key.toString(16).padStart(6, '0');   // 不連號:抗鋸齒混出來的顏色才不會剛好是別的圓
     }
     function renderHitCanvas() {
-      hitCtx.clearRect(0, 0, W, H);              // 清成透明,RGB 讀回 0 = 空白
-      hitCtx.imageSmoothingEnabled = false;      // 關平滑,否則邊緣混色讓 ID 算錯
-      for (let i = 0; i < circles.length; i++) {
-        hitCtx.fillStyle = idToColor(i + 1);     // i+1:留 0 當「空白」
+      hitCtx.clearRect(0, 0, W, H);              // 清成透明,alpha 讀回 0 = 空白
+      for (const c of circles) {
+        hitCtx.fillStyle = c.hitColor;
         hitCtx.beginPath();
-        hitCtx.arc(circles[i].x, circles[i].y, circles[i].r, 0, Math.PI * 2);
+        hitCtx.arc(c.x, c.y, c.r, 0, Math.PI * 2);
         hitCtx.fill();                           // 由下往上疊,上層蓋掉下層,z-order 自動正確
       }
     }
     function hitTestColor(p) {
       // hit canvas 是 1:1 邏輯尺寸,直接用 CSS 座標讀(getImageData 吃緩衝區像素座標)
       const d = hitCtx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
-      const id = (d[0] << 16) | (d[1] << 8) | d[2];
-      return id === 0 ? null : circles[id - 1];
+      if (d[3] !== 255) return null;             // 透明 = 空白;半透明 = 抗鋸齒邊緣,不可信
+      return colorToCircle.get((d[0] << 16) | (d[1] << 8) | d[2]) ?? null;   // 查不到 = 混色,當沒命中
     }
 
-    // 兩種命中法用開關切換,行為應該一模一樣,程式碼複雜度自己對比
+    // 兩種命中法用開關切換,行為應該幾乎一樣,程式碼複雜度自己對比
     function hitTest(p) {
       return colorHitBox.checked ? hitTestColor(p) : hitTestMath(p);
     }
 
     // ---- 7.8:hover 高亮 + 點擊選取 + 拖曳 ----
     canvas.addEventListener('pointermove', (e) => {
+      if (activeId !== null && e.pointerId !== activeId) return;   // 拖曳中,別根手指的移動不理
       const p = eventToWorld(e);
       if (dragging) {
         // 作業要求:拖曳移動——用按下時記的偏移,圓才不會跳到滑鼠正中心
@@ -675,11 +753,13 @@ function frame() {
     });
 
     canvas.addEventListener('pointerdown', (e) => {
+      if (activeId !== null || e.button !== 0) return;     // 已有指標在拖 / 不是主按鍵 → 不理
       const p = eventToWorld(e);
       const hit = hitTest(p);
       selected = hit;                                      // 作業要求:點擊選取(點空白 = 取消選取)
       if (hit) {
         dragging = hit;
+        activeId = e.pointerId;
         dragOffset = { x: p.x - hit.x, y: p.y - hit.y };   // 記住抓在圓的哪個相對位置
         canvas.style.cursor = 'grabbing';
         canvas.setPointerCapture(e.pointerId);             // 拖出畫布也持續收事件
@@ -687,11 +767,20 @@ function frame() {
       invalidate();
     });
 
-    canvas.addEventListener('pointerup', (e) => {
-      if (!dragging) return;
+    function endDrag(e) {                                  // pointerup 與 pointercancel 共用(7.8)
+      if (e.pointerId !== activeId) return;
       dragging = null;
+      activeId = null;
       canvas.style.cursor = hovered ? 'grab' : 'default';
-      canvas.releasePointerCapture(e.pointerId);
+    }
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+
+    canvas.addEventListener('pointerleave', () => {        // 離開畫布:清掉 hover 高亮
+      if (dragging || !hovered) return;
+      hovered = null;
+      canvas.style.cursor = 'default';
+      invalidate();
     });
 
     function render() {

@@ -30,14 +30,12 @@ describe('excerpt', () => {
 
 describe('formatDate', () => {
   it('ISO 字串格式化成 zh-TW 日期', () => {
-    expect(formatDate('2025-03-08T10:20:30.000Z')).toBe(
-      new Date('2025-03-08T10:20:30.000Z').toLocaleDateString('zh-TW')
-    )
+    expect(formatDate('2025-03-08T10:20:30.000Z')).toBe('2025/3/8')
   })
 
-  it('Date 物件也吃', () => {
-    const d = new Date('2025-01-01T00:00:00.000Z')
-    expect(formatDate(d)).toBe(d.toLocaleDateString('zh-TW'))
+  it('Date 物件也吃，且固定用台北時區（UTC 20:00 在台北已是隔天）', () => {
+    const d = new Date('2025-03-08T20:00:00.000Z')
+    expect(formatDate(d)).toBe('2025/3/9')
   })
 
   it('空值或不合法的日期回傳空字串（畫面不會出現 Invalid Date）', () => {

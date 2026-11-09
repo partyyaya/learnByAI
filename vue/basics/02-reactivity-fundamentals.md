@@ -267,6 +267,9 @@ watch(() => state.age, (n, o) => { /* ... */ })
 
 // ③ 多個來源組成的陣列（任一變都觸發）
 watch([count, () => state.age], ([c, a], [pc, pa]) => { /* ... */ })
+
+// ④ 一個 reactive 物件本身（自動深層監看：內層任何屬性變都會觸發，不用另外設 deep）
+watch(state, () => { /* ... */ })
 ```
 
 > 常見錯誤：想監看 reactive 的某個屬性，寫成 `watch(state.age, ...)`——這是把「當下那個數字」傳進去，之後不會觸發。**正確是傳 getter：`watch(() => state.age, ...)`。**
@@ -330,8 +333,13 @@ watch(keyword, async (kw, _old, onCleanup) => {
   // 下次觸發前先取消上一個請求，避免舊結果蓋掉新結果
   onCleanup(() => controller.abort())
 
-  const res = await fetch(`/api/search?q=${kw}`, { signal: controller.signal })
-  result.value = await res.text()
+  try {
+    const res = await fetch(`/api/search?q=${kw}`, { signal: controller.signal })
+    result.value = await res.text()
+  } catch (err) {
+    // 被取消的請求會以 AbortError 結束，這是預期中的，忽略即可；其他錯誤照常拋出
+    if (err.name !== 'AbortError') throw err
+  }
 })
 </script>
 
@@ -340,6 +348,8 @@ watch(keyword, async (kw, _old, onCleanup) => {
   <p>{{ result }}</p>
 </template>
 ```
+
+> `abort()` 會讓還在等的 `fetch` 以 `AbortError` 失敗。少了 `try/catch` 的話，每次取消舊請求，console 都會跳出 `Unhandled error during execution of watcher callback` 和一筆 AbortError——那只是預期中的取消，`catch` 起來忽略即可。
 
 ### 5.5 `onWatcherCleanup`：3.5 的新寫法
 
@@ -351,8 +361,12 @@ import { watch, onWatcherCleanup } from 'vue'
 watch(keyword, async (kw) => {
   const controller = new AbortController()
   onWatcherCleanup(() => controller.abort())   // 不用再接第三個參數
-  const res = await fetch(`/api/search?q=${kw}`, { signal: controller.signal })
-  result.value = await res.text()
+  try {
+    const res = await fetch(`/api/search?q=${kw}`, { signal: controller.signal })
+    result.value = await res.text()
+  } catch (err) {
+    if (err.name !== 'AbortError') throw err
+  }
 })
 ```
 
@@ -404,7 +418,7 @@ watchEffect((onCleanup) => {
 
 ### 6.2 對照 React：`watch/watchEffect` ≈ `useEffect`，但不用依賴陣列
 
-React 的 `useEffect(fn, [a, b])` 靠**手動依賴陣列**決定何時重跑，列錯就出 bug（過期閉包、無限迴圈都源自這裡）。Vue 兩者都是**自動追蹤**，沒有依賴陣列這回事：
+React 的 `useEffect(fn, [a, b])` 靠**手動依賴陣列**決定何時重跑，列錯就出 bug（過期閉包、無限迴圈都源自這裡）。Vue 這邊不用維護依賴陣列：`watchEffect` 自動追蹤 callback 用到的狀態；`watch` 只需指定「要監看誰」，callback 裡讀到的響應式狀態永遠是最新值，不會有過期閉包的問題：
 
 - `watchEffect` ≈ `useEffect` 但自動抓依賴。
 - `watch(src, cb)` ≈ 「只在 `src` 變化時跑的 `useEffect`」，且天生給你新舊值。
@@ -480,7 +494,7 @@ input { width: 100px; margin-left: 8px; }
 1. **忘記 `.value`**：`<script>` 裡 `ref` 一律 `.value`。`const` 宣告的 ref 寫成 `count++` 會丟 `TypeError: Assignment to constant variable.`（不是 `NaN`）；若用 `let` 宣告才會真的變成 `NaN` 並把 ref 整個蓋掉。見 §1.2。
 2. **解構 `reactive` 失去響應式**：`const { age } = state` 會斷連結。要嘛用 `toRefs` / `toRef`，要嘛整包用 `state.age` 不解構。
 3. **`watch` reactive 屬性沒用 getter**：`watch(state.age, ...)` 無效，必須 `watch(() => state.age, ...)`。
-4. **改物件內層卻沒設 `deep`**：`watch` 一個裝物件的來源、又只改內部屬性時，要 `{ deep: true }` 才會觸發。
+4. **改物件內層卻沒設 `deep`**：`watch` 一個裝物件的 ref（或回傳物件的 getter）、又只改內部屬性時，要 `{ deep: true }` 才會觸發；直接 `watch` 一個 `reactive` 物件則本來就是深層監看。
 5. **把該用 `computed` 的東西塞進 `watch`**：如果只是「A 變了要算出 B」，用 `computed`（有快取、宣告式）；`watch` 是拿來做「副作用」的，不要用它手動同步一個衍生值。
 6. **`reactive` 整包重新賦值**：`state = { ... }` 會直接斷掉響應式。需要整包替換的資料請改用 `ref`，寫 `state.value = { ... }`。
 

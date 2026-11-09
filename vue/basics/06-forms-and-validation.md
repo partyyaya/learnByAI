@@ -2,7 +2,7 @@
 
 表單是幾乎每個應用都逃不掉的東西：登入、註冊、搜尋、結帳。它同時考驗你對「雙向綁定」「衍生狀態」「副作用」的理解，所以是驗收前幾章的好題目。
 
-好消息是：Vue 的 `v-model` 讓表單綁定比 React 少寫非常多樣板碼。這一章我們先把 `v-model` 在各種表單元素上的用法一次講齊，接著用第 5 章學到的 composable 技巧，把驗證邏輯抽成 `useForm`/`useField` 重用，最後做一個完整、可跑、會送到後端的註冊表單。
+好消息是：Vue 的 `v-model` 讓表單綁定比 React 少寫非常多樣板碼。這一章我們先把 `v-model` 在各種表單元素上的用法一次講齊，接著用第 5 章學到的 composable 技巧，把驗證邏輯抽成 `useForm` composable 重用，最後做一個完整、可跑、會送到後端的註冊表單。
 
 ## 本章目標
 
@@ -12,7 +12,7 @@
 2. 用 `.lazy` / `.number` / `.trim` 修飾符調整綁定行為，並知道中文輸入法（IME）組字期間 `v-model` 不會更新。
 3. 用 `reactive` 管理多欄位表單，並用 `computed` 算出即時錯誤。
 4. 做出「碰過才顯示錯誤（touched）」「送出前全面檢查」的驗證體驗。
-5. 把驗證抽成可重用的 `useForm`/`useField` composable。
+5. 把驗證抽成可重用的 `useForm` composable，並知道 `useField` 這類單欄位抽象想解決什麼。
 6. 送出表單到後端並正確處理 loading / error / 成功三種狀態。
 
 ---
@@ -143,7 +143,7 @@ const city = ref('')
 </template>
 ```
 
-> 放一個 `disabled value=""` 的預設項，能避免「沒選」時綁到第一個選項的坑。
+> 初始值對不到任何選項時，`select` 會呈現「未選取」狀態，綁定值仍是 `''`。但 iOS 在這個狀態下選第一項不會觸發 `change`，使用者會選不到第一項——所以要放一個 `disabled value=""` 的提示選項。
 
 多選 `select`（加 `multiple`），綁到陣列：
 
@@ -193,7 +193,7 @@ const account = ref('')
   <input v-model.lazy="search" />
 
   <!-- .number：自動把字串轉成數字（表單輸入預設都是字串） -->
-  <input v-model.number="age" type="number" />
+  <input v-model.number="age" inputmode="numeric" />
 
   <!-- .trim：自動去掉頭尾空白 -->
   <input v-model.trim="account" />
@@ -206,7 +206,7 @@ const account = ref('')
 | `.number` | 值轉成數字型別 | 數量、年齡、價格 |
 | `.trim` | 去除頭尾空白 | 帳號、Email、搜尋字 |
 
-> `.number` 很重要：沒有它，`<input type="number">` 綁出來仍是**字串** `"18"`，做數字比較或送後端時容易踩雷。
+> `<input type="number">` 不用另外加 `.number`：`v-model` 看到 `type="number"` 會自動轉成數字。`.number` 是給 `type="text"` 這類輸入框用的（例如上面配 `inputmode="numeric"` 叫出手機的數字鍵盤）——沒有它，綁出來就是**字串** `"18"`，做數字比較或送後端時容易踩雷。另外注意：欄位清空時，值是 `''` 而不是 `0`。
 
 ### 3.1 中文輸入法（IME）：`v-model` 在組字期間不會更新
 
@@ -387,11 +387,11 @@ function handleSubmit() {
 }
 ```
 
-> 那 `:disabled` 什麼時候該用？**綁「送出中」，不要綁「表單有效性」**——`:disabled="submitting"` 防止重複送出，這才是它的正確用途（第 7 節與章末完整範例都是這樣寫）。
+> 那 `:disabled` 什麼時候該用？**綁「送出中」，不要綁「表單有效性」**——`:disabled="submitting"` 防止重複送出，這才是它的正確用途（章末完整範例就是這樣寫）。
 
 ---
 
-## 6. 抽成 `useForm` / `useField` composable 重用
+## 6. 抽成 `useForm` composable 重用
 
 上面每個表單都要重寫 `form`/`touched`/`errors`/`isValid` 很煩。用第 5 章的技巧把它抽成一組 composable，之後任何表單只要「給初始值 + 給規則」就行。
 
@@ -453,7 +453,7 @@ export function useForm(initial, rules = {}) {
 }
 ```
 
-> `useField` 概念：如果你想更細到「單一欄位自帶 value/error/touched」，可以再抽一層。但實務上 `useForm`（管整張表）＋ validators（管單條規則）這個組合最好用，所以本課以它為主；把單一欄位的綁定包成小元件即可達到 `useField` 想要的重用效果（見最後範例的 `<FormField>`）。
+> `useField` 概念：如果你想更細到「單一欄位自帶 value/error/touched」，可以再抽一層。但實務上 `useForm`（管整張表）＋ validators（管單條規則）這個組合最好用，所以本課以它為主；把單一欄位的綁定包成小元件即可達到 `useField` 想要的重用效果（見練習作業第 5 題的 `<FormField>`）。
 
 這裡再次體現第 5 章的重點：`errors` 是 `computed`，**只要 `values` 變就自動重算**，你完全不用手動同步、也沒有依賴陣列——這是 Vue 響應式相對 React 手動維護的優勢。
 
@@ -489,20 +489,20 @@ async function submit(payload) {
 }
 ```
 
-> 這裡用瀏覽器原生 `fetch`（純 Vue + Vite 環境）。到了 Nuxt，你會改用內建的 `$fetch`／`useFetch`（第 7 章末會銜接），API 更順、還自動處理 SSR，但心智模型一樣是「送出中 / 錯誤 / 成功」三態。
+> 這裡用瀏覽器原生 `fetch`（純 Vue + Vite 環境）。到了 Nuxt，你會改用內建的 `$fetch`／`useFetch`（第 8 章結業會對照），API 更順、還自動處理 SSR，但心智模型一樣是「送出中 / 錯誤 / 成功」三態。
 
 ---
 
 ## 常見陷阱
 
-1. **`<input type="number">` 忘了 `.number`**：綁出來是字串 `"18"` 不是數字 `18`，數字比較與送後端都會出錯。
+1. **`type="text"` 的輸入框想拿數字卻忘了 `.number`**：綁出來是字串 `"18"` 不是數字 `18`，數字比較與送後端都會出錯（`type="number"` 的輸入框 `v-model` 會自動轉，不必加）。
 2. **把 errors 存成 state 再手動同步**：例如 `const [errors, setErrors] = ...` 然後每次 change 都 `setErrors(...)`。錯誤是衍生狀態，用 `computed` 算，讓它自己跟著資料變。
 3. **一進頁面就報一堆錯**：沒做 `touched`。應該「碰過（失焦）才顯示該欄錯誤」，送出時再 `touchAll` 把漏填的也亮出來。
 4. **用 `:disabled="!isValid"` 鎖送出鈕**：按鈕一開始就是 disabled、點不動，`handleSubmit` 永遠不會跑，`touchAll` 也就永遠不會亮紅字——使用者只看到一顆按不下去的灰按鈕（見 §5.3）。`:disabled` 請綁 `submitting`。
 5. **忘了擋整頁刷新**：`<form>` 的預設送出會重新整理頁面，記得 `@submit.prevent`。
 6. **多個 checkbox 想收成陣列，卻忘了給每顆 `value`**：沒有 `value` 的 checkbox 綁陣列時無法辨識是哪一項。
 7. **`finally` 沒解除 `submitting`**：只在 `try` 成功時把 `submitting` 設回 false，一旦丟錯就會卡在「送出中」永遠點不了。把它放 `finally`。
-8. **`select` 沒放預設 disabled 選項**：使用者「還沒選」時會被當成選了第一項，必填驗證形同虛設。
+8. **`select` 沒放預設 disabled 選項**：初始值對不到任何選項時，`select` 呈現未選取、綁定值仍是 `''`；但在 iOS 上使用者選第一項不會觸發 `change`，等於選不到第一項。放一個 `<option disabled value="">請選擇…</option>` 當提示。
 9. **中文輸入法組字中拿不到值**：`v-model` 在 IME 組字期間不同步，即時搜尋／字數統計會慢半拍。需要逐字反應就改綁 `:value` + `@input`（見 §3.1）。
 
 ---
@@ -702,7 +702,7 @@ button:disabled { opacity: .6; cursor: not-allowed; }
 2. `errors` 是 `computed`：使用者一邊打字，錯誤訊息即時重算，完全不用手動同步。
 3. `touched` 控制「碰過才報錯」，送出時 `touchAll()` 讓漏填欄位一併亮紅字。
 4. 送出走 `submitting`/`submitError`/`done` 三態，`finally` 保證「送出中」一定會解除。
-5. 底部的 `<pre>{{ values }}</pre>` 讓你即時看到綁定結果——`.number`/`.trim`/checkbox 陣列的效果一目了然。
+5. 底部的 `<pre>{{ values }}</pre>` 讓你即時看到綁定結果——`.trim`、checkbox 布林值、`select` 的效果一目了然。
 
 ---
 

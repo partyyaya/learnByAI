@@ -30,18 +30,19 @@ ball.x += ball.vx;   // 每一幀移動 vx 像素
 
 正確的觀念:**不要問「這一幀移動多少」,要問「距離上一幀過了多少時間,該移動多少」**。
 
-`requestAnimationFrame` 的回呼會收到一個 `timestamp`(高精度毫秒,第 01 章提過)。算出兩幀之間的時間差 `dt`,用「速度 × 時間」算位移:
+`requestAnimationFrame` 的回呼會收到一個時間戳(第 01 章提過):**這一幀的開始時間**(毫秒,和 `performance.now()` 同一時間原點;同一幀的所有 callback 拿到同一個值)。算出兩幀之間的時間差 `dt`,用「速度 × 時間」算位移:
 
 ```js
-let lastTime = 0;
+let lastTime = null;         // 上一幀的時間戳;null = 還沒有基準
 
-function frame(now) {        // now:瀏覽器傳入的當前時間(毫秒)
+function frame(now) {        // now:這一幀的開始時間(毫秒)
+  requestAnimationFrame(frame);            // 先預約下一幀(理由見 6.8)
+  if (lastTime === null) lastTime = now;   // 第一幀以 rAF 時間戳為基準:dt = 0
   const dt = (now - lastTime) / 1000;   // 距上一幀過了幾「秒」
   lastTime = now;
 
   update(dt);              // 把 dt 傳進去,用時間算移動
   render();
-  requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
@@ -53,6 +54,8 @@ function update(dt) {
 ```
 
 現在 `vx = 120` 代表「**每秒移動 120 像素**」,不管螢幕是 60Hz 還 120Hz、不管有沒有掉幀,**一秒就是移動 120 像素**,完全一致。
+
+> ⚠️ **基準取第一個 rAF 時間戳**:時間戳從頁面載入就起算,`lastTime = 0` 會讓第一幀 `dt` 等於「頁面開了幾秒」,球直接瞬移;拿事件處理器裡量的 `performance.now()` 當基準也不行——時間戳是這一幀的開始,可能比它還**早**,算出負的 `dt`。
 
 > **心智模型**:幀率是「我多久畫一次」,跟「東西該多快」是兩回事。**物理世界用「秒」描述速度,渲染用「幀」呈現**——delta-time 就是這兩者之間的翻譯。把 `vx` 從「像素/幀」改成「像素/秒」,你的動畫就跟硬體解耦了。
 
@@ -76,32 +79,40 @@ Delta-time 解決了「速度一致」,但若你做**物理模擬**(碰撞、彈
 專業做法:**邏輯更新用固定的步長(例如每步 1/60 秒),用一個累加器(accumulator)把真實時間切成固定步**:
 
 ```js
-let lastTime = 0;
+let lastTime = null;
 let accumulator = 0;
 const STEP = 1 / 60;          // 物理每步固定 1/60 秒
+const prev = { x: ball.x, y: ball.y };   // 上一個物理步的位置(插值用)
 
 function frame(now) {
+  requestAnimationFrame(frame);   // 先預約下一幀(理由見 6.8)
+  if (lastTime === null) lastTime = now;
   let dt = (now - lastTime) / 1000;
   lastTime = now;
-  dt = Math.min(dt, 0.25);    // 防暴衝(見 6.7),最多補 0.25 秒
+  dt = Math.min(dt, 0.25);    // 上限:防暴衝(見 6.7),也防「死亡螺旋」(見下)
 
   accumulator += dt;
   while (accumulator >= STEP) {  // 累積夠一個固定步就更新一次
+    prev.x = ball.x; prev.y = ball.y;   // 先記住這一步之前的位置
     updatePhysics(STEP);         // 永遠用固定的 STEP,物理超穩定
     accumulator -= STEP;
   }
 
-  render();                      // render 仍然每幀畫(可加內插讓更平滑)
-  requestAnimationFrame(frame);
+  const alpha = accumulator / STEP;   // 插值比例 0~1:真實時間落在上一步和這一步之間的哪裡
+  render(alpha);                      // 畫在 prev.x + (ball.x - prev.x) * alpha
 }
 ```
+
+**為什麼要插值**:物理固定 1/60 秒一步,螢幕卻不一定是 60Hz——120Hz 上每幀 0、1 步交替,144Hz 更不規則,直接畫最新一步會「走一下、停一下」。插值畫在兩步之間、按真實時間比例的位置,代價是畫面最多落後一個 STEP。
+
+**死亡螺旋(spiral of death)**:單一物理步若要算超過 STEP 的真實時間,幀變長 → 要補更多步 → 更長……最後卡死。0.25 的上限讓每幀最多補 15 步:跟不上時模擬變慢,但不會凍住。
 
 | 步長策略 | 優點 | 缺點 | 適合 |
 |----------|------|------|------|
 | 變動步長(`dt` 直接用) | 簡單 | 物理不穩、會穿牆 | UI 動畫、簡單移動 |
 | 固定步長(accumulator) | 穩定、可重現 | 較複雜 | 物理、遊戲、需要確定性 |
 
-> **心智模型**:固定步長把「現實時間」切成大小一致的積木,物理只認積木。一幀真實時間若很長,就連續走好幾個積木(`while` 迴圈),而不是走一大步——所以不會穿牆、計算穩定。**需要「可重現/確定性」(replay、網路同步、單元測試)的場景,固定步長是唯一解。**
+> **心智模型**:固定步長把「現實時間」切成大小一致的積木,物理只認積木。一幀真實時間若很長,就連續走好幾個積木(`while` 迴圈),而不是走一大步——所以不會因為某一幀特別長而穿牆、計算穩定(高速物體每步位移大於牆厚時仍會穿過,要靠掃掠碰撞)。**需要「可重現/確定性」(replay、網路同步、單元測試)的場景,固定步長是基本前提**(還要固定每步輸入、用有種子的亂數;跨瀏覽器時連 `Math.sin` 的結果都可能略有差異)。
 
 ---
 
@@ -112,7 +123,7 @@ function frame(now) {
 ```js
 const Easing = {
   linear:    t => t,
-  easeInOut: t => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2) / 2,
+  easeInOut: t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2,   // 前半加速、後半減速
   easeOut:   t => 1 - Math.pow(1 - t, 3),   // 快進慢出,UI 最常用
   easeIn:    t => t * t * t,
 };
@@ -155,6 +166,8 @@ function update(dt) {
 
 > **心智模型**:補間 = 「**從 A 到 B,花 N 秒,用某種節奏**」。`t` 是線性時間進度(0→1),`easing(t)` 把它扭成有快慢的節奏,再 `from + (to-from)×eased` 內插出當下的值。所有 UI 微動畫(展開、滑入、淡出)都是這個公式。
 
+> **跟 DOM 動畫對比**:CSS transition/animation 與 Web Animations(`el.animate()`)也是「進度 → easing → 內插」,但它們是 retained 的:宣告一次,瀏覽器自己推進;只動 `transform`/`opacity` 時還能交給**合成器執行緒**跑,主執行緒卡住照樣順。Canvas 的 tween 是你每幀在主執行緒跑的 JS,任何 long task(大量解析、框架重新渲染、GC)都直接吃掉幀——要抗卡頓,就把重工作切小,或把渲染搬到 Worker 的 OffscreenCanvas(第 09 章)。
+
 ---
 
 ## 6.6 基於物理的動畫(spring,簡介)
@@ -166,7 +179,7 @@ function update(dt) {
 // 彈簧和 tween 最大的差別:它要記住「速度」,值才會有慣性、會過衝回彈
 // target    = 要彈到的目標值
 // stiffness = 剛性:彈簧多「硬」,越大拉力越強、彈得越快
-// damping   = 阻尼:越大速度衰減越快、越快停下來(太小會一直抖)
+// damping   = 阻尼:太小會來回晃;約 32(這組 stiffness 的臨界阻尼)時停得最快,再大反而黏滯、爬得慢
 function springStep(state, target, dt, stiffness = 120, damping = 14) {
   // 1) 算拉力:離目標越遠,往目標拉的力越大(虎克定律 F = k × 距離)
   //    (target - state.value) 是「還差多遠」,自帶方向(正 = 往前拉,負 = 往回拉)
@@ -180,7 +193,7 @@ function springStep(state, target, dt, stiffness = 120, damping = 14) {
   //    (dt 或 damping 越大 → 係數越小 → 這一幀速度被砍越多)
   state.velocity *= Math.pow(0.5, dt * damping);
 
-  // 4) 速度改變位置:位置 += 速度 × 時間(和第 04 章的 x += vx*dt 一模一樣)
+  // 4) 速度改變位置:位置 += 速度 × 時間(和 6.2 的 x += vx*dt 一模一樣)
   state.value += state.velocity * dt;
 }
 
@@ -194,7 +207,7 @@ function update(dt) {
 
 > **心智模型**:整個函式就是兩條物理課公式串起來——**離目標越遠拉力越大 → 拉力改變速度 → 速度改變位置**,阻尼負責讓它收斂停住。每幀重算一次,值就會像被橡皮筋拉著一樣衝向目標、微微過頭、再彈回來穩定。
 
-> tween 適合「明確的進場/退場」;spring 適合「跟手、可被打斷」的互動(拖曳放手後回彈)——因為它記住了速度,中途改 `target` 也能平順接續,不會像 tween 一樣跳一下重來。先知道有這個選項,深入可參考 framer-motion / react-spring 的模型。
+> tween 適合「明確的進場/退場」;spring 適合「跟手、可被打斷」的互動(拖曳放手後回彈)——因為它記住了速度,中途改 `target` 也能平順接續,不會像 tween 一樣跳一下重來。先知道有這個選項,深入可參考 Motion(前身 framer-motion)/ react-spring 的模型。
 
 ---
 
@@ -218,28 +231,30 @@ dt = Math.min(dt, 0.1);   // 任何超過 0.1 秒的間隔都當成 0.1 秒處�
 
 > **記住**:任何用 `dt` 的動畫,**第一件事就是 clamp 它**。否則你的應用「切走再切回來就爆炸」,而且這種 bug 極難在開發時發現(你不會一直切分頁)。
 
+> **不只背景分頁**:rAF 頻率本來就不保證等於螢幕刷新率(省電模式可能降到 30fps),所以永遠用時間計時。要連音效一起明確暫停,就監聽 `visibilitychange`:`document.hidden` 時 `stop()`、回來時 `start()`(6.8)。另外,clamp 會讓動畫時間落後牆鐘時間;要跟影片、音訊對齊的動畫(字幕、彈幕),改用絕對時間 `t = (now - startTime) / duration` 或 `video.currentTime`。
+
 ---
 
 ## 6.8 動畫的生命週期:啟動、停止、避免重複迴圈
 
 ```js
 let rafId = null;
-let lastTime = 0;
+let lastTime = null;
 
-// 主迴圈(同 6.2,完整列出):瀏覽器每次重繪前呼叫一次,now 是它自動傳入的時間戳
+// 主迴圈(同 6.2,完整列出):瀏覽器每次重繪前呼叫一次,now 是這一幀的開始時間
 function frame(now) {
+  rafId = requestAnimationFrame(frame);   // 先預約下一幀並更新 rafId:本幀內呼叫 stop(),取消的正是這一次
+  if (lastTime === null) lastTime = now;  // 第一幀以 rAF 時間戳為基準(6.2)
   const dt = Math.min((now - lastTime) / 1000, 0.1);   // 算 dt 並 clamp(6.7)
   lastTime = now;
 
-  update(dt);
+  update(dt);   // 裡面可以放心呼叫 stop(),例如動畫播完
   render();
-
-  rafId = requestAnimationFrame(frame);   // 預約下一幀;更新 rafId,stop() 才取消得到最新那次預約
 }
 
 function start() {
   if (rafId !== null) return;        // 防止重複啟動(常見 bug:多個迴圈疊在一起)
-  lastTime = performance.now();      // 重設時間基準,避免第一幀 dt 暴衝
+  lastTime = null;                   // 重設時間基準:第一幀 dt = 0,不暴衝
   rafId = requestAnimationFrame(frame);   // 傳「函式本身」(沒括號):請瀏覽器下次重繪前呼叫它
 }
 
@@ -249,10 +264,11 @@ function stop() {
 }
 ```
 
-兩個常見 bug:
+三個常見 bug:
 
 1. **重複啟動**:多次呼叫 `start()` 沒擋,結果同時跑好幾個 `rAF` 迴圈,動畫變快、CPU 飆高。用 `rafId !== null` 守門。
-2. **停了忘了重設時間基準**:停很久再 `start`,第一幀 `dt` 暴衝(同 6.7)。`start` 時重設 `lastTime`。
+2. **停了忘了重設時間基準**:停很久再 `start`,第一幀 `dt` 暴衝(同 6.7)。`start` 時把 `lastTime` 設回 `null`。
+3. **在幀裡呼叫 `stop()` 停不下來**:預約若寫在 `frame` 最後,`update()` 裡的 `stop()` 取消的是正在執行的這一次(沒效果),尾端又預約了下一幀。所以預約一律放在 `frame` 開頭。
 
 ### 省電進階:不變就不畫(dirty flag)
 
@@ -271,7 +287,21 @@ function frame() {
 }
 ```
 
-> 這是「**按需渲染(on-demand rendering)**」,白板、編輯器這類「大部分時間是靜止」的應用必用——能把待機時的 CPU/GPU 用量降到接近 0。第 09 章效能、第 11 章白板會用它。
+這個版本省下繪圖成本,但迴圈仍在每個 vsync(每秒 60~120 次)喚醒主執行緒跑 JS。要讓靜止時真的什麼都不做,就改成**需要時才排 rAF**——呼叫端一樣只呼叫 `invalidate()`:
+
+```js
+let scheduled = false;            // 下一幀已經排了嗎?
+function invalidate() {           // 任何改變狀態的地方都呼叫它
+  if (scheduled) return;          // 同一幀內改了 10 次,也只排一次
+  scheduled = true;
+  requestAnimationFrame(() => {   // 靜止時一個 rAF 都不排
+    scheduled = false;
+    render();                     // 動畫還沒播完,就在 render 裡再呼叫 invalidate()
+  });
+}
+```
+
+> 這是「**按需渲染(on-demand rendering)**」,白板、編輯器這類「大部分時間是靜止」的應用必用——用第二個版本,待機時的 CPU/GPU 用量能降到接近 0。第 09 章效能、第 11 章白板會用它。
 
 ---
 
@@ -283,7 +313,7 @@ function frame() {
 // ---- 工具(和 6.5、第 03 章相同,原樣搬來讓這段可獨立執行) ----
 const Easing = {
   linear:    t => t,
-  easeInOut: t => t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2) / 2,
+  easeInOut: t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2,   // 前半加速、後半減速
   easeOut:   t => 1 - Math.pow(1 - t, 3),   // 快進慢出,UI 最常用
   easeIn:    t => t * t * t,
 };
@@ -312,7 +342,10 @@ function getCanvasPoint(canvas, e) {   // 滑鼠事件座標 → 畫布內座標
 }
 
 // ---- 主體:點一下,方塊平滑飛到滑鼠位置 ----
-const W = 800, H = 400;   // 邏輯畫布尺寸
+const W = 800, H = 400;   // 邏輯畫布尺寸(1:1;HiDPI 用第 01 章的 setupHiDPICanvas)
+const canvas = document.querySelector('canvas'); canvas.width = W; canvas.height = H;
+const ctx = canvas.getContext('2d');
+
 const box = { x: 100, y: 100, size: 40 };
 let tweenX = null, tweenY = null;
 
@@ -320,37 +353,49 @@ canvas.addEventListener('click', (e) => {
   const p = getCanvasPoint(canvas, e);
   tweenX = new Tween(box.x, p.x, 0.5, Easing.easeOut);
   tweenY = new Tween(box.y, p.y, 0.5, Easing.easeOut);
+  start();                                     // 有動畫才啟動迴圈
 });
 
-let lastTime = performance.now();
-function frame(now) {
-  let dt = Math.min((now - lastTime) / 1000, 0.1);   // delta-time + clamp
-  lastTime = now;
+function update(dt) {
+  box.x = tweenX.update(dt);
+  box.y = tweenY.update(dt);
+  if (tweenX.done && tweenY.done) stop();   // 播完就停:靜止時一幀都不排(按需渲染)
+}
 
-  if (tweenX && !tweenX.done) box.x = tweenX.update(dt);
-  if (tweenY && !tweenY.done) box.y = tweenY.update(dt);
-
+function render() {
   ctx.clearRect(0, 0, W, H);
   ctx.fillStyle = '#457b9d';
   ctx.fillRect(box.x - box.size/2, box.y - box.size/2, box.size, box.size);
-
-  requestAnimationFrame(frame);
 }
-requestAnimationFrame(frame);
+
+// ---- 迴圈生命週期(同 6.8) ----
+let rafId = null, lastTime = null;
+function frame(now) {
+  rafId = requestAnimationFrame(frame);   // 先預約,update 裡的 stop() 才停得下來
+  if (lastTime === null) lastTime = now;
+  const dt = Math.min((now - lastTime) / 1000, 0.1);   // delta-time + clamp
+  lastTime = now;
+  update(dt);
+  render();
+}
+function start() { if (rafId !== null) return; lastTime = null; rafId = requestAnimationFrame(frame); }
+function stop() { cancelAnimationFrame(rafId); rafId = null; }
+
+render();   // 先畫出初始畫面;之後只有動畫期間才重畫
 ```
 
-點哪裡,方塊就用「先快後慢」的自然節奏滑過去。改 `Easing.easeOut` 成別的,立刻感受節奏差異。
+點哪裡,方塊就用「先快後慢」的自然節奏滑過去;停下來後迴圈也跟著停,靜止時零成本。改 `Easing.easeOut` 成別的,立刻感受節奏差異。
 
 ---
 
 ## 6.10 本章小結與下一步
 
-- **delta-time**:速度用「像素/秒」,移動量 = `速度 × dt`,動畫跟硬體刷新率解耦,不再忽快忽慢。
+- **delta-time**:速度用「像素/秒」,移動量 = `速度 × dt`,動畫跟硬體刷新率解耦,不再忽快忽慢;第一幀以 rAF 時間戳(這一幀的開始時間)為基準。
 - **update/render 分離**:`update(dt)` 推進資料、`render()` 只畫;讓暫停、回放、測試、換渲染後端都變可能。
-- **固定時間步長**:物理模擬用 accumulator 切成固定步,穩定、不穿牆、可重現。
+- **固定時間步長**:物理模擬用 accumulator 切成固定步,穩定、是可重現的前提;畫面靠插值才順。
 - **easing + tween**:`from + (to-from) × easing(t)`,所有 UI 微動畫的公式;spring 適合跟手互動。
-- **必踩的坑**:背景分頁回來 `dt` 暴衝 → **永遠 clamp `dt`**;防重複啟動;停止後重設時間基準。
-- **按需渲染(dirty flag)**:靜止時不畫,省電——編輯器類應用必備。
+- **必踩的坑**:背景分頁回來 `dt` 暴衝 → **永遠 clamp `dt`**;防重複啟動;停止後重設時間基準;`frame` 開頭先預約,幀內 `stop()` 才有效。
+- **按需渲染**:需要時才排 rAF 的 `invalidate()`,靜止時零成本——編輯器類應用必備。
 
 **下一章(07)**,我們兌現第 00 章最重要的推論:**Canvas 沒有 click 事件,點到誰要自己算**。這就是**命中測定(hit testing)**——從滑鼠座標轉世界座標(第 03 章)、用數學判斷點在不在圖形內、`isPointInPath`、到「隱藏色彩緩衝」這種神技,最後做出可 hover、可選取、可拖曳的互動。這是把 Canvas 從「會動的圖」變成「可互動的應用」的關鍵一章。
 
@@ -456,16 +501,16 @@ requestAnimationFrame(frame);
       ctx.globalAlpha = 1;   // globalAlpha 是持續生效的狀態,記得改回來(第 02 章)
     }
 
-    // ---- 主迴圈:delta-time + clamp(6.2、6.7)----
-    let lastTime = performance.now();
+    // ---- 主迴圈:delta-time + clamp(6.2、6.7、6.8)----
+    let lastTime = null;
     function frame(now) {
+      requestAnimationFrame(frame);          // 先預約下一幀(6.8)
+      if (lastTime === null) lastTime = now; // 第一幀以 rAF 時間戳為基準(6.2)
       const dt = Math.min((now - lastTime) / 1000, 0.1);   // 作業要求:clamp dt,防背景分頁回來暴衝
       lastTime = now;
 
       update(dt);   // 算:推進資料的世界
       render();     // 畫:把世界拍一張照
-
-      requestAnimationFrame(frame);
     }
     requestAnimationFrame(frame);
   </script>

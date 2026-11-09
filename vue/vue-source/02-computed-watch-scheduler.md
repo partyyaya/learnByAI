@@ -72,26 +72,32 @@ class ComputedRefImpl<T> {
 > | **3.4** | 改的是**行為**：computed 重算後若值沒變，**不再觸發下游**。當時的實作是 `_dirtyLevel` + `_trackId`，還沒有版本號。 |
 > | **3.5** | 改的是**機制**：`_dirtyLevel` 整套換成 `dep.version` / `globalVersion` 版本比對，讀 `.value` 走 `refreshComputed()`。行為維持 3.4 的結果，但判定更便宜。 |
 >
-> 下面描述的 `refreshComputed`、`globalVersion`、link version 比對**都是 3.5 的實作**；`_dirty` 布林則是 3.3 以前。追原始碼（`packages/reactivity/src/computed.ts`）務必對準你手上的版本。
+> 下面描述的 `refreshComputed`、`globalVersion`、link version 比對**都是 3.5 的實作**；`_dirty` 布林則是 3.3 以前。追原始碼時，`ComputedRefImpl` 在 `packages/reactivity/src/computed.ts`，`refreshComputed`／`isDirty`／`prepareDeps`／`cleanupDeps` 則在同目錄的 `effect.ts`，務必對準你手上的版本。
 
-3.5 重寫後 `ComputedRefImpl` 有兩個關鍵改變：
+3.5 重寫後 `ComputedRefImpl` 有三個關鍵改變：
 
 **改變一：computed 同時是 `Subscriber` 也是 `Dep`。**
-它訂閱自己 getter 用到的那些 dep（所以有 `deps`/`depsTail`），同時它自己也是一個 `Dep`（所以讀它 `.value` 的 effect 會訂閱它）。它不再內含一個獨立的 `ReactiveEffect`。
+它記錄自己 getter 用到的那些 dep（所以有 `deps`/`depsTail`），同時自己帶一個 `Dep`（`c.dep`，讀它 `.value` 的 effect 會訂閱這個 dep）。它不再內含一個獨立的 `ReactiveEffect`。
+
+**注意：只有自己也有訂閱者時，computed 才真的掛進上游 dep 的訂閱串列。** 第一個訂閱者出現時，`addSub` 會遞迴把它掛上去並標上 `TRACKING`，之後上游一 trigger 就透過 `notify()` 把它標成 `DIRTY`（推）；沒有任何訂閱者時（例如只在一般函式裡讀），它不在上游的訂閱串列裡，上游無法通知它，只能在被讀時用 `globalVersion` 與 link version 自己比對（拉）。「沒人訂閱就不掛上去」也是 3.5 能修掉 SSR 上 computed 殘留（hanging computed）記憶體問題的原因。
 
 **改變二：髒判定改用版本比對，不是單一布林（3.5）。**
 讀 `.value` 會走 `refreshComputed(cRef)`，流程大致是：
 
 ```text
 refreshComputed(c):
-  1. 若 c 沒被標記可能過期，且 c.globalVersion === 全域 globalVersion
-       → 什麼都沒變過，直接用快取（最便宜的短路）
-  2. 更新 c.globalVersion = globalVersion
-  3. 走訪 c 的依賴 link，比對每條 link.version 與 dep.version
+  1. c 有訂閱者（TRACKING）且沒被標 DIRTY
+       → 上游有變一定會把它標 DIRTY；沒標就直接用快取
+  2. 清掉 DIRTY；若 c.globalVersion === 全域 globalVersion
+       → 上次算完後沒有任何響應式寫入，直接用快取（最便宜的短路）
+  3. 更新 c.globalVersion = globalVersion
+  4. 已算過（EVALUATED）時走訪 c 的依賴 link（isDirty），比對每條 link.version 與 dep.version
        → 都沒變 → 用快取
        → 有變 → 真的重算 getter（prepareDeps / cleanupDeps 修剪依賴）
-  4. 重算後：只有新值 hasChanged 才 c.dep.version++
+  5. 重算後：只有第一次計算或新值 hasChanged 才 c.dep.version++
 ```
+
+第 1 步對應上面說的「推」，第 2～4 步對應「拉」。
 
 **改變三（最容易被考）：重算後值沒變，就不 bump `dep.version`，下游不會被觸發。**（這個**行為**從 3.4 就有了，3.5 只是換成用版本號實作。）
 
@@ -183,7 +189,7 @@ function doWatch(source, cb, options) {
 }
 ```
 
-> **入口變了（3.5 重要）**：以上是概念版。3.5 起 `watch` 的核心實作已抽到 **`@vue/reactivity`** 的 `watch.ts`（`baseWatch`），`runtime-core/src/apiWatch.ts` 只是**包裝**（補上元件實例綁定、`flush: 'pre'/'post'` 對接元件排程、SSR 行為等）。所以你要追 watch 的核心邏輯（source 正規化、`onWatcherCleanup`、`WatchHandle`）要去 reactivity 包，不是只看 runtime-core——00 / 10 章的入口地圖也照這個更新。
+> **入口變了（3.5 重要）**：以上是概念版。3.5 起 `watch` 的核心實作已抽到 **`@vue/reactivity`** 的 `watch.ts`（`baseWatch`），`runtime-core/src/apiWatch.ts` 只是**包裝**（補上元件實例綁定、`flush: 'pre'/'post'` 對接元件排程、SSR 行為等）。所以你要追 watch 的核心邏輯（source 正規化、`onWatcherCleanup`、`WatchHandle`）要去 reactivity 包，不是只看 runtime-core。
 
 ---
 
@@ -226,7 +232,7 @@ set state 多次
 
 4. **遞迴保護**：dev 下 `checkRecursiveUpdates` 會統計同一輪 flush 中某 job 執行幾次，超過 `RECURSION_LIMIT`（100）就丟 **`Maximum recursive updates exceeded`**——這通常代表你在 watcher/render 裡改了自己依賴的狀態造成無窮迴圈。
 
-5. **失效工作以 `DISPOSED` 跳過**：以 Vue 3.5.13 為例，元件卸載時將待執行的 update job 標上 `DISPOSED`，`flushJobs` 遇到就跳過。不要把舊版 `invalidateJob` 移除佇列項目的說明套到這個版本；卸載端可對照 [renderer.ts](https://github.com/vuejs/core/blob/v3.5.13/packages/runtime-core/src/renderer.ts) 的 `unmountComponent`。
+5. **失效工作以 `DISPOSED` 跳過**：以 Vue 3.5.41 為例，元件卸載時將待執行的 update job 標上 `DISPOSED`，`flushJobs` 遇到就跳過。不要把舊版 `invalidateJob` 移除佇列項目的說明套到這個版本；卸載端可對照 [renderer.ts](https://github.com/vuejs/core/blob/v3.5.41/packages/runtime-core/src/renderer.ts) 的 `unmountComponent`。
 
 6. **3.5 job 旗標**：job 直接帶 `flags` 與 `i`（instance）；render job 用 `runIfDirty` 只在 dirty 時真的重跑（見第 04 章）。
 
@@ -250,8 +256,8 @@ function nextTick(fn?: () => void) {
 
 差別在於：當有排程正在進行時，`currentFlushPromise` 是「這輪 flushJobs 完成」的 promise，所以 `await nextTick()` 會等**整輪更新（含 DOM patch）跑完**，而不只是等一個空的 microtask。這正是「`nextTick` 之後能讀到最新 DOM」的原因。
 
-上面的程式省略泛型與 `$nextTick` callback 的 `this` 綁定。以下依 Vue 3.5.13 的
-[scheduler.ts](https://github.com/vuejs/core/blob/v3.5.13/packages/runtime-core/src/scheduler.ts) 串起呼叫鏈。
+上面的程式省略泛型與 `$nextTick` callback 的 `this` 綁定。以下依 Vue 3.5.41 的
+[scheduler.ts](https://github.com/vuejs/core/blob/v3.5.41/packages/runtime-core/src/scheduler.ts) 串起呼叫鏈。
 
 ### 2.7.1 `currentFlushPromise` 是誰建立、何時完成？
 

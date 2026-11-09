@@ -13,46 +13,65 @@ window.CH = {
   md: '../06-animation-architecture-and-timing.md',
   W: 400, H: 260,
   presets: [
-{ id:'basic-loop', label:'6.1 基本 rAF 迴圈:球碰邊反彈', code:`// 最基本的動畫:每幀移動固定像素,碰到邊界就反彈
+{ id:'basic-loop', label:'6.1 基本 rAF 迴圈:球碰邊反彈(綁幀)', code:`// 最基本的動畫:每幀移動固定像素,碰到邊界就反彈
 let x = 60, y = 80, vx = 3, vy = 2.4, r = 18;
 function loop() {
+  requestAnimationFrame(loop);          // 先排下一幀(託管:重跑會自動停掉舊迴圈)
   ctx.clearRect(0, 0, W, H);            // 清掉上一幀
   x += vx; y += vy;                     // 每幀移動固定量(先這樣寫,6.2 會修正)
-  if (x < r || x > W - r) vx = -vx;     // 碰左右邊反彈
-  if (y < r || y > H - r) vy = -vy;     // 碰上下邊反彈
+  // 反彈:推回牆內 + 依撞到哪面牆決定速度方向(只寫 vx = -vx,球卡在牆外時會來回翻轉)
+  if (x < r)     { x = r;     vx =  Math.abs(vx); }
+  if (x > W - r) { x = W - r; vx = -Math.abs(vx); }
+  if (y < r)     { y = r;     vy =  Math.abs(vy); }
+  if (y > H - r) { y = H - r; vy = -Math.abs(vy); }
   ctx.fillStyle = '#457b9d';
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
-  requestAnimationFrame(loop);          // 排下一幀(託管:重跑會自動停掉舊迴圈)
 }
 requestAnimationFrame(loop);` },
-{ id:'delta-time', label:'6.2 Delta-time:速度與幀率無關(對比)', code:`// 上排:每幀固定 +2px(綁幀,快慢會隨螢幕刷新率漂移)
-// 下排:用 dt,速度 = 120 像素/秒(綁時間,任何裝置都一致)
-let ax = 30, bx = 30, last = 0;
+{ id:'delta-time', label:'6.2 Delta-time:綁幀 vs 綁時間(可模擬掉幀)', code:`// 上排:每幀固定 +2px(綁幀);下排:用 dt,速度 = 120 像素/秒(綁時間)
+// 60Hz 螢幕上兩排剛好一樣快(2px × 60 = 120px/秒)→ 勾「模擬掉幀」,差別立刻出現
+// 注入「模擬掉幀」開關(playground 沒有這個 checkbox;離開範例會自動清掉)
+const stage = canvas.parentNode; stage.style.flexDirection = 'column';
+const bar = document.createElement('label'); bar.className = 'demo-inject';
+bar.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:13px;color:#666;';
+const jank = document.createElement('input'); jank.type = 'checkbox';
+bar.append(jank, document.createTextNode(' 模擬掉幀(約三成的幀故意卡 40ms)'));
+stage.insertBefore(bar, canvas);
+window.__demoCleanup = () => { stage.style.flexDirection = ''; };
+
+let ax = 30, bx = 30, last = null;
 const SPEED = 120;                          // 像素/秒
 function loop(t) {
-  const dt = last ? (t - last) / 1000 : 0;  // 距上一幀幾秒(第一幀當 0,避免暴衝)
+  requestAnimationFrame(loop);              // 先排下一幀(6.8)
+  if (last === null) last = t;              // 第一幀以 rAF 時間戳為基準(6.2)
+  const dt = (t - last) / 1000;             // 距上一幀幾秒
   last = t;
+  if (jank.checked && Math.random() < 0.3) {          // 模擬「這一幀太重」:忙等 40ms
+    const s = performance.now(); while (performance.now() - s < 40) {}
+  }
   ctx.clearRect(0, 0, W, H);
-  ax += 2;               if (ax > W - 20) ax = 20;   // 綁幀
-  bx += SPEED * dt;      if (bx > W - 20) bx = 20;   // 綁時間:位移 = 速度 × dt
+  ax += 2;               if (ax > W - 20) ax = 20;   // 綁幀:幀少了就變慢
+  bx += SPEED * dt;      if (bx > W - 20) bx = 20;   // 綁時間:位移 = 速度 × dt,掉幀也準時
   ctx.fillStyle = '#e63946'; ctx.fillRect(ax, 80, 20, 20);
   ctx.fillStyle = '#2a9d8f'; ctx.fillRect(bx, 170, 20, 20);
   ctx.fillStyle = '#555'; ctx.font = '13px system-ui, sans-serif';
   ctx.fillText('每幀 +2(綁幀)', 20, 65);
   ctx.fillText('dt × 120/秒(綁時間)', 20, 155);
-  requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);` },
 { id:'update-render-split', label:'6.3 update / render 分離', code:`// update 只改資料、render 只讀資料作畫;兩者分開,才能暫停/回放/測試/換後端
 const ball = { x: 200, y: 130, vx: 90, vy: 70, r: 16 };
-let last = 0;
+let last = null;
 function update(dt) {                    // ① 只碰資料,完全不碰畫布
   ball.x += ball.vx * dt;
   ball.y += ball.vy * dt;
-  if (ball.x < ball.r || ball.x > W - ball.r) ball.vx *= -1;
-  if (ball.y < ball.r || ball.y > H - ball.r) ball.vy *= -1;
+  // 反彈:推回牆內 + 依方向設定速度
+  if (ball.x < ball.r)     { ball.x = ball.r;     ball.vx =  Math.abs(ball.vx); }
+  if (ball.x > W - ball.r) { ball.x = W - ball.r; ball.vx = -Math.abs(ball.vx); }
+  if (ball.y < ball.r)     { ball.y = ball.r;     ball.vy =  Math.abs(ball.vy); }
+  if (ball.y > H - ball.r) { ball.y = H - ball.r; ball.vy = -Math.abs(ball.vy); }
 }
 function render() {                      // ② 只讀資料、只作畫,不改資料
   ctx.clearRect(0, 0, W, H);
@@ -62,95 +81,15 @@ function render() {                      // ② 只讀資料、只作畫,不改�
   ctx.fill();
 }
 function loop(t) {
-  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;   // dt + clamp(防暴衝)
+  requestAnimationFrame(loop);           // 先排下一幀(6.8)
+  if (last === null) last = t;           // 第一幀以 rAF 時間戳為基準(6.2)
+  const dt = Math.min((t - last) / 1000, 0.1);   // dt + clamp(防暴衝)
   last = t;
   update(dt);                            // 先推進世界
   render();                              // 再把世界拍成像素
-  requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);` },
-{ id:'fixed-timestep', label:'6.4 固定時間步長:彈跳球(accumulator)', code:`// 固定步長物理:用累加器把真實時間切成固定 1/60 秒的積木,穩定又不穿牆
-const STEP = 1 / 60;
-const G = 900;                           // 重力(像素/秒²)
-const ball = { x: 80, y: 40, vx: 90, vy: 0, r: 14 };
-function physics() {                     // 永遠用固定 STEP,計算超穩定
-  ball.vy += G * STEP;
-  ball.x += ball.vx * STEP;
-  ball.y += ball.vy * STEP;
-  if (ball.y > H - ball.r) { ball.y = H - ball.r; ball.vy *= -0.82; }  // 落地反彈耗能
-  if (ball.x < ball.r || ball.x > W - ball.r) ball.vx *= -1;
-}
-let last = 0, acc = 0;
-function loop(t) {
-  let dt = last ? (t - last) / 1000 : 0;
-  last = t;
-  dt = Math.min(dt, 0.25);               // 6.7 防背景分頁回來 dt 暴衝
-  acc += dt;
-  while (acc >= STEP) { physics(); acc -= STEP; }   // 累積夠一步就走一步
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#e76f51';
-  ctx.beginPath();
-  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-  ctx.fill();
-  requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);` },
-{ id:'easing-tween', label:'6.5 緩動 Tween:方塊平滑滑到目標', code:`// Tween:在固定時間內把值從 from ease 到 to(easeOutCubic:先快後慢,UI 感)
-const easeOutCubic = k => 1 - Math.pow(1 - k, 3);
-function makeTween(from, to, dur) {
-  return {
-    from, to, dur, elapsed: 0, done: false,
-    value(dt) {
-      this.elapsed += dt;
-      let k = Math.min(this.elapsed / this.dur, 1);   // 線性進度 0→1
-      if (k >= 1) this.done = true;
-      return this.from + (this.to - this.from) * easeOutCubic(k);   // 套 easing 後內插
-    }
-  };
-}
-let a = 40, b = W - 80;
-let tween = makeTween(a, b, 1.2), last = 0;
-function loop(t) {
-  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;
-  last = t;
-  const x = tween.value(dt);
-  if (tween.done) { const tmp = a; a = b; b = tmp; tween = makeTween(a, b, 1.2); }  // 折返
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#457b9d';
-  ctx.fillRect(x, 110, 40, 40);
-  requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);` },
-{ id:'easing-compare', label:'6.5 四種 easing 節奏對比', code:`// 同起點、同時間、同距離,同時跑四種 easing,直觀感受節奏差異
-const E = {
-  linear:       k => k,
-  easeInCubic:  k => k * k * k,
-  easeOutCubic: k => 1 - Math.pow(1 - k, 3),
-  easeInOut:    k => k < 0.5 ? 4*k*k*k : 1 - Math.pow(-2*k + 2, 3) / 2,
-};
-const names = Object.keys(E);
-const colors = ['#e63946', '#f1a208', '#2a9d8f', '#457b9d'];
-const DUR = 1.4, X0 = 40, X1 = W - 60;
-let elapsed = 0, dir = 1, last = 0;
-function loop(t) {
-  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;
-  last = t;
-  elapsed += dt * dir;
-  if (elapsed > DUR) { elapsed = DUR; dir = -1; }   // 到終點折返
-  if (elapsed < 0)   { elapsed = 0;   dir = 1; }
-  const k = elapsed / DUR;
-  ctx.clearRect(0, 0, W, H);
-  ctx.font = '12px system-ui, sans-serif';
-  names.forEach((n, i) => {
-    const y = 30 + i * 55;
-    const x = X0 + (X1 - X0) * E[n](k);   // 線性進度 k 經各自 easing 映射
-    ctx.fillStyle = '#888'; ctx.fillText(n, X0, y - 8);
-    ctx.fillStyle = colors[i]; ctx.fillRect(x, y, 22, 22);
-  });
-  requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);` },
-{ id:'particles', label:'6.x 多物件:粒子噴發(重力 + dt)', code:`// 多物件 + 物理:每顆粒子受重力(vy += g*dt)、透明度隨時間衰減後移除
+{ id:'particles', label:'6.3 延伸:粒子噴發(多物件 update / render)', code:`// 多物件 + 物理:每顆粒子受重力(vy += g*dt)、透明度隨時間衰減後移除
 const G = 520;                           // 重力(像素/秒²)
 const parts = [];
 function spawn() {
@@ -160,30 +99,192 @@ function spawn() {
     parts.push({ x: W / 2, y: H - 20, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: 1 });
   }
 }
-let last = 0, acc = 0;
-function loop(t) {
-  const dt = last ? Math.min((t - last) / 1000, 0.1) : 0;   // dt + clamp
-  last = t;
+let last = null, acc = 0;
+function update(dt) {                    // 只改資料
   acc += dt;
-  if (acc > 0.08) { spawn(); acc = 0; }  // 定時噴發一批
-  ctx.clearRect(0, 0, W, H);
+  while (acc >= 0.08) { spawn(); acc -= 0.08; }   // 每 0.08 秒噴一批;用減的,掉幀時批數也補得回來
   for (let i = parts.length - 1; i >= 0; i--) {   // 反向走訪,方便邊刪邊跑
     const p = parts[i];
     p.vy += G * dt;                      // 重力(全用 dt)
     p.x += p.vx * dt;
     p.y += p.vy * dt;
     p.life -= dt * 0.6;                  // 生命衰減
-    if (p.life <= 0) { parts.splice(i, 1); continue; }   // 死了就移除
-    ctx.globalAlpha = Math.max(p.life, 0);
-    ctx.fillStyle = '#ffd166';
+    if (p.life <= 0) parts.splice(i, 1); // 死了就移除
+  }
+}
+function render() {                      // 只讀資料作畫
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#ffd166';
+  for (const p of parts) {
+    ctx.globalAlpha = p.life;
     ctx.beginPath();
     ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;                   // 用完務必還原
+}
+function loop(t) {
   requestAnimationFrame(loop);
+  if (last === null) last = t;
+  const dt = Math.min((t - last) / 1000, 0.1);   // dt + clamp
+  last = t;
+  update(dt);
+  render();
 }
 requestAnimationFrame(loop);` },
+{ id:'fixed-timestep', label:'6.4 固定時間步長:彈跳球(accumulator + 插值)', code:`// 固定步長物理:用累加器把真實時間切成固定 1/60 秒的積木;畫面用插值補在兩步之間
+// 120/144Hz 螢幕上取消勾選「插值」會看到一頓一頓;把 STEP 改成 1 / 15,任何螢幕都看得出差別。點畫布重新丟球
+const stage = canvas.parentNode; stage.style.flexDirection = 'column';
+const bar = document.createElement('label'); bar.className = 'demo-inject';
+bar.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:8px;font-size:13px;color:#666;';
+const interp = document.createElement('input'); interp.type = 'checkbox'; interp.checked = true;
+bar.append(interp, document.createTextNode(' 插值(畫在上一步和這一步之間)'));
+stage.insertBefore(bar, canvas);
+window.__demoCleanup = () => { stage.style.flexDirection = ''; };
+
+const STEP = 1 / 60;
+const G = 900;                           // 重力(像素/秒²)
+const ball = { x: 80, y: 40, vx: 90, vy: 0, r: 14 };
+const prev = { x: ball.x, y: ball.y };   // 上一個物理步的位置(插值用)
+function physics() {                     // 永遠用固定 STEP,計算超穩定
+  ball.vy += G * STEP;
+  ball.x += ball.vx * STEP;
+  ball.y += ball.vy * STEP;
+  // 反彈:推回牆內 + 依方向設定速度;落地時順便耗能
+  if (ball.y > H - ball.r) { ball.y = H - ball.r; ball.vy = -Math.abs(ball.vy) * 0.82; }
+  if (ball.x < ball.r)     { ball.x = ball.r;     ball.vx =  Math.abs(ball.vx); }
+  if (ball.x > W - ball.r) { ball.x = W - ball.r; ball.vx = -Math.abs(ball.vx); }
+}
+canvas.addEventListener('click', () => {         // 重新丟球:位置瞬移時 prev 也要一起改,不然插值會拉出一道殘影
+  ball.y = prev.y = 40; ball.vy = 0;
+});
+let last = null, acc = 0;
+function loop(t) {
+  requestAnimationFrame(loop);
+  if (last === null) last = t;
+  let dt = (t - last) / 1000;
+  last = t;
+  dt = Math.min(dt, 0.25);               // 防背景分頁回來暴衝(6.7),也擋死亡螺旋(6.4)
+  acc += dt;
+  while (acc >= STEP) {                  // 累積夠一步就走一步
+    prev.x = ball.x; prev.y = ball.y;    // 先記住這一步之前的位置
+    physics();
+    acc -= STEP;
+  }
+  const alpha = interp.checked ? acc / STEP : 1;   // 插值比例 0~1;不插值 = 直接畫最新一步
+  const x = prev.x + (ball.x - prev.x) * alpha;
+  const y = prev.y + (ball.y - prev.y) * alpha;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#e76f51';
+  ctx.beginPath();
+  ctx.arc(x, y, ball.r, 0, Math.PI * 2);
+  ctx.fill();
+}
+requestAnimationFrame(loop);` },
+{ id:'easing-tween', label:'6.5 緩動 Tween:方塊平滑滑到目標', code:`// Tween:在固定時間內把值從 from ease 到 to(easeOut:先快後慢,UI 感)
+const Easing = { easeOut: t => 1 - Math.pow(1 - t, 3) };   // 同 6.5
+function makeTween(from, to, dur) {
+  return {
+    from, to, dur, elapsed: 0, done: false,
+    value(dt) {
+      this.elapsed += dt;
+      let t = Math.min(this.elapsed / this.dur, 1);   // 線性進度 0→1
+      if (t >= 1) this.done = true;
+      return this.from + (this.to - this.from) * Easing.easeOut(t);   // 套 easing 後內插
+    }
+  };
+}
+let a = 40, b = W - 80;
+let tween = makeTween(a, b, 1.2), last = null;
+function loop(t) {
+  requestAnimationFrame(loop);
+  if (last === null) last = t;
+  const dt = Math.min((t - last) / 1000, 0.1);
+  last = t;
+  const x = tween.value(dt);
+  if (tween.done) { const tmp = a; a = b; b = tmp; tween = makeTween(a, b, 1.2); }  // 折返
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#457b9d';
+  ctx.fillRect(x, 110, 40, 40);
+}
+requestAnimationFrame(loop);` },
+{ id:'easing-compare', label:'6.5 四種 easing 節奏對比', code:`// 同起點、同時間、同距離,同時跑四種 easing(與課文 6.5 的 Easing 相同,皆為三次曲線)
+const Easing = {
+  linear:    t => t,
+  easeIn:    t => t * t * t,
+  easeOut:   t => 1 - Math.pow(1 - t, 3),
+  easeInOut: t => t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t + 2, 3) / 2,
+};
+const names = Object.keys(Easing);
+const colors = ['#e63946', '#f1a208', '#2a9d8f', '#457b9d'];
+const DUR = 1.4, X0 = 40, X1 = W - 60;
+let elapsed = 0, dir = 1, last = null;
+function loop(t) {
+  requestAnimationFrame(loop);
+  if (last === null) last = t;
+  const dt = Math.min((t - last) / 1000, 0.1);
+  last = t;
+  elapsed += dt * dir;
+  if (elapsed > DUR) { elapsed = DUR; dir = -1; }   // 到終點折返
+  if (elapsed < 0)   { elapsed = 0;   dir = 1; }
+  const k = elapsed / DUR;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = '12px system-ui, sans-serif';
+  names.forEach((n, i) => {
+    const y = 30 + i * 55;
+    const x = X0 + (X1 - X0) * Easing[n](k);   // 線性進度 k 經各自 easing 映射
+    ctx.fillStyle = '#888'; ctx.fillText(n, X0, y - 8);
+    ctx.fillStyle = colors[i]; ctx.fillRect(x, y, 22, 22);
+  });
+}
+requestAnimationFrame(loop);` },
+{ id:'on-demand', label:'6.9 點一下飛過去(播完就停,靜止零成本)', code:`// 6.8 的生命週期 + 6.9 的按需渲染:點擊才 start(),tween 播完在 update 裡 stop()
+const Easing = { easeOut: t => 1 - Math.pow(1 - t, 3) };
+class Tween {
+  constructor(from, to, duration, easing = Easing.easeOut) {
+    this.from = from; this.to = to; this.duration = duration; this.easing = easing;
+    this.elapsed = 0; this.done = false;
+  }
+  update(dt) {
+    this.elapsed += dt;
+    const t = Math.min(this.elapsed / this.duration, 1);   // 線性進度 0→1
+    if (t >= 1) this.done = true;
+    return this.from + (this.to - this.from) * this.easing(t);
+  }
+}
+const box = { x: 60, y: 60, size: 36 };
+let tweenX = null, tweenY = null, frames = 0;
+canvas.addEventListener('click', (e) => {
+  const r = canvas.getBoundingClientRect();
+  tweenX = new Tween(box.x, e.clientX - r.left, 0.5);
+  tweenY = new Tween(box.y, e.clientY - r.top, 0.5);
+  start();                               // 有動畫才啟動迴圈
+});
+function update(dt) {
+  box.x = tweenX.update(dt);
+  box.y = tweenY.update(dt);
+  if (tweenX.done && tweenY.done) stop();   // 幀內呼叫 stop():frame 開頭已預約,所以取消得掉
+}
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#457b9d';
+  ctx.fillRect(box.x - box.size / 2, box.y - box.size / 2, box.size, box.size);
+  ctx.fillStyle = '#666'; ctx.font = '12px system-ui, sans-serif';
+  ctx.fillText('點畫布任一處 · 迴圈' + (rafId !== null ? '執行中' : '已停止') + ' · 累計跑了 ' + frames + ' 幀', 10, H - 10);
+}
+let rafId = null, lastTime = null;
+function frame(now) {
+  rafId = requestAnimationFrame(frame);  // 先預約,update 裡的 stop() 才停得下來
+  if (lastTime === null) lastTime = now; // 第一幀以 rAF 時間戳為基準
+  const dt = Math.min((now - lastTime) / 1000, 0.1);
+  lastTime = now;
+  frames++;
+  update(dt);
+  render();
+}
+function start() { if (rafId !== null) return; lastTime = null; rafId = requestAnimationFrame(frame); }
+function stop() { cancelAnimationFrame(rafId); rafId = null; }
+render();                                // 先畫初始畫面;之後只有動畫期間才重畫` },
 { id:'homework', label:'💡 動手作業:煙火粒子(delta-time)', code:
 `// 第 06 章作業:點一下爆出 50 個粒子,受重力、透明度隨時間 ease 到 0。全程 delta-time + clamp dt
 function getCanvasPoint(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
@@ -195,7 +296,7 @@ canvas.addEventListener('click', (e) => {                   // 作業要求:點�
   const p = getCanvasPoint(e);
   for (let i = 0; i < 50; i++) {
     const angle = Math.random() * Math.PI * 2;              // 先抽方向:整個圓上均勻,爆開才圓
-    const speed = 60 + Math.random() * 200;                // 再抽速率(像素/秒)
+    const speed = 60 + Math.random() * 240;                // 再抽速率:60~300 像素/秒
     particles.push({ x: p.x, y: p.y,
       vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,   // 方向 × 速率 → x/y 分量
       life: 0, maxLife: 1 + Math.random() * 1.5,
@@ -220,16 +321,17 @@ function render() {                                          // 只讀資料、�
   }
   ctx.globalAlpha = 1;                                       // globalAlpha 是持續狀態,記得改回來
   if (!particles.length) {
-    ctx.globalAlpha = 1; ctx.fillStyle = '#8a8aa0'; ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
+    ctx.fillStyle = '#8a8aa0'; ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
     ctx.fillText('點畫布任一處,放一場煙火', W / 2, H / 2);
   }
 }
-let lastTime = performance.now();
+let lastTime = null;
 function frame(now) {
+  requestAnimationFrame(frame);                              // 先預約下一幀(6.8)
+  if (lastTime === null) lastTime = now;                     // 第一幀以 rAF 時間戳為基準(6.2)
   const dt = Math.min((now - lastTime) / 1000, 0.1);         // 作業要求:clamp dt,防背景分頁回來暴衝
   lastTime = now;
   update(dt); render();
-  requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);` }
   ]

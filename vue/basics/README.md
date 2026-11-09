@@ -67,9 +67,9 @@
 # 0) 確認 Node 版本（舊版先切）
 nvm use 22
 
-# 1) 用官方腳手架建立 Vue 專案
-#    功能清單只勾 ESLint 與 Prettier，Router/Pinia/TS 都先不勾
-npm create vue@latest my-vue-course
+# 1) 用官方腳手架建立 Vue 專案：JavaScript，只加 Linter（ESLint）與 Prettier，Router/Pinia/TS 都先不裝
+#    （帶旗標就不會再問問題；想用互動模式建，選法見第 1 章 4.1 節）
+npm create vue@latest my-vue-course -- --eslint --prettier
 
 # 2) 安裝依賴並啟動
 cd my-vue-course
