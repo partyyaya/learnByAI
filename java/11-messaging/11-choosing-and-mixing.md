@@ -624,52 +624,59 @@ RabbitMQ 的削峰是「撐一下」，Kafka 的削峰是「本來就這樣設�
 **共存最常見的形狀不是「兩套各做各的」，是「既有系統在 RabbitMQ 上，新需求要 Kafka」。**
 
 ```java
-var bridge = new SimpleMessageListenerContainer(rabbitCf);
-bridge.setQueueNames(Q);
-bridge.setPrefetchCount(50);
-bridge.setMessageListener(msg -> {
-    String body = new String(msg.getBody(), StandardCharsets.UTF_8);
-    // ⚠️ 橋接器要自己決定 key —— RabbitMQ 的 routing key 不等於 Kafka 的 key
-    String key = body.substring(0, body.indexOf(':'));
-    bridgeProducer.send(T, key, body);      // ⚠️ 這裡如果 .get() 會把吞吐砍掉一個數量級
-});
+package com.example.lab11.messaging;
+
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.springframework.amqp.AmqpException;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.listener.api.ChannelAwareMessageListener;
+import org.springframework.kafka.core.KafkaTemplate;
+
+public class RabbitKafkaBridge implements ChannelAwareMessageListener {
+    private final KafkaTemplate<Object, Object> kafka;
+    public RabbitKafkaBridge(KafkaTemplate<Object, Object> kafka) { this.kafka=kafka; }
+    @Override
+    public void onMessage(Message msg, com.rabbitmq.client.Channel channel) {
+        String id=msg.getMessageProperties().getMessageId();
+        if (id==null || id.isBlank()) throw new AmqpException("bridge requires stable messageId");
+        String body=new String(msg.getBody(), StandardCharsets.UTF_8);
+        int separator=body.indexOf(':');
+        if (separator<=0) throw new AmqpException("expected orderId:payload");
+        // 此小實驗格式為 orderId:payload；正式 JSON 請解析 orderId，不拿 routing key 當業務 key
+        ProducerRecord<Object,Object> record=new ProducerRecord<>("order.bridge.v1", body.substring(0,separator), msg.getBody());
+        record.headers().add("eventId", id.getBytes(StandardCharsets.UTF_8));
+        Object trace=msg.getMessageProperties().getHeaders().get("X-Trace-Id");
+        if (trace!=null) record.headers().add("X-Trace-Id", trace.toString().getBytes(StandardCharsets.UTF_8));
+        try {
+            kafka.send(record).get(5, TimeUnit.SECONDS); // 確認 Kafka 成功後，AUTO 才能 ACK Rabbit
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AmqpException("bridge interrupted", e);
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+            throw new AmqpException("Kafka failed or outcome unknown", e);
+        }
+    }
+}
 ```
 
-**輸出**：
+將 listener 接到獨立 bridge queue 的 `SimpleMessageListenerContainer`，使用 AUTO，
+`defaultRequeueRejected=false`，並為該 queue 配置 06 章的安全 DLX／parking。
+Kafka template 沿用 10.7.1 的 bytes／JSON serializer，`acks=all`；來源訊息為 persistent，queue durable。
 
-```
-═══ 11.5.2 共存：一個 RabbitMQ → Kafka 的橋接器 ═══
-  既有系統照常送 RabbitMQ，新的分析團隊從 Kafka 讀
+失敗必須向外拋，交由 DLX 保留原訊息並告警；修復後人工重放。
+需要自動退避可沿用 06 章的**確認轉送與有限次數**模式，或先把訊息寫進本地 Inbox／Outbox，
+提交後再 ACK 來源，不能無限立即 requeue。
 
-  ── ① 橋接器還沒啟動 ──
-     RabbitMQ 佇列積壓 : 300 則
-     Kafka topic 上    : 0 則
-     → 訊息安全地等在佇列裡（既有系統完全不受影響）
+這個版本在目標確認成功後才 ACK，所以在上述儲存、重放與維運前提下提供至少一次傳遞。
+若 Kafka 已接收、來源 ACK 前崩潰，仍會重送；下游以 eventId 去重。
+`send()` 回傳 future 並不表示目標已接收，直接回傳會有來源已 ACK、目標稍後失敗的遺失窗口。
+等待只限制 future，`send()` 另受 max.block.ms 限制；它也不會取消已在途的訊息。
 
-  ── ② 橋接器啟動 ──
-     搬了 300 則，花 1,421 ms
-     RabbitMQ 佇列積壓 : 0 則
-     Kafka topic 上    : 300 則
-     端到端延遲        : 平均 1,307 ms、最大 1,321 ms
-
-  ── ③ 穩定運轉（每 40 ms 一則）──
-     搬了 50 則，端到端延遲 平均 2 ms、最大 4 ms
-
-  ⚠️ 橋接器的三個代價
-     ① 它是一個新的行程，要部署、要監控、要有 HA
-     ② 它是至少一次的：ack 在 send 之後，掛掉會重送 → 下游一定要冪等（03 章）
-     ③ RabbitMQ 的 routing key 不等於 Kafka 的 key —— 這一段邏輯要自己寫
-```
-
-📌 **② 與 ③ 的差別要看懂**：
-
-- **②** 的「平均 1,307 ms」是**積壓被清掉**的那一批 —— 它們在佇列裡等了 1.3 秒。
-  這個數字反映的是「橋接器停機的時間」，不是它的處理速度。
-- **③** 的「平均 2 ms」才是穩定運轉的延遲。
-
-⚠️ **①「橋接器沒開，訊息安全地等在佇列裡」是共存架構最大的好處**：
-橋接器掛掉**不影響既有系統**，修好之後自己追上。
-這比「生產者同時送兩邊」安全得多（下一節）。
+舊的非同步橋接量測無法證明可靠傳遞，其吞吐／延遲不再作為此版本驗收數字。
+驗證應先暫停 Kafka future，確認 Rabbit 訊息仍為 unacked；再讓目標成功或失敗，
+分別檢查來源 ACK 或 parking。效能需對修正版另測，可增加實例或採 Outbox 提升吞吐。
 
 ### 11.5.3 ⚠️ 不要做的四件事
 

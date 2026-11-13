@@ -591,7 +591,7 @@ class WiringReportTest {
         for (String[] c : new String[][]{
                 {"cs2", "🔴 表單登入 + session，但 csrf().disable()"},
                 {"cs1", "✅ 表單登入 + session，CSRF 開著（預設）"},
-                {"cs4", "✅ Basic + STATELESS，CSRF 關掉"},
+                {"cs4", "Basic 裸 HTTP 對照，未自動重送憑證"},
                 {"cs3", "✅ 前後端分離：CookieCsrfTokenRepository"}}) {
             System.out.println("\n>>> " + c[1] + "（profile " + c[0] + "）");
             try (ConfigurableApplicationContext ctx = new SpringApplicationBuilder(com.example.lab09.LabApp.class)
@@ -651,7 +651,7 @@ chain[0]  any request（15 個 Filter）
 ──────────────────────────────────────────
 
 
->>> ✅ Basic + STATELESS，CSRF 關掉（profile cs4）
+>>> Basic 裸 HTTP 對照，未自動重送憑證（profile cs4）
 
 ──────── 身分載體設定（每條 chain）────────
 chain[0]  any request（13 個 Filter）
@@ -2195,10 +2195,10 @@ public class CsrfScenarios {
         }
     }
 
-    /** cs4：真的無狀態 —— 身分靠 Authorization 標頭，CSRF 關掉是【對的】 */
+    /** cs4：非瀏覽器裸 HTTP 對照；這個 client 不會自動重送 Basic 憑證，不能證明瀏覽器安全 */
     @Configuration
     @Profile("cs4")
-    static class Cs4_StatelessBearer {
+    static class Cs4_StatelessBasicProbe {
         @Bean SecurityFilterChain chain(HttpSecurity http) throws Exception {
             return http
                 .authorizeHttpRequests(a -> a
@@ -2318,15 +2318,15 @@ class CsrfAttackTest {
     }
 
     @Test
-    void c_statelessBearer() {
-        System.out.println("\n═══ 4.4.2 真的無狀態（身分靠 Authorization 標頭）：攻擊不成立 ═══");
+    void c_statelessBasicProbe() {
+        System.out.println("\n═══ 4.4.2 裸 HTTP Basic 對照：第二次請求沒有憑證 ═══");
         withPort("cs4", port -> {
             Web victim = new Web(port);
             victim.post("/s/transfers/reset", null);     // 帳本是全域的，每個情境先歸零
             System.out.println("   ① 受害者用 Basic 打一次 → "
                     + Web.brief(victim.get("/s/notouch", "Authorization", Web.basic("alice", "pw")), 60));
             System.out.println("      手上的 cookie：" + (victim.cookies().isEmpty() ? "（一個都沒有）" : victim.cookies()));
-            HttpResponse<String> r = evilForm(victim);       // 攻擊者【沒辦法】加上 Authorization 標頭
+            HttpResponse<String> r = evilForm(victim);       // 這個裸 HTTP client 沒有替第二次請求重送 Basic
             System.out.println("   ② 攻擊者的表單（帶不了 Authorization）→ " + Web.brief(r, 100));
             System.out.println("   ③ 伺服器的帳本 → " + victim.get("/s/transfers").body());
         });
@@ -2362,21 +2362,19 @@ class CsrfAttackTest {
 
 ✅ **403。而受害者自己在正常頁面上的同一個操作（帶得到 token）是 200。**
 
-**③ 真的無狀態（身分靠 `Authorization` 標頭）**：
+**③ 裸 HTTP Basic 對照：未自動重送憑證**：
 
 ```
-═══ 4.4.2 真的無狀態（身分靠 Authorization 標頭）：攻擊不成立 ═══
+═══ 4.4.2 裸 HTTP Basic 對照：第二次請求沒有憑證 ═══
    ① 受害者用 Basic 打一次 → 200  {"endpoint":"/s/notouch","who":"alice"}
       手上的 cookie：（一個都沒有）
    ② 攻擊者的表單（帶不了 Authorization）→ 401  {"status":401,"error":"Unauthorized","path":"/s/transfer…
    ③ 伺服器的帳本 → {"轉帳次數":0,"明細":[]}
 ```
 
-✅ **401。** 不是因為有 CSRF 防護——**是因為攻擊者根本放不進 `Authorization` 標頭**。
-📌 **這就是「無狀態 API 可以關 CSRF」的真正理由**，而不是「因為它是 REST」。
+這個 401 只證明 `Web` 裸 HTTP client 在第二次請求沒有送 Basic 憑證。它不會模擬瀏覽器的 HTTP 認證快取，因此不能拿這個結果推論「Basic + STATELESS 可以關 CSRF」。
 
-⚠️ **注意受害者手上的 cookie：一個都沒有。** 這是關 CSRF 的**前提條件**，
-而 4.5.2 會示範這個前提不成立時會發生什麼。
+瀏覽器可能自動重送記住的 Basic 憑證，即使沒有 cookie 也有 CSRF 風險。若供瀏覽器使用，Basic 流程要保留 CSRF；05 章的 API 則只接受 JS 主動附上的 Bearer。參考 [Spring 官方對 stateless／Basic 的說明](https://docs.spring.io/spring-security/reference/features/exploits/csrf.html#csrf-and-stateless-browser-applications)。
 
 ### 4.4.3 🔴 實測：用「檢查 Referer」代替 token
 
@@ -2698,7 +2696,8 @@ public void delete(@PathVariable Long id) { ... }
 | **`Authorization: Bearer …`**，token 存在 JS 記憶體 / `localStorage` | JS 主動放 | ✅ 不成立 | 可以關 |
 | 🔴 **token 存在 cookie**，伺服器從 cookie 讀 | 瀏覽器自動 | 🔴 **成立** | **開**（4.5.2 實測） |
 | **token 存在 cookie，但伺服器只從【標頭】讀** | JS 主動放 | ✅ 不成立 | 可以關（這是 4.5.4 的做法） |
-| **API key / mTLS / 伺服器對伺服器** | 呼叫方主動放 | ✅ 不成立 | 可以關 |
+| **API key（JS 主動放標頭）／伺服器對伺服器** | 呼叫方主動放 | ✅ 不成立 | 可以關 |
+| **瀏覽器用戶端憑證（mTLS）** | 瀏覽器可能自動送憑證 | 🔴 可能成立 | 依自動攜帶行為判斷，不能只憑 mTLS 關掉 |
 
 ⚠️ **第四列與第五列只差一個字，但結果相反**：
 
@@ -3507,7 +3506,7 @@ JWT                 無狀態 ✅   每個請求成本 ✅ 低      ← 05 章
 ```
 🔴 停用帳號不會立刻踢掉現有 session（02 章 2.7.7）        → ✅ 這一章（4.3.3）
 🔴 權限收回來要等下一次登入（03 章 3.7.7）                 → ✅ 這一章（4.3.3 + 4.7.1）
-🔴 CSRF 直接 disable 了 —— 那是對的，但要說得出理由        → ✅ 這一章（4.5.1）
+🔴 Basic 階段關 CSRF 僅限非瀏覽器實驗；供瀏覽器使用必須保留        → ✅ 這一章（4.5.1）
 🔴 API 用 HTTP Basic —— 每個請求跑一次 BCrypt（4.7.2）    → 05 章換 JWT
 🔴 沒有任何稽核紀錄                                       → 08 章
 ```
@@ -3534,20 +3533,13 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.session.HttpSessionEventPublisher;
 
 @Configuration
-@EnableMethodSecurity                     // 03 章 3.5.2
 public class ShopAuthzConfig {
-
-    /** 4.3.2：並行 session 控制與 4.3.3 的「踢人」都靠它 */
-    @Bean SessionRegistry sessionRegistry() { return new SessionRegistryImpl(); }
-
-    /** ⚠️ 少了它，登出與逾時不會從 registry 移除 —— 幾天後那個人就登不進來了（4.3.2） */
-    @Bean HttpSessionEventPublisher httpSessionEventPublisher() { return new HttpSessionEventPublisher(); }
 
     /**
      * REST API：無狀態。
-     * ✅ CSRF 可以關，理由是【身分靠 Authorization 標頭攜帶，瀏覽器不會自動送】（4.5.1）。
-     *    ⚠️ 這個理由在 05 章把 Basic 換成 JWT 之後仍然成立 ——
-     *       前提是 JWT【不放進 cookie】（4.5.2 示範過放進 cookie 的後果）。
+     * 這一版 Basic 僅供 curl／測試等非瀏覽器客戶端實驗。
+     * 瀏覽器可能自動附上記住的 Basic 憑證；若供瀏覽器使用，必須保留 CSRF。
+     * 05 章改成僅讀 Authorization: Bearer 後，才適用 4.5.1 的 JS 主動攜帶論證。
      */
     @Bean
     @Order(1)
@@ -3565,7 +3557,7 @@ public class ShopAuthzConfig {
                 .requestMatchers("/api/admin/**").hasAuthority("user:manage")
                 .anyRequest().authenticated())
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .csrf(c -> c.disable())                                      // ★ 理由見上面的 javadoc
+            .csrf(c -> c.disable())                                      // 僅限上述非瀏覽器 Basic 實驗
             .httpBasic(Customizer.withDefaults())                        // ⚠️ 暫時的，05 章換 JWT
             .exceptionHandling(e -> e
                 .authenticationEntryPoint(ApiErrors::write401)           // 01 章 1.8.5
@@ -3605,6 +3597,20 @@ public class ShopAuthzConfig {
 }
 ```
 
+Session 的共用 bean 也獨立保留；05～08 章只替換 chain，不刪這個類別：
+
+```java
+package com.example.lab09.shop;
+import org.springframework.context.annotation.*;
+import org.springframework.security.core.session.*;
+import org.springframework.security.web.session.HttpSessionEventPublisher;
+@Configuration
+public class ShopSessionConfig {
+    @Bean SessionRegistry sessionRegistry() { return new SessionRegistryImpl(); }
+    @Bean HttpSessionEventPublisher httpSessionEventPublisher() { return new HttpSessionEventPublisher(); }
+}
+```
+
 **② `ShopUserDetails` 要明確寫出 `equals` / `hashCode`**
 
 ⚠️ **03 章 3.10 把它寫成 `record`，而 record 的 `equals` 會比對【所有】欄位。**
@@ -3638,12 +3644,26 @@ public class ShopUserDetailsService implements UserDetailsService {
     @Override
     @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        if (username != null) username = username.trim();
+        if (username == null || !username.matches("[A-Za-z0-9:_-]{1,64}"))
+            throw new UsernameNotFoundException("帳號格式不符");
+        username = username.toLowerCase(Locale.ROOT);
         Map<String, Object> u;
         try {
-            u = jdbc.queryForMap("""
+            u = jdbc.queryForObject("""
                     SELECT id, username, password_hash, display_name, enabled,
-                           account_non_expired, account_non_locked, credentials_expire_at
-                      FROM app_user WHERE username = ?""", username);
+                           account_non_expired, account_non_locked, local_password_enabled, credentials_expire_at
+                      FROM app_user WHERE username = ?""",
+                    (rs, rowNum) -> {
+                        Map<String, Object> row = new HashMap<>();
+                        row.put("id", rs.getLong("id"));
+                        for (String name : List.of("username", "password_hash", "display_name"))
+                            row.put(name, rs.getString(name));
+                        for (String name : List.of("enabled", "account_non_expired", "account_non_locked", "local_password_enabled"))
+                            row.put(name, rs.getBoolean(name));
+                        row.put("credentials_expire_at", rs.getObject("credentials_expire_at", LocalDateTime.class));
+                        return row;
+                    }, username);
         } catch (org.springframework.dao.EmptyResultDataAccessException e) {
             throw new UsernameNotFoundException(username);          // ★ 02 章 2.5.5 規則一
         }
@@ -3662,7 +3682,7 @@ public class ShopUserDetailsService implements UserDetailsService {
                     if (p != null) authorities.add(p);
                 }, u.get("id"));
 
-        java.sql.Timestamp exp = (java.sql.Timestamp) u.get("credentials_expire_at");
+        LocalDateTime exp = (LocalDateTime) u.get("credentials_expire_at");
         return new ShopUserDetails(
                 (Long) u.get("id"),
                 (String) u.get("username"),
@@ -3671,15 +3691,22 @@ public class ShopUserDetailsService implements UserDetailsService {
                 (Boolean) u.get("enabled"),
                 (Boolean) u.get("account_non_expired"),
                 (Boolean) u.get("account_non_locked"),
-                exp == null || exp.toLocalDateTime().isAfter(LocalDateTime.now()),
+                (Boolean) u.get("local_password_enabled"),
+                exp == null || exp.isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC)),
                 authorities.stream().map(a -> (GrantedAuthority) new SimpleGrantedAuthority(a)).toList());
+    }
+
+    @Transactional(readOnly = true)
+    public ShopUserDetails loadById(Long id) {
+        String username = jdbc.queryForObject("SELECT username FROM app_user WHERE id=?", String.class, id);
+        return (ShopUserDetails) loadUserByUsername(username);
     }
 
     /** 03 章 3.10 的 record，補上明確的 equals / hashCode（4.3.2） */
     public record ShopUserDetails(Long userId, String username, String password, String displayName,
                                   boolean enabled, boolean accountNonExpired, boolean accountNonLocked,
-                                  boolean credentialsNonExpired,
-                                  List<GrantedAuthority> grantedAuthorities) implements UserDetails {
+                                  boolean localPasswordEnabled, boolean credentialsNonExpired,
+                                  List<GrantedAuthority> grantedAuthorities) implements UserDetails, LocalIdentity, LocalPasswordPolicy {
 
         @Override public Collection<? extends GrantedAuthority> getAuthorities() { return grantedAuthorities; }
         @Override public String getPassword() { return password; }
@@ -3733,7 +3760,7 @@ public class ShopSessionAdmin {
     public int kick(Long userId) {
         int n = 0;
         for (Object p : registry.getAllPrincipals()) {
-            if (!(p instanceof ShopUserDetailsService.ShopUserDetails u)) continue;
+            if (!(p instanceof LocalIdentity u)) continue;
             if (!u.userId().equals(userId)) continue;
             for (SessionInformation si : registry.getAllSessions(p, false)) { si.expireNow(); n++; }
         }
@@ -3771,7 +3798,7 @@ server.servlet.session.timeout=30m
 **本章結束時，shop-service 的樣子**：
 
 ```
-API（/api/**）   無狀態；CSRF 關掉，而且【寫得出理由】；05 章要把 Basic 換成 JWT
+API（/api/**）   Basic 僅限非瀏覽器實驗；瀏覽器用 Basic 需保留 CSRF；05 章改為僅讀 Bearer
 後台（其餘）      session；CSRF 開著；changeSessionId + maximumSessions(5)
 撤銷             ShopSessionAdmin.kick(userId) —— 停用帳號 / 收回權限都要呼叫它
 principal        ShopUserDetails 明確覆寫 equals/hashCode（比 userId）

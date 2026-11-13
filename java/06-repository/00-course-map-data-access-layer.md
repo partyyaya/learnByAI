@@ -1617,7 +1617,7 @@ UPDATE orders SET status = 'CANCELLED'
 
 > 📌 **shop-service 選 A**，理由是第二列：**B 繞過了 `Order.cancel()` 裡的其他規則**
 > （7 天內、客服要填原因、已付款要建退款單）。
-> **05 章 5.5 會處理 A 的一個麻煩**：`save()` 之後，
+> **02 章 2.15.4 會處理 A 的一個麻煩**：`save()` 之後，
 > 記憶體裡那個 `Order` 的 `version` 已經過期了。
 
 ---
@@ -2496,6 +2496,17 @@ public interface OrderRepository {
      */
     void save(Order order);
 
+    /**
+     * 在既有寫入交易內保存並重載；繼續操作或回傳版本時使用回傳的新物件。
+     * 實作必須在 save 返回前完成版本寫入（JPA 見 03 章 3.10.3）。
+     * 提交前的結果是暫定值；交易 rollback 後必須丟棄。
+     */
+    default Order saveAndReload(Order order) {
+        save(order);
+        return findById(order.id()).orElseThrow(
+                () -> new IllegalStateException("保存後找不到訂單：" + order.id()));
+    }
+
     /** ★ 06 站新增：批次存，給排程與匯入用（0.6.2 ⑫）。 */
     void saveAll(Collection<Order> orders);
 
@@ -2547,7 +2558,9 @@ public record Actor(String userId, Role role) {
 }
 ```
 
-**`Order` 聚合（本站使用的版本 —— 05 站 0.9.2 的精簡版，加上 `rehydrate`）**：
+**`Order` 聚合（本站持久化教學用的精簡模型，加上 `rehydrate`）**：
+
+保留前站可取消狀態的白名單，但省略付款、授權、退款與取消原因等事實；不能直接替換 `05-service` 的完整領域模型。本節的建構驗證只承諾此處列出的不變量。
 
 ```java
 package example.shop.order.domain;
@@ -2587,11 +2600,13 @@ public final class Order {
         this.total = Objects.requireNonNull(total);
         this.createdAt = Objects.requireNonNull(createdAt);
         this.version = version;
+        assertInvariants();
     }
 
-    /** 新單：版本從 0 開始，走完整的業務驗證。 */
+    /** 新單：版本從 0 開始，檢查本節精簡模型的必要不變量。 */
     public static Order place(String id, String customerId, List<OrderLine> lines, Money total, Instant now) {
         if (lines.isEmpty()) throw new IllegalArgumentException("訂單至少要有一筆明細");
+        if (total.isNegative()) throw new IllegalArgumentException("訂單總額不能為負");
         return new Order(id, customerId, OrderStatus.PENDING_PAYMENT, lines, total, now, 0L);
     }
 
@@ -2604,8 +2619,9 @@ public final class Order {
     }
 
     public void cancel() {
-        if (status.isTerminal()) throw new IllegalStateException("已結束的訂單不能取消：" + status);
+        if (!status.isCancellable()) throw new IllegalStateException("此狀態不能取消：" + status);
         status = OrderStatus.CANCELLED;
+        assertInvariants();
     }
 
     public void markPaid() {
@@ -2633,6 +2649,10 @@ package example.shop.order.domain;
 
 public enum OrderStatus {
     PENDING_PAYMENT, PAID, PARTIALLY_SHIPPED, SHIPPED, DELIVERED, CANCELLED, REFUNDED;
+
+    public boolean isCancellable() {
+        return this == PENDING_PAYMENT || this == PAID || this == PARTIALLY_SHIPPED;
+    }
 
     public boolean isTerminal() { return this == DELIVERED || this == CANCELLED || this == REFUNDED; }
 }
@@ -2739,7 +2759,8 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
 
 ```sql
 -- shop-service 的訂單資料表
--- ⚠️ 這份 DDL 同時要能跑在 H2 與 MySQL 8 上，所以刻意避開兩邊不同的語法。
+-- H2 與 MySQL 8 共用的一次性 migration。索引不使用 MySQL 不支援的 IF NOT EXISTS。
+-- 由 Flyway/Liquibase 記錄已執行版本；不能反覆當作啟動 SQL 執行。
 
 CREATE TABLE IF NOT EXISTS orders (
     id           VARCHAR(26)  NOT NULL,
@@ -2747,7 +2768,7 @@ CREATE TABLE IF NOT EXISTS orders (
     status       VARCHAR(20)  NOT NULL,
     total_minor  BIGINT       NOT NULL,
     currency     CHAR(3)      NOT NULL,
-    created_at   TIMESTAMP    NOT NULL,
+    created_at   TIMESTAMP(6) NOT NULL,
     version      BIGINT       NOT NULL,
     CONSTRAINT pk_orders PRIMARY KEY (id),
     -- ★ 不變量 I3 的第四道防線（0.8）——「抓 bug」，不是「擋併發」
@@ -2757,8 +2778,8 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 
 -- ★ findExpiredPendingPayment 的索引：欄位順序就是查詢條件的順序（07-mysql 站 03 章）
-CREATE INDEX IF NOT EXISTS ix_orders_pending  ON orders (status, created_at, id);
-CREATE INDEX IF NOT EXISTS ix_orders_customer ON orders (customer_id, created_at, id);
+CREATE INDEX ix_orders_pending  ON orders (status, created_at, id);
+CREATE INDEX ix_orders_customer ON orders (customer_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS order_line (
     order_id         VARCHAR(26) NOT NULL,
@@ -2833,6 +2854,13 @@ public class JdbcOrderRepository implements OrderRepository {
     private final NamedParameterJdbcTemplate jdbc;
 
     public JdbcOrderRepository(NamedParameterJdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Order saveAndReload(Order order) {
+        return OrderRepository.super.saveAndReload(order);
+    }
+
 
     @Override
     public String nextId() {
@@ -2962,7 +2990,7 @@ public class JdbcOrderRepository implements OrderRepository {
 |---|---|---|
 | ① | `save()` 先 UPDATE 再判斷 —— 新單一定會多一次無效的 UPDATE | 02 章 2.8（`INSERT … ON DUPLICATE KEY` / MERGE 的取捨） |
 | ② | `saveAll()` 是 N 次來回，不是批次 | 05 章 5.8 |
-| ③ | `save()` 之後，記憶體裡的 `Order.version` 已經過期 | 05 章 5.5 |
+| ③ | `save()` 之後，記憶體裡的 `Order.version` 已經過期 | 02 章 2.15.4：交易內 `saveAndReload()` |
 | ④ | `LIMIT :limit` 的具名參數在某些資料庫上不支援 | 02 章 2.6 |
 | ⑤ | 明細是「全刪重插」還是「逐筆比對」——目前**兩者都不是**（只在 insert 時寫） | 03 章 3.7 |
 
@@ -3198,7 +3226,7 @@ Architecture Violation [Priority: MEDIUM] - Rule 'classes that reside in a packa
 ```yaml
 spring:
   datasource:
-    url: jdbc:mysql://localhost:3306/shop?useSSL=false&characterEncoding=utf8mb4&connectionTimeZone=UTC&rewriteBatchedStatements=true
+    url: jdbc:mysql://localhost:3306/shop?useSSL=false&characterEncoding=UTF-8&connectionTimeZone=UTC&rewriteBatchedStatements=true&useServerPrepStmts=true&useCursorFetch=true
     username: ${DB_USER}
     password: ${DB_PASSWORD}
     hikari:

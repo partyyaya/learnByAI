@@ -85,6 +85,7 @@ CREATE TABLE app_user (
   password_hash         VARCHAR(100) NOT NULL COMMENT '含 {演算法} 前綴（00 章 0.7.5）',
   display_name          VARCHAR(64)  NOT NULL,
   enabled               BOOLEAN      NOT NULL DEFAULT TRUE,
+  local_password_enabled BOOLEAN     NOT NULL DEFAULT TRUE, -- 06 章：社群專用帳號設 FALSE
   account_non_expired   BOOLEAN      NOT NULL DEFAULT TRUE,
   account_non_locked    BOOLEAN      NOT NULL DEFAULT TRUE,
   credentials_expire_at DATETIME     NULL COMMENT 'NULL = 永不過期',
@@ -108,7 +109,7 @@ CREATE TABLE authority (
 ```yaml
 spring:
   datasource:
-    url: jdbc:mysql://localhost:33307/lab09?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Taipei
+    url: jdbc:mysql://localhost:33307/lab09?useSSL=false&allowPublicKeyRetrieval=true&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true
     username: root
     password: root
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -120,6 +121,8 @@ spring:
       hibernate:
         generate_statistics: true    # ★ 2.7.4 / 2.7.5 用它數 SQL 句數
 ```
+
+帳號到期日與之後的 token 時間一律以 UTC 寫入 DATETIME；讀取用 `LocalDateTime` 搭配明確的 UTC 比較。展示時間時才轉 Asia/Taipei。
 
 **④ 每個情境一個 profile**（用 `@ActiveProfiles` 切換，跟 01 章的做法一樣）：
 
@@ -3457,6 +3460,7 @@ CREATE TABLE app_user (
   password_hash         VARCHAR(100) NOT NULL COMMENT '含 {演算法} 前綴（00 章 0.7.5）',
   display_name          VARCHAR(64)  NOT NULL,
   enabled               BOOLEAN      NOT NULL DEFAULT TRUE,
+  local_password_enabled BOOLEAN     NOT NULL DEFAULT TRUE, -- 06 章：社群專用帳號設 FALSE
   account_non_expired   BOOLEAN      NOT NULL DEFAULT TRUE,
   account_non_locked    BOOLEAN      NOT NULL DEFAULT TRUE,
   credentials_expire_at DATETIME     NULL COMMENT 'NULL = 永不過期',
@@ -6006,6 +6010,10 @@ package com.example.lab09.shop;
 import org.springframework.context.annotation.*;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.ProviderManager;
+import org.springframework.security.authentication.AuthenticationEventPublisher;
+import org.springframework.security.authentication.DefaultAuthenticationEventPublisher;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.core.userdetails.UserDetailsPasswordService;
 import org.springframework.security.core.userdetails.UserDetailsService;
@@ -6021,6 +6029,20 @@ public class ShopAuthConfig {
         return PasswordEncoderFactories.createDelegatingPasswordEncoder();
     }
 
+    @Bean
+    AuthenticationEventPublisher authenticationEventPublisher(ApplicationEventPublisher events) {
+        return new DefaultAuthenticationEventPublisher(events);
+    }
+
+    @Bean
+    UserDetailsPasswordService passwordUpgrade(JdbcTemplate jdbc, UserDetailsService uds) {
+        return (user, hash) -> {
+            jdbc.update("UPDATE app_user SET password_hash=? WHERE username=? AND password_hash=?",
+                    hash, user.getUsername(), user.getPassword());
+            return uds.loadUserByUsername(user.getUsername());
+        };
+    }
+
     /**
      * ② 明確組出 AuthenticationManager（2.6.2 am3）。
      *    不依賴自動設定，是為了：
@@ -6030,7 +6052,8 @@ public class ShopAuthConfig {
     @Bean
     AuthenticationManager authenticationManager(UserDetailsService uds,
                                                 PasswordEncoder encoder,
-                                                UserDetailsPasswordService pwUpgrade) {
+                                                UserDetailsPasswordService pwUpgrade,
+                                                AuthenticationEventPublisher events) {
         DaoAuthenticationProvider dao = new DaoAuthenticationProvider();
         dao.setUserDetailsService(uds);
         dao.setPasswordEncoder(encoder);
@@ -6039,6 +6062,8 @@ public class ShopAuthConfig {
         // ④ 帳號狀態檢查搬到密碼比對【之後】—— 2.5.3 修法 A
         dao.setPreAuthenticationChecks(user -> { });
         dao.setPostAuthenticationChecks(user -> {
+            if (user instanceof LocalPasswordPolicy policy && !policy.localPasswordEnabled())
+                throw new org.springframework.security.authentication.BadCredentialsException("帳密錯誤");
             if (!user.isAccountNonLocked())
                 throw new org.springframework.security.authentication.LockedException("帳號已鎖定");
             if (!user.isEnabled())
@@ -6050,8 +6075,21 @@ public class ShopAuthConfig {
         });
 
         // ⑤ 不掛 UserCache —— 2.7.8 量過，預設設定下它省不到查詢，關掉 erase 又會開兩個洞
-        return new ProviderManager(dao);
+        ProviderManager manager = new ProviderManager(dao);
+        manager.setAuthenticationEventPublisher(events); // 手動建立不會自動接上容器的 publisher
+        return manager;
     }
+}
+```
+
+密碼 provider 也要辨識「允許本地密碼登入」的政策。這個小介面留給 03／06 章的本地帳號快照實作：
+
+```java
+package com.example.lab09.shop;
+
+/** 社群專用帳號即使存在於 app_user，也不能用本地密碼登入。 */
+public interface LocalPasswordPolicy {
+    boolean localPasswordEnabled();
 }
 ```
 

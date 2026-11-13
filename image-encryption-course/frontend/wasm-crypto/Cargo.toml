@@ -16,5 +16,7 @@ ctr = "0.9"
 opt-level = 3
 lto = true
 codegen-units = 1
-strip = true
 panic = "abort"
+# 不要加 strip = true：它會連 target_features 區段一起刪掉，
+# wasm-pack 內建的 wasm-opt 就不知道 bulk memory 已啟用，build 會失敗。
+# release build 經過 wasm-bindgen + wasm-opt 後本來就不含 Rust 函式名。

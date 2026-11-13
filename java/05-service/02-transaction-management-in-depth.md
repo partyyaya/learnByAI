@@ -128,11 +128,11 @@ orderService.create(cmd);        // orderService 是一個 CGLIB 代理
       │
 ⑫ connection.commit() / rollback()            ★ 交易在這裡真正結束
       │
-⑬ triggerAfterCommit → @TransactionalEventListener(AFTER_COMMIT)
+⑬ triggerAfterCommit → 手動 TransactionSynchronization.afterCommit callback
       │   ⚠️⚠️ 資源「還綁在 ThreadLocal 上」，但「不會再有 commit」
       │        → 這是 2.12.3 那個坑的根源
       │
-⑭ triggerAfterCompletion → @TransactionalEventListener(AFTER_COMPLETION)
+⑭ triggerAfterCompletion → 註解 listener：AFTER_COMMIT / AFTER_ROLLBACK / AFTER_COMPLETION
       │   ⚠️ 同步器在呼叫前已被清除；例外在這裡會被 catch 並記 log
       │
 ⑮ cleanupAfterCompletion
@@ -3049,16 +3049,17 @@ public enum TransactionPhase {
 ⑩ 決定 commit / rollback
 ⑪ ── BEFORE_COMMIT ──────────  ★ 還在交易裡，寫入會一起 commit
 ⑫ connection.commit()          ← 交易在這裡結束
-⑬ ── AFTER_COMMIT ───────────  ⚠️ 資源還綁著，但「不會再 commit」
-⑭ ── AFTER_COMPLETION ───────  ⚠️ 例外會被 catch 並記 log
+⑬ triggerAfterCommit           手動 synchronization callback（資源仍綁著）
+⑭ triggerAfterCompletion      註解 listener 的 AFTER_COMMIT / AFTER_ROLLBACK / AFTER_COMPLETION
+                               依完成狀態執行；例外被 catch 並記 log
 ⑮ 解除綁定 → connection 歸還池子
 ```
 
 | Phase | 寫入會被 commit 嗎？ | listener 拋例外會怎樣 | 用途 |
 |---|---|---|---|
 | `BEFORE_COMMIT` | ✅ **會**（還在交易裡） | 🔴 **整個交易 rollback** | commit 前的最後檢查、寫衍生資料 |
-| **`AFTER_COMMIT`** | 🔴 **不會**（除非 `REQUIRES_NEW`） | ⚠️ **傳到呼叫端**（2.12.2 陷阱 ②） | **通知、推 ERP、清快取**（絕大多數） |
-| `AFTER_ROLLBACK` | 同上 | 同上 | 補償、告警 |
+| **`AFTER_COMMIT`** | 🔴 **不會**（除非 `REQUIRES_NEW`） | ✅ 記 log，不把 listener 例外傳回原呼叫端（2.12.2） | **通知、推 ERP、清快取**（絕大多數） |
+| `AFTER_ROLLBACK` | 同上 | ✅ 記 log，不覆蓋原交易例外 | 補償、告警 |
 | `AFTER_COMPLETION` | 同上 | ✅ 被 catch 並記 log | 清理（無論成敗） |
 
 ⚠️ **`BEFORE_COMMIT` 那一列的「拋例外 = 整個交易 rollback」值得注意**：
@@ -3127,50 +3128,31 @@ public class EventPublisherWithTransactionCheck implements DomainEventPublisher 
 同一個 listener 有時在 commit 之後跑、有時立刻跑。
 **讓它明確失敗，比讓它「有時候對」好。**
 
-**陷阱 ②：`AFTER_COMMIT` 的例外會傳回呼叫端，但不會 rollback ★**
+**陷阱 ②：註解式 `AFTER_COMMIT` 與手動 `afterCommit()` 的例外傳播不同**
 
 ```java
-@TransactionalEventListener        // 預設 AFTER_COMMIT，且沒有 @Async
+@TransactionalEventListener        // 預設 AFTER_COMMIT，沒有 @Async
 public void onOrderPlaced(OrderPlacedEvent event) {
     throw new RuntimeException("寄信失敗");
 }
 ```
 
-**發生什麼**：交易**已經 commit 了**（步驟 ⑫），
-而 `triggerAfterCommit`（步驟 ⑭）沒有包 try-catch
-→ 例外沿著呼叫堆疊往上拋 → **Controller 收到 500**。
+在本課 Spring 6.1.6 中，這個 listener 是 **`afterCompletion(COMMITTED)`** 的一部分，
+不是步驟 ⑬ 的手動 `TransactionSynchronization.afterCommit()` callback。
+Spring 會記錄 listener 例外；原呼叫端仍正常返回，訂單已 commit，後續 listener 仍可執行。
+`AFTER_ROLLBACK`／`AFTER_COMPLETION` 的 listener 例外也會被記錄。
 
-> 🔴 **結果：訂單建立成功，但使用者看到 500，然後按了重試。**
+| 使用方式 | 拋例外後原呼叫端 | 資料 |
+|---|---|---|
+| `@TransactionalEventListener(AFTER_COMMIT)` | 正常返回（若沒有其他失敗） | 已 commit |
+| 手動註冊 `TransactionSynchronization.afterCommit()` | 例外可能傳播 | 已 commit，無法補回滾 |
+| `@Async void` listener 的方法本體 | 交給 `AsyncUncaughtExceptionHandler` | 原交易已結束 |
 
-⚠️ 這是一個很糟的組合，而**兩種修法都必要**：
-
-```java
-// ① 用 @Async 把它推到另一條執行緒（例外留在那條執行緒上）
-@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-@Async("notificationExecutor")
-public void onOrderPlaced(OrderPlacedEvent event) { … }
-
-// ② 而且 listener 自己要 catch —— 因為 @Async 的例外會靜默消失，
-//    除非設定了 AsyncUncaughtExceptionHandler
-@Async("notificationExecutor")
-@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
-public void onOrderPlaced(OrderPlacedEvent event) {
-    try {
-        email.send(OrderConfirmationMail.from(event));
-    } catch (Exception e) {
-        // ⚠️ 通知失敗屬於「可以遺失」那一類（00 章 0.3.1）→ warn 就好
-        log.warn("訂單確認信寄送失敗：order={}", event.orderId(), e);
-    }
-}
-```
-
-⚠️ **但要注意 `AFTER_COMPLETION` 的行為不同**：
-它被 `TransactionSynchronizationUtils.invokeAfterCompletion` 包在 try-catch 裡並記 log
-→ **例外不會傳出去**。
-
-> 📌 **這個差別（`AFTER_COMMIT` 會拋、`AFTER_COMPLETION` 不會）
-> 沒有寫在大部分文件裡，而它決定了「一個失敗的 listener 會不會讓使用者看到 500」。**
-> ⚠️ **請在你的環境實測驗證** —— 2.16 練習 3 就是這件事。
+因此不能宣稱這個註解 listener 拋錯必然讓 HTTP 回 500／422。
+實際風險是 **HTTP 成功，但通知沒有完成**；只記 log 無法提供重試與投遞保證。
+`@Async` 用於隔離延遲，並不會讓記憶體任務變成可靠訊息。
+重要通知應在原交易寫入 outbox（06 章 6.8），失敗留下狀態、重試與告警。
+2.16 練習 3 會以實際 commit 釘住註解式 listener 的行為。
 
 **陷阱 ③：`@Async` + `AFTER_COMMIT` 的執行緒池滿了**
 
@@ -4117,15 +4099,14 @@ class FrameworkBehaviourProbeTest extends MySqlIntegrationTestBase {
      * 而在<b>把答案釘住</b>：升級 Spring 版本時它會告訴你行為變了。
      */
     @Test
-    void AFTER_COMMIT的listener拋例外時_例外傳到呼叫端而且資料已commit() {
-        assertThatThrownBy(() -> probe.publishAndFailInAfterCommit("x1"))
-                .as("如果這裡沒有拋例外，代表 Spring 把它吞了 —— 更新 2.12.2")
-                .isInstanceOf(RuntimeException.class)
-                .hasMessageContaining("listener 失敗");
+    void AFTER_COMMIT的listener拋例外時_呼叫端正常返回而且資料已commit() {
+        assertThatCode(() -> probe.publishAndFailInAfterCommit("x1"))
+                .as("註解式 AFTER_COMMIT listener 由 afterCompletion 執行，例外記 log")
+                .doesNotThrowAnyException();
 
         // ★★ 這一行才是重點：交易「已經 commit 了」
         assertThat(count("x1"))
-                .as("使用者看到 500，但資料其實存進去了 —— 這正是 2.12.2 的危險")
+                .as("listener 失敗不回滾訂單；通知可靠性必須另有機制")
                 .isEqualTo(1);
     }
 
@@ -4466,7 +4447,7 @@ void 同一張訂單重複記錄是冪等的() {
 
 - [ ] 四個 phase 各自在 15 步的哪一步？哪一個還在交易裡？
 - [ ] 沒有交易時發佈事件會怎樣？兩種處理，shop-service 選哪一個、為什麼？
-- [ ] `AFTER_COMMIT` 與 `AFTER_COMPLETION` 對「listener 拋例外」的處理有什麼不同？
+- [ ] 註解式 `AFTER_COMMIT` 與手動 `TransactionSynchronization.afterCommit()` 的例外傳播有何不同？
 - [ ] 為什麼 `AFTER_COMMIT` + 寫資料庫 = 一定要 `REQUIRES_NEW`？
 - [ ] 事件會遺失的三種方式？哪一類資料不可以只靠事件？
 

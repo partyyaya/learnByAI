@@ -1753,12 +1753,18 @@ public class RabbitTopology {
 }
 ```
 
+成品事件沿用 02 章的 `com.example.lab11.events.OrderCreatedEvent(eventId, orderId)`；
+本章 `ch04.*` 的 OrderCreated 是各自實驗的 DTO。接到 Outbox 時，JSON 已序列化，
+由 02 的 ConfirmedRabbitSender 用 raw Message 傳送；不要再交給 converter 編碼 String。
+06.9 的 OrderTopology 會取代本節 RabbitTopology（包括 converter bean），不能兩份同時啟用。
+queue 參數變更仍須走 4.6 的遷移流程。
+
 ⚠️ **這份設定還缺三樣東西，都在後面兩章補上**：
 
 | 缺什麼 | 為什麼現在不寫 | 在哪裡補 |
 |---|---|---|
 | `publisher-confirm-type` / `publisher-returns` | [01 章 1.3.3](./01-reliable-delivery-three-hops.md) 講了機制，還沒落地 | **05 章 5.2** |
-| `acknowledge-mode: manual` + prefetch | 這兩個是 RabbitMQ「不懂就一定寫錯」的地方 | **05 章 5.3、5.4** |
+| ack 模式（AUTO／MANUAL）+ prefetch | 這兩個是 RabbitMQ「不懂就一定寫錯」的地方 | **05 章 5.3、5.4** |
 | 死信交換器（DLX） | 少了它，任何一則處理不了的訊息都會變成 [00 章 0.5.2](./00-course-map-why-message-queue.md) 的風暴 | **06 章 6.2** |
 
 📌 **順序是刻意的**：先有正確的拓撲（04），才談得上可靠性（05），最後才是失敗處理（06）。

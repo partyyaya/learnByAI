@@ -876,6 +876,7 @@ import org.springframework.security.web.context.*;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 @RestController
 @Profile("manual")                   // ← 跟下面那個 ManualLoginConfig 是一組（00 章 0.3.0.1）
@@ -1829,6 +1830,7 @@ import org.springframework.security.core.AuthenticationException;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 public final class ApiErrors {
 
@@ -2084,6 +2086,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 /**
  * 放在 Security chain 的【最前面】，用 try-catch 包住後面所有的 Filter。

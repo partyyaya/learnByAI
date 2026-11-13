@@ -1,0 +1,1 @@
+package example.shop.order.domain;public interface ShippingFeePolicy{example.shop.common.money.Money feeFor(Address a,example.shop.common.money.Money m);}

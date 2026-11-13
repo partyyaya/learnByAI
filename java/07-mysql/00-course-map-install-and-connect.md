@@ -1965,6 +1965,16 @@ shop:
 
 **⑤ 守門測試** —— 把上面四件事變成 CI 的責任：
 
+以下測試改用隔離環境的 `shop_probe`，JDBC URL 的時區／字元集參數仍與應用相同。不要替正式 shop_app 增加 DDL 權限。
+
+```sql
+-- 僅在可拋棄的測試 MySQL 建立；密碼由測試環境提供。
+CREATE USER 'shop_probe'@'%' IDENTIFIED BY 'probe-only';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE TEMPORARY TABLES ON shop.* TO 'shop_probe'@'%';
+```
+
+在測試 profile／Testcontainers 覆寫 datasource 帳密為 shop_probe／probe-only。暫存表的建立、寫入、讀取與 finally 刪除都使用同一個 ConnectionCallback；不能假設每次 JdbcTemplate 都向池借到同一條連線。
+
 ```java
 package com.example.shop.infra.db;
 
@@ -2015,21 +2025,23 @@ class TimeZoneContractTest {
      */
     @Test
     void 應用寫入的時間與資料庫的_NOW_落在同一個時間軸() {
-        jdbc.execute("DROP TEMPORARY TABLE IF EXISTS tz_probe");
-        jdbc.execute("""
-                CREATE TEMPORARY TABLE tz_probe (
-                  app_time DATETIME(3) NOT NULL,
-                  db_time  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3))""");
-
-        jdbc.update("INSERT INTO tz_probe (app_time) VALUES (?)",
-                Timestamp.from(Instant.now()));
-
-        Long diffSeconds = jdbc.queryForObject(
-                "SELECT ABS(TIMESTAMPDIFF(SECOND, db_time, app_time)) FROM tz_probe", Long.class);
-
-        assertThat(diffSeconds)
-                .as("差 28800 秒 = 8 小時 = 時區設定錯了（本章 0.3.3 的事故）")
-                .isLessThan(5L);
+        jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) c -> {
+            try (var st = c.createStatement()) {
+                st.execute("CREATE TEMPORARY TABLE tz_probe (app_time DATETIME(3) NOT NULL, "
+                        + "db_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3))");
+                try {
+                    try (var ps = c.prepareStatement("INSERT INTO tz_probe(app_time) VALUES (?)")) {
+                        ps.setTimestamp(1, Timestamp.from(Instant.now()));
+                        ps.executeUpdate();
+                    }
+                    try (var rs = st.executeQuery("SELECT ABS(TIMESTAMPDIFF(SECOND, db_time, app_time)) FROM tz_probe")) {
+                        assertThat(rs.next()).isTrue();
+                        assertThat(rs.getLong(1)).as("時差應小於 5 秒").isLessThan(5L);
+                    }
+                } finally { st.execute("DROP TEMPORARY TABLE tz_probe"); }
+            }
+            return null;
+        });
     }
 
     /**
@@ -2039,19 +2051,22 @@ class TimeZoneContractTest {
      */
     @Test
     void DATETIME_欄位存的是_UTC_的字面值() {
-        jdbc.execute("DROP TEMPORARY TABLE IF EXISTS tz_probe2");
-        jdbc.execute("CREATE TEMPORARY TABLE tz_probe2 (t DATETIME(3) NOT NULL)");
-
-        Instant fixed = Instant.parse("2026-09-02T10:00:00Z");
-        jdbc.update("INSERT INTO tz_probe2 (t) VALUES (?)", Timestamp.from(fixed));
-
-        // ★ 用 CAST AS CHAR 讀，繞過驅動的時區換算，看資料庫裡「真正的字面值」
-        String literal = jdbc.queryForObject(
-                "SELECT CAST(t AS CHAR) FROM tz_probe2", String.class);
-
-        assertThat(literal)
-                .as("如果這裡是 18:00，代表存進去的是 JVM 本地時間（0.6.3 的 A/D）")
-                .startsWith("2026-09-02 10:00:00");
+        jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) c -> {
+            try (var st = c.createStatement()) {
+                st.execute("CREATE TEMPORARY TABLE tz_probe2(t DATETIME(3) NOT NULL)");
+                try {
+                    try (var ps = c.prepareStatement("INSERT INTO tz_probe2(t) VALUES (?)")) {
+                        ps.setTimestamp(1, Timestamp.from(Instant.parse("2026-09-02T10:00:00Z")));
+                        ps.executeUpdate();
+                    }
+                    try (var rs = st.executeQuery("SELECT CAST(t AS CHAR) FROM tz_probe2")) {
+                        assertThat(rs.next()).isTrue();
+                        assertThat(rs.getString(1)).startsWith("2026-09-02 10:00:00");
+                    }
+                } finally { st.execute("DROP TEMPORARY TABLE tz_probe2"); }
+            }
+            return null;
+        });
     }
 
     /** 0.6.6：業務時區必須來自設定檔，不可以是 ZoneId.systemDefault() */
@@ -2340,10 +2355,10 @@ INSERT INTO b_t (v, amt) VALUES ('row-1', 19.99), ('row-2', 19.99), ... ;
 
 > ⚠️ **`rewriteBatchedStatements=true` 有三個要知道的行為**：
 >
-> 1. **`executeBatch()` 的回傳值會變。** 改寫成一句之後，
->    MySQL 只回一個總數，驅動只能回 `Statement.SUCCESS_NO_INFO`（-2）給每一格。
->    **如果你的程式碼在檢查「每一列各影響幾列」，它會壞掉。**
-> 2. **只對 `INSERT` 有效**（8.x 起也支援部分 `REPLACE`）。`UPDATE` / `DELETE` 不會被改寫。
+> 1. **回傳列數取決於改寫路徑。** 普通 INSERT 合成 multi-values 時，驅動可能以
+>    `Statement.SUCCESS_NO_INFO`（-2）表示各筆成功但無逐筆列數；不能推論所有 batch 都回 -2。
+>    帶版本條件的 UPDATE 必須保留逐筆列數檢查；0 表示未更新，-2 也不足以證明版本比對成功（05 章 5.4.1）。
+> 2. **INSERT／REPLACE 可合成 multi-values**；其他符合條件的 prepared batch 可走 multi-statement 改寫，UPDATE／DELETE 並非完全無效。兩條路的回傳列數不能混為一談（05 章 5.4.1）。
 > 3. **改寫後的 SQL 有長度上限**（`max_allowed_packet`，預設 64 MB）。
 >    驅動會自動分段，但如果你的單列很大（含 TEXT / BLOB），要注意這個值。
 >

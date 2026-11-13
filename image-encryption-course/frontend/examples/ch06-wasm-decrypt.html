@@ -36,7 +36,7 @@
   </section>
 
   <script type="module">
-    import init, { aes_ctr_decrypt_header } from '/pkg/img_crypto.js';
+    import init, { aes_ctr_decrypt, aes_ctr_decrypt_header } from '/pkg/img_crypto.js';
     await init();
 
     document.getElementById('upload').onchange = async (e) => {
@@ -53,29 +53,30 @@
         fetch(`/api/image/${id}/key`).then((r) => r.json()),
         fetch(`/api/image/${id}.enc`).then((r) => r.arrayBuffer()),
       ]);
+      const key = hexToBytes(meta.keyHex);
+      const iv = hexToBytes(meta.ivHex);
 
-      const wasmBuf = new Uint8Array(encBuf.slice(0));
-      const webBuf  = new Uint8Array(encBuf.slice(0));
-
-      // WASM
+      // WASM ①：把整個檔案傳進去。wasm-bindgen 會把整個陣列複製進 wasm 記憶體、解完再複製回來
+      const fullBuf = new Uint8Array(encBuf.slice(0));
       let t0 = performance.now();
-      aes_ctr_decrypt_header(
-        wasmBuf,
-        hexToBytes(meta.keyHex),
-        hexToBytes(meta.ivHex),
-        meta.headerLen,
-      );
-      const wasmMs = performance.now() - t0;
+      aes_ctr_decrypt_header(fullBuf, key, iv, meta.headerLen);
+      const wasmFullMs = performance.now() - t0;
 
-      // WebCrypto
-      const key = await crypto.subtle.importKey(
-        'raw', hexToBytes(meta.keyHex),
-        { name: 'AES-CTR', length: 256 }, false, ['decrypt']
-      );
+      // WASM ②：只傳加密的那一段（subarray），複製量只剩 headerLen byte
+      const wasmBuf = new Uint8Array(encBuf.slice(0));
       t0 = performance.now();
+      aes_ctr_decrypt(wasmBuf.subarray(0, meta.headerLen), key, iv);
+      const wasmSubMs = performance.now() - t0;
+
+      // WebCrypto：length 128 才跟 Node 的 aes-256-ctr 計數器一致
+      const webBuf = new Uint8Array(encBuf.slice(0));
+      t0 = performance.now();
+      const cryptoKey = await crypto.subtle.importKey(
+        'raw', key, { name: 'AES-CTR', length: 256 }, false, ['decrypt']
+      );
       const headerPlain = new Uint8Array(await crypto.subtle.decrypt(
-        { name: 'AES-CTR', counter: hexToBytes(meta.ivHex), length: 64 },
-        key,
+        { name: 'AES-CTR', counter: iv, length: 128 },
+        cryptoKey,
         webBuf.subarray(0, meta.headerLen),
       ));
       webBuf.set(headerPlain, 0);
@@ -83,9 +84,10 @@
 
       const t = document.getElementById('benchTable');
       t.innerHTML = `
-        <tr><th>方案</th><th>耗時</th></tr>
-        <tr><td>WASM (AES-CTR)</td><td>${wasmMs.toFixed(3)} ms</td></tr>
-        <tr><td>WebCrypto (AES-CTR)</td><td>${webMs.toFixed(3)} ms</td></tr>
+        <tr><th>方案（${(encBuf.byteLength / 1024 / 1024).toFixed(2)} MB，檔頭 ${meta.headerLen} byte）</th><th>耗時</th></tr>
+        <tr><td>WASM，傳入整個檔案</td><td>${wasmFullMs.toFixed(3)} ms</td></tr>
+        <tr><td>WASM，只傳檔頭 subarray</td><td>${wasmSubMs.toFixed(3)} ms</td></tr>
+        <tr><td>WebCrypto（含 importKey）</td><td>${webMs.toFixed(3)} ms</td></tr>
       `;
 
       const blob = new Blob([wasmBuf], { type: meta.mime });

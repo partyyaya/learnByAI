@@ -210,3 +210,13 @@ MySQL 8.0.46 / mysql-connector-j 8.3.0。
 - 兩者的 SQL 執行紀錄與效能對照（**用同一把尺**，否則比較沒有意義）。
 - 一份 N+1 的偵測 / 修復實驗報告。
 - 從這一站的 25 條 CI 斷言裡挑出**跟框架無關的那七條**，放進你的專案。
+
+## 可重跑的回歸驗證
+
+[`verification/README.md`](./verification/README.md) 提供本次修正的對照、版本與驗證範圍。從儲存庫根目錄執行：
+
+```bash
+bash java/08-jpa-mybatis/verification/run.sh
+```
+
+測試直接抽取教材原碼，以 Docker MySQL 驗證交易、庫存生命週期、折扣、批次與 SQL 守門；另提供不啟動 Spring／資料庫的離線契約測試。

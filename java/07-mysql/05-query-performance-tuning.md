@@ -879,19 +879,49 @@ jdbc:mysql://host:3306/db?rewriteBatchedStatements=true
 spring.datasource.url=jdbc:mysql://localhost:3306/shop?rewriteBatchedStatements=true
 ```
 
-⚠️ **`rewriteBatchedStatements=true` 的三個副作用**（00 章 0.7.4 列過，這裡補上後果）：
+⚠️ **要分清楚兩種改寫與逐筆列數契約**（Connector/J 8.3.0）：
 
+| SQL／路徑 | 改寫方式 | 列數的意義 |
+|---|---|---|
+| 適合改寫的 INSERT／REPLACE | multi-values | 可回 SUCCESS_NO_INFO(-2)，表示成功但不知道每筆列數 |
+| 其他符合條件、超過 3 筆的 prepared batch | multi-statement，不是 multi-values | 本課帶版本 UPDATE 實測回 `[1,1,1,1,0]`，最後一筆版本不符，仍不會自動拋例外 |
+| 不符合改寫條件 | 逐筆執行 | 依實際回傳值與例外判斷 |
+
+不能由 INSERT 的 -2 推論 UPDATE 也一樣，更不能把樂觀鎖的檢查改成「只看有沒有例外」。JDBC 的 -3 表示失敗；-2 無法證明更新恰好一列。若業務要求每筆 UPDATE 都成功，套用以下 helper，並讓失敗離開外層交易邊界以回滾整批：
+
+```java
+package com.example.shop.persistence;
+
+import org.springframework.dao.OptimisticLockingFailureException;
+
+/** 僅供「每個參數應更新恰好一筆既有列」的帶版本 UPDATE 使用。 */
+public final class VersionedBatchCounts {
+    private VersionedBatchCounts() {}
+
+    public static void requireOnePerUpdate(int[] counts, int expected) {
+        if (counts.length != expected) throw new IllegalStateException("批次回傳長度不符");
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i] == 0) {
+                throw new OptimisticLockingFailureException("批次第 " + i + " 筆版本衝突或列不存在");
+            }
+            if (counts[i] != 1) {
+                // 包括 SUCCESS_NO_INFO(-2)、EXECUTE_FAILED(-3) 與意外的多列更新。
+                throw new IllegalStateException("無法確認批次第 " + i + " 筆的更新列數：" + counts[i]);
+            }
+        }
+    }
+}
 ```
-① executeBatch() 的回傳值變成 Statement.SUCCESS_NO_INFO（-2）
-     🔴 如果你在檢查「每一列各影響幾列」，程式碼會壞掉
-     ✅ 改成檢查「有沒有丟例外」
 
-② 只對 INSERT 有效（8.x 起也支援部分 REPLACE）
-     🔴 UPDATE / DELETE 不會被改寫 → 大量 UPDATE 要自己想辦法（5.4.5）
-
-③ 改寫後的單句 SQL 受 max_allowed_packet 限制（5.6.3）
-     驅動會自動分段，但如果單列很大（含 TEXT / BLOB）要注意
+```java
+@Transactional
+public void updateExistingBatch(List<OrderUpdate> updates) {
+    int[] counts = jdbc.batchUpdate(UPDATE_WITH_VERSION, toParameters(updates));
+    VersionedBatchCounts.requireOnePerUpdate(counts, updates.size());
+}
 ```
+
+最後一段是呼叫位置示意，UPDATE_WITH_VERSION 與參數依實際模型提供。不要將此 helper 套用到 INSERT 的 -2，兩者的成功契約不同。改寫後的 SQL 仍受 max_allowed_packet 限制，驅動可能分段；batch API 呼叫數與 general_log 的列數都不等於網路往返次數。
 
 ### 5.4.2 批次大小怎麼選
 
@@ -1031,7 +1061,7 @@ JDBC 端：   ?allowLoadLocalInfile=true          （8.0 起預設 false）
 
 ### 5.4.5 大量 `UPDATE` 怎麼辦
 
-`rewriteBatchedStatements` 對 `UPDATE` 無效。三種做法：
+UPDATE 不能合成 INSERT 那種 multi-values，但符合條件的 batch 可走 multi-statement 改寫，不能說這個選項完全無效。大量 UPDATE 還可以比較以下三種寫法，並保留逐筆版本／影響列數的契約：
 
 **① `INSERT ... ON DUPLICATE KEY UPDATE`（可以被改寫）**
 
@@ -2627,15 +2657,15 @@ ORDER BY DATA_LENGTH + INDEX_LENGTH DESC;
 class PerformanceGateTest {
 
     @Autowired JdbcTemplate jdbc;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
 
     /** 硬斷言 ①：關鍵查詢的掃描放大倍率 —— 與硬體無關 */
     @Test
     void 首頁訂單列表的掃描放大倍率不得超過 5 倍() {
-        jdbc.execute("FLUSH STATUS");
-        jdbc.query("SELECT * FROM ord WHERE customer_id=? ORDER BY placed_at DESC LIMIT 20",
-                   rs -> {}, 42);
-        long examined = handlerReads();        // Handler_read_* 的總和
-        assertThat(examined)
+        var counts = MySqlSessionMetrics.measure(jdbc, db ->
+                db.query("SELECT * FROM ord WHERE customer_id=? ORDER BY placed_at DESC LIMIT 20",
+                        (org.springframework.jdbc.core.RowCallbackHandler) rs -> {}, 42));
+        assertThat(counts.handlerReads())
             .as("回傳 20 列，掃描不該超過 100 列")
             .isLessThan(100);
     }
@@ -2643,20 +2673,18 @@ class PerformanceGateTest {
     /** 硬斷言 ②：不得產生磁碟暫存表 */
     @Test
     void 報表查詢不得產生磁碟暫存表() {
-        jdbc.execute("FLUSH STATUS");
-        jdbc.query(REPORT_SQL, rs -> {});
-        Long onDisk = jdbc.queryForObject(
-            "SELECT VARIABLE_VALUE FROM performance_schema.session_status " +
-            "WHERE VARIABLE_NAME='Created_tmp_disk_tables'", Long.class);
-        assertThat(onDisk).isZero();
+        var counts = MySqlSessionMetrics.measure(jdbc, db ->
+                db.query(REPORT_SQL, (org.springframework.jdbc.core.RowCallbackHandler) rs -> {}));
+        assertThat(counts.diskTempTables()).isZero();
     }
 
     /** 硬斷言 ③：不得有 N+1 —— 一次業務操作的 SQL 次數上限 */
     @Test
     void 訂單詳情頁最多發出 3 句 SQL() {
-        long before = questions();
-        orderQueryService.getOrderDetail(orderId);     // 一次完整的業務操作
-        assertThat(questions() - before).isLessThanOrEqualTo(3);
+        var tx = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        var counts = tx.execute(status -> MySqlSessionMetrics.measure(jdbc, db ->
+                orderQueryService.getOrderDetail(orderId)));
+        assertThat(counts.questions()).isLessThanOrEqualTo(3);
     }
 
     /** 硬斷言 ④：批次匯入必須開啟 rewriteBatchedStatements */
@@ -2675,29 +2703,81 @@ class PerformanceGateTest {
         if (ms > 50) System.out.printf("⚠️ 首頁查詢 %.1f ms，超過基線 50 ms%n", ms);
     }
 
-    private long questions() {
-        return jdbc.queryForObject(
-            "SELECT VARIABLE_VALUE FROM performance_schema.session_status " +
-            "WHERE VARIABLE_NAME='Questions'", Long.class);
+
+}
+```
+
+下面是完整 helper，需放在測試能引用的 package，前面的測試 import `com.example.shop.persistence.MySqlSessionMetrics`。使用前後差值，不呼叫需要 RELOAD 權限的 FLUSH STATUS；包含反向掃描的 prev／last，也扣除最後一次 SHOW 的 Questions 取樣成本。
+
+```java
+package com.example.shop.persistence;
+
+import org.springframework.jdbc.core.ConnectionCallback;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+
+import java.sql.Connection;
+import java.sql.SQLException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Consumer;
+
+/** 同一 session 的前後差值；不代表其他連線、實體 I/O 或網路往返次數。 */
+public final class MySqlSessionMetrics {
+    private MySqlSessionMetrics() {}
+    private static final String[] READS = {
+            "Handler_read_first", "Handler_read_key", "Handler_read_last",
+            "Handler_read_next", "Handler_read_prev", "Handler_read_rnd", "Handler_read_rnd_next"
+    };
+    public record Counts(long handlerReads, long diskTempTables, long questions) {}
+
+    public static Counts measure(JdbcTemplate jdbc, Consumer<JdbcTemplate> operation) {
+        return jdbc.execute((ConnectionCallback<Counts>) c -> {
+            Map<String, Long> before = status(c);
+            // suppressClose=true：各 JDBC 呼叫不會把這條受管理的實體連線關掉。
+            JdbcTemplate sameSession = new JdbcTemplate(new SingleConnectionDataSource(c, true));
+            operation.accept(sameSession);
+            Map<String, Long> after = status(c);
+            long reads = 0;
+            for (String name : READS) reads += delta(before, after, name);
+            // 後一次 SHOW SESSION STATUS 本身會增加 Questions 一次。
+            long questions = delta(before, after, "Questions") - 1;
+            if (questions < 0) throw new IllegalStateException("量測期間 session 計數被重設");
+            return new Counts(reads, delta(before, after, "Created_tmp_disk_tables"), questions);
+        });
     }
-    private long handlerReads() {
-        return jdbc.queryForObject("""
-            SELECT SUM(VARIABLE_VALUE) FROM performance_schema.session_status
-             WHERE VARIABLE_NAME IN ('Handler_read_next','Handler_read_rnd_next',
-                                     'Handler_read_key','Handler_read_first')
-            """, Long.class);
+
+    private static Map<String, Long> status(Connection c) throws SQLException {
+        Map<String, Long> result = new HashMap<>();
+        try (var st = c.createStatement(); var rs = st.executeQuery("""
+                SHOW SESSION STATUS WHERE Variable_name IN (
+                    'Handler_read_first','Handler_read_key','Handler_read_last',
+                    'Handler_read_next','Handler_read_prev','Handler_read_rnd','Handler_read_rnd_next',
+                    'Created_tmp_disk_tables','Questions')""")) {
+            while (rs.next()) result.put(rs.getString(1), rs.getLong(2));
+        }
+        return result;
+    }
+
+    private static long delta(Map<String, Long> before, Map<String, Long> after, String name) {
+        long value = after.get(name) - before.get(name);
+        if (value < 0) throw new IllegalStateException("量測期間計數被重設：" + name);
+        return value;
     }
 }
 ```
+
+DAO 查詢必須使用 callback 傳入的 db，確保同一連線。上面的業務操作計數另由 TransactionTemplate 綁定同一 DataSource 的連線，僅涵蓋會加入該交易的同步 JDBC 操作；多資料源、REQUIRES_NEW、非同步或其他框架查詢要用 DataSource SQL spy，不能用這個 session 計數宣稱全都沒有 N+1。callback 必須實際消耗所需結果。
+
+這些是邏輯存取／SQL 計數，仍受資料量、選擇性與執行計畫影響，不是物理 I/O 或精確的掃描列數。`verification/` 讓反向掃描實際讀近千列，確認不會再通過 100 次存取的門檻；也用已知 SQL 次數校正 Questions。
 
 📌 **硬斷言全部是【計數】，軟斷言才是【時間】。**
 
 ```
 計數（Handler_read_*、Created_tmp_disk_tables、Questions）
     ✅ 跟你的機器多快無關
-    ✅ 跟正式環境【完全一致】
-    ✅ 資料量小也測得出來（一句沒走索引的查詢，在 100 列的測試資料上
-       Handler_read_rnd_next 一樣是 100，比例一樣錯）
+    ⚠️ 計數語意可比較，數值仍取決於資料分布與計畫
+    ⚠️ 必須有足夠且具代表性的資料，並驗證實際回傳筆數；小表不能替代正式資料分布
 
 時間（毫秒）
     🔴 跟機器、跟其他測試、跟 CI 機器當下的負載都有關

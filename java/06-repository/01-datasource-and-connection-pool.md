@@ -334,7 +334,7 @@ String sql = "SELECT COUNT(*) FROM customer WHERE email = 'alice@example.com'";
 |---|---|---|
 | `connectionTimeZone` | `UTC`（8.0.23+；舊版叫 `serverTimezone`） | ⚠️ **時間差 8 小時**，而且是靜默的 |
 | `forceConnectionTimeZoneToSession` | `true` | 連線的 session 時區與你想的不一致 |
-| `characterEncoding` | `utf8mb4`（或用 `connectionCollation`） | emoji、罕見字變成 `?` |
+| `characterEncoding` | `UTF-8`（Java 編碼名稱；MySQL 字元集是 `utf8mb4`） | 填 `utf8mb4` 會無法連線；字元集協商與資料表編碼還需驗證 emoji 往返 |
 | `preserveInstants` | `true` | `Instant` 往返之後不相等 |
 | `zeroDateTimeBehavior` | `CONVERT_TO_NULL` | 遇到 `0000-00-00` 直接拋例外 |
 | `sessionVariables=sql_mode='STRICT_TRANS_TABLES,…'` | 明確指定 | 🔴 **非嚴格模式會把超長字串「截斷」而不是報錯** |
@@ -346,6 +346,7 @@ String sql = "SELECT COUNT(*) FROM customer WHERE email = 'alice@example.com'";
 | `rewriteBatchedStatements` | `true` | 🔴 **`batchUpdate` 仍然是 N 次來回**（05 章 5.8 實測） |
 | `cachePrepStmts` + `prepStmtCacheSize` + `prepStmtCacheSqlLimit` | `true` / `250` / `2048` | 每次都重新解析 SQL |
 | `useServerPrepStmts` | `true` | 用不到伺服器端的預備語句 |
+| `useCursorFetch` | `true`（搭配正 fetchSize） | 正 fetchSize 本身不足以避免整批緩衝；05 章 5.11.4 的匯出採此模式 |
 | `useLocalSessionState` | `true` | 每次 `setAutoCommit` 都送一次往返 |
 | `maintainTimeStats` | `false` | 小幅的統計開銷 |
 
@@ -375,12 +376,12 @@ jdbc:mysql://db-primary.internal:3306/shop
   ?connectionTimeZone=UTC                       # A：全站存 UTC（00 章 0.12.3）
   &forceConnectionTimeZoneToSession=true        # A
   &preserveInstants=true                        # A
-  &characterEncoding=utf8mb4                    # A
+  &characterEncoding=UTF-8                    # A
   &zeroDateTimeBehavior=CONVERT_TO_NULL         # A：遇到髒資料不要整個炸掉
   &sessionVariables=sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'   # A ★
   &rewriteBatchedStatements=true                # B（05 章）
   &cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048     # B
-  &useServerPrepStmts=true                      # B
+  &useServerPrepStmts=true&useCursorFetch=true                      # B
   &useLocalSessionState=true                    # B
   &connectTimeout=3000                          # C
   &socketTimeout=30000                          # C ★★ 一定要設
@@ -1694,11 +1695,11 @@ spring:
     # ⚠️ 見下方「一個 YAML 的坑」——這裡【不能】用 > 或 >- 折行
     url: "jdbc:mysql://${DB_HOST:db-primary.internal}:3306/shop\
       ?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&preserveInstants=true\
-      &characterEncoding=utf8mb4&zeroDateTimeBehavior=CONVERT_TO_NULL\
+      &characterEncoding=UTF-8&zeroDateTimeBehavior=CONVERT_TO_NULL\
       &sessionVariables=sql_mode='STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION'\
       &rewriteBatchedStatements=true\
       &cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048\
-      &useServerPrepStmts=true&useLocalSessionState=true\
+      &useServerPrepStmts=true&useCursorFetch=true&useLocalSessionState=true\
       &connectTimeout=3000&socketTimeout=30000&tcpKeepAlive=true\
       &sslMode=REQUIRED"
     username: ${DB_USER}
@@ -1758,13 +1759,13 @@ logging:
 url: >-
   jdbc:mysql://db-primary.internal:3306/shop
   ?connectionTimeZone=UTC&preserveInstants=true
-  &characterEncoding=utf8mb4
+  &characterEncoding=UTF-8
 ```
 
 **實際解析出來的字串**：
 
 ```
-jdbc:mysql://db-primary.internal:3306/shop ?connectionTimeZone=UTC&preserveInstants=true &characterEncoding=utf8mb4
+jdbc:mysql://db-primary.internal:3306/shop ?connectionTimeZone=UTC&preserveInstants=true &characterEncoding=UTF-8
                                           ↑ 空格                                        ↑ 空格
 ```
 
@@ -1776,15 +1777,15 @@ jdbc:mysql://db-primary.internal:3306/shop ?connectionTimeZone=UTC&preserveInsta
 # ✅ ① 雙引號 + 反斜線續行（本節採用）—— 反斜線【吃掉】換行與後續縮排
 url: "jdbc:mysql://db-primary.internal:3306/shop\
   ?connectionTimeZone=UTC&preserveInstants=true\
-  &characterEncoding=utf8mb4"
+  &characterEncoding=UTF-8"
 
 # ✅ ② 就寫一行，不折（最不會出錯，代價是很長）
-url: jdbc:mysql://db-primary.internal:3306/shop?connectionTimeZone=UTC&preserveInstants=true&characterEncoding=utf8mb4
+url: jdbc:mysql://db-primary.internal:3306/shop?connectionTimeZone=UTC&preserveInstants=true&characterEncoding=UTF-8
 
 # ✅ ③ 把參數拆成一個可讀的變數，再組起來
 app:
   db:
-    params: connectionTimeZone=UTC&preserveInstants=true&characterEncoding=utf8mb4
+    params: connectionTimeZone=UTC&preserveInstants=true&characterEncoding=UTF-8
 spring:
   datasource:
     url: jdbc:mysql://${DB_HOST}:3306/shop?${app.db.params}
@@ -2081,7 +2082,7 @@ spring:
 | 2 | `allowMultiQueries=true` | 1.4.5 | SQL Injection 從「讀」升級成「刪」 |
 | 3 | **沒有 `socketTimeout`** | 1.4.3 | 🔴 網路故障時執行緒**永遠**卡住 |
 | 4 | 沒有 `connectionTimeZone` | 1.4.3 | 時間差 8 小時，靜默 |
-| 5 | 沒有 `characterEncoding=utf8mb4` | 1.4.3 | emoji 變 `?` |
+| 5 | 未明定或驗證字元集協商 | 1.4.3 | 使用 `characterEncoding=UTF-8` 並確認資料表支援 `utf8mb4`；不能把 MySQL 字元集名稱填入 Java 編碼參數 |
 | 6 | 用 `root` 帳號 | — | 權限過大；應用只需要 DML |
 | 7 | 密碼寫在設定檔 | — | 應該用環境變數 / Secret |
 | 8 | `maximum-pool-size: 200` | 1.6 | 吞吐下降 + 資料庫連線數危險 |

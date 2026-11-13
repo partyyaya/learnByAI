@@ -481,79 +481,65 @@ grep -c 'CREATE TABLE' /tmp/success.sql    # → 3      🔴 一樣！
 從 7.2.2 ～ 7.2.4 推出來的一份腳本。**每一個檢查都對應一個實測過的失敗**：
 
 ```bash
-#!/bin/bash
-# ops/backup-mysql.sh
-set -euo pipefail                  # 🔴 檢查 ①：任何一步失敗就停
-set -o pipefail                    # 🔴 檢查 ②：管線中間的失敗不會被吃掉（7.2.3）
+#!/usr/bin/env bash
+# ops/backup-mysql.sh —— 單庫獨立還原／PITR 用；複製種子另見 7.3.2
+set -euo pipefail
 
-DB=shop
-HOST=${DB_HOST:?}
-USER=${BACKUP_USER:?}
-OUT_DIR=/var/backups/mysql
+BACKUP_DATABASE=${BACKUP_DATABASE:-shop}
+BACKUP_HOST=${DB_HOST:?}
+BACKUP_LOGIN=${BACKUP_USER:?}
+OUT_DIR=${BACKUP_DIR:-/var/backups/mysql}
 STAMP=$(date -u '+%Y%m%dT%H%M%SZ')
-BASE="$OUT_DIR/${DB}-${STAMP}"
+BASE="$OUT_DIR/${BACKUP_DATABASE}-${STAMP}"
 LOG="$BASE.log"
-
 mkdir -p "$OUT_DIR"
 
-# ── 備份 ────────────────────────────────────────────────────────────
-# --single-transaction  一致且不擋寫入（7.2.2 實測）
-# --source-data=2       把 binlog 座標寫進註解，PITR 要用（7.2.7）
-# --routines --events --triggers   🔴 這三個【不是預設】，漏了就少了預存程序
-# --hex-blob            二進位欄位（01 章的 BINARY(16) 主鍵）用十六進位，避免編碼問題
-# ⚠️ 這裡故意【不寫】--skip-lock-tables。
-#    直覺會覺得要加（預設是 --lock-tables，不關掉就會鎖表），但實測不是這樣：
-#    --single-transaction 會自動關掉 --lock-tables。開 general_log 驗證過，
-#    連 --single-transaction --lock-tables 一起下，送出去的也只有
-#    START TRANSACTION WITH CONSISTENT SNAPSHOT + UNLOCK TABLES，沒有 LOCK TABLES。
-#    → 加了無害，但它是一個「看起來必要、其實無效」的參數。多寫一個沒作用的旗標，
-#      下一個人會以為它在防什麼，然後不敢動它。
+# 密碼由 defaults-extra-file／登入設定或環境中的 Secret 提供。
+# 此檔不當作複製種子：明確 OFF，避免單庫部分備份帶入整個 instance 的 GTID。
+# --source-data=2 仍記錄 binlog 座標，獨立還原後可依 7.2.7 重放。
+# routines / events 不是預設；triggers 預設開啟，這裡明確列出完整範圍。
 mysqldump \
-    --host="$HOST" --user="$USER" \
-    --single-transaction \
-    --source-data=2 \
-    --routines --events --triggers \
-    --hex-blob \
-    --set-gtid-purged=ON \
-    --databases "$DB" \
-  2> "$LOG" \
-  | gzip -c > "$BASE.sql.gz"
+    --host="$BACKUP_HOST" --user="$BACKUP_LOGIN" \
+    --single-transaction --source-data=2 \
+    --routines --events --triggers --hex-blob \
+    --set-gtid-purged=OFF --databases "$BACKUP_DATABASE" \
+  2> "$LOG" | gzip -c > "$BASE.sql.gz"
 
-# ── 檢查 ③：mysqldump 的 stderr 有沒有東西（警告也算） ─────────────
-if [ -s "$LOG" ] && grep -viE 'Using a password on the command line' "$LOG" | grep -q '[^[:space:]]'; then
-  echo "🔴 mysqldump 有輸出到 stderr："
-  cat "$LOG"
-  exit 1
-fi
-
-# ── 檢查 ④：gzip 檔案本身完整嗎 ─────────────────────────────────────
-gzip -t "$BASE.sql.gz" || { echo "🔴 gzip 檔案損壞"; exit 1; }
-
-# ── 檢查 ⑤：🔴 結尾有 mysqldump 的收尾標記嗎（7.2.4 的靜默失敗）─────
-if ! gzip -dc "$BASE.sql.gz" | tail -5 | grep -q 'SET SQL_NOTES=@OLD_SQL_NOTES'; then
-  echo "🔴 備份檔沒有正確的收尾標記 —— mysqldump 中途中止了（見 7.2.4）"
-  exit 1
-fi
-
-# ── 檢查 ⑥：檔案大小跟前一天差太多嗎 ───────────────────────────────
-SIZE=$(stat -c '%s' "$BASE.sql.gz" 2>/dev/null || stat -f '%z' "$BASE.sql.gz")
-PREV=$(ls -t "$OUT_DIR/${DB}"-*.sql.gz 2>/dev/null | sed -n 2p)
-if [ -n "$PREV" ]; then
-  PREV_SIZE=$(stat -c '%s' "$PREV" 2>/dev/null || stat -f '%z' "$PREV")
-  RATIO=$(( SIZE * 100 / (PREV_SIZE > 0 ? PREV_SIZE : 1) ))
-  if [ "$RATIO" -lt 70 ] || [ "$RATIO" -gt 200 ]; then
-    echo "🔴 備份大小是前一次的 ${RATIO}% —— 太不尋常，請人工確認"
+# 只排除已知的命令列密碼提示；其他 stderr（包括未知警告）仍失敗。
+# 不用 grep -q 提早關管線，避免 pipefail 下 SIGPIPE 造成誤判。
+if [ -s "$LOG" ] && grep -viE 'Using a password on the command line' "$LOG" \
+        | grep '[^[:space:]]' >/dev/null; then
+    cat "$LOG" >&2
     exit 1
-  fi
 fi
 
-# ── 記錄 binlog 座標（PITR 的起點）─────────────────────────────────
-gzip -dc "$BASE.sql.gz" | grep -m1 -iE 'CHANGE (MASTER|REPLICATION SOURCE)' \
-  > "$BASE.binlog-position.txt" || true
+gzip -t "$BASE.sql.gz"
+if ! gzip -dc "$BASE.sql.gz" | tail -5 | grep -q 'SET SQL_NOTES=@OLD_SQL_NOTES'; then
+    echo "備份缺少收尾標記" >&2
+    exit 1
+fi
 
-echo "✅ 備份完成：$BASE.sql.gz（$((SIZE / 1024 / 1024)) MB）"
+SIZE=$(stat -c '%s' "$BASE.sql.gz" 2>/dev/null || stat -f '%z' "$BASE.sql.gz")
+PREV=$(ls -t "$OUT_DIR/${BACKUP_DATABASE}"-*.sql.gz | sed -n 2p)
+if [ -n "$PREV" ]; then
+    PREV_SIZE=$(stat -c '%s' "$PREV" 2>/dev/null || stat -f '%z' "$PREV")
+    RATIO=$(( SIZE * 100 / (PREV_SIZE > 0 ? PREV_SIZE : 1) ))
+    if [ "$RATIO" -lt 70 ] || [ "$RATIO" -gt 200 ]; then
+        echo "備份大小為前一次的 ${RATIO}%，請人工確認" >&2
+        exit 1
+    fi
+fi
+
+# awk 讀完整份輸入，不因找到第一行就提早截斷 gzip 管線。
+gzip -dc "$BASE.sql.gz" | awk '
+    !found && /CHANGE (MASTER|REPLICATION SOURCE)/ { print; found=1 }
+    END { if (!found) exit 1 }
+' > "$BASE.binlog-position.txt"
+echo "備份完成：$BASE.sql.gz（$SIZE bytes）"
 cat "$BASE.binlog-position.txt"
 ```
+
+本腳本供單庫獨立還原／PITR，明確使用 set-gtid-purged=OFF；備份仍帶 binlog 座標。若用來建立複製種子，必須改走 7.3.2 保留 GTID 的專用流程，不能把 OFF 複製到所有備份。ON 的部分備份會產生正常的 GTID 範圍警告；不能一面要求 ON，一面把該警告當作備份壞掉。
 
 📌 **檢查 ⑤ 是這份腳本的核心。**
 它是唯一能抓到 7.2.4 那個「194 MB 的壞檔案」的檢查 ——
@@ -718,15 +704,18 @@ id  order_no  amount     created_at
 #     🔴 這一步必須在還原之前做。理由：
 #        還原本身也會寫 binlog，而 binlog 可能會被輪替 / 過期清掉。
 UUID=f569bde7-a766-11f1-b95c-66696dea34ab
+# start-position 是備份座標，stop-position 是事故發現時的事件邊界。
+# exclude-gtids 排除事故交易；skip-gtids 不沿用原 GTID；database 限定事件庫。
+# 續行反斜線必須放在行尾，說明另寫註解，不接空白或反引號。
 
 docker run --rm --network mysqlrepl --user root percona/percona-server:8.0 \
   mysqlbinlog --no-defaults \
     --read-from-remote-server --host=mysql-m1 --port=3306 --user=root --password=root \
-    --start-position=63179228 \        `# 備份時的座標（--source-data=2 給的）` \
-    --stop-position=63180984 \         `# 事故發現時的座標` \
-    --exclude-gtids="$UUID:87682" \    `# 🔴 只排除【事故那一個交易】` \
-    --skip-gtids \                     `# 重放時不要沿用原本的 GTID` \
-    --database=pitr \                  `# 只要這個資料庫的事件` \
+    --start-position=63179228 \
+    --stop-position=63180984 \
+    --exclude-gtids="$UUID:87682" \
+    --skip-gtids \
+    --database=pitr \
     binlog.000004 > /tmp/pitr_replay.sql
 ```
 
@@ -839,77 +828,117 @@ id  order_no  amount
 ✅ **一份可以自動化的演練腳本**（建議每月跑一次，並把耗時記錄下來）：
 
 ```bash
-#!/bin/bash
-# ops/restore-drill.sh —— 每月一次的還原演練。🔴 這個腳本自己就是文件。
+#!/usr/bin/env bash
+# ops/restore-drill.sh —— 已驗證的備份才可記為成功演練
 set -euo pipefail
-set -o pipefail
-
 BACKUP=${1:?用法: restore-drill.sh <backup.sql.gz>}
+MYSQL_IMAGE=${MYSQL_IMAGE:-mysql:8.0.46}
+GOLDEN=${GOLDEN:-src/main/resources/db/golden-schema.sql}
+VERIFY_RESTORE_SCRIPT=${VERIFY_RESTORE_SCRIPT:-ops/verify-restored-mysql.sh}
+: "${EXPECTED_ORDER_COUNT:?}"
+: "${EXPECTED_TABLE_COUNT:?}"
+: "${EXPECTED_SCHEMA_VERSION:?}"
 CONTAINER=restore-drill-$$
-REPORT=/tmp/restore-drill-$(date -u '+%Y%m%dT%H%M%SZ').txt
-
+REPORT=${RESTORE_REPORT:-/tmp/restore-drill-$(date -u '+%Y%m%dT%H%M%SZ').txt}
 t() { date -u '+%s'; }
 log() { echo "$*" | tee -a "$REPORT"; }
-
 trap 'docker rm -f "$CONTAINER" >/dev/null 2>&1 || true' EXIT
-
+TOTAL_START=$(t)
 log "還原演練開始：$(date -u)"
-log "備份檔：$BACKUP（$(du -h "$BACKUP" | cut -f1)）"
+gzip -t "$BACKUP"
 
-# ── ① 起一個【跟正式環境同版本】的空 MySQL ──────────────────────────
-T0=$(t)
-docker run -d --name "$CONTAINER" -e MYSQL_ROOT_PASSWORD=drill \
-  mysql:8.0.46 \
-  --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci \
-  --default-time-zone=+00:00 >/dev/null
-until docker exec "$CONTAINER" mysqladmin -uroot -pdrill ping --silent 2>/dev/null; do sleep 1; done
-log "① 起容器：$(( $(t) - T0 )) 秒"
-
-# ── ② 還原（🔴 這是 RTO 的主要成分）───────────────────────────────
-T0=$(t)
-gzip -dc "$BACKUP" | docker exec -i "$CONTAINER" mysql -uroot -pdrill
-log "② 還原：$(( $(t) - T0 )) 秒"
-
-# ── ③ 驗證：不是「有沒有錯誤」，是【資料對不對】──────────────────
-T0=$(t)
-docker exec "$CONTAINER" mysql -uroot -pdrill -N -e "
-  SELECT CONCAT('   表數量        = ', COUNT(*))
-  FROM information_schema.tables WHERE table_schema = 'shop';
-  SELECT CONCAT('   orders 列數   = ', COUNT(*)) FROM shop.orders;
-  SELECT CONCAT('   最新一筆訂單  = ', COALESCE(MAX(placed_at),'（無）')) FROM shop.orders;
-  SELECT CONCAT('   預存程序數量  = ', COUNT(*))
-  FROM information_schema.routines WHERE routine_schema = 'shop';
-  SELECT CONCAT('   視圖數量      = ', COUNT(*))
-  FROM information_schema.views WHERE table_schema = 'shop';
-  SELECT CONCAT('   Flyway 版本   = ', COALESCE(MAX(version),'（無）'))
-  FROM shop.flyway_schema_history WHERE success = 1;
-" | tee -a "$REPORT"
-
-# 🔴 業務不變量檢查 —— 這是「還原成功」與「資料正確」的差別（7.2.2）
-docker exec "$CONTAINER" mysql -uroot -pdrill -N -e "
-  SELECT CONCAT('   🔴 明細總額與訂單總額不符的筆數 = ', COUNT(*))
-  FROM shop.orders o
-  JOIN (SELECT order_id, SUM(line_amount) s FROM shop.order_item GROUP BY order_id) i
-       ON i.order_id = o.id
-  WHERE i.s <> o.total_amount;
-" | tee -a "$REPORT"
-
-# 🔴 schema 與版控一致嗎（接上 06 章 6.9.3 的黃金 schema）
-docker exec "$CONTAINER" mysqldump -uroot -pdrill --no-data --skip-comments \
-    --skip-add-drop-table --skip-set-charset --routines --triggers shop \
-  | sed -E 's/ AUTO_INCREMENT=[0-9]+//' | grep -v '^/\*!' \
-  | grep -v 'flyway_schema_history' > /tmp/drill-schema.sql
-if diff -q src/main/resources/db/golden-schema.sql /tmp/drill-schema.sql >/dev/null 2>&1; then
-  log "   ✅ schema 與 golden-schema.sql 一致"
-else
-  log "   🔴 schema 與 golden-schema.sql 不一致"
+docker run --rm -d --name "$CONTAINER" -e MYSQL_ROOT_PASSWORD=drill \
+    "$MYSQL_IMAGE" --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci \
+    --default-time-zone=+00:00 >/dev/null
+READY=false
+for ((attempt=0; attempt<60; attempt++)); do
+    if docker exec -e MYSQL_PWD=drill "$CONTAINER" mysql -h127.0.0.1 -uroot \
+            --batch --skip-column-names -e 'SELECT 1' >/dev/null 2>&1; then
+        READY=true
+        break
+    fi
+    sleep 1
+ done
+if [[ "$READY" != true ]]; then
+    docker logs "$CONTAINER" >&2
+    exit 1
 fi
-log "③ 驗證：$(( $(t) - T0 )) 秒"
 
-log ""
-log "🔴 把上面的「② 還原」秒數填進 RTO 文件。"
+RESTORE_START=$(t)
+gzip -dc "$BACKUP" | docker exec -i -e MYSQL_PWD=drill "$CONTAINER" mysql -uroot
+log "還原耗時：$(( $(t) - RESTORE_START )) 秒"
+# pipefail 保留驗證器的失敗，不會被 tee 的成功掩蓋。
+VERIFY_PASSWORD=drill bash "$VERIFY_RESTORE_SCRIPT" "$CONTAINER" shop "$GOLDEN" \
+    2>&1 | tee -a "$REPORT"
+log "演練成功，啟動／還原／驗證總耗時：$(( $(t) - TOTAL_START )) 秒"
 log "報告：$REPORT"
 ```
+
+驗證器與 6.9.3 的 dump 工具都要先保存為對應檔案。以下檢查資料量、版本、跨表不變量與完整 schema，任一失敗都回傳非零；缺少明細的訂單也算失敗。
+
+```bash
+#!/usr/bin/env bash
+# ops/verify-restored-mysql.sh —— 任一驗證失敗就以非零退出
+set -euo pipefail
+VERIFY_CONTAINER=${1:?用法: verify-restored-mysql.sh <容器名> <資料庫名> <golden-schema.sql>}
+VERIFY_DATABASE=${2:?}
+GOLDEN=${3:?}
+VERIFY_USER=${VERIFY_USER:-root}
+: "${VERIFY_PASSWORD:?}"
+: "${EXPECTED_ORDER_COUNT:?請提供與備份快照對齊的預期訂單數}"
+: "${EXPECTED_TABLE_COUNT:?請提供不含 Flyway history／view 的預期資料表數}"
+: "${EXPECTED_SCHEMA_VERSION:?請提供預期 Flyway 版本}"
+DUMP_SCHEMA_SCRIPT=${DUMP_SCHEMA_SCRIPT:-ci/dump-golden-schema.sh}
+ACTUAL=$(mktemp)
+trap 'rm -f "$ACTUAL"' EXIT
+FAIL=0
+
+value() {
+    docker exec -e MYSQL_PWD="$VERIFY_PASSWORD" "$VERIFY_CONTAINER" mysql \
+        -u"$VERIFY_USER" --batch --skip-column-names --database="$VERIFY_DATABASE" -e "$1"
+}
+expect_equal() {
+    if [[ "$1" != "$2" ]]; then
+        echo "驗證失敗：$3，實際=$1，預期=$2" >&2
+        FAIL=1
+    fi
+}
+
+TABLES=$(value "SELECT COUNT(*) FROM information_schema.tables
+    WHERE table_schema=DATABASE() AND table_type='BASE TABLE' AND table_name<>'flyway_schema_history'")
+ORDERS=$(value 'SELECT COUNT(*) FROM orders')
+# 用安裝次序，不使用字串 MAX(version)，避免 9 排在 10 後面的錯誤。
+VERSION=$(value "SELECT version FROM flyway_schema_history
+    WHERE success=1 AND version IS NOT NULL ORDER BY installed_rank DESC LIMIT 1")
+expect_equal "$TABLES" "$EXPECTED_TABLE_COUNT" '資料表數'
+expect_equal "$ORDERS" "$EXPECTED_ORDER_COUNT" '訂單數'
+expect_equal "$VERSION" "$EXPECTED_SCHEMA_VERSION" 'Flyway 版本'
+
+# LEFT JOIN 也抓到沒有任何明細的訂單。
+BROKEN=$(value 'SELECT COUNT(*) FROM orders o
+    LEFT JOIN (SELECT order_id,SUM(line_amount) amount FROM order_item GROUP BY order_id) i
+      ON i.order_id=o.id
+    WHERE i.order_id IS NULL OR i.amount<>o.total_amount')
+expect_equal "$BROKEN" '0' '明細和與訂單總額不符／缺明細'
+
+DUMP_USER="$VERIFY_USER" DUMP_PASSWORD="$VERIFY_PASSWORD" \
+    bash "$DUMP_SCHEMA_SCRIPT" "$VERIFY_CONTAINER" "$VERIFY_DATABASE" > "$ACTUAL"
+if ! diff -u "$GOLDEN" "$ACTUAL"; then
+    echo '驗證失敗：schema 與黃金檔不同' >&2
+    FAIL=1
+fi
+if [[ "$FAIL" != 0 ]]; then exit 1; fi
+echo '還原資料與 schema 驗證通過'
+```
+
+執行時提供與備份快照對齊的期望值，例如：
+
+```bash
+EXPECTED_ORDER_COUNT=100 EXPECTED_TABLE_COUNT=7 EXPECTED_SCHEMA_VERSION=3 \
+  bash ops/restore-drill.sh backup.sql.gz
+```
+
+期望值應來自可追溯、與該備份快照對齊的審核資料／manifest；不能從還原後資料庫自己讀回來當期望值，也不能直接拿稍後 live DB 的 COUNT 代替。演練完整跑完啟動、還原、驗證後才回報成功與總耗時。以上數值是操作範例；`verification/` 用自己的可拋棄備份與負例測試，沒有把它宣稱成原大型資料集的 RTO。
 
 📌 **演練要記錄的四個數字**：
 
@@ -1199,9 +1228,10 @@ SHOW REPLICA STATUS\G
 
 ```bash
 # ① 從主庫（或另一個從庫）備份，並帶上 GTID 資訊
+# 此處供新從庫初始化，使用 ON；與 7.2.5 的獨立單庫備份用途不同。
 mysqldump -h primary -u backup -p \
     --single-transaction --skip-lock-tables \
-    --set-gtid-purged=ON \          `# 🔴 這裡要 ON（跟 7.2.5 的備份不同）` \
+    --set-gtid-purged=ON \
     --routines --events --triggers \
     --all-databases > /tmp/seed.sql
 
@@ -1942,7 +1972,7 @@ public class ReadYourWritesFixed {
 
     public static void main(String[] args) throws Exception {
         int n = Integer.parseInt(args.length > 0 ? args[0] : "200");
-        int stale = 0, ok = 0, timedOut = 0;
+        int stale = 0, ok = 0, timedOut = 0, waitErrors = 0, primaryReads = 0;
         long sumWaitUs = 0, maxWaitUs = 0;
 
         try (Connection m = DriverManager.getConnection(M);
@@ -1956,6 +1986,7 @@ public class ReadYourWritesFixed {
             var gtidQ = m.prepareStatement("SELECT @@GLOBAL.gtid_executed");
             var wait  = r.prepareStatement("SELECT WAIT_FOR_EXECUTED_GTID_SET(?, 1)");
             var sel   = r.prepareStatement("SELECT id FROM ord WHERE order_no = ?");
+            var primarySel = m.prepareStatement("SELECT id FROM ord WHERE order_no = ?");
 
             for (int i = 0; i < n; i++) {
                 String no = "RYWF-" + System.nanoTime();
@@ -1970,23 +2001,32 @@ public class ReadYourWritesFixed {
 
                 // ② 在從庫上等它
                 long t0 = System.nanoTime();
-                int rc;
+                Integer rc = null;
                 wait.setString(1, gtid);
-                try (var rs = wait.executeQuery()) { rs.next(); rc = rs.getInt(1); }
+                try (var rs = wait.executeQuery()) {
+                    if (rs.next()) rc = rs.getObject(1, Integer.class);
+                } catch (SQLException e) {
+                    waitErrors++;
+                    System.err.printf("GTID 等待失敗，改讀主庫，errorCode=%d%n", e.getErrorCode());
+                }
                 long waitUs = (System.nanoTime() - t0) / 1000;
                 sumWaitUs += waitUs;
                 if (waitUs > maxWaitUs) maxWaitUs = waitUs;
-                if (rc != 0) timedOut++;      // 非 0 = 逾時，這時應該退回主庫
+                if (rc != null && rc == 1) timedOut++;
 
-                // ③ 才讀
-                sel.setString(1, no);
-                try (var rs = sel.executeQuery()) { if (rs.next()) ok++; else stale++; }
+                // ③ 只有明確成功才讀從庫；逾時、NULL 或例外一律改讀主庫。
+                boolean replicaReady = rc != null && rc == 0;
+                PreparedStatement read = replicaReady ? sel : primarySel;
+                if (!replicaReady) primaryReads++;
+                read.setString(1, no);
+                try (var rs = read.executeQuery()) { if (rs.next()) ok++; else stale++; }
             }
         }
         System.out.printf("先等 GTID 再讀從庫 %d 次：%n", n);
         System.out.printf("  ✅ 讀到了  %d 次（%.1f%%）%n", ok, 100.0 * ok / n);
         System.out.printf("  🔴 讀不到  %d 次（%.1f%%）%n", stale, 100.0 * stale / n);
         System.out.printf("  等待逾時   %d 次%n", timedOut);
+        System.out.printf("  等待錯誤   %d 次，改讀主庫 %d 次%n", waitErrors, primaryReads);
         System.out.printf("  等待時間：平均 %.2f ms，最久 %.2f ms%n",
                 sumWaitUs / 1000.0 / n, maxWaitUs / 1000.0);
     }
@@ -2003,7 +2043,9 @@ public class ReadYourWritesFixed {
   等待時間：平均 1.12 ms，最久 4.69 ms
 ```
 
-✅ **100% 失敗 → 0% 失敗，成本是平均 1.12 毫秒的等待。**
+上述是原健康從庫實驗的歷史數字，沒有涵蓋逾時分支。完成版新增主庫 fallback 與對應計數，`verification/` 另以實際複製成功／暫停 SQL thread 的兩種情況驗證：逾時時從主庫讀回剛寫入的訂單，不把它算成從庫成功。
+
+本例連線使用 autocommit，每次 SELECT 建立新的讀取視野。若放進既有 RR 交易，等待完成也不會更新已建立的快照，必須另處理交易／快照邊界。
 
 ---
 
@@ -2206,7 +2248,9 @@ import org.springframework.core.annotation.Order;
  *    這個切面才會在【交易開始之前】跑 —— 否則連線已經拿了，路由就來不及了。
  */
 @Aspect
-@Order(Ordered.HIGHEST_PRECEDENCE)
+// ExposeInvocationInterceptor 的順序是 HIGHEST_PRECEDENCE + 1；
+// 必須在它之後才能綁定註解參數，同時仍早於預設交易攔截器。
+@Order(Ordered.HIGHEST_PRECEDENCE + 2)
 public class DbRoleAspect {
 
     private static final Logger log = LoggerFactory.getLogger(DbRoleAspect.class);
@@ -2217,7 +2261,7 @@ public class DbRoleAspect {
         this.lagMonitor = lagMonitor;
     }
 
-    @Pointcut("@annotation(readFromReplica)")
+    @Pointcut(value = "@annotation(readFromReplica)", argNames = "readFromReplica")
     public void replicaRead(ReadFromReplica readFromReplica) {}
 
     @Around(value = "replicaRead(readFromReplica)", argNames = "pjp,readFromReplica")
@@ -2306,6 +2350,7 @@ package lab7.rw;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -2347,7 +2392,8 @@ public class ReadWriteSplitConfig {
         return pool(url, user, pw, 32, true);   // 從庫的池可以大一些
     }
 
-    @Bean ReplicaLagMonitor replicaLagMonitor(DataSource replicaDataSource) {
+    @Bean ReplicaLagMonitor replicaLagMonitor(
+            @Qualifier("replicaDataSource") DataSource replicaDataSource) {
         return new ReplicaLagMonitor(replicaDataSource);
     }
 
@@ -2371,12 +2417,15 @@ public class ReadWriteSplitConfig {
      *        於是 RoutingDataSource.determineCurrentLookupKey() 才看得到正確的 DbRole。
      */
     @Bean @Primary
-    DataSource dataSource(DataSource primaryDataSource, DataSource replicaDataSource) {
+    DataSource dataSource(@Qualifier("primaryDataSource") DataSource primaryDataSource,
+                          @Qualifier("replicaDataSource") DataSource replicaDataSource) {
         var routing = new RoutingDataSource(primaryDataSource, replicaDataSource);
         return new LazyConnectionDataSourceProxy(routing);
     }
 }
 ```
+
+`@Qualifier` 不能省：路由資料源標了 `@Primary`，只把參數命名為 replicaDataSource 不足以選中原生從庫池。延遲監控必須直接查從庫，不經路由；從庫的監控帳號還需要 `SELECT ON ops.heartbeat`，只有 `shop.*` 的權限不夠。`verification/` 用兩個實際 MySQL 端點、不同心跳時間，驗證注入物件及延遲超標時退回主庫。
 
 **用起來**：
 
@@ -2411,8 +2460,8 @@ public class OrderQueryService {
 ```
 
 ⚠️ **`@ReadFromReplica` 與 `@Transactional` 的順序**：
-`DbRoleAspect` 的 `@Order(HIGHEST_PRECEDENCE)` 保證它在交易攔截器**外面**，
-所以 `DbRoleContext` 在交易開始前就設好了。
+`DbRoleAspect` 的 `@Order(HIGHEST_PRECEDENCE + 2)` 讓 Spring 先暴露呼叫資訊，
+完成註解參數綁定，再於預設交易攔截器**外面**設定 `DbRoleContext`。
 ✅ 加上 `LazyConnectionDataSourceProxy`，這兩層就都安全了。
 
 ---

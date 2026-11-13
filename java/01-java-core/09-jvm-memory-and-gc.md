@@ -1457,6 +1457,11 @@ GC 累計耗時 : 8 ms（佔 0.2%）
 public class OomTypes {
 
     public static void main(String[] args) {
+        if (args.length > 0) {
+            if (args.length != 1) throw new IllegalArgumentException("用法：OomTypes <heap|overhead|metaspace|thread|direct|arraysize>");
+            reproduce(args[0]); // 明確選擇才執行；不傳參數只顯示說明。
+            return;
+        }
         System.out.println("""
                 ┌───────────────────────────────────┬────────────────────────────────────────┐
                 │ 訊息                              │ 意思與診斷方向                          │
@@ -1505,7 +1510,7 @@ public class OomTypes {
             }
             // java -XX:MaxMetaspaceSize=32m
             case "metaspace" -> {
-                // 見 9.5 節的 MetaspaceLeak
+                throw new UnsupportedOperationException("請另外執行 9.5 節的 MetaspaceLeak，並設定 -XX:MaxMetaspaceSize=32m");
             }
             // java -Xss1m（然後開幾萬條執行緒）
             case "thread" -> {
@@ -1530,6 +1535,11 @@ public class OomTypes {
     }
 }
 ```
+
+執行方式：先編譯 `javac OomTypes.java`，再開**獨立子 JVM**，例如
+`java -Xmx32m OomTypes heap`；預期以 OutOfMemoryError 結束，而非一般測試的成功退出碼。
+`direct`、`thread` 等也要各自設定限制；不要在共用測試 JVM 呼叫。
+`metaspace` 會明確提示改跑 9.5 的完整程式，不再空跑成功。
 
 ### 「是洩漏還是需要更多記憶體」——怎麼判斷
 

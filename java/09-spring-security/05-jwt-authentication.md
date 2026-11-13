@@ -97,6 +97,13 @@
 ALTER TABLE app_user ADD COLUMN token_version INT NOT NULL DEFAULT 0;
 
 -- ② refresh token（5.6）—— 只存雜湊，不存原文
+CREATE TABLE refresh_family (
+  family_id CHAR(36) PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  revoked_at DATETIME(3) NULL,
+  KEY idx_family_user(user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE refresh_token (
   id         BIGINT AUTO_INCREMENT PRIMARY KEY,
   token_hash CHAR(64) NOT NULL UNIQUE,      -- SHA-256(原文)；DB 外洩也拿不到原文
@@ -106,7 +113,8 @@ CREATE TABLE refresh_token (
   expires_at DATETIME(3) NOT NULL,
   used_at    DATETIME(3) NULL,              -- 用過就記上時間；又被用到 = 被偷了
   revoked_at DATETIME(3) NULL,
-  KEY idx_family (family_id), KEY idx_user (user_id)
+  KEY idx_family (family_id), KEY idx_user (user_id),
+  CONSTRAINT fk_refresh_family FOREIGN KEY (family_id) REFERENCES refresh_family(family_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ③ access token 的撤銷（5.7.2 做法一：jti 黑名單）
@@ -805,12 +813,12 @@ JJWT 直接不讓你用太短的金鑰簽：
 **為什麼 `verifyWith(publicKey)` 擋得住？**
 因為你把公鑰交給 parser 時，JJWT 就知道「這是一把 RSA 公鑰」，
 它只會用 RSA 演算法去驗——看到 header 說 HS256，型別對不上，直接 `UnsupportedJwtException`。
-**是你（用金鑰的型別）決定用哪個演算法，不是 token。**
+**固定金鑰型別可阻止這種 RSA／HMAC 混淆；若還要限制同類型中的演算法，需另設 parser.sig() 白名單。**
 
 > 📌 **三個「不要相信 token」的鐵則**（5.2.4 + 5.2.6 的總結）：
 > ```
 > ① 不要用 parse()（不驗簽章）—— 要用 verifyWith(key).parseSignedClaims()
-> ② 不要相信 header 裡的 alg —— 由你手上金鑰的型別決定
+> ② 固定驗證金鑰，並限制 parser.sig() 的允許集合；alg 必須同時符合金鑰型別與協定
 > ③ 不要自己 split(".") 讀 payload 就信 —— 那等於完全沒有驗證（5.8.1）
 > ```
 
@@ -863,6 +871,7 @@ import java.util.*;
 public class JwtService {
 
     private final SecretKey key;
+    private final JwtParser parser;
     private final String issuer;
     private final Duration ttl;
     private final Duration allowedSkew;
@@ -871,11 +880,19 @@ public class JwtService {
     private final boolean omitExpiration;
 
     public JwtService(String secret, String issuer, Duration ttl, Duration allowedSkew, boolean omitExpiration) {
+        if (secret == null || secret.isBlank()) throw new IllegalArgumentException("JWT secret 不可空白");
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.issuer = issuer;
         this.ttl = ttl;
         this.allowedSkew = allowedSkew;
         this.omitExpiration = omitExpiration;
+        JwtParserBuilder builder=Jwts.parser().verifyWith(key).requireIssuer(issuer)
+                .clockSkewSeconds(allowedSkew.toSeconds());
+        var algorithms=builder.sig();
+        // 0.12.5 的 registry 不接受空集合，逐一移除其餘演算法，始終保留 HS256。
+        for (var algorithm : Jwts.SIG.get().values())
+            if (!Jwts.SIG.HS256.getId().equals(algorithm.getId())) algorithms.remove(algorithm);
+        this.parser=algorithms.and().build();
     }
 
     /** 正常用法：HS256、15 分鐘、30 秒容錯、有 exp */
@@ -903,15 +920,12 @@ public class JwtService {
 
     /** 驗證並回傳 claims。任何問題都會拋 JwtException —— 由 Filter 決定怎麼處理（5.4.3）。 */
     public Jws<Claims> verify(String token) {
-        return Jwts.parser()
-                .verifyWith(key)
-                .requireIssuer(issuer)                                  // 5.8.2：連 iss 一起驗
-                .clockSkewSeconds(allowedSkew.toSeconds())             // 5.3.3
-                .build()
-                .parseSignedClaims(token);
+        return parser.parseSignedClaims(token);
     }
 }
 ```
+
+演算法集合的行為可對照 [JJWT 0.12.5 JwtParserBuilder.sig()](https://raw.githubusercontent.com/jwtk/jjwt/0.12.5/api/src/main/java/io/jsonwebtoken/JwtParserBuilder.java)。本版 parser 建立一次後重用，避免每個請求重建設定。
 
 **這個類別把 5.2 的每一個教訓都寫進去了**：
 
@@ -919,7 +933,8 @@ public class JwtService {
 .signWith(key, Jwts.SIG.HS256)   把演算法寫死（5.2.3、5.2.6）
 if (!omitExpiration) .expiration  一定有 exp（除非故意關掉來做 5.3.2）
 .id(UUID)                         每個 token 有 jti，撤銷才有 key（5.7.2）
-verifyWith(key)                   用金鑰型別決定演算法，不看 header（5.2.6）
+verifyWith(key)                   固定驗證金鑰；演算法仍從已允許的 alg 集合選取
+parser.sig() 移除其餘演算法      驗證端明確只接受 HS256，簽發端寫死並不會自動限制 parser
 requireIssuer(issuer)             連「誰發的」一起驗（5.8.2）
 clockSkewSeconds                  容忍時鐘誤差（5.3.3）
 ```
@@ -1166,7 +1181,10 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             var authorities = (auths == null ? List.<String>of() : auths).stream()
                     .map(SimpleGrantedAuthority::new).map(a -> (org.springframework.security.core.GrantedAuthority) a).toList();
 
-            var authentication = new UsernamePasswordAuthenticationToken(c.getSubject(), null, authorities);
+            Long uid = c.get("uid", Long.class);
+            if (uid == null || c.getSubject() == null) throw new JwtException("缺少本地身分");
+            var authentication = new UsernamePasswordAuthenticationToken(
+                    new JwtPrincipal(uid, c.getSubject()), null, authorities);
             authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(req));
             SecurityContextHolder.getContext().setAuthentication(authentication);
 
@@ -1186,6 +1204,18 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 沒有標頭就 chain.doFilter 往下走      不是「沒帶 token = 擋下來」，而是「交給後面的規則決定」
 驗過就塞進 SecurityContextHolder      跟表單登入成功後做的事一模一樣
 setDetails(...)                       補上 IP / session id，稽核（08 章）要用
+```
+
+JWT principal 同時保留已驗簽的本地 `uid` 與帳號，不能只存 subject 字串，否則 03 章的資源授權及 04 章的踢人無法共用身分契約：
+
+```java
+package com.example.lab09.ch05;
+import com.example.lab09.shop.LocalIdentity;
+import java.security.Principal;
+
+public record JwtPrincipal(Long userId, String username) implements LocalIdentity, Principal {
+    @Override public String getName() { return username; }
+}
 ```
 
 ### 5.4.3 🔴 實測：驗證失敗時，Filter 該做什麼
@@ -1632,112 +1662,122 @@ package com.example.lab09.ch05;
 
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.SecureRandom;
-import java.sql.Timestamp;
-import java.time.Duration;
-import java.time.Instant;
+import java.security.*;
+import java.time.*;
 import java.util.*;
 
-/**
- * 5.6：refresh token。
- *
- * ★ 三個設計決定，每一個都對應一個實測：
- *   1. refresh token 是【不透明的隨機字串】，不是 JWT —— 因為它要能被查、被撤銷（5.6.1）。
- *   2. 資料庫只存【雜湊】，不存原文 —— 外洩 DB 不等於外洩所有人的 refresh token（5.6.2）。
- *   3. 用一次就換一張（rotation），舊的標記 used；舊的又被用到 = 偷竊，整個 family 撤銷（5.6.3）。
- */
+/** 每條 family 用一列做鎖；同一 family 的換發與撤銷依相同順序序列化。 */
 public class RefreshTokenService {
-
     private final JdbcTemplate jdbc;
     private final Duration ttl;
+    private final Clock clock;
+    private final TransactionTemplate tx;
     private final SecureRandom rnd = new SecureRandom();
 
-    public RefreshTokenService(JdbcTemplate jdbc, Duration ttl) { this.jdbc = jdbc; this.ttl = ttl; }
-
+    public RefreshTokenService(JdbcTemplate jdbc, PlatformTransactionManager manager, Duration ttl) {
+        this(jdbc, manager, ttl, Clock.systemUTC());
+    }
+    public RefreshTokenService(JdbcTemplate jdbc, PlatformTransactionManager manager, Duration ttl, Clock clock) {
+        this.jdbc = jdbc; this.ttl = ttl; this.clock = clock;
+        this.tx = new TransactionTemplate(manager);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
+    }
     public record Issued(String rawToken, String familyId) {}
-
-    /** 登入時發第一張，開一個新的 family */
-    public Issued issueNew(long userId) { return insert(userId, UUID.randomUUID().toString()); }
-
-    private Issued insert(long userId, String familyId) {
-        String raw = randomToken();
-        Instant now = Instant.now();
-        jdbc.update("""
-                INSERT INTO refresh_token (token_hash, user_id, family_id, issued_at, expires_at)
-                VALUES (?,?,?,?,?)""",
-                sha256(raw), userId, familyId, Timestamp.from(now), Timestamp.from(now.plus(ttl)));
-        return new Issued(raw, familyId);
-    }
-
     public record Rotated(long userId, Issued next) {}
+    private record Attempt(Rotated value, String error) {}
 
-    /**
-     * 5.6.3 的核心：拿一張 refresh token 換一張新的 + 一個新的 access token。
-     * 🔴 reuse detection：如果這張已經被用過（used_at 不是 null），代表它被偷了 ——
-     *    把整個 family 撤銷，逼真正的使用者重新登入。
-     */
-    public Rotated rotate(String rawToken) {
-        Map<String, Object> row;
-        try {
-            row = jdbc.queryForMap("""
-                    SELECT id, user_id, family_id, expires_at, used_at, revoked_at
-                      FROM refresh_token WHERE token_hash = ?""", sha256(rawToken));
-        } catch (EmptyResultDataAccessException e) {
-            throw new IllegalStateException("REFRESH_UNKNOWN");           // 根本沒發過這張
-        }
-
-        long id = ((Number) row.get("id")).longValue();
-        long userId = ((Number) row.get("user_id")).longValue();
-        String familyId = (String) row.get("family_id");
-
-        if (row.get("revoked_at") != null) throw new IllegalStateException("REFRESH_REVOKED");
-        if (toInstant(row.get("expires_at")).isBefore(Instant.now()))
-            throw new IllegalStateException("REFRESH_EXPIRED");
-
-        if (row.get("used_at") != null) {                                // 🔴 用過的又出現 = 被偷了
-            revokeFamily(familyId);
-            throw new IllegalStateException("REFRESH_REUSE_DETECTED");    // 5.6.3
-        }
-
-        jdbc.update("UPDATE refresh_token SET used_at = ? WHERE id = ?", Timestamp.from(Instant.now()), id);
-        return new Rotated(userId, insert(userId, familyId));            // 同一個 family 續下去
+    public Issued issueNew(long userId) {
+        return tx.execute(status -> {
+            String family = UUID.randomUUID().toString();
+            jdbc.update("INSERT INTO refresh_family(family_id,user_id) VALUES (?,?)", family, userId);
+            return insert(userId, family);
+        });
+    }
+    private Issued insert(long userId, String family) {
+        byte[] bytes = new byte[32]; rnd.nextBytes(bytes);
+        String raw = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+        Instant now = clock.instant();
+        jdbc.update("""
+                INSERT INTO refresh_token(token_hash,user_id,family_id,issued_at,expires_at)
+                VALUES (?,?,?,?,?)""", sha256(raw), userId, family, utc(now), utc(now.plus(ttl)));
+        return new Issued(raw, family);
     }
 
-    public void revokeFamily(String familyId) {
-        jdbc.update("UPDATE refresh_token SET revoked_at = ? WHERE family_id = ? AND revoked_at IS NULL",
-                Timestamp.from(Instant.now()), familyId);
+    public Rotated rotate(String raw) {
+        Attempt attempt = tx.execute(status -> {
+            String family;
+            try {
+                family = jdbc.queryForObject("SELECT family_id FROM refresh_token WHERE token_hash=?",
+                        String.class, sha256(raw));
+            } catch (EmptyResultDataAccessException e) { return new Attempt(null, "REFRESH_UNKNOWN"); }
+            // 所有換發／撤銷先鎖 family，再讀 token；不能只鎖每張 token 自己。
+            Map<String,Object> f = jdbc.queryForMap(
+                    "SELECT revoked_at FROM refresh_family WHERE family_id=? FOR UPDATE", family);
+            if (f.get("revoked_at") != null) return new Attempt(null, "REFRESH_REVOKED");
+            Map<String,Object> row = jdbc.queryForMap("""
+                    SELECT id,user_id,used_at,revoked_at FROM refresh_token WHERE token_hash=? FOR UPDATE""", sha256(raw));
+            if (row.get("revoked_at") != null) return new Attempt(null, "REFRESH_REVOKED");
+            if (row.get("used_at") != null) {
+                revokeLocked(family);
+                return new Attempt(null, "REFRESH_REUSE_DETECTED");
+            }
+            LocalDateTime expiry = jdbc.queryForObject(
+                    "SELECT expires_at FROM refresh_token WHERE id=?",
+                    (rs,n) -> rs.getObject(1, LocalDateTime.class), row.get("id"));
+            if (!expiry.toInstant(ZoneOffset.UTC).isAfter(clock.instant()))
+                return new Attempt(null, "REFRESH_EXPIRED");
+            long uid = ((Number)row.get("user_id")).longValue();
+            // 停用／鎖定後不能靠 refresh 取得新的登入機會。
+            Boolean usable;
+            try {
+                usable = jdbc.queryForObject("""
+                        SELECT enabled AND account_non_expired AND account_non_locked
+                          FROM app_user WHERE id=?""", Boolean.class, uid);
+            } catch (EmptyResultDataAccessException missingUser) { usable = false; }
+            if (!Boolean.TRUE.equals(usable)) {
+                revokeLocked(family);
+                return new Attempt(null, "REFRESH_REVOKED");
+            }
+            jdbc.update("UPDATE refresh_token SET used_at=? WHERE id=?", utc(clock.instant()), row.get("id"));
+            return new Attempt(new Rotated(uid, insert(uid, family)), null);
+        });
+        // tx.execute 已提交才拋重用錯誤，避免撤銷跟著 RuntimeException 回滾。
+        if (attempt.error() != null) throw new IllegalStateException(attempt.error());
+        return attempt.value();
     }
-
-    /** 診斷用：某個 family 現在的狀態 */
-    public List<Map<String, Object>> familyDump(String familyId) {
-        return jdbc.queryForList("""
-                SELECT id, LEFT(token_hash,8) AS hash8, used_at, revoked_at
-                  FROM refresh_token WHERE family_id = ? ORDER BY id""", familyId);
+    private void revokeLocked(String family) {
+        LocalDateTime now = utc(clock.instant());
+        jdbc.update("UPDATE refresh_family SET revoked_at=? WHERE family_id=?", now, family);
+        jdbc.update("UPDATE refresh_token SET revoked_at=? WHERE family_id=? AND revoked_at IS NULL", now, family);
     }
-
-    private String randomToken() {
-        byte[] b = new byte[32];
-        rnd.nextBytes(b);
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(b);
+    public void revokeFamily(String family) {
+        tx.executeWithoutResult(status -> {
+            jdbc.queryForMap("SELECT family_id FROM refresh_family WHERE family_id=? FOR UPDATE", family);
+            revokeLocked(family);
+        });
     }
-
-    /** MySQL DATETIME 經由 JDBC 可能回 Timestamp 或 LocalDateTime，兩種都吃 */
-    private static Instant toInstant(Object o) {
-        if (o instanceof Timestamp t) return t.toInstant();
-        if (o instanceof java.time.LocalDateTime ldt) return ldt.atZone(java.time.ZoneId.systemDefault()).toInstant();
-        throw new IllegalArgumentException("未知的時間型別：" + o.getClass());
+    /** 停用帳號時與 app_user／token_version 的 UPDATE 使用呼叫端同一交易。 */
+    public void revokeAll(long userId) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive())
+            throw new IllegalStateException("revokeAll 必須與帳號狀態在同一交易");
+        // 固定排序取得 family 鎖，與 rotate 的 family -> token 順序一致。
+        var families = jdbc.queryForList("SELECT family_id FROM refresh_family WHERE user_id=? ORDER BY family_id FOR UPDATE",
+                String.class, userId);
+        for (String family : families) revokeLocked(family);
     }
-
-    static String sha256(String s) {
-        try {
-            byte[] h = MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8));
-            StringBuilder sb = new StringBuilder();
-            for (byte x : h) sb.append(String.format("%02x", x));
-            return sb.toString();
-        } catch (Exception e) { throw new RuntimeException(e); }
+    public List<Map<String,Object>> familyDump(String family) {
+        return jdbc.queryForList("SELECT id,LEFT(token_hash,8) AS hash8,used_at,revoked_at FROM refresh_token WHERE family_id=? ORDER BY id", family);
+    }
+    private static LocalDateTime utc(Instant instant) { return LocalDateTime.ofInstant(instant, ZoneOffset.UTC); }
+    static String sha256(String raw) {
+        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(raw.getBytes(StandardCharsets.UTF_8))); }
+        catch (NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
 }
 ```
@@ -1745,6 +1785,10 @@ public class RefreshTokenService {
 > 📌 **`token_hash CHAR(64) NOT NULL UNIQUE`**：我們比對的是 `sha256(rawToken)`，不是原文。
 > 這跟 02 章「密碼要雜湊存」是同一個道理——**refresh token 也是一種憑證，DB 裡不該有原文。**
 > （差別：密碼用 BCrypt 慢雜湊擋暴力破解；refresh token 是高熵隨機字串，SHA-256 就夠，不用慢雜湊。）
+
+family 列鎖涵蓋讀取、消耗與新增 token；任一步失敗整個換發回滾。重用分支先提交撤銷，再由交易外拋錯。兩個請求同時用舊 token：一個完成換發，另一個偵測重用並撤銷整條 family，因此第一個請求剛拿到的新 token 也失效。前端應將 refresh 合併成同一個進行中的請求，不能把正常重試誤認成永遠不會發生。
+
+`DATETIME(3)` 的 issued／expires／used／revoked 一律寫入 UTC `LocalDateTime`，讀取後用 `ZoneOffset.UTC` 轉 Instant；不依 JVM 時區猜測。實驗建構子也要改成 `new RefreshTokenService(jdbc, transactionManager, ttl)`。`revokeAll()` 必須由已有交易的停用服務呼叫；與帳號狀態、版本號一起提交。
 
 ### 5.6.2 實測：refresh 流程
 
@@ -1798,8 +1842,8 @@ public class RefreshTokenService {
 
 ### 5.6.3 🔴 實測：refresh token 重用偵測
 
-rotation 的真正價值：**如果一張已經用過的 refresh token 又被拿來換，那一定是被偷了。**
-（正常使用者手上永遠只有最新的那一張；舊的被用到，代表有第二個人也有這條鏈。）
+rotation 的真正價值：**能偵測已消耗憑證的再次使用，並使整條換發鏈失效。**
+（重用是可疑訊號，也可能來自前端併發或網路重試；本課採取整條撤銷的保守政策。）
 
 偵測到就把**整個 family 撤銷**——寧可讓真正的使用者重新登入一次，也不讓小偷繼續：
 
@@ -1854,7 +1898,7 @@ rotation 的真正價值：**如果一張已經用過的 refresh token 又被拿
 
 ```
 family（換發鏈）：  #1 → #2 → #3 → ...   每一張只能用一次，用完換下一張
-偷竊的訊號：        #1 被用了第二次       → 一定有兩個人拿著這條鏈
+重用的訊號：        #1 被用了第二次       → 可能外洩，也可能正常併發／重試；本課一律撤銷
 反應：              整個 family 撤銷      → 小偷和使用者都被踢，使用者重登、拿一條新 family
 ```
 
@@ -1941,8 +1985,10 @@ public class TokenVersionRevocation implements TokenRevocation {
         Long uid = c.get("uid", Long.class);
         Integer tokenVer = c.get("ver", Integer.class);
         if (uid == null || tokenVer == null) return true;               // 沒帶 = 當作無效
-        Integer current = jdbc.queryForObject(
-                "SELECT token_version FROM app_user WHERE id = ?", Integer.class, uid);
+        Integer current;
+        try {
+            current = jdbc.queryForObject("SELECT token_version FROM app_user WHERE id=? AND enabled=TRUE AND account_non_locked=TRUE AND account_non_expired=TRUE", Integer.class, uid);
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) { return true; }
         return current == null || !current.equals(tokenVer);            // 對不上 = 已撤銷
     }
 
@@ -2220,7 +2266,7 @@ token 每個請求都在 `Authorization` 標頭裡傳。有人把「整包使用
 這一章就把它換掉。**API chain 的每一個設計，5.7.3 的 `j4` 已經端到端驗過了**
 （STATELESS + JWT filter + 版本號撤銷 + `report:read` 規則），這裡是把它組進 shop 的形狀。
 
-> 📌 **這一節的四個新類別，本質就是把 5.3～5.7 的 `ch05` 元件搬進 `shop` 套件、換上正式的名字。**
+> 📌 **這一節直接重用 5.3～5.7 的 ch05 token 元件，由獨立的 ShopTokenConfig 接線。成品只掃描 shop 套件；不要連實驗情境一起掃描。**
 > 差別只有：金鑰從環境變數讀、`ShopUserDetails` 多帶一個 `tokenVersion`、撤銷路徑接進 04 章的 `ShopSessionAdmin`。
 
 **① 金鑰從環境變數讀，不寫死**（5.2.5 的教訓）：
@@ -2229,7 +2275,7 @@ token 每個請求都在 `Authorization` 標頭裡傳。有人把「整包使用
 # application.yml —— 本機開發用；正式環境用真正的 Secret Manager
 shop:
   jwt:
-    secret: ${JWT_SECRET:請用-openssl-rand-base64-32-產生一把至少32位元組的隨機金鑰}
+    secret: ${JWT_SECRET}   # 缺少時直接啟動失敗，不能把提示文字當預設值
     access-ttl: 15m
     refresh-ttl: 14d
 ```
@@ -2240,15 +2286,229 @@ shop:
 只多一個欄位 `tokenVersion`，以及查詢多讀一個 `token_version` 欄位：
 
 ```java
-public record ShopUserDetails(Long userId, String username, String password, String displayName,
-                              boolean enabled, boolean accountNonExpired, boolean accountNonLocked,
-                              boolean credentialsNonExpired, int tokenVersion,      // ★ 05 章多的
-                              List<GrantedAuthority> grantedAuthorities) implements UserDetails {
-    // getAuthorities / getPassword / ... 同 04 章
-    @Override public boolean equals(Object o) {                       // 04 章 4.3.2：只比 userId
-        return o instanceof ShopUserDetails other && java.util.Objects.equals(userId, other.userId);
+package com.example.lab09.shop;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.*;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.*;
+
+/**
+ * 取代 04 章的同名類別；保留 LocalIdentity／密碼政策／equals，再讀取 token_version。
+ */
+@Service
+public class ShopUserDetailsService implements UserDetailsService {
+
+    private final JdbcTemplate jdbc;
+    public ShopUserDetailsService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @Override
+    @Transactional(readOnly = true)
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        if (username != null) username = username.trim();
+        if (username == null || !username.matches("[A-Za-z0-9:_-]{1,64}"))
+            throw new UsernameNotFoundException("帳號格式不符");
+        username = username.toLowerCase(Locale.ROOT);
+        Map<String, Object> u;
+        try {
+            u = jdbc.queryForObject("""
+                    SELECT id, username, password_hash, display_name, enabled,
+                           account_non_expired, account_non_locked, local_password_enabled, credentials_expire_at, token_version
+                      FROM app_user WHERE username = ?""",
+                    (rs, rowNum) -> {
+                        Map<String, Object> row = new HashMap<>();
+                        row.put("id", rs.getLong("id"));
+                        for (String name : List.of("username", "password_hash", "display_name"))
+                            row.put(name, rs.getString(name));
+                        for (String name : List.of("enabled", "account_non_expired", "account_non_locked", "local_password_enabled"))
+                            row.put(name, rs.getBoolean(name));
+                        row.put("token_version", rs.getInt("token_version"));
+                        row.put("credentials_expire_at", rs.getObject("credentials_expire_at", LocalDateTime.class));
+                        return row;
+                    }, username);
+        } catch (org.springframework.dao.EmptyResultDataAccessException e) {
+            throw new UsernameNotFoundException(username);          // ★ 02 章 2.5.5 規則一
+        }
+
+        Set<String> authorities = new LinkedHashSet<>();
+        jdbc.query("""
+                SELECT r.code AS role_code, p.code AS perm_code
+                  FROM user_role ur
+                  JOIN app_role r              ON r.id = ur.role_id
+                  LEFT JOIN role_permission rp ON rp.role_id = r.id
+                  LEFT JOIN permission p       ON p.id = rp.permission_id
+                 WHERE ur.user_id = ?""",
+                rs -> {
+                    authorities.add("ROLE_" + rs.getString("role_code"));   // ★ 前綴只加這一次
+                    String p = rs.getString("perm_code");
+                    if (p != null) authorities.add(p);
+                }, u.get("id"));
+
+        LocalDateTime exp = (LocalDateTime) u.get("credentials_expire_at");
+        return new ShopUserDetails(
+                (Long) u.get("id"),
+                (String) u.get("username"),
+                (String) u.get("password_hash"),
+                (String) u.get("display_name"),
+                (Boolean) u.get("enabled"),
+                (Boolean) u.get("account_non_expired"),
+                (Boolean) u.get("account_non_locked"),
+                (Boolean) u.get("local_password_enabled"),
+                exp == null || exp.isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC)),
+                (Integer) u.get("token_version"),
+                authorities.stream().map(a -> (GrantedAuthority) new SimpleGrantedAuthority(a)).toList());
     }
-    @Override public int hashCode() { return java.util.Objects.hashCode(userId); }
+
+    @Transactional(readOnly = true)
+    public ShopUserDetails loadById(Long id) {
+        String username = jdbc.queryForObject("SELECT username FROM app_user WHERE id=?", String.class, id);
+        return (ShopUserDetails) loadUserByUsername(username);
+    }
+
+    /** 03 章 3.10 的 record，補上明確的 equals / hashCode（4.3.2） */
+    public record ShopUserDetails(Long userId, String username, String password, String displayName,
+                                  boolean enabled, boolean accountNonExpired, boolean accountNonLocked,
+                                  boolean localPasswordEnabled, boolean credentialsNonExpired, int tokenVersion,
+                                  List<GrantedAuthority> grantedAuthorities) implements UserDetails, LocalIdentity, LocalPasswordPolicy {
+
+        @Override public Collection<? extends GrantedAuthority> getAuthorities() { return grantedAuthorities; }
+        @Override public String getPassword() { return password; }
+        @Override public String getUsername() { return username; }
+        @Override public boolean isAccountNonExpired() { return accountNonExpired; }
+        @Override public boolean isAccountNonLocked() { return accountNonLocked; }
+        @Override public boolean isCredentialsNonExpired() { return credentialsNonExpired; }
+        @Override public boolean isEnabled() { return enabled; }
+
+        /**
+         * ★ 「同一個人」的定義是 userId，不是「這次載入的那份快照」。
+         *   SessionRegistry 用 principal 當 Map 的 key —— 少了這兩個方法，
+         *   maximumSessions 與 4.3.3 的 kick 都會靜默失效（4.3.2）。
+         *
+         *   ⚠️ record 【本來就有】自動產生的 equals —— 但它比對【所有】欄位，
+         *      只要有人加一個 lastLoginAt，那個 bug 就會無聲無息地回來。
+         */
+        @Override public boolean equals(Object o) {
+            return o instanceof ShopUserDetails other && Objects.equals(userId, other.userId);
+        }
+        @Override public int hashCode() { return Objects.hashCode(userId); }
+    }
+}
+```
+
+以下共用設定和登入控制器新增後保留到 08 章；只替換 chain，不刪它們。缺少 `JWT_SECRET` 或密鑰太短時，應用必須啟動失敗。可先執行 `export JWT_SECRET="$(openssl rand -base64 32)"`，每次部署使用持久且受保護的隨機秘密。
+
+```java
+package com.example.lab09.shop;
+
+import com.example.lab09.ch05.*;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import java.time.Duration;
+
+/** 共用零件獨立保存；後面只替換 ShopAuthzConfig 的兩條 chain。 */
+@Configuration
+public class ShopTokenConfig {
+    @Bean JwtService jwtService(@Value("${shop.jwt.secret}") String secret,
+                               @Value("${shop.jwt.access-ttl:15m}") Duration ttl) {
+        if (secret == null || secret.isBlank()) throw new IllegalArgumentException("JWT_SECRET 不可空白");
+        return new JwtService(secret, "shop-service", ttl, Duration.ofSeconds(30), false);
+    }
+    @Bean TokenVersionRevocation tokenRevocation(JdbcTemplate jdbc) { return new TokenVersionRevocation(jdbc); }
+    @Bean RefreshTokenService refreshTokenService(JdbcTemplate jdbc, PlatformTransactionManager manager,
+                                                  @Value("${shop.jwt.refresh-ttl}") Duration ttl) {
+        return new RefreshTokenService(jdbc, manager, ttl);
+    }
+}
+```
+
+```java
+package com.example.lab09.shop;
+import java.time.Duration;
+
+/** 05 章預留的登入前檢查；07 章提供帳號＋IP 的實作。 */
+public interface PasswordLoginGate {
+    Duration remaining(String username, String clientIp);
+}
+```
+
+```java
+package com.example.lab09.shop;
+
+import com.example.lab09.ch05.*;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.*;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
+import org.springframework.web.bind.annotation.*;
+import java.time.Duration;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/auth")
+public class ShopTokenController {
+    private final org.springframework.context.ApplicationEventPublisher events;
+    private final AuthenticationManager am;
+    private final JwtService jwt;
+    private final RefreshTokenService refresh;
+    private final ShopUserDetailsService users;
+    private final ObjectProvider<PasswordLoginGate> gates;
+    public ShopTokenController(AuthenticationManager am, JwtService jwt, RefreshTokenService refresh,
+                               ShopUserDetailsService users, ObjectProvider<PasswordLoginGate> gates,
+                               org.springframework.context.ApplicationEventPublisher events) {
+        this.am=am; this.jwt=jwt; this.refresh=refresh; this.users=users; this.gates=gates; this.events=events;
+    }
+    public record LoginReq(@NotBlank @Size(max=64) String username, @NotBlank @Size(max=128) String password) {}
+    public record RefreshReq(@NotBlank @Size(max=128) String refreshToken) {}
+
+    @PostMapping("/login")
+    public ResponseEntity<?> login(@Valid @RequestBody LoginReq req, HttpServletRequest request) {
+        var gate = gates.getIfAvailable(); // 07 章接上唯一的 ShopLoginProtection bean
+        Duration wait = gate == null ? Duration.ZERO : gate.remaining(req.username(), request.getRemoteAddr());
+        if (!wait.isZero()) return ResponseEntity.status(429)
+                .header("Retry-After", String.valueOf(Math.max(1, wait.toSeconds())))
+                .body(Map.of("error", "LOGIN_RATE_LIMITED"));
+        try {
+            var input = UsernamePasswordAuthenticationToken.unauthenticated(req.username(), req.password());
+            input.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+            var result = am.authenticate(input);
+            var user = (ShopUserDetailsService.ShopUserDetails) result.getPrincipal();
+            var body=tokens(user, refresh.issueNew(user.userId()));
+            events.publishEvent(new org.springframework.security.authentication.event.InteractiveAuthenticationSuccessEvent(
+                    result, ShopTokenController.class)); // API 一次登入；不是每次驗 JWT 都發
+            return ResponseEntity.ok(body);
+        } catch (AuthenticationException e) {
+            return ResponseEntity.status(401).body(Map.of("error", "BAD_CREDENTIALS"));
+        }
+    }
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refresh(@Valid @RequestBody RefreshReq req) {
+        try {
+            var rotated = refresh.rotate(req.refreshToken());
+            var user = users.loadById(rotated.userId());
+            if (!user.isEnabled() || !user.isAccountNonLocked() || !user.isAccountNonExpired()) {
+                refresh.revokeFamily(rotated.next().familyId());
+                return ResponseEntity.status(401).body(Map.of("error", "REFRESH_REVOKED"));
+            }
+            return ResponseEntity.ok(tokens(user, rotated.next()));
+        } catch (IllegalStateException e) {
+            if (!e.getMessage().startsWith("REFRESH_")) throw e;
+            return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
+        }
+    }
+    private Map<String,String> tokens(ShopUserDetailsService.ShopUserDetails user, RefreshTokenService.Issued issued) {
+        return Map.of("accessToken",jwt.issue(user,user.userId(),user.tokenVersion()), "refreshToken",issued.rawToken());
+    }
 }
 ```
 
@@ -2259,21 +2519,9 @@ public record ShopUserDetails(Long userId, String username, String password, Str
 
 ```java
 @Configuration
-@EnableMethodSecurity
 public class ShopAuthzConfig {
 
-    // web chain 的 SessionRegistry / HttpSessionEventPublisher 照 04 章 4.8，不變
-
-    @Bean JwtService jwtService(@Value("${shop.jwt.secret}") String secret) {
-        return JwtService.standard(secret);                    // HS256、15 分鐘、有 exp、驗 iss（5.3.1）
-    }
-    @Bean TokenVersionRevocation tokenRevocation(JdbcTemplate jdbc) {
-        return new TokenVersionRevocation(jdbc);               // 停用帳號 / 收回權限要立刻生效（5.7.3）
-    }
-    @Bean RefreshTokenService refreshTokenService(JdbcTemplate jdbc,
-                                                  @Value("${shop.jwt.refresh-ttl}") Duration ttl) {
-        return new RefreshTokenService(jdbc, ttl);             // 14 天 + rotation（5.6）
-    }
+    // ShopMethodSecurityConfig／ShopSessionConfig／ShopTokenConfig 獨立保留。
 
     /**
      * REST API：無狀態 + JWT。
@@ -2317,20 +2565,40 @@ public class ShopAuthzConfig {
 所以「停用帳號」要**同時**踢 session **和** bump token_version：
 
 ```java
+package com.example.lab09.shop;
+import com.example.lab09.ch05.*;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.session.*;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
 @Service
 public class ShopSessionAdmin {
-
-    private final SessionRegistry registry;                    // 04 章：踢 session
-    private final TokenVersionRevocation jwtRevocation;        // 05 章：撤 JWT
+    private final SessionRegistry registry;
+    private final TokenVersionRevocation jwt;
+    private final RefreshTokenService refresh;
     private final JdbcTemplate jdbc;
-    // 建構子注入三個
-
-    /** 停用帳號 = 改 DB + 踢 session（04 章）+ 撤所有 JWT（05 章）*/
+    public ShopSessionAdmin(SessionRegistry registry, TokenVersionRevocation jwt,
+                            RefreshTokenService refresh, JdbcTemplate jdbc) {
+        this.registry=registry; this.jwt=jwt; this.refresh=refresh; this.jdbc=jdbc;
+    }
+    public int kick(Long userId) {
+        int n=0;
+        for(Object principal:registry.getAllPrincipals()) {
+            if (!(principal instanceof LocalIdentity local) || !userId.equals(local.userId())) continue;
+            for(SessionInformation session:registry.getAllSessions(principal,false)) { session.expireNow(); n++; }
+        }
+        return n;
+    }
     @Transactional
     public void disable(Long userId) {
-        jdbc.update("UPDATE app_user SET enabled = FALSE WHERE id = ?", userId);
-        kickSessions(userId);                                  // 04 章 4.3.3：expireNow()
-        jwtRevocation.revokeAll(userId);                       // 05 章 5.7.3：token_version + 1
+        jdbc.update("UPDATE app_user SET enabled=FALSE WHERE id=?",userId);
+        jwt.revokeAll(userId);
+        refresh.revokeAll(userId); // refresh family 也要撤銷
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+            new org.springframework.transaction.support.TransactionSynchronization() {
+                @Override public void afterCommit() { kick(userId); }
+            });
     }
 }
 ```
@@ -2374,7 +2642,7 @@ principal        ShopUserDetails 比 userId，多帶 tokenVersion
 **誤區 2：「我驗了簽章，所以 token 一定是我發的」**
 
 → 5.2.6 實測：如果你**相信 header 裡的 `alg`**，攻擊者可以把 RS256 降級成 HS256、
-用你的公鑰當 HMAC 密碼偽造 token。**要由你手上金鑰的型別決定用哪個演算法，不是 token。**
+用你的公鑰當 HMAC 密碼偽造 token。**金鑰型別必須與演算法相容，並由驗證端設定演算法白名單；不能讓 header 任意擴大接受範圍。**
 而且要 `requireIssuer`（5.8.2），否則別的系統用同一把金鑰簽的 token 也會被接受。
 
 **誤區 3：「JWT 是無狀態的，所以不能撤銷，只能等過期」**

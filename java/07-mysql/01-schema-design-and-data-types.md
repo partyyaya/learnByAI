@@ -2257,11 +2257,13 @@ ERROR 1062 (23000): Duplicate entry 'a@x.com' for key 't_soft3.uk_email_active'
 
 | | 哨兵值 | 生成欄位 |
 |---|---|---|
-| 唯一索引大小 | 🟡 `email + 8 bytes` | ✅ 只有 `email`，而且已刪除的列不進索引 |
+| 唯一索引鍵值 | email 與刪除時間的複合鍵，另含主鍵等結構成本 | active 列是 email；已刪除列是 NULL，仍有索引 entry 與主鍵成本 |
 | 可讀性 | 🔴 `1970-01-01` 是一個要解釋的魔術值 | ✅ 意圖明確 |
 | 查詢「未刪除」 | `WHERE deleted_at = '1970-01-01'` 🔴 醜 | `WHERE deleted_at IS NULL` ✅ 自然 |
 | 相容性 | ✅ 所有版本 | MySQL 5.7+ |
 | `ALTER` 加上去 | 要改欄位型別 → COPY | `VIRTUAL` 生成欄位 → INSTANT |
+
+這是「只限制 active 唯一性」的技巧，不是只儲存 active rows 的實體部分索引。InnoDB 索引仍包含 NULL entry；`WHERE email_active IS NULL` 甚至可以利用該索引查已刪除列。不能據此宣稱軟刪除歷史資料沒有索引空間或維護成本。
 
 > 📌 **本課採用生成欄位**（做法二），因為它讓**業務查詢維持 `deleted_at IS NULL` 的自然寫法**，
 > 而把「唯一性」的技巧藏在一個純粹是為了索引而存在的欄位裡。

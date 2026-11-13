@@ -76,8 +76,11 @@ public interface Cache {
 
 ### 7.2.2 換掉 `CacheManager` 就換掉了整個後端
 
-只加 `@EnableCaching`、不設定任何 `CacheManager` 時，Spring Boot 給你
-`ConcurrentMapCacheManager`——一個 `ConcurrentHashMap`：
+只加 `@EnableCaching`、不設定 `CacheManager` 時，Boot 會依 classpath 與
+`spring.cache.type` 選擇 provider。本站已加入 Redis starter，最初基線會選
+`RedisCacheManager`；若後續加入 JCache provider，選擇又可能改變。
+要比較最簡單的 JVM 記憶體快取，請明確設定 `spring.cache.type=simple`，
+這時才是 `ConcurrentMapCacheManager`，底層使用 `ConcurrentHashMap`：
 
 | | `ConcurrentMapCacheManager` | `RedisCacheManager` |
 |---|---|---|
@@ -228,7 +231,9 @@ Jackson 第一次替 `Product` 建反序列化器的成本。**第 3 次才是�
 `@Cacheable` 可能讓方法不執行，`@CachePut` 要求一定執行，**語意互相矛盾**。Spring 不會報錯，行為難以預測。
 
 **② `@CacheEvict(allEntries = true)` 在 Redis 上不是 `FLUSHDB`。**
-它是 `RedisCache.clear()`，實作是「**用 `SCAN` 掃出這個前綴的所有 key 再刪掉**」。
+它是 `RedisCache.clear()`，依 CacheWriter 的批次策略找出前綴對應的 key 再刪除。
+**Spring Data Redis 3.2.5 預設是 `KEYS` + `DEL`，不是 `SCAN`。**
+本站 7.9.1 明確改用 `BatchStrategies.scan(1000)`，下文的分批掃描說明以該設定為前提。
 
 > ⚠️ **回到 01 章 1.5**：`SCAN` 會分批、會重複、而且在 key 很多的時候要掃很久。
 > 一個有 50 萬筆的 cache 做一次 `allEntries = true`，
@@ -306,14 +311,14 @@ public List<Product> findPage(int page, int size) {
 
 ```java
 @Bean
-public RedisCacheConfiguration defaultCacheConfiguration(ObjectMapper redisObjectMapper) {
+public RedisCacheConfiguration defaultCacheConfiguration(RedisConfig.RedisJson redisJson) {
     return RedisCacheConfiguration.defaultCacheConfig()
             .entryTtl(Duration.ofMinutes(10))                        // ① TTL
             .prefixCacheNameWith("lab10:cache:")                     // ② key 前綴
             .serializeKeysWith(SerializationPair
                     .fromSerializer(new StringRedisSerializer()))    // ③ key 序列化
             .serializeValuesWith(SerializationPair
-                    .fromSerializer(new GenericJackson2JsonRedisSerializer(redisObjectMapper)));  // ④ 值序列化
+                    .fromSerializer(new GenericJackson2JsonRedisSerializer(redisJson.mapper())));  // ④ 值序列化
             // ⑤ .disableCachingNullValues()  ← 預設是「允許」，見 7.5
 }
 ```
@@ -448,17 +453,23 @@ Boot 的 `RedisCacheConfiguration` 自動設定類別上掛的是：
 `withInitialCacheConfigurations` 換的不只是 TTL，**序列化器也可以各換各的**：
 
 ```java
+// RedisJson 是 06 章的包裝 bean；copy 避免改動通用快取那顆 mapper。
+ObjectMapper typedMapper = redisJson.mapper().copy().deactivateDefaultTyping();
 Map.of(
     // 這個 cache 只放 Product → 用不帶 @class 的版本，省 71 bytes / 筆，
     // 而且改套件名也不會壞（06 章 6.5.7 的那張表）
     "products", base.serializeValuesWith(SerializationPair.fromSerializer(
-            new Jackson2JsonRedisSerializer<>(redisObjectMapper, Product.class))),
+            new Jackson2JsonRedisSerializer<>(typedMapper, Product.class))),
 
     // 這個 cache 放 List<Product> → 明確指定泛型，順便解掉 7.3.5 的 .toList() 問題
     "productPage", base.serializeValuesWith(SerializationPair.fromSerializer(
-            new Jackson2JsonRedisSerializer<>(redisObjectMapper,
+            new Jackson2JsonRedisSerializer<>(typedMapper,
                     TypeFactory.defaultInstance().constructCollectionType(List.class, Product.class)))))
 ```
+
+⚠️ **指定 `Product.class` 不會自動關掉 mapper 的 default typing。**
+必須使用上面已停用 default typing 的副本，才能得到不含類別名稱的 JSON。
+固定欄位／泛型契約仍須維持相容，不能把「可改套件名」理解成任意改 schema。
 
 | | `GenericJackson2Json`（帶 `@class`） | `Jackson2Json<T>`（不帶） |
 |---|---|---|
@@ -644,8 +655,9 @@ private void simulateRename() {
 只是 Jackson 至少不會讓整批快取一起死。
 
 > 📌 **`FAIL_ON_UNKNOWN_PROPERTIES` 必須關掉**（06 章 6.6.2 已經關了）。
-> 開著的話，「加一個欄位」就會變成「舊快取全部讀不回來」——
-> **而加欄位是所有改版裡最常見的一種。**
+> 開著時，舊 JSON 仍有新版已刪除／改名的欄位，就會因未知欄位而失敗。
+> 新版單純新增欄位、舊 JSON 缺少該欄位，則是缺值／預設值問題，
+> 不由 FAIL_ON_UNKNOWN_PROPERTIES 控制；兩種相容性要分開測。
 
 ### 7.6.3 解法一：前綴帶版本
 
@@ -1222,13 +1234,13 @@ public class CacheConfig {
     private boolean transactionAware;
 
     @Bean
-    public RedisCacheConfiguration defaultCacheConfiguration(ObjectMapper redisObjectMapper) {
+    public RedisCacheConfiguration defaultCacheConfiguration(RedisConfig.RedisJson redisJson) {
         return RedisCacheConfiguration.defaultCacheConfig()
                 .prefixCacheNameWith(prefix)                                   // 7.4.2
                 .entryTtl(ttl(Duration.ofMinutes(30)))                         // 7.5.4 + 7.8.3
                 .serializeKeysWith(SerializationPair.fromSerializer(new StringRedisSerializer()))
                 .serializeValuesWith(SerializationPair.fromSerializer(
-                        new GenericJackson2JsonRedisSerializer(redisObjectMapper)));   // 06 章 6.6.2
+                        new GenericJackson2JsonRedisSerializer(redisJson.mapper())));   // 06 章 6.6.2
                 // 刻意「不」呼叫 disableCachingNullValues()：本站要快取 null（7.5.3）
     }
 
@@ -1256,7 +1268,7 @@ public class CacheConfig {
                 "productCount", defaultCacheConfiguration.entryTtl(ttl(Duration.ofSeconds(10))));
 
         FailSoftRedisCacheManager manager = new FailSoftRedisCacheManager(     // 7.6.4
-                RedisCacheWriter.nonLockingRedisCacheWriter(factory),
+                RedisCacheWriter.nonLockingRedisCacheWriter(factory, BatchStrategies.scan(1000)),
                 defaultCacheConfiguration, perCache);
         manager.setTransactionAware(transactionAware);                         // 7.7.4
         return manager;
@@ -1275,8 +1287,8 @@ public class CacheConfig {
 
 | | 說明 |
 |---|---|
-| `nonLockingRedisCacheWriter`（**預設**） | `clear()` 用 `SCAN` + 批次刪，**過程中別人照樣可以寫** |
-| `lockingRedisCacheWriter` | `clear()` 期間會用一個 Redis key 當鎖，**擋住其他寫入** |
+| `nonLockingRedisCacheWriter`（**預設**） | 不取得 cache 層級鎖；**批次策略預設 KEYS**，本站明確選 SCAN；清除期間其他請求仍可寫入 |
+| `lockingRedisCacheWriter` | 以 cache 層級鎖協調 writer 操作；批次策略仍須另外選，不保證擋住繞過 writer 的直接 Redis 寫入 |
 
 **本站用 non-locking。** locking 版的目的是讓 `allEntries = true` 的清除「乾淨一點」，
 代價是清除期間所有寫入都要等——**而我們本來就不建議用 `allEntries = true`（7.3.3）。**
@@ -1369,7 +1381,8 @@ public class CacheConfig {
 
 **⑪ 「`@CacheEvict(allEntries = true)` 很快」**
 
-它是 `SCAN` + 批次刪（7.3.3 ②）。50 萬筆的 cache 清一次，就是 01 章 1.5 的那些代價。
+本站明確指定 `BatchStrategies.scan(1000)` 才是 SCAN + 批次刪；未指定的預設是 KEYS。
+50 萬筆的 cache 清一次，仍有 01 章 1.5 的掃描代價（7.3.3 ②）。
 
 **⑫ 「TTL 設一樣比較好管理」**
 

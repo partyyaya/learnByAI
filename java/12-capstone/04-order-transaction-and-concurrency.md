@@ -1084,6 +1084,14 @@ class PlaceOrderService implements OrderingApi {
             for (int attempt = 1; ; attempt++) {
                 try {
                     return tx.execute(s -> placeInTransaction(buyerId, idempotencyKey, lines));
+                } catch (org.springframework.dao.PessimisticLockingFailureException e) {
+                    // tx.execute 已完成 rollback。只重跑完整 DB 交易，不在仍持鎖的交易內重試單一句 SQL。
+                    if (attempt >= ORDER_NO_ATTEMPTS) throw e;
+                    try { Thread.sleep(20L * attempt); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new org.springframework.dao.CannotAcquireLockException("retry interrupted", interrupted);
+                    }
                 } catch (DataIntegrityViolationException e) {
                     // 2.4.4：訂單編號撞號（一天約 12 次）。整個交易已經 rollback，換一個號碼重來
                     if (attempt >= ORDER_NO_ATTEMPTS || !ConstraintViolations.isViolationOf(e, "uk_orders_order_no")) throw e;
@@ -2382,21 +2390,28 @@ public void consume(long orderId) {
 record Held(long id, long productId, int quantity) {}
 
 /**
- * 這張訂單還佔著庫存的預留，依 productId 排序。先鎖預留列（FOR UPDATE），再依序改 inventory：
- * 同一張訂單的兩個釋放（例如兩個排程實例）會在第一句就排隊，第二個進來時看到的已經是 RELEASED —— 不會重複減。
+ * 這張訂單還佔著庫存的預留，依 productId 排序。先找完整 id，再以主鍵等值 FOR UPDATE 鎖現有預留列：
+ * 同一張訂單的兩個釋放（例如兩個排程實例）會在主鍵鎖定讀排隊，第二個進來時看到的已經是 RELEASED —— 不會重複減。
  * 註：這裡的 statuses 只會是程式裡的常數，不是使用者輸入。
  */
 private List<Held> held(long orderId, String statuses) {
-    return jdbc.query("""
-            SELECT id, product_id, quantity FROM inventory_reservations
-             WHERE order_id = ? AND status IN (%s) ORDER BY product_id FOR UPDATE""".formatted(statuses),
-            (rs, i) -> new Held(rs.getLong(1), rs.getLong(2), rs.getInt(3)), orderId);
+    // 訂單成立後預留的 id／productId 集合不再新增或刪除；先找完整主鍵，不在範圍查詢拿 gap lock。
+    List<Long> ids = jdbc.queryForList(
+            "SELECT id FROM inventory_reservations WHERE order_id = ? ORDER BY product_id", Long.class, orderId);
+    List<Held> result = new ArrayList<>();
+    for (long id : ids) {
+        result.addAll(jdbc.query("""
+                SELECT id, product_id, quantity FROM inventory_reservations FORCE INDEX (PRIMARY)
+                 WHERE id = ? AND order_id = ? AND status IN (%s) FOR UPDATE""".formatted(statuses),
+                (rs, row) -> new Held(rs.getLong(1), rs.getLong(2), rs.getInt(3)), id, orderId));
+    }
+    return result;
 }
 ```
 
 - **`release()` 釋放 `HELD` 與 `CONFIRMED`**：待付款的取消釋放 `HELD`，已付款的取消（買家、賣家）釋放 `CONFIRMED`。已經 `RELEASED` 或 `CONSUMED` 的不碰 —— 所以 `release()` 是**冪等**的。
 - **`held()` 用 `FOR UPDATE` 鎖住預留列**，而且依 `product_id` 排序（4.2.3 的規則，這次用在預留列上）。這是這個模組**唯一**防止「同一張訂單被釋放兩次」的地方：
-  兩個交易同時釋放同一張訂單，第二個會卡在這句 SELECT，等第一個 commit 之後再讀 —— `FOR UPDATE` 是當前讀（4.6.2），它看到的已經是 `RELEASED`，回傳空清單。
+  兩個交易同時釋放同一張訂單，第二個會卡在主鍵鎖定讀，等第一個 commit 之後再讀 —— `FOR UPDATE` 是當前讀（4.6.2），它看到的已經是 `RELEASED`，回傳空清單。
 - **`consume()` 同時減 `on_hand` 與 `reserved`**（US-ORD-6 AC-2），庫存帳記 `SHIP (−n, −n)`。
 - **`confirm()` 不記庫存帳**：`HELD → CONFIRMED` 不改變任何數量，只改變「能不能被逾時釋放」。
 - `InventoryApi` 與 `JdbcInventoryService` 的全文（含第 01～03 章就有的方法）在 4.10.1。
@@ -2404,6 +2419,19 @@ private List<Held> held(long orderId, String statuses) {
 > 📌 **`OrderTransitionService` 的條件式 UPDATE 已經保證「一張訂單只會被取消一次」了，`held()` 的 `FOR UPDATE` 是不是多餘的？**
 > 對 `ordering` 來說是。但 `InventoryApi.release()` 是一個**公開介面**，它的正確性不應該依賴「呼叫端剛好有做對」。
 > 一個模組的不變量（INV-2）由那個模組自己守 —— 0.5.1 的 📌「一個不變量只能有一個主人」。
+
+主鍵鎖定讀為什麼拆成兩步？原本 `WHERE order_id=? ... FOR UPDATE` 只比對
+複合唯一索引 `(order_id,product_id)` 的前綴。在 REPEATABLE READ 下，取消最新訂單可能
+拿到後方 gap lock；同時新下單先拿 inventory 的 X lock，再插入下一張預留，就會形成死鎖。
+改成先找既有 id，再用完整主鍵讀取與重新檢查 status，避免在這個範圍查詢拿 gap lock。
+第二個釋放者仍會等主鍵鎖，並在第一個提交後看到 RELEASED，因此不會扣兩次。
+預留的成員在訂單成立後不可新增／刪除；業務流程只改狀態與 counted，清理另走離線流程。
+這個改動增加逐筆查詢，單張訂單最多 50 品項；效能應對修正版另測。
+
+下單的 `tx.execute` 已在交易外對悲觀鎖失敗最多試 3 次，退避也在 rollback 之後。
+06 章的熱點閘門只取得一次，重試的是同一批預扣內的 DB 交易；最後仍失敗才統一加回。
+其他交易入口沒有自動重跑，鎖衝突由 `handleLockConflict` 回 503 + Retry-After，
+不把它偽裝成成功或對外暴露 SQL。客戶端重送下單必須沿用 Idempotency-Key。
 
 ### 4.6.5 走完一張訂單：兩個在回應裡的坑
 
@@ -3369,6 +3397,14 @@ class PlaceOrderService implements OrderingApi {
             for (int attempt = 1; ; attempt++) {
                 try {
                     return tx.execute(s -> placeInTransaction(buyerId, idempotencyKey, lines));
+                } catch (org.springframework.dao.PessimisticLockingFailureException e) {
+                    // tx.execute 已完成 rollback。只重跑完整 DB 交易，不在仍持鎖的交易內重試單一句 SQL。
+                    if (attempt >= ORDER_NO_ATTEMPTS) throw e;
+                    try { Thread.sleep(20L * attempt); }
+                    catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new org.springframework.dao.CannotAcquireLockException("retry interrupted", interrupted);
+                    }
                 } catch (DataIntegrityViolationException e) {
                     // 2.4.4：訂單編號撞號（一天約 12 次）。整個交易已經 rollback，換一個號碼重來
                     if (attempt >= ORDER_NO_ATTEMPTS || !ConstraintViolations.isViolationOf(e, "uk_orders_order_no")) throw e;
@@ -4394,15 +4430,22 @@ class JdbcInventoryService implements InventoryApi {
     record Held(long id, long productId, int quantity) {}
 
     /**
-     * 這張訂單還佔著庫存的預留，依 productId 排序。先鎖預留列（FOR UPDATE），再依序改 inventory：
-     * 同一張訂單的兩個釋放（例如兩個排程實例）會在第一句就排隊，第二個進來時看到的已經是 RELEASED —— 不會重複減。
+     * 這張訂單還佔著庫存的預留，依 productId 排序。先找完整 id，再以主鍵等值 FOR UPDATE 鎖現有預留列：
+     * 同一張訂單的兩個釋放（例如兩個排程實例）會在主鍵鎖定讀排隊，第二個進來時看到的已經是 RELEASED —— 不會重複減。
      * 註：這裡的 statuses 只會是程式裡的常數，不是使用者輸入。
      */
     private List<Held> held(long orderId, String statuses) {
-        return jdbc.query("""
-                SELECT id, product_id, quantity FROM inventory_reservations
-                 WHERE order_id = ? AND status IN (%s) ORDER BY product_id FOR UPDATE""".formatted(statuses),
-                (rs, i) -> new Held(rs.getLong(1), rs.getLong(2), rs.getInt(3)), orderId);
+        // 訂單成立後預留的 id／productId 集合不再新增或刪除；先找完整主鍵，不在範圍查詢拿 gap lock。
+        List<Long> ids = jdbc.queryForList(
+                "SELECT id FROM inventory_reservations WHERE order_id = ? ORDER BY product_id", Long.class, orderId);
+        List<Held> result = new ArrayList<>();
+        for (long id : ids) {
+            result.addAll(jdbc.query("""
+                    SELECT id, product_id, quantity FROM inventory_reservations FORCE INDEX (PRIMARY)
+                     WHERE id = ? AND order_id = ? AND status IN (%s) FOR UPDATE""".formatted(statuses),
+                    (rs, row) -> new Held(rs.getLong(1), rs.getLong(2), rs.getInt(3)), id, orderId));
+        }
+        return result;
     }
 
     @Override
@@ -4782,6 +4825,14 @@ class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                        org.springframework.dao.DataAccessResourceFailureException.class})
     ResponseEntity<ProblemDetail> handleNoConnection(Exception e) {
         log.warn("拿不到資料庫連線：{}", e.getMessage());
+        return ResponseEntity.status(ProblemType.TEMPORARILY_UNAVAILABLE.status()).header(HttpHeaders.RETRY_AFTER, "1")
+                .body(problem(ProblemType.TEMPORARILY_UNAVAILABLE, "系統忙碌中，請稍後再試"));
+    }
+
+    /** 鎖衝突不是未知程式錯誤；完整交易的有限重試耗盡後，讓呼叫端稍後重送。 */
+    @ExceptionHandler(org.springframework.dao.PessimisticLockingFailureException.class)
+    ResponseEntity<ProblemDetail> handleLockConflict(org.springframework.dao.PessimisticLockingFailureException e) {
+        log.warn("資料庫鎖衝突，請稍後重試：{}", e.getMessage());
         return ResponseEntity.status(ProblemType.TEMPORARILY_UNAVAILABLE.status()).header(HttpHeaders.RETRY_AFTER, "1")
                 .body(problem(ProblemType.TEMPORARILY_UNAVAILABLE, "系統忙碌中，請稍後再試"));
     }
@@ -6576,13 +6627,13 @@ Q1 還會綠嗎？再對調回來呢？寫下你從中學到的「怎麼寫一�
 先用 `curl` 送一次確認（簽章隨便填 —— `canonical()` 在驗簽之前就執行了），再把它改成 400 `/problems/validation`，並在 `OrderFlowTest` 加一個測試守住它。（做完再對照 4.6.3：修法、三個選項的比較，以及為什麼測試最後沒有放在 `OrderFlowTest`。）
 **改在哪一層最好？** `CallbackRequest` 上的 `@Digits(integer = 10, fraction = 2)`、`record()` 裡接住例外、還是 `canonical()` 自己檢查？各自擋得住哪些呼叫路徑？
 
-**練習十（30 分鐘）：`held()` 的 `FOR UPDATE` 鎖了什麼？**
+**練習十（30 分鐘）：主鍵鎖定與範圍鎖的對照**
 
-4.6.4 的 `held()` 用 `WHERE order_id = ? ... FOR UPDATE` 走 `uk_reservations_order_product (order_id, product_id)` 的**前綴** —— 這不是對整個唯一鍵的等值查找，而是一段範圍掃描。
-在 REPEATABLE READ 底下，InnoDB 會在掃到的記錄上加什麼鎖？取消**最新的**那張訂單時，鎖住的範圍延伸到哪裡？
-同一瞬間有人下單同一個商品（`reserve()`：先拿 `inventory` 那一列的 X 鎖，再 INSERT `inventory_reservations`），會不會被擋住？會不會死鎖？
-寫一個實驗驗證：一條執行緒取消最新的訂單、一條下單同一個商品，用 `CountDownLatch` 對齊，看 `performance_schema.data_locks` 與 `SHOW ENGINE INNODB STATUS`。
-如果真的會互等，提出一個修法，並說明它還能不能防止「同一張訂單被釋放兩次」。
+用獨立資料庫重現舊版 `WHERE order_id=? ... FOR UPDATE` 的取消／新下單交錯，
+記錄 1213；換成 4.6.4 的主鍵逐筆鎖定，確認同一交錯兩邊都能完成。
+另外同時釋放同一張訂單兩次，確認 reserved 與 RELEASE 帳只減一次。
+READ COMMITTED 可作對照，但不要為通過單一測試就更改整站隔離等級；
+09 章對帳明確依賴 REPEATABLE READ 快照。驗證重試每次是新交易，耗盡時回 503。
 
 **練習十一（15 分鐘）：`Idempotency-Key` 上的 `@NotBlank` 是誰在驗？**
 

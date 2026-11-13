@@ -46,7 +46,9 @@
       rawImg.src = `/api/image/${id}.enc`;
 
       const [meta, encBuf] = await Promise.all([
-        fetch(`/api/image/${id}/key`).then((r) => r.json()),
+        fetch(`/api/image/${id}/key`, {
+          headers: { Authorization: 'Bearer dummy-token' },   // 真實系統由登入流程取得
+        }).then((r) => r.json()),
         fetch(`/api/image/${id}.enc`).then((r) => r.arrayBuffer()),
       ]);
 

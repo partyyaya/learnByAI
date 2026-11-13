@@ -123,10 +123,10 @@ class G1ConfirmLandingTest {
 
 | 做不到的事 | 為什麼 |
 |---|---|
-| ❌ `@Transactional` | 這條執行緒上沒有交易上下文，標註等於沒寫 |
+| ⚠️ 沿用呼叫端交易 | 交易上下文不跨執行緒；若呼叫另一顆交易 bean，會開它自己的交易，不能與 Pump 原交易混用 |
 | ❌ 讀 `ThreadLocal`（含 MDC 裡的 `traceId`） | 那是呼叫端執行緒的東西，**這裡是空的**（10 章處理） |
 | ❌ 讀 `RequestContextHolder` / `SecurityContextHolder` | 同上 |
-| ⚠️ 做很慢的事（呼叫 API、寫一筆同步的 DB） | callback 跑在**連線的 I/O 執行緒**上（看那個執行緒名字），卡住它就會拖慢同一條連線上其他訊息的 confirm |
+| ⚠️ 做很慢的事（呼叫 API、寫一筆同步的 DB） | callback 由連線工廠的 executor 執行，通常不是原呼叫執行緒；不要把它視為可以無限阻塞的工作池，卡住它會拖慢後續確認處理 |
 
 ⚠️ **還有一個會讓你第一次就撞牆的限制：一顆 `RabbitTemplate` 只能掛一個 `ConfirmCallback`。**
 
@@ -141,34 +141,21 @@ rabbit.setConfirmCallback(cb2);   // ❌ IllegalStateException:
 或是**每個用途建一顆自己的 `RabbitTemplate`**（本章的測試就是這樣寫的，
 否則兩支測試會互相踩到）。
 
-📌 **callback 裡唯一該做的事是「記一筆」**：
+📌 **本課程 callback 只做觀測，不更新 Outbox 狀態**。例如在既有唯一 callback 中記錄：
 
 ```java
-@Component
-public class ReliablePublisher {
-
-    private final RabbitTemplate rabbit;
-    private final OutboxRepository outbox;          // 02 章那張表
-
-    @PostConstruct
-    void wire() {
-        rabbit.setConfirmCallback((corr, ack, cause) -> {
-            if (corr == null) return;                      // ⚠️ 沒帶 CorrelationData 的訊息，這裡是 null
-            if (ack) {
-                outbox.markSent(corr.getId());             // 一個 UPDATE，很快
-            } else {
-                outbox.markFailed(corr.getId(), cause);    // 留下可以重來的憑據
-            }
-        });
-        rabbit.setReturnsCallback(ret -> {
-            // NO_ROUTE 幾乎一定是設定/程式錯誤，不是暫時性故障 → 要吵醒人
-            log.error("NO_ROUTE exchange={} rk={} replyText={}",
-                    ret.getExchange(), ret.getRoutingKey(), ret.getReplyText());
-            alerting.page("訊息路由不到，這是設定錯誤");
-        });
-    }
-}
+rabbit.setConfirmCallback((corr, ack, cause) -> {
+    if (corr == null) return;
+    log.debug("publish attempt={} ack={} cause={}", corr.getId(), ack, cause);
+});
+rabbit.setReturnsCallback(ret -> log.error("NO_ROUTE exchange={} rk={}",
+        ret.getExchange(), ret.getRoutingKey()));
 ```
+
+02.5.3 的 Pump 等待 future，檢查 ACK 與 return 後，在原交易更新狀態。
+不要直接在 callback 呼叫沒有交易的 `@Modifying` repository；它會丟
+`TransactionRequiredException`。若另做高吞吐非同步 relay，必須重新設計認領租約、
+回呼自己的交易及單一結果狀態機，不能沿用目前 `SKIP LOCKED` 的交易模型。
 
 ⚠️ **`corr == null` 那一行不要省。**
 任何沒有帶 `CorrelationData` 的 `convertAndSend`（例如別人寫的程式、或框架內部送的訊息）
@@ -1859,39 +1846,27 @@ class G9ScaleUpTest {
 ```java
 @Component
 public class ReliablePublisher {
-
-    private final RabbitTemplate rabbit;
-    private final OutboxRepository outbox;
-
-    /** 02 章的輪詢器呼叫這個 */
+    private final ConfirmedRabbitSender sender; // import com.example.lab11.messaging.ConfirmedRabbitSender
+    public ReliablePublisher(ConfirmedRabbitSender sender) { this.sender=sender; }
     public void publish(OutboxMessage msg) {
-        CorrelationData corr = new CorrelationData(msg.getId().toString());
-        rabbit.convertAndSend(msg.getExchange(), msg.getRoutingKey(), msg.getPayload(), corr);
-        // 不在這裡等 —— 等的事情交給 callback，輪詢器可以繼續送下一批
-    }
-
-    @PostConstruct
-    void wire() {
-        rabbit.setConfirmCallback((corr, ack, cause) -> {
-            if (corr == null) return;                        // ⚠️ 5.2.1
-            if (ack) outbox.markSent(corr.getId());
-            else     outbox.markFailed(corr.getId(), cause); // 會被輪詢器撿回來重送
-        });
-        rabbit.setReturnsCallback(ret -> {
-            // ⚠️ NO_ROUTE 是設定錯誤，重試一萬次也一樣 → 標成「需要人介入」
-            outbox.markUnroutable(extractId(ret), ret.getReplyText());
-            alerting.page("訊息路由不到：" + ret.getExchange() + " / " + ret.getRoutingKey());
-        });
+        sender.sendJson(msg.getId(), "order.x", msg.getEventType(), msg.getPayload());
     }
 }
 ```
 
-📌 **`markFailed` 與 `markUnroutable` 是兩張不同的臉**：
+02.5.3 的 Pump 可將 `sender.sendJson(...)` 換成 `publisher.publish(m)`；
+**ACK 且沒有 return 才回傳**，Pump 再於同一交易 `markSent`。
+這是背景輪詢器的有界等待，HTTP 仍只寫 Outbox。
 
-| | 下一步 | 為什麼 |
-|---|---|---|
-| `markFailed`（nack） | **等 `next_retry_at` 到了重送** | 暫時性故障（broker 忙、佇列滿） |
-| `markUnroutable`（return） | **不要重送，叫人來看** | 設定錯誤，重送只會變成 [00 章 0.5.2](./00-course-map-why-message-queue.md) 的風暴 |
+| 發送結果 | Pump 的處理 |
+|---|---|
+| ACK，沒有 return | `markSent` |
+| return / NO_ROUTE | `markUnroutable`，修正路由後人工重設 PENDING |
+| nack / 逾時 / 斷線 | `markRetry`，達 5 次轉 FAILED；逾時可能重複，沿用 eventId |
+
+`CorrelationData.id` 只識別一次發送嘗試，不會自動變成 AMQP `messageId`。
+共用 sender 明確將 `messageId` 設為 Outbox ID；JSON 字串用 raw Message 傳送，
+避免被 Jackson 再編碼成帶引號的 JSON string。
 
 ⚠️ **這份設定還缺最後一塊**：
 `acknowledge-mode: auto` + `default-requeue-rejected: false` 目前的效果是
@@ -2077,13 +2052,13 @@ public class ReliablePublisher {
 **記錄每一種的回收時間**（0 那一次請設一個 10 分鐘的上限，然後記錄「沒回來」）。
 然後回答：你的正式環境該設多少？寫下你的理由與你願意接受的最壞情況。
 
-**練習七（進階，40 分鐘）**：把 5.2 的 `ReliablePublisher` 接上
+**練習七（進階，40 分鐘）**：把 5.8 的 `ReliablePublisher` 接上
 [02 章](./02-outbox-and-transactional-consistency.md) 的 Outbox，做一個端到端驗證：
 
 1. 輪詢器送 1,000 則，其中 100 則的 routing key 是錯的。
-2. **驗證**：`markSent` 900 筆、`markUnroutable` 100 筆、`markFailed` 0 筆。
+2. **驗證**：`markSent` 900 筆、`markUnroutable` 100 筆、`markRetry` 0 次。
 3. 然後在送到一半時 `docker stop rabbit-lab`，10 秒後 `docker start`。
-4. **記錄**：有幾則進了 `markFailed`、重送之後最終有幾則成功。
+4. **記錄**：有幾則執行了 `markRetry`、重送之後最終有幾則成功。
 5. **最後對帳**：broker 上收到的總數 **≥ 900**，且資料庫裡 `PENDING` 的筆數是 **0**。
 
 **練習八（綜合，60 分鐘）**：做一份「消費者健康檢查」腳本，

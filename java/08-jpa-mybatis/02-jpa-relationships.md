@@ -1995,9 +1995,9 @@ OrderItem(UUID id, Order order, Product product, int qty) {
 📌 **2.3.4 之所以用 setter 版，是因為要示範「少寫一行會怎樣」**——
 **正式的設計應該用建構子版，讓那一行不可能被少寫。**
 
-### 2.12.2 缺口一：`Order` 少了 `removeItem`
+### 2.12.2 `removeItem`：孤兒刪除仍須維持折扣不變量
 
-2.6.3 那段 diff 的程式碼呼叫了 `o::removeItem`，**而 01 章 1.16.5 沒有這個方法**。補上：
+2.6.3 的 diff 呼叫 `o::removeItem`；沿用 01 章的完整方法，移除前也要檢查折扣不超過剩餘總額。6.11 加入庫存後，服務層還必須在同一交易釋放該筆預扣：
 
 ```java
     /**
@@ -2007,10 +2007,17 @@ OrderItem(UUID id, Order order, Product product, int qty) {
      */
     public void removeItem(OrderItem item) {
         requireStatus(OrderStatus.PENDING, "只有 PENDING 的訂單可以移除明細");
-        if (items.remove(item)) {
-            totalAmount = totalAmount.subtract(item.getLineAmount());
+        // 先取真正屬於此聚合的明細；不能用外部同 id 物件的金額計算。
+        OrderItem stored = items.stream().filter(i -> i.equals(item)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("明細不屬於此訂單"));
+        BigDecimal remaining = totalAmount.subtract(stored.getLineAmount());
+        if (discountAmount.compareTo(remaining) > 0) {
+            throw new IllegalStateException("移除後折扣會超過總額，請先調整折扣");
         }
+        items.remove(stored);
+        totalAmount = remaining;
     }
+
 ```
 
 ⚠️ **注意註解裡那句「不需要 `item.setOrder(null)`」**——這跟 2.3.4 的 `removeItem` 不一樣。

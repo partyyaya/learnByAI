@@ -2,7 +2,7 @@
 
 > **學習目標**：完整實作 XOR 加密的前後端，理解其數學原理、安全邊界與效能特性。
 > **預計時數**：120 分鐘
-> **先備知識**：[[01-image-format-and-magic-number]]、Express 基礎
+> **先備知識**：[第 01 章](./01-image-format-and-magic-number.md)、Express 基礎
 
 > **本章對應專案**
 >
@@ -24,8 +24,8 @@ XOR（互斥或）是密碼學裡最簡單的對稱運算。雖然強度遠不�
 2. **效能極好** — 一個 CPU 指令就能完成
 3. **可以分塊並行** — 容易搬到 WASM、Worker、GPU
 
-更重要的是：**真實線上系統有一半以上的「圖片加密」其實就是 XOR 變種**（包括某些大型漫畫站）。
-學完這章，你就有能力逆向他們，也有能力做出同等水準的方案。
+更重要的是：不少網站的「圖片加密」其實就是 XOR 或它的變形。
+學完這章，你看到這類方案就知道怎麼拆，也清楚它的極限在哪。
 
 ---
 
@@ -60,8 +60,8 @@ plaintext = encrypted ^ k    // 同一個 k 還原
 | 變體 | Key 形式 | 安全度 | 場景 |
 |------|---------|--------|------|
 | 單 byte XOR | `0x5A` | 極弱（256 次窮舉） | demo / 學習 |
-| 多 byte 循環 XOR | `[0x5A, 0x11, 0xAB, ...]` | 弱（可頻率分析破解） | 一般圖片防爬 |
-| 流式 XOR（PRNG 產 key） | 由 seed 產生 keystream | 中（接近 stream cipher） | 對抗 Level 2 對手 |
+| 多 byte 循環 XOR | `[0x5A, 0x11, 0xAB, ...]` | 弱（知道一段明文或做頻率分析就能破） | 一般圖片防爬 |
+| 流式 XOR（PRNG 產 key） | 由 seed 產生 keystream | 弱（簡單 PRNG 可預測，見第 8 節） | 比循環 key 多一道手續 |
 
 本章用第二種（多 byte 循環）作主力。
 
@@ -100,129 +100,131 @@ npm install
 // lib/xor.js
 'use strict';
 
+const crypto = require('crypto');
+
 /**
  * 對整個 buffer 做循環 XOR
  * @param {Buffer | Uint8Array} buf 原始資料
- * @param {Uint8Array} key 任意長度的 key (建議 16-32 byte)
+ * @param {Uint8Array} key 任意長度的 key（建議 16–32 byte）
  * @returns {Buffer}
  */
 function xorBuffer(buf, key) {
   const out = Buffer.alloc(buf.length);
-  const keyLen = key.length;
+  const kl = key.length;
   for (let i = 0; i < buf.length; i++) {
-    out[i] = buf[i] ^ key[i % keyLen];
+    out[i] = buf[i] ^ key[i % kl];
   }
   return out;
 }
 
 /**
- * 產生隨機 key
+ * 產生隨機 key：一定要用密碼學等級的亂數
  */
 function randomKey(byteLen = 32) {
-  const k = Buffer.alloc(byteLen);
-  for (let i = 0; i < byteLen; i++) {
-    k[i] = Math.floor(Math.random() * 256);
-  }
-  return k;
+  return crypto.randomBytes(byteLen);
 }
 
 module.exports = { xorBuffer, randomKey };
 ```
 
+> 不要用 `Math.random()` 產生 key：它的內部狀態只有 128 bit，連續觀察幾個輸出就能推回狀態、算出之後所有的值。Node 用 `crypto.randomBytes()`，瀏覽器用 `crypto.getRandomValues()`。
+
 ### 4.4 `backend/examples/ch02-xor-server.js`
 
-下面是教材精簡版，**完整可跑版本以及檔案註解請看實際檔案** [`backend/examples/ch02-xor-server.js`](./backend/examples/ch02-xor-server.js)。差異是專案版把 meta 存在 `data/encrypted/ch02/_meta.json` 隔離不同章節資料。
-
+下面就是 [`backend/examples/ch02-xor-server.js`](./backend/examples/ch02-xor-server.js) 的全文。meta 存在 `data/encrypted/ch02/_meta.json`，每章的資料各自分開。
 
 ```js
-// server.js
+// 對應章節：Chapter 02 - XOR 全檔加密 demo
+//
+// 跑起來後，前端打開 http://localhost:3000/examples/ch02-xor.html
+'use strict';
+
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
-const { v4: uuidv4 } = require('uuid');
-const { xorBuffer, randomKey } = require('./lib/xor');
+const { v4: uuid } = require('uuid');
+const { xorBuffer, randomKey } = require('../lib/xor');
+
+// 每章的資料各自放一個資料夾，互不干擾
+const ENC_DIR = path.join(__dirname, '..', 'data', 'encrypted', 'ch02');
+fs.mkdirSync(ENC_DIR, { recursive: true });
+
+const META_FILE = path.join(ENC_DIR, '_meta.json');
+const load = () => (fs.existsSync(META_FILE) ? JSON.parse(fs.readFileSync(META_FILE, 'utf-8')) : {});
+const save = (d) => fs.writeFileSync(META_FILE, JSON.stringify(d, null, 2));
+
+// id 只接受 UUID：Express 會把 %2F 解碼成 /，不檢查的話 ..%2F 能讀到資料夾外的檔案
+const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const app = express();
 app.use(cors());
-app.use(express.json());
 
-const ENC_DIR = path.join(__dirname, 'encrypted');
-const META_DB = path.join(__dirname, 'meta.json');
-fs.mkdirSync(ENC_DIR, { recursive: true });
-if (!fs.existsSync(META_DB)) fs.writeFileSync(META_DB, '{}');
+// 前端頁面由這裡一起服務，不用另外起伺服器
+const FRONTEND = path.resolve(__dirname, '..', '..', 'frontend');
+app.use(express.static(FRONTEND));
 
 const upload = multer({ storage: multer.memoryStorage() });
-
-function loadMeta() { return JSON.parse(fs.readFileSync(META_DB, 'utf-8')); }
-function saveMeta(d) { fs.writeFileSync(META_DB, JSON.stringify(d, null, 2)); }
 
 // === 路由 1：上傳並加密 ===
 app.post('/api/upload', upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'no file' });
 
-  const id = uuidv4();
+  const id = uuid();
   const key = randomKey(32);
-  const encrypted = xorBuffer(req.file.buffer, key);
+  const enc = xorBuffer(req.file.buffer, key);
 
-  fs.writeFileSync(path.join(ENC_DIR, `${id}.enc`), encrypted);
+  fs.writeFileSync(path.join(ENC_DIR, `${id}.enc`), enc);
 
-  // 把這張圖的「描述資訊」記到 meta 裡，給後續的解密 API 用
-  const meta = loadMeta();
+  // 把這張圖的「描述資訊」記到 meta 裡，給後續的 key API 用
+  const meta = load();
   meta[id] = {
-    id,                             // 跟 .enc 檔名一致，前端用它對應到密文檔
-    mime: req.file.mimetype,        // 原圖的 MIME（image/jpeg、image/png…）
-                                    // 前端解密後要靠它建 Blob，不存的話 <img> 不會顯示
-    size: req.file.size,            // 原圖大小（byte），只是給 debug / 前端顯示用
-    keyHex: key.toString('hex'),    // ⚠️ 這張圖的 XOR key（hex 字串）
-                                    // demo 用「明文存進 JSON」很方便，但正式環境千萬不能這樣：
-                                    //   1) DB 被脫庫 = 所有圖一次解密
-                                    //   2) 應該用 master key 加密後再存（[[04-aes-with-webcrypto]] 的 wrapKey）
-                                    //   3) 或丟 KMS / Vault，code 只拿 reference
-    createdAt: Date.now(),          // 建立時間戳（毫秒），用來做過期、排序、稽核
+    id,                           // 跟 .enc 檔名一致，前端用它對應到密文檔
+    mime: req.file.mimetype,      // 原圖的 MIME，前端解密後要靠它建 Blob
+    size: req.file.size,          // 原圖大小（byte），給 debug / 前端顯示用
+    keyHex: key.toString('hex'),  // ⚠️ 這張圖的 XOR key
+                                  // demo 直接存明文很方便，正式環境不能這樣：
+                                  //   1) 資料庫外洩 = 所有圖一次解密
+                                  //   2) 應該用 master key 包裝後再存（第 04 章的 wrapKey）
+                                  //   3) 或交給 KMS / Vault，程式只拿 reference
+    createdAt: Date.now(),        // 建立時間（毫秒），用來做過期、排序、稽核
   };
-  saveMeta(meta);
-  // saveMeta 把整個 meta 物件寫回 meta.json
-  // demo 簡化成「整檔重寫」，圖很多時應換成 SQLite（見 backend/db.js）
+  save(meta);
+  // demo 簡化成「整檔重寫 JSON」，圖很多時應換成資料庫（見 backend/db.js）
 
   res.json({ id, size: req.file.size });
 });
 
 // === 路由 2：取得加密圖檔 ===
 app.get('/api/image/:id.enc', (req, res) => {
+  if (!ID_RE.test(req.params.id)) return res.status(404).end();
   const file = path.join(ENC_DIR, `${req.params.id}.enc`);
   if (!fs.existsSync(file)) return res.status(404).end();
-  // 重點：用 octet-stream，並關閉嗅探
+  // 用 octet-stream 並關閉嗅探：這是「告訴瀏覽器別當圖片處理」，真正的保護來自 byte 已經被 XOR
   res.set('Content-Type', 'application/octet-stream');
   res.set('X-Content-Type-Options', 'nosniff');
-  res.send(fs.readFileSync(file));
+  fs.createReadStream(file).pipe(res);
 });
 
-// === 路由 3：取 key（簡化：應該要做 token 驗證）===
+// === 路由 3：取 key（簡化：只檢查有沒有 Bearer token）===
 app.get('/api/image/:id/key', (req, res) => {
-  // 真實系統：req.headers.authorization 拆出 JWT → 確認權限
-  const userToken = req.headers.authorization;
-  if (!userToken || !userToken.startsWith('Bearer ')) {
+  // 真實系統：從 Authorization 拆出 JWT、驗證簽章、確認這個人有權看這張圖（第 07 章）
+  const auth = req.headers.authorization || '';
+  if (!auth.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'unauthorized' });
   }
 
-  const meta = loadMeta();
-  const m = meta[req.params.id];
+  const m = load()[req.params.id];
   if (!m) return res.status(404).end();
-
-  res.json({
-    keyHex: m.keyHex,
-    mime: m.mime,
-    size: m.size,
-  });
+  res.set('Cache-Control', 'no-store');
+  res.json({ keyHex: m.keyHex, mime: m.mime, size: m.size });
 });
 
-// === 簡易靜態頁面 ===
-app.use(express.static('public'));
-
-app.listen(3000, () => console.log('http://localhost:3000'));
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`[Ch02 XOR] http://localhost:${PORT}/examples/ch02-xor.html`);
+});
 ```
 
 ### 4.5 測試後端
@@ -293,7 +295,7 @@ curl -H "Authorization: Bearer dummy-token" \
 
 ### 5.2 解密邏輯（在 HTML 內 `<script>` 區塊）
 
-專案版本把 JS 寫進 HTML 同檔，方便 `file://` 也能開。教學版抽出來看更清楚：
+專案版本把 JS 直接寫在 HTML 裡，少一個檔案。這裡抽出來看比較清楚：
 
 ```js
 // 等同於 ch02-xor.html 的 <script> 區塊
@@ -370,10 +372,8 @@ function xorBytes(buf, key) {
 async function bench() {
   // 模擬不同大小
   for (const sizeMB of [0.5, 1, 5, 10, 20]) {
-    const bytes = new Uint8Array(sizeMB * 1024 * 1024);
-    crypto.getRandomValues(bytes);
-    const key = new Uint8Array(32);
-    crypto.getRandomValues(key);
+    const bytes = randomBytes(sizeMB * 1024 * 1024);
+    const key = randomBytes(32);
 
     const t0 = performance.now();
     xorBytes(bytes, key);
@@ -381,20 +381,48 @@ async function bench() {
     console.log(`${sizeMB}MB: ${(t1 - t0).toFixed(1)} ms (${(sizeMB / (t1 - t0) * 1000).toFixed(0)} MB/s)`);
   }
 }
+
+// crypto.getRandomValues() 一次最多只能填 65,536 byte，超過會丟 QuotaExceededError，要分段填
+function randomBytes(n) {
+  const out = new Uint8Array(n);
+  for (let off = 0; off < n; off += 65536) {
+    crypto.getRandomValues(out.subarray(off, Math.min(n, off + 65536)));
+  }
+  return out;
+}
 ```
 
-在 M1 MacBook + Chrome 120 上的實測：
+在 Apple M2 + Edge 157（Chromium）上實測（取中位數）：
 
-| 圖片大小 | 純 JS 耗時 | 吞吐 |
-|---------|-----------|------|
-| 0.5 MB | ~3 ms | 167 MB/s |
-| 1 MB | ~6 ms | 167 MB/s |
-| 5 MB | ~30 ms | 167 MB/s |
-| 10 MB | ~60 ms | 167 MB/s |
-| 20 MB | ~120 ms | 167 MB/s |
+| 圖片大小 | 上面的 `xorBytes` | 吞吐 |
+|---------|-----------------|------|
+| 1 MB | ~1.7 ms | ~590 MB/s |
+| 5 MB | ~9.3 ms | ~540 MB/s |
+| 10 MB | ~17 ms | ~575 MB/s |
+| 20 MB | ~36 ms | ~555 MB/s |
 
-> 在 60 fps 的瀏覽器裡，**16ms 是一幀的預算**。大於 5MB 的圖就明顯卡頓。
-> 這就是為什麼後面要搬到 WASM。
+> 在 60 fps 的瀏覽器裡，**16ms 是一幀的預算**。10MB 以上的圖，或一次解很多張，就會占掉好幾幀，畫面卡頓。
+> 手機 CPU 慢上好幾倍，門檻會更低。
+
+兩個便宜的改法：
+
+1. **一次處理 4 byte**：`i % kLen` 的除法是迴圈裡最貴的部分。key 長度是 4 的倍數時，用 `Uint32Array` 一次 XOR 4 byte、用 `& 7` 取代 `% 32`，同一台機器上 5MB 只要 ~1.5 ms。
+2. **搬到 Web Worker**：解密不在主執行緒做，就不會卡畫面。解完用 `postMessage(buf, [buf.buffer])` 把結果「轉移」回主執行緒，不用複製。
+
+```js
+// 一次處理 4 byte（key 長度須為 4 的倍數，例如 32）
+function xorBytes32(buf, key) {
+  const out = new Uint8Array(buf.length);
+  const n = buf.length >> 2;
+  const b = new Uint32Array(buf.buffer, buf.byteOffset, n);   // buf.byteOffset 要是 4 的倍數
+  const o = new Uint32Array(out.buffer, 0, n);
+  const k = new Uint32Array(key.buffer, key.byteOffset, key.length >> 2);
+  const mask = k.length - 1;                                   // key 32 byte → 8 個 uint32 → mask 7
+  for (let i = 0; i < n; i++) o[i] = b[i] ^ k[i & mask];
+  for (let i = n << 2; i < buf.length; i++) out[i] = buf[i] ^ key[i % key.length];  // 尾巴不足 4 byte
+  return out;
+}
+```
 
 ---
 
@@ -404,7 +432,7 @@ async function bench() {
 
 ### 攻擊 1：known-plaintext attack
 
-對手知道「這是 JPEG」，所以前 4 byte 必然是 `FF D8 FF E0`。
+對手知道「這是 JPEG」，所以前 3 byte 一定是 `FF D8 FF`，第 4 byte 通常是 `E0`（JFIF）或 `E1`（Exif）。
 
 ```text
 key[0..4] = enc[0..4] XOR (FF D8 FF E0)
@@ -432,18 +460,28 @@ JPEG 內部有大量 padding 與 `0x00`，對手可用統計分析推測 key。
 
 ### 改進 1：用 PRNG 產生長 keystream
 
-不直接循環使用 key，而是用 key 作 seed 產生與檔案等長的 keystream：
+不直接循環使用 key，而是用 key 作 seed 產生與檔案等長的 keystream。概念是這樣，但**亂數產生器選錯，等於沒改進**。
+最常見的反例是教科書上的線性同餘產生器（LCG）：
 
 ```js
-// 簡化版（真實要用 ChaCha20 之類）
+// ❌ 反例：LCG 不能拿來產生 keystream
 function* keystream(seed) {
   let s = seed;
   while (true) {
-    s = (s * 1103515245 + 12345) & 0x7FFFFFFF;
+    s = (Math.imul(s, 1103515245) + 12345) & 0x7FFFFFFF;   // 用 Math.imul 做 32 bit 整數乘法
     yield s & 0xFF;
   }
 }
 ```
+
+這段有兩個問題：
+
+- **可預測**：seed 只有 31 bit，對手用 JPEG 固定的開頭（已知明文）就能暴力找回 seed，之後整條 keystream 都算得出來。
+- **週期很短**：模數是 2 的次方時，低 8 bit 每 256 個輸出就重複一次——等於一把 256 byte 的循環 key。
+
+順帶一提，如果把 `Math.imul(s, 1103515245)` 寫成 `s * 1103515245`，乘積最大約 2^61，超過 JS 數字（double）能精確表示的 2^53，算出來的就不是 LCG；之後搬到 Rust / WASM 時，兩邊的 keystream 會對不起來。
+
+真的要「由 key 產生 keystream」，直接用 **AES-CTR**（第 03 章）或 ChaCha20：它們就是設計來做這件事的 stream cipher。
 
 ### 改進 2：每張圖獨立 key
 
@@ -453,9 +491,11 @@ function* keystream(seed) {
 
 key 一半從伺服器拿、一半從 URL 拿、再用 HMAC 合成。對手必須同時拿到兩半。
 
+> 兩半最後都會出現在瀏覽器裡，這只是讓對手多一道手續，不是真正的保護。
+
 ### 改進 4：把解密邏輯搬到 WASM
 
-純 JS 容易被 hook，搬到 WASM 後可大幅提高逆向成本。詳見 [[06-wasm-decryption-in-browser]]。
+純 JS 一設斷點就看懂流程；搬到 WASM 後要讀 wasm 指令才看得懂。但如果 key 是以明文從 API 拿到的，對手根本不需要看懂流程——詳見 [第 06 章](./06-wasm-decryption-in-browser.md)。
 
 ---
 
@@ -473,10 +513,11 @@ key 一半從伺服器拿、一半從 URL 拿、再用 HMAC 合成。對手必�
 ## 10 本章重點回顧
 
 - XOR 是 `a ^ k ^ k = a`，加密解密用同一個函式。
-- 三種變體：單 byte、循環、流式。生產用「循環 + 32 byte key」。
-- 純 JS XOR 吞吐約 150–200 MB/s，5MB 以上的圖會卡幀。
+- 三種變體：單 byte、循環、流式。本章示範「循環 + 32 byte key」；簡單 PRNG 的流式 XOR 並不比它安全。
+- key 要用 `crypto.randomBytes()` / `crypto.getRandomValues()` 產生，不能用 `Math.random()`。
+- 純 JS XOR 在 M2 上約 550 MB/s，10MB 以上或一次解多張會卡幀；改成一次處理 4 byte、或搬到 Worker 都能解決。
 - **XOR 不是真正安全**，只能擋 Level 0–1 對手，真要強加密用 AES。
-- 強化方向：PRNG keystream、每圖獨立 key、key 拆分、搬到 WASM。
+- 強化方向：每圖獨立 key、改用 AES-CTR 產生 keystream、搬到 WASM（前提是 key 不以明文經過 JS）。
 
 ---
 

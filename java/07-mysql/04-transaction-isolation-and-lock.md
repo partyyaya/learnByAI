@@ -1887,9 +1887,13 @@ ORDER BY id
 LIMIT 20
 FOR UPDATE SKIP LOCKED;
 -- … 處理 …
-UPDATE outbox_message SET status = 'SENT' WHERE id IN (...);
+UPDATE outbox_message
+SET status = 'PUBLISHED', published_at = CURRENT_TIMESTAMP(3)
+WHERE id IN (:ids) AND status = 'PENDING';
 COMMIT;
 ```
+
+本例 `:ids` 是前一個 SELECT 領取的 id，由 JDBC 綁定；狀態沿用 01 章 schema 的 PUBLISHED。這裡示範鎖與狀態轉移，外部投遞及失敗重試仍須採至少一次／冪等設計。
 
 ⚠️ **`SKIP LOCKED` 會讓你的查詢變成「不確定的」** ——
 同一句話在不同時刻回傳不同的列。**不要用在需要精確結果的地方**
@@ -3054,8 +3058,10 @@ class OrderService {
 | `1205` Lock wait timeout | `CannotAcquireLockException` | ✅（見下方 ⚠️） |
 | 樂觀鎖 `version` 不符（你自己丟） | `OptimisticLockingFailureException` | ✅ |
 | `1062` Duplicate entry | `DuplicateKeyException` | 🔴 **不要重試**（重試幾次都一樣） |
-| `3819` Check constraint violated | `DataIntegrityViolationException` | 🔴 不要重試 |
+| `3819` Check constraint violated | 回歸基線 Spring JDBC 6.1.14／Connector/J 8.3.0 預設為 `UncategorizedSQLException`（SQLState HY000） | 🔴 不要重試 |
 | `1452` FK constraint fails | `DataIntegrityViolationException` | 🔴 不要重試 |
+
+錯誤碼與 Spring 例外不是一對一固定對照。上表 3819 是 verification/ 指定版本的預設 JdbcTemplate 翻譯路徑實測，不代表所有章節提及的 Spring 版本都已重測；若專案使用自訂 SQLExceptionTranslator，結果可能不同。需要統一完整性例外時，應明確配置 translator 並測試 3819，不要以 H2 或其他 SQLState 的結果推論。
 
 ⚠️ **`1205` 可以重試，但要小心**：它代表「有人的交易開太久」，
 盲目重試只會**加劇**擁塞。看到大量 `1205` 應該先去查 4.3.9 的長交易，而不是加大重試次數。
@@ -3366,7 +3372,7 @@ public class PlaceOrderService {
      * 下單交易。設計決策：
      *  1. 交易【只包】資料庫操作 —— 金流、通知都在交易外（4.7.6）
      *  2. 明細一律按 productId 排序後處理 —— 消滅加鎖順序死鎖（4.6.3 模式一）
-     *  3. 扣庫存用【原子 UPDATE + 條件】—— 消滅更新遺失（4.7.2 寫法 ③）
+     *  3. 預扣用【原子 UPDATE + 可用量條件】—— 消滅更新遺失（4.7.2 寫法 ③）
      *  4. 冪等鍵用唯一索引擋重複 —— 不做「先查再插」（4.6.3 模式二）
      *  5. 不用 SELECT ... FOR UPDATE —— 沒有需要「讀出來算」的邏輯
      *  6. 交易外層一定有重試 —— 4.8.2 證明死鎖消不掉
@@ -3388,13 +3394,13 @@ public class PlaceOrderService {
                 .sorted(Comparator.comparing(OrderLine::productId))
                 .toList();
 
-        // ③ 逐筆扣庫存：一句話完成「檢查 + 扣減」
+        // ③ 逐筆預扣：cmd 已由領域層驗證 qty > 0，這裡原子檢查可用量
         for (OrderLine line : lines) {
             int affected = jdbc.update("""
                     UPDATE stock
-                       SET qty = qty - ?, version = version + 1
+                       SET reserved_qty = reserved_qty + ?, version = version + 1
                      WHERE product_id = ?
-                       AND qty >= ?
+                       AND qty - reserved_qty >= ?
                     """, line.qty(), line.productId(), line.qty());
             if (affected == 0) {
                 // 不是例外情況，是正常的業務結果 → 用明確的業務例外
@@ -3406,6 +3412,10 @@ public class PlaceOrderService {
     }
 }
 ```
+
+這裡已切回 01 章完整模型：`qty` 是總庫存，`reserved_qty` 是已預扣未出貨，可用量為兩者之差。下單增加預扣；出貨時應在同一句條件 UPDATE 同時減少 qty 與 reserved_qty，取消則釋放預扣。前面的「單欄 qty」實驗只用來比較併發寫法，不能直接替換這個模型。
+
+例如 qty=10、reserved_qty=8，預扣 3 應影響 0 列並走 InsufficientStockException；預扣 2 成功後是 qty=10、reserved_qty=10，不會撞 `reserved_qty <= qty` 的 CHECK。
 
 **外層（重試 + 交易外的動作）**：
 
@@ -3443,7 +3453,7 @@ public class PlaceOrderFacade {
 |---|---|---|
 | 交易只包 DB 操作 | 150 ms 的 API 讓 20% 的請求連不上 DB | 4.7.6 |
 | 明細按 `productId` 排序 | 死鎖從 4～11 次降到 0 | 4.8.1 ①→② |
-| 原子 `UPDATE ... AND qty >= ?` | 讀-改-寫扣 60 件只扣掉 3 件 | 4.8.1 ②→④ |
+| 原子 `UPDATE ... AND qty - reserved_qty >= ?` | 讀-改-寫扣 60 件只扣掉 3 件 | 4.8.1 ②→④ |
 | 冪等鍵直接插、接 `1062` | 「先查再插」= 間隙鎖死鎖 | 4.6.3 模式二 |
 | `timeout = 5` | 預設 `innodb_lock_wait_timeout` 是 50 秒 | 4.6.4 |
 | `rollbackFor = Exception.class` | checked exception 預設不回滾 | 4.7.1 P2 |

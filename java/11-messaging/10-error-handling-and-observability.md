@@ -392,7 +392,14 @@ TimeoutException: Topic ch10.pm72645b.v1.DLT not present in metadata after 10000
 > 📌 **兩個結論**：
 > **①** DLT 的分區數**建得跟原 topic 一樣**，不要靠自動建立。
 > **②** 自己寫的重建 / 重放工具要傳 consumer 進去，或者自己
-> `setPartitionResolver((rec, ex) -> null)` 明確放棄分區對應。
+> Spring Kafka 3.1.4 沒有 `setPartitionResolver`。請在 constructor 傳 destination resolver：
+>
+> ```java
+> new DeadLetterPublishingRecoverer(template,
+>         (rec, ex) -> new TopicPartition(rec.topic()+".DLT", -1));
+> ```
+>
+> -1 表示不指定目標分區，由 producer 決定；不是傳回 null（那代表不提供目的地）。
 
 ### 10.2.4 `@RetryableTopic`：重試主題階梯 ★★★
 
@@ -536,7 +543,7 @@ class L3RetryTopicTest {
 
 ```java
 @Bean
-public RetryTopicConfiguration retryTopics(KafkaTemplate<String, Object> template) {
+public RetryTopicConfiguration retryTopics(KafkaTemplate<Object, Object> template) {
     return RetryTopicConfigurationBuilder.newInstance()
             .exponentialBackoff(1000, 2, 8000)
             .maxAttempts(4)
@@ -844,21 +851,14 @@ Caused by: ClassCastException: class [B cannot be cast to class java.lang.String
 死信送不出去 → 位移不能前進 → **又一個迴圈，這次是每秒 9.7 次**。
 比 ① 慢了 1,500 倍，但一樣永遠不會結束。
 
-**④ 正解**：給 recoverer 一份「依 value 型別挑 template」的對照表。
+**④ 正解**：讓 producer 能同時序列化正常 DTO 與反序列化失敗的原始 `byte[]`。
+10.7.1 的成品使用一顆 `KafkaTemplate<Object,Object>`，搭配 `DelegatingByTypeSerializer`：
+byte[] 原樣輸出，其餘物件用 JsonSerializer。這樣不會因額外建立 bytes template，
+觸發 Boot 的 `@ConditionalOnMissingBean(KafkaTemplate.class)`，讓主要 template 消失。
 
-```java
-@Bean
-public DeadLetterPublishingRecoverer recoverer(KafkaTemplate<String, String> text,
-                                               KafkaTemplate<Object, Object> bytes) {
-    return new DeadLetterPublishingRecoverer(Map.of(
-            byte[].class, bytes,       // ← 反序列化失敗時走這一顆
-            String.class, text));
-}
-```
-
-`bytes` 那一顆的 `value.serializer` 是 `ByteArraySerializer`。
-⚠️ **兩顆 template 都要有**，因為「listener 丟例外」與「反序列化失敗」
-兩條路徑上的 value 型別不一樣。
+若採兩顆 template，必須自行宣告**全部** factory／template，明確命名與 qualifier，
+並註冊兩顆 producer factory 的生命週期；不能假設 Boot 還會補一顆。
+舊的 StringSerializer 實驗仍只適合文字，不可拿來處理 DTO 或 byte[] 死信。
 
 **⑤ 最後一行是回到 10.2.0 的閉環**：
 
@@ -963,38 +963,8 @@ DefaultErrorHandler errorHandler(DeadLetterPublishingRecoverer recoverer) {
 
 ### 10.2.9 本節建議的設定
 
-```java
-@Configuration
-class KafkaErrorHandling {
-
-    /** 送 byte[] 的 template：給反序列化失敗那條路徑用（10.2.6 ④） */
-    @Bean
-    KafkaTemplate<Object, Object> bytesKafkaTemplate(KafkaProperties props) {
-        Map<String, Object> cfg = new HashMap<>(props.buildProducerProperties(null));
-        cfg.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(cfg));
-    }
-
-    @Bean
-    DeadLetterPublishingRecoverer recoverer(KafkaTemplate<String, String> text,
-                                            KafkaTemplate<Object, Object> bytes) {
-        return new DeadLetterPublishingRecoverer(Map.of(byte[].class, bytes, String.class, text));
-    }
-
-    @Bean
-    DefaultErrorHandler errorHandler(DeadLetterPublishingRecoverer recoverer) {
-        // ⚠️ 預設是 FixedBackOff(0, 9)（10.2.0）—— 明確寫出來
-        // ⚠️ 這個類別在 org.springframework.kafka.support，不是 util.backoff（10.2.7）
-        var backOff = new ExponentialBackOffWithMaxRetries(3);
-        backOff.setInitialInterval(1000);
-        backOff.setMultiplier(2.0);
-        backOff.setMaxInterval(8000);
-        var handler = new DefaultErrorHandler(recoverer, backOff);
-        handler.addNotRetryableExceptions(IllegalArgumentException.class);
-        return handler;
-    }
-}
-```
+請直接使用 10.7.1 的 `KafkaReliabilityConfig`，不要另外宣告第二個 error handler 或 template。
+它涵蓋 bytes／DTO serializer、有限退避與 DLT 發送失敗傳播。消費端至少需要：
 
 ```yaml
 spring:
@@ -1004,7 +974,8 @@ spring:
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
-        spring.json.trusted.packages: com.example.events
+        spring.json.trusted.packages: com.example.lab11.events
+        spring.json.value.default.type: com.example.lab11.events.OrderCreatedEvent
 ```
 
 📌 **`@RetryableTopic` 與 `DefaultErrorHandler` 兩者只挑一個**：
@@ -1114,11 +1085,13 @@ rabbit.convertAndSend("", Q, "ORD-9527", m -> {
 
 ```java
 @Bean
-RabbitTemplate tracedRabbitTemplate(ConnectionFactory cf) {
-    RabbitTemplate t = new RabbitTemplate(cf);
+RabbitTemplate tracedRabbitTemplate(RabbitTemplateConfigurer configurer, ConnectionFactory cf) {
+    RabbitTemplate t = new RabbitTemplate();
+    configurer.configure(t, cf); // 保留 mandatory、converter、timeout 等 Boot 設定
     t.setBeforePublishPostProcessors(m -> {
         String id = MDC.get(TRACE);
-        if (id != null) m.getMessageProperties().setHeader(HDR, id);
+        if (id != null && m.getMessageProperties().getHeader(HDR)==null)
+            m.getMessageProperties().setHeader(HDR, id);
         return m;
     });
     return t;
@@ -1425,8 +1398,9 @@ spring:
 
 ```java
 // ⚠️ RabbitMQ 這一側沒有對應的設定項，要用程式
-@Bean RabbitTemplate rabbitTemplate(ConnectionFactory cf) {
-    var t = new RabbitTemplate(cf);
+@Bean RabbitTemplate rabbitTemplate(RabbitTemplateConfigurer configurer, ConnectionFactory cf) {
+    var t = new RabbitTemplate();
+    configurer.configure(t, cf);
     t.setObservationEnabled(true);
     return t;
 }
@@ -2179,62 +2153,88 @@ Testcontainers 的容器**跑完就沒了**。
 
 ### 10.7.1 Kafka 這一側
 
+這份是**非交易 listener** 的 DLT 範例；不要設定 09 章 EOS 的 transaction-id-prefix。
+交易 listener 失敗需要回滾與 AfterRollbackProcessor，請用獨立設定／profile。
+正常 producer 注入 `KafkaTemplate<Object,Object>`（07 章成品已一致）；key 仍要求 String，
+value 可為 DTO 或 byte[]，已編碼 JSON 請用 bytes，不能當 String 再次序列化。
+producer factory 是受 Spring 管理的獨立 bean，關閉 context 時會釋放 producer。
+
 ```java
+package com.example.lab11.messaging;
+
+import java.util.*;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import org.springframework.context.annotation.*;
+import org.springframework.boot.autoconfigure.kafka.KafkaProperties;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.common.serialization.*;
+import org.springframework.kafka.core.*;
+import org.springframework.kafka.listener.*;
+import org.springframework.kafka.support.ExponentialBackOffWithMaxRetries;
+import org.springframework.kafka.support.serializer.*;
+import org.apache.kafka.clients.consumer.*;
+import org.apache.kafka.common.header.*;
+import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.slf4j.MDC;
+
 @Configuration
-class KafkaReliabilityConfig {
-
-    /** ① 送 byte[] 的 template：給反序列化失敗那條路徑用（10.2.6 ④） */
+public class KafkaReliabilityConfig {
     @Bean
-    KafkaTemplate<Object, Object> bytesKafkaTemplate(KafkaProperties props) {
-        Map<String, Object> cfg = new HashMap<>(props.buildProducerProperties(null));
-        cfg.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(cfg));
+    ProducerFactory<Object,Object> kafkaProducerFactory(KafkaProperties props) {
+        Map<String,Object> cfg=new HashMap<>(props.buildProducerProperties(null));
+        cfg.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
+        Map<Class<?>,Serializer<?>> delegates=new LinkedHashMap<>();
+        delegates.put(byte[].class, new ByteArraySerializer()); // 先匹配原始 bytes
+        delegates.put(Object.class, new JsonSerializer<>());
+        return new DefaultKafkaProducerFactory<>(cfg, null, new DelegatingByTypeSerializer(delegates, true));
     }
-
-    /** ② 死信：兩種 value 型別各一顆 template */
     @Bean
-    DeadLetterPublishingRecoverer recoverer(KafkaTemplate<String, String> text,
-                                            KafkaTemplate<Object, Object> bytes) {
-        var r = new DeadLetterPublishingRecoverer(Map.of(byte[].class, bytes, String.class, text));
-        r.setHeadersFunction((rec, ex) -> {          // ③ 死信上多帶一個「第幾次」
-            Headers h = new RecordHeaders(rec.headers().toArray());
-            h.add("X-Replay-Count", "0".getBytes(UTF_8));
-            return h;
+    KafkaTemplate<Object,Object> kafkaTemplate(ProducerFactory<Object,Object> factory, KafkaProperties props) {
+        KafkaTemplate<Object,Object> template=new KafkaTemplate<>(factory);
+        template.setObservationEnabled(props.getTemplate().isObservationEnabled());
+        return template;
+    }
+    @Bean
+    DeadLetterPublishingRecoverer recoverer(KafkaTemplate<Object,Object> template) {
+        var r=new DeadLetterPublishingRecoverer(template); // 預設 .DLT、相同分區
+        r.setFailIfSendResultIsError(true); // DLT 失敗必須向外拋，不能提交來源 offset
+        r.setHeadersFunction((rec, ex) -> {
+            Headers extra=new RecordHeaders(); // 只回傳額外 header；框架會保留原 headers
+            if (rec.headers().lastHeader("X-Replay-Count")==null)
+                extra.add("X-Replay-Count", "0".getBytes(UTF_8));
+            return extra; // 不覆蓋人工重放帶入的 1、2、3...
         });
         return r;
     }
-
-    /** ④ 退避：預設是 FixedBackOff(0, 9)（10.2.0），明確覆寫掉 */
     @Bean
     DefaultErrorHandler errorHandler(DeadLetterPublishingRecoverer recoverer) {
-        var backOff = new ExponentialBackOffWithMaxRetries(3);
+        var backOff=new ExponentialBackOffWithMaxRetries(3);
         backOff.setInitialInterval(1000);
         backOff.setMultiplier(2.0);
         backOff.setMaxInterval(8000);
-        var handler = new DefaultErrorHandler(recoverer, backOff);
-        handler.addNotRetryableExceptions(          // ⑤ 重試不會變好的，直接進死信
-                IllegalArgumentException.class,
-                OrderNotFoundException.class);
+        var handler=new DefaultErrorHandler(recoverer, backOff);
+        handler.addNotRetryableExceptions(IllegalArgumentException.class);
         return handler;
     }
-
-    /** ⑥ traceId：進來的時候放進 MDC，做完一定要清（10.3.4） */
     @Bean
-    RecordInterceptor<String, String> traceInterceptor() {
+    RecordInterceptor<Object,Object> traceInterceptor() { // Boot 3.2.5 依此泛型自動套用
         return new RecordInterceptor<>() {
-            @Override public ConsumerRecord<String, String> intercept(
-                    ConsumerRecord<String, String> r, Consumer<String, String> c) {
-                Header h = r.headers().lastHeader("X-Trace-Id");
-                MDC.put("traceId", h == null ? "mq-" + UUID.randomUUID() : new String(h.value(), UTF_8));
+            @Override public ConsumerRecord<Object,Object> intercept(ConsumerRecord<Object,Object> r, Consumer<Object,Object> c) {
+                Header h=r.headers().lastHeader("X-Trace-Id");
+                MDC.put("traceId", h==null ? "mq-"+UUID.randomUUID() : new String(h.value(), UTF_8));
                 return r;
             }
-            @Override public void afterRecord(ConsumerRecord<String, String> r, Consumer<String, String> c) {
+            @Override public void afterRecord(ConsumerRecord<Object,Object> r, Consumer<Object,Object> c) {
                 MDC.remove("traceId");
             }
         };
     }
 }
 ```
+
+Boot 3.2.5 自動查找 `RecordInterceptor<Object,Object>`；若另宣告
+`RecordInterceptor<String,String>`，需自己在指定 container factory `setRecordInterceptor`，
+不能假設泛型不同也會被自動採用。下方驗證同時檢查 bean 與 factory 的實際攔截器。
 
 ```yaml
 spring:
@@ -2247,7 +2247,8 @@ spring:
       value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
         spring.deserializer.value.delegate.class: org.springframework.kafka.support.serializer.JsonDeserializer
-        spring.json.trusted.packages: com.example.events
+        spring.json.trusted.packages: com.example.lab11.events
+        spring.json.value.default.type: com.example.lab11.events.OrderCreatedEvent
         max.poll.interval.ms: 300000     # 08 章 8.5.3
         session.timeout.ms: 45000
         partition.assignment.strategy: >-
@@ -2268,17 +2269,33 @@ spring:
 ### 10.7.2 RabbitMQ 這一側
 
 ```java
+package com.example.lab11.messaging;
+
+import java.util.UUID;
+import org.springframework.context.annotation.*;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.support.converter.MessageConverter;
+import org.springframework.amqp.rabbit.connection.ConnectionFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
+import org.springframework.boot.autoconfigure.amqp.RabbitTemplateConfigurer;
+import org.springframework.boot.autoconfigure.amqp.SimpleRabbitListenerContainerFactoryConfigurer;
+import org.aopalliance.intercept.MethodInterceptor;
+import org.slf4j.MDC;
+
 @Configuration
-class RabbitReliabilityConfig {
+public class RabbitReliabilityConfig {
 
     /** ① 生產端：每一則都帶 traceId（10.3.2） */
     @Bean
-    RabbitTemplate rabbitTemplate(ConnectionFactory cf, MessageConverter converter) {
-        RabbitTemplate t = new RabbitTemplate(cf);
+    RabbitTemplate rabbitTemplate(RabbitTemplateConfigurer configurer, ConnectionFactory cf, MessageConverter converter) {
+        RabbitTemplate t = new RabbitTemplate();
+        configurer.configure(t, cf); // 手動建立 bean 時，Boot 不會再替你套 mandatory 等屬性
         t.setMessageConverter(converter);
         t.setBeforePublishPostProcessors(m -> {
             String id = MDC.get("traceId");
-            if (id != null) m.getMessageProperties().setHeader("X-Trace-Id", id);
+            if (id != null && m.getMessageProperties().getHeader("X-Trace-Id")==null)
+                m.getMessageProperties().setHeader("X-Trace-Id", id); // 重試保留原 trace
             return m;
         });
         return t;
@@ -2307,6 +2324,8 @@ spring:
   rabbitmq:
     publisher-confirm-type: correlated    # 01 章 1.3.3
     publisher-returns: true
+    template:
+      mandatory: true                    # return 必須同時開啟 mandatory
     listener:
       simple:
         acknowledge-mode: auto            # 05 章 5.3.1
@@ -2320,47 +2339,58 @@ spring:
 ### 10.7.3 告警規則
 
 ```yaml
-# ── 兩邊共通 ──
-- alert: 死信堆積
-  expr: dlq_messages > 0 or dlt_end_offset_increase > 0
-  for: 1m
-  severity: warning                       # 06 章 6.2.1 / 本章 10.2.2
+groups:
+  - name: messaging
+    rules:
+      # ── 兩邊共通 ──
+      - alert: 死信堆積
+        expr: dlq_messages > 0 or dlt_end_offset_increase > 0
+        for: 1m
+        labels:
+          severity: warning                       # 06 章 6.2.1 / 本章 10.2.2
 
-- alert: 業務數字對不上
-  expr: orders_created_total - notifications_sent_total > 10
-  for: 15m
-  severity: critical                      # 10.4.4：唯一不會騙你的數字
+      - alert: 業務數字對不上
+        expr: orders_created_total - notifications_sent_total > 10
+        for: 15m
+        labels:
+          severity: critical                      # 10.4.4：唯一不會騙你的數字
 
-# ── Kafka ──
-- alert: 消費者落後的時間跨度接近 retention
-  expr: kafka_consumergroup_lag_seconds / kafka_topic_retention_seconds > 0.2
-  for: 5m
-  severity: warning                       # 10.4.5，防的是 09 章 9.5.3 的無聲遺失
+      # ── Kafka ──
+      - alert: 消費者落後的時間跨度接近 retention
+        expr: kafka_consumergroup_lag_seconds / kafka_topic_retention_seconds > 0.2
+        for: 5m
+        labels:
+          severity: warning                       # 10.4.5，防的是 09 章 9.5.3 的無聲遺失
 
-- alert: rebalance 一直發生
-  expr: increase(kafka_consumer_coordinator_rebalance_total[10m]) > 3
-  for: 0m
-  severity: critical                      # 10.4.3 —— lag 看不到這件事
+      - alert: rebalance 一直發生
+        expr: increase(kafka_consumer_coordinator_rebalance_total[10m]) > 3
+        for: 0m
+        labels:
+          severity: critical                      # 10.4.3 —— lag 看不到這件事
 
-- alert: consumer group 不見了
-  expr: absent(kafka_consumergroup_current_offset{group="order-notify"})
-  for: 5m
-  severity: critical                      # 08 章 8.8.4：offsets.retention.minutes
+      - alert: consumer group 不見了
+        expr: absent(kafka_consumergroup_current_offset{group="order-notify"})
+        for: 5m
+        labels:
+          severity: critical                      # 08 章 8.8.4：offsets.retention.minutes
 
-# ── RabbitMQ ──
-- alert: 消費者卡死
-  expr: rabbitmq_queue_messages_unacked > 0 and rate(rabbitmq_queue_messages_delivered_total[5m]) == 0
-  for: 3m
-  severity: critical                      # 10.4.6 ③ —— 深度看起來還在下降
+      # ── RabbitMQ ──
+      - alert: 消費者卡死
+        expr: rabbitmq_queue_messages_unacked > 0 and rate(rabbitmq_queue_messages_delivered_total[5m]) == 0
+        for: 3m
+        labels:
+          severity: critical                      # 10.4.6 ③ —— 深度看起來還在下降
 
-- alert: 沒有消費者
-  expr: rabbitmq_queue_consumers == 0
-  for: 2m
-  severity: critical                      # 10.4.6 ②
+      - alert: 沒有消費者
+        expr: rabbitmq_queue_consumers == 0
+        for: 2m
+        labels:
+          severity: critical                      # 10.4.6 ②
 ```
 
 ⚠️ **這裡的 metric 名稱依你用的 exporter 而定**（`kafka-exporter` / `rabbitmq_exporter` /
-RabbitMQ 3.8+ 內建的 Prometheus 外掛都不一樣）。**重點是那六個「要抓什麼」，不是名字。**
+RabbitMQ 3.8+ 內建的 Prometheus 外掛都不一樣）。**先對應實際 exporter 名稱及 labels，再用 `promtool check rules alerts.yml` 驗證並做告警演練。
+此檔共有七條規則，語法可驗證；自訂業務指標與 retention 秒數仍需自行匯出。**
 
 ---
 
@@ -2471,7 +2501,7 @@ DLT 上累積的份數會**一次全部重放回來**（10.5.2 ③：一則被�
 - [ ] 說得出 `@RetryableTopic` 的死信 header 跟 `DeadLetterPublishingRecoverer` 差在哪三處（10.2.5 ⑤）。
 - [ ] 說得出 `new ExponentialBackOff(1000, 2.0)` 當退避策略會發生什麼事（10.2.7）。
 - [ ] 解釋得出為什麼反序列化失敗碰不到重試階梯，以及 `ErrorHandlingDeserializer` 要包在哪一層（10.2.6）。
-- [ ] 說得出 `DeadLetterPublishingRecoverer` 為什麼需要**兩顆** `KafkaTemplate`（10.2.6 ④）。
+- [ ] 說得出 `DeadLetterPublishingRecoverer` 如何用同一顆 KafkaTemplate 處理 DTO 與反序列化失敗的 byte[]（10.2.6 ④）。
 - [ ] 說得出「這個例外該不該重試」的判斷準則，以及兩種判斷錯誤的成本（10.2.7）。
 - [ ] 在兩邊都做得出 traceId 傳遞，並說得出**三個**會弄丟它的地方（10.3）。
 - [ ] 說得出「忘了清 MDC」為什麼比「沒有 traceId」更糟（10.3.4）。

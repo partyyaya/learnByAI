@@ -2266,31 +2266,48 @@ ALTER TABLE ord DROP KEY idx_placed;
 
 ### 3.8.5 找出冗餘索引
 
-**一個索引 `(a)` 如果被 `(a, b)` 涵蓋，它就是冗餘的** ——
-因為任何能用 `(a)` 的查詢都能用 `(a, b)` 的最左前綴。
+普通非唯一索引 `(a)` 若與 `(a,b)` 的 key part 定義一致，可能是存取路徑上的冗餘候選；UNIQUE(a) 的約束不能由 `(a,b)` 取代。方向、前綴長度、運算式與可見性也要一致。
 
 **一句 SQL 自動偵測**：
 
 ```sql
-SELECT a.INDEX_NAME AS 冗餘的, b.INDEX_NAME AS 被誰涵蓋,
-       a.cols AS 冗餘的欄位, b.cols AS 涵蓋者的欄位
-FROM (SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) cols
-      FROM information_schema.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ord'
-      GROUP BY INDEX_NAME) a
-JOIN (SELECT INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) cols
-      FROM information_schema.STATISTICS
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ord'
-      GROUP BY INDEX_NAME) b
-  ON a.INDEX_NAME <> b.INDEX_NAME
- AND b.cols LIKE CONCAT(a.cols, ',%');
+WITH idx AS (
+    SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, INDEX_TYPE, IS_VISIBLE,
+           COUNT(*) AS parts
+    FROM information_schema.statistics
+    WHERE TABLE_SCHEMA = DATABASE()
+    GROUP BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, INDEX_TYPE, IS_VISIBLE
+)
+SELECT CONCAT(a.TABLE_NAME, '.', a.INDEX_NAME, ' 被 ', b.INDEX_NAME, ' 涵蓋') AS msg
+FROM idx a JOIN idx b
+  ON a.TABLE_SCHEMA = b.TABLE_SCHEMA AND a.TABLE_NAME = b.TABLE_NAME
+ AND a.INDEX_NAME <> b.INDEX_NAME
+WHERE a.NON_UNIQUE = 1
+  AND a.INDEX_TYPE = 'BTREE' AND b.INDEX_TYPE = 'BTREE'
+  AND a.IS_VISIBLE = 'YES' AND b.IS_VISIBLE = 'YES'
+  AND a.parts < b.parts
+  AND NOT EXISTS (
+      SELECT 1
+      FROM information_schema.statistics x
+      LEFT JOIN information_schema.statistics y
+        ON y.TABLE_SCHEMA = x.TABLE_SCHEMA AND y.TABLE_NAME = x.TABLE_NAME
+       AND y.INDEX_NAME = b.INDEX_NAME AND y.SEQ_IN_INDEX = x.SEQ_IN_INDEX
+      WHERE x.TABLE_SCHEMA = a.TABLE_SCHEMA AND x.TABLE_NAME = a.TABLE_NAME
+        AND x.INDEX_NAME = a.INDEX_NAME
+        AND (y.SEQ_IN_INDEX IS NULL
+             OR NOT (x.COLUMN_NAME <=> y.COLUMN_NAME)
+             OR NOT (x.EXPRESSION <=> y.EXPRESSION)
+             OR NOT (x.SUB_PART <=> y.SUB_PART)
+             OR NOT (x.COLLATION <=> y.COLLATION))
+  )
+;
 ```
 
 **在本章的實驗表上跑出來**：
 
 ```
-冗餘的              被誰涵蓋       冗餘的欄位                    涵蓋者的欄位
-idx_cust_placed     idx_cover      customer_id,placed_at        customer_id,placed_at,status,total_amount
+msg
+ord.idx_cust_placed 被 idx_cover 涵蓋
 ```
 
 📌 **它抓到了**：`idx_cust_placed (customer_id, placed_at)` 是
@@ -3097,7 +3114,7 @@ class QueryPlanContractTest {
     }
 
     /**
-     * 3.8.5：沒有冗餘索引（新加的索引不該把既有的變成前綴）。
+     * 3.8.5：保守尋找可見 BTREE 非唯一索引的嚴格前綴候選。
      *
      * ⚠️ 這一句 SQL 有一個很容易寫錯的地方：兩個子查詢都要 SELECT TABLE_NAME，
      *    而且 JOIN 條件要比對 TABLE_NAME —— 否則會跨表誤判。
@@ -3106,21 +3123,35 @@ class QueryPlanContractTest {
     @Test
     void 沒有冗餘索引() {
         var redundant = jdbc.queryForList("""
-                SELECT CONCAT(a.TABLE_NAME, '.', a.INDEX_NAME,
-                              ' 被 ', b.INDEX_NAME, ' 涵蓋') AS msg
-                FROM (SELECT TABLE_NAME, INDEX_NAME,
-                             GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) cols
-                      FROM information_schema.STATISTICS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                      GROUP BY TABLE_NAME, INDEX_NAME) a
-                JOIN (SELECT TABLE_NAME, INDEX_NAME,
-                             GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) cols
-                      FROM information_schema.STATISTICS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                      GROUP BY TABLE_NAME, INDEX_NAME) b
-                  ON a.TABLE_NAME = b.TABLE_NAME          -- ★ 少了這一行就會跨表誤判
+                WITH idx AS (
+                    SELECT TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, INDEX_TYPE, IS_VISIBLE,
+                           COUNT(*) AS parts
+                    FROM information_schema.statistics
+                    WHERE TABLE_SCHEMA = DATABASE()
+                    GROUP BY TABLE_SCHEMA, TABLE_NAME, INDEX_NAME, NON_UNIQUE, INDEX_TYPE, IS_VISIBLE
+                )
+                SELECT CONCAT(a.TABLE_NAME, '.', a.INDEX_NAME, ' 被 ', b.INDEX_NAME, ' 涵蓋') AS msg
+                FROM idx a JOIN idx b
+                  ON a.TABLE_SCHEMA = b.TABLE_SCHEMA AND a.TABLE_NAME = b.TABLE_NAME
                  AND a.INDEX_NAME <> b.INDEX_NAME
-                 AND b.cols LIKE CONCAT(a.cols, ',%')
+                WHERE a.NON_UNIQUE = 1
+                  AND a.INDEX_TYPE = 'BTREE' AND b.INDEX_TYPE = 'BTREE'
+                  AND a.IS_VISIBLE = 'YES' AND b.IS_VISIBLE = 'YES'
+                  AND a.parts < b.parts
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM information_schema.statistics x
+                      LEFT JOIN information_schema.statistics y
+                        ON y.TABLE_SCHEMA = x.TABLE_SCHEMA AND y.TABLE_NAME = x.TABLE_NAME
+                       AND y.INDEX_NAME = b.INDEX_NAME AND y.SEQ_IN_INDEX = x.SEQ_IN_INDEX
+                      WHERE x.TABLE_SCHEMA = a.TABLE_SCHEMA AND x.TABLE_NAME = a.TABLE_NAME
+                        AND x.INDEX_NAME = a.INDEX_NAME
+                        AND (y.SEQ_IN_INDEX IS NULL
+                             OR NOT (x.COLUMN_NAME <=> y.COLUMN_NAME)
+                             OR NOT (x.EXPRESSION <=> y.EXPRESSION)
+                             OR NOT (x.SUB_PART <=> y.SUB_PART)
+                             OR NOT (x.COLLATION <=> y.COLLATION))
+                  )
                 """, String.class);
 
         assertThat(redundant)
@@ -3133,6 +3164,9 @@ class QueryPlanContractTest {
     }
 }
 ```
+
+這條守門只把「非唯一」索引列為候選，不會因 INDEX(email,name) 存在就判定 UNIQUE(email) 多餘。每個 key part 還要比對方向、前綴長度與運算式，且覆蓋索引必須可見；約束語意不能只靠欄位名稱前綴推論。有理由保留的非唯一索引，要在測試中使用具名 allowlist，不能直接刪 UNIQUE／PRIMARY。`verification/` 同時驗證真正可報告的候選與唯一性／方向／前綴長度的負例。
+
 
 > ⚠️ **這一組測試有一個真實的缺點：它很脆。**
 >

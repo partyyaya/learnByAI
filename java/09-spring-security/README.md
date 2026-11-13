@@ -11,7 +11,7 @@
 - 畫出 Spring Security 的 Filter Chain，說明認證資訊存在哪裡、何時被清掉。
 - 實作自訂使用者來源與密碼雜湊，並說明為什麼不能用 MD5 存密碼。
 - 設計權限模型（角色 vs 權限），並用方法層註解做細粒度控管。
-- 說明 Session 與 Token 的取捨，以及無狀態 API 為什麼通常關掉 CSRF。
+- 說明 Session 與 Token 的取捨，並依瀏覽器是否自動攜帶身分判斷 CSRF；無狀態本身不是關閉理由。
 - 從零實作一套 JWT 認證：簽發、驗證過濾器、refresh token、登出撤銷。
 - 接上第三方登入（Google / GitHub），理解 OAuth2 與 OIDC 的流程。
 - 檢查一份設定是否有常見漏洞，並寫出帶身分的整合測試。
@@ -79,7 +79,7 @@ SecurityChainReporter  啟動時印出整條 Filter Chain，並對設定錯誤�
 | 02（2.1.1） | MySQL `app_user` / `authority`，七個蓋滿帳號狀態的帳號 | `AuthWiringReporter`（誰在驗密碼）、`/whoami` |
 | 03（3.1.1） | RBAC 五張表 ＋ 訂單表 `ord3` ＋ 第五個帳號 `cs` | `AuthzRuleReporter`（授權規則表）、`Matrix`（授權矩陣）、`AuthzCoverageReporter` |
 | 04（4.1.1） | 不需要新表 | `SessionCounter`、`Web`（會記 cookie 的瀏覽器替身）、`SessionWiringReporter` |
-| 05（5.1.1） | JJWT ＋ `app_user.token_version`、`refresh_token`、`revoked_jti` | `TokenScope`（JWT 解剖器）、`JwtWiringReporter` |
+| 05（5.1.1） | JJWT ＋ `app_user.token_version`、`refresh_family`、`refresh_token`、`revoked_jti` | `TokenScope`（JWT 解剖器）、`JwtWiringReporter` |
 | 06（6.1.1） | oauth2-client ＋ authorization-server、`social_identity` | 本機真 AS（`AuthServerConfig`，扮 Google）、`SocialAccountService` |
 | 07（7.1.1） | `spring-boot-starter-actuator` | `Ch07Endpoints`（含一支**不在 CORS 範圍內**的 `/legacy/transfer`）、`Lab7.browserVerdict` |
 | 08（8.1.1） | `audit_log`、`note` | `EventProbe`、`AuditLog`、`@WithMockAppUser` |
@@ -96,9 +96,9 @@ SecurityChainReporter  啟動時印出整條 Filter Chain，並對設定錯誤�
 | 00 章 0.8.4 的 `SecurityChainReporter` | 01 章 1.10 | 同一個類別的擴充版（多兩個警告），**直接覆蓋**，不要另開同名類別 |
 | 00 章 0.3.0 的 `Users`（記憶體帳號） | 02 章 2.11 | 帳號改由 MySQL 供應，`ShopAuthConfig` 接手 `passwordEncoder` |
 | 02 章 2.11 的 `ShopSecurityConfig` | 03 章 3.10 | 改名 `ShopAuthzConfig`；規則從「寫角色」改成「寫權限」，每條寫入規則都指定 HTTP 方法 |
-| 03 章 3.10 的 `ShopAuthzConfig` | 04 章 4.8 | 補上 session 管理與「CSRF 為什麼可以關」的理由 |
+| 03 章 3.10 的 `ShopAuthzConfig` | 04 章 4.8 | 補上 session 管理；Basic 僅供非瀏覽器實驗，瀏覽器使用時保留 CSRF |
 | 03 章 3.10 的 `ShopUserDetails`（record） | 04 章 4.8 | record 的 `equals` 比對**所有**欄位，能用但脆弱——改成只比 `userId`（4.3.2） |
-| 04 章 4.8 的 `ShopAuthzConfig`（Basic） | 05 章 5.9 | API 從 Basic 換成 JWT；`ShopUserDetails` 多帶 `tokenVersion`；停用帳號要**同時**踢 session 與 bump `token_version` |
+| 04 章 4.8 的 `ShopAuthzConfig`（Basic） | 05 章 5.9 | API 從 Basic 換成 JWT；`ShopUserDetails` 多帶 `tokenVersion`；停用帳號要踢表單／OIDC session、bump `token_version` 並撤銷 refresh family |
 | 04 章 4.8 的 `webChain` | 06 章 6.9 | 加上 `.oauth2Login(...)`，掛 `OidcUserService` 用 `sub` 綁到 `app_user` |
 | 06 章 6.9 的兩條 chain | 07 章 7.8 | 改名 `ShopWebHardeningConfig`，補 `.cors(...)`、安全標頭、登入速率限制、actuator 收斂 |
 | 02 章 2.11 起「登入失敗回 `?error`」 | 07 章 7.3.3 | 改成統一的 `failureHandler`——停用／鎖定／過期的訊息也要一致 |
@@ -145,3 +145,24 @@ SecurityChainReporter  啟動時印出整條 Filter Chain，並對設定錯誤�
 JWT 登入與續期、第三方登入、方法層權限控管（買家只能看自己的訂單、管理員可看全部）、
 CORS 與安全標頭、登入速率限制、稽核日誌，
 以及一份帶身分的整合測試與**上線前安全檢查清單**（08 章 8.8）。
+
+
+## 成品設定與可重跑驗證
+
+03 章起，`LocalIdentity.userId()` 是表單、JWT、OIDC 共用的本地身分契約；資源查詢與 session 撤銷都依它運作。社群帳號以 `local_password_enabled=FALSE` 禁止本地密碼登入。
+
+後續章節只替換 chain 設定。以下共用設定從首次新增後就保留：
+
+| 設定 | 首次出現 | 負責的 bean |
+|---|---|---|
+| `ShopAuthConfig` | 02 章 2.11 | 密碼編碼、升級服務、認證事件 publisher、帳密 manager |
+| `ShopMethodSecurityConfig` | 03 章 3.10 | `@EnableMethodSecurity`，不可隨 chain 一起刪除 |
+| `ShopSessionConfig` | 04 章 4.8 | SessionRegistry、HttpSessionEventPublisher |
+| `ShopTokenConfig` | 05 章 5.9 | JWT、版本撤銷、refresh service；JWT_SECRET 必填 |
+| `ShopOidcConfig` | 06 章 6.9 | 社群綁定、帳號狀態檢查、本地 OIDC principal |
+| `ShopWebHardeningConfig` | 07 章 7.8 | 最後一版兩條 chain、CORS 指定來源、登入 gate |
+| `ShopAuditConfig` | 08 章 8.9 | 稽核 service／listener、方法授權事件 publisher |
+
+成品只掃描 `shop` 套件；`chNN` 的共用元件由上述設定明確建立或在 chain 內 new，避免把實驗 profile／額外 chain 掃進來。00 章的記憶體 Order／OrderRepo 用於入門；03 章後的持久化範例使用 ShopOrder／ShopOrderRepo，08 章退款亦沿用後者。不要把記憶體端點與新的同路徑端點一起保留。
+
+[`verification/README.md`](./verification/README.md) 提供 Docker 一鍵驗證。腳本每次從目前 Markdown 擷取成品類別與 SQL，檢查最終 context 啟動、授權、帳號狀態、JWT／OIDC 身分、兩種密碼登入限制、refresh 競態與 rollback、稽核交易。它使用隔離 MySQL，不連既有資料庫；Google 的外部協定部分以已驗證的 OIDC token fixture 取代。

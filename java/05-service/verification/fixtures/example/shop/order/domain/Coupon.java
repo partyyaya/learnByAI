@@ -1,0 +1,1 @@
+package example.shop.order.domain;public class Coupon{public example.shop.common.money.Money discountFor(example.shop.common.money.Money subtotal,java.util.List<OrderLine>lines,java.time.Instant now){return example.shop.common.money.Money.zero(subtotal.currency());}public String code(){return "code";}public String name(){return "name";}}

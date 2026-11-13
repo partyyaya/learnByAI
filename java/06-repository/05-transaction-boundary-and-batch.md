@@ -209,11 +209,15 @@ public String nextId() {
 public class PayOrderService {
 
     @Transactional                                    // ★ 邊界在這裡，只有這裡
-    public void payOrder(String orderId, long version) {
+    public Order payOrder(String orderId, long version) {
         Order order = orderRepository.findById(orderId).orElseThrow(OrderNotFound::new);
+        if (order.version() != version) {
+            throw new org.springframework.dao.OptimisticLockingFailureException("訂單版本衝突");
+        }
         order.markPaid();
-        orderRepository.save(order);
-        stockPort.decrease(order);
+        Order saved = orderRepository.saveAndReload(order);
+        stockPort.decrease(saved); // 本例僅限同一資料庫交易的庫存操作
+        return saved; // Controller 以提交成功後的版本產生 ETag
     }
 }
 ```
@@ -308,54 +312,26 @@ read.executeWithoutResult(s -> {
 📌 **所以 `readOnly = true` 的正確理解是**：
 
 > **它把「不寫」變成預設，但它不是權限控制。**
-> 一個明確呼叫 `save()` + `flush()` 的程式碼**照樣寫得進去**。
+> 在上述 H2 實驗中明確 `save()` + `flush()` 可寫入；MySQL 的驅動旗標／唯讀交易可能拒絕寫入，見下一節。
 
-### 5.3.4 那個「JDBC 連線也會變唯讀」的說法
+### 5.3.4 三種不同的唯讀機制
 
-很多文章說 `readOnly = true` 會把 JDBC 連線設成唯讀。**實測**：
+| 層次 | 機制 | 意義 |
+|---|---|---|
+| Hibernate | flush mode／entity read-only | 減少自動寫回與快照成本 |
+| JDBC | `Connection.setReadOnly(true)` | 傳遞給驅動；效果依資料庫與連線準備設定而異 |
+| 額外 SQL | `DataSourceTransactionManager.setEnforceReadOnly(true)` | 送 `SET TRANSACTION READ ONLY`，不同於 JDBC 旗標 |
 
-```
-=== T2-B ② JDBC 連線的 readOnly 旗標 ===
-  讀寫交易：connection.isReadOnly() = false
-  唯讀交易：connection.isReadOnly() = false ★
-```
+`JpaTransactionManager` 配合 `HibernateJpaDialect` 預設的 `prepareConnection=true` 也會準備 JDBC 連線並傳遞 readOnly。原來 H2 實驗中讀寫交易及唯讀交易的 `isReadOnly()` 都是 false，是 H2 對旗標的行為，不能推論 JPA 交易管理器沒有設定它。
 
-🔴 **兩個都是 `false`。**
-
-**因為那是 `DataSourceTransactionManager` 的功能，不是 `JpaTransactionManager` 的。**
-而且要**額外開啟**：
+實際 MySQL 8.0.46／Hibernate 6.4.4 的唯讀 JPA 交易，用同一個 Session 的 `doReturningWork(Connection::isReadOnly)` 可讀到 true。5.3.3 在 H2 明確 `save`／`flush` 成功，只代表該實驗，不能保證 MySQL 也允許寫入。
 
 ```java
 DataSourceTransactionManager tm = new DataSourceTransactionManager(ds);
-tm.setEnforceReadOnly(true);          // ★ 預設是 false
+tm.setEnforceReadOnly(true); // 額外送 SQL，預設 false；不是啟用 setReadOnly 的開關
 ```
 
-**開了之後**：
-
-```
-=== T2-B2 換成 DataSourceTransactionManager + setEnforceReadOnly(true) ===
-  🔴 交易【開不起來】：CannotCreateTransactionException
-     根因：JdbcSQLSyntaxErrorException
-     Syntax error in SQL statement "SET TRANSACTION [*]READ ONLY";
-     expected "ISOLATION"; SQL statement: SET TRANSACTION READ ONLY [42001-224]
-  ★ setEnforceReadOnly(true) 會送出 `SET TRANSACTION READ ONLY`
-    MySQL 8 與 PostgreSQL 支援它，【H2 2.2.224 不支援】
-    → 這個設定在 H2 上測不出來，而在正式環境上是有效的
-```
-
-⚠️ **這是一個「H2 會騙你」的反向例子**：
-不是「H2 通過了正式環境會失敗的東西」，是
-**「H2 讓一個在正式環境有效的設定完全無法測試」**。
-
-📌 **`enforceReadOnly` 值得開嗎**？
-
-| 好處 | 代價 |
-|---|---|
-| 資料庫層面真的拒絕寫入（連 5.3.3 那個 `save()` 也擋得住） | 每一個唯讀交易多送一句 `SET TRANSACTION READ ONLY`（一次 round trip） |
-| 讀寫分離架構下，讓「唯讀交易誤連到主庫寫入」直接失敗 | **H2 上完全無法測試** —— 本機與 CI 都跑不起來 |
-
-**建議**：在**讀寫分離**的系統上值得開（那裡的風險最大），
-並用 profile 讓 H2 環境關掉它。單一資料庫的系統，`readOnly = true` 已經夠。
+`SET TRANSACTION READ ONLY` 在 MySQL 可拒絕寫入，H2 2.2.224 不支援該語法。是否啟用要在目標資料庫驗證；唯讀交易也不改變隔離級別。
 
 ### 5.3.5 隔離級別是另一件事
 
@@ -379,8 +355,8 @@ tm.setEnforceReadOnly(true);          // ★ 預設是 false
 | `FlushMode` → `COMMIT` | ✅ **有** | T2-A |
 | dirty checking 不寫回 | ✅ **有**（0 句 `UPDATE`） | T2-C |
 | Hibernate 的 entity 標記為唯讀（省掉快照） | ✅ 有（間接效果：記憶體與 CPU） | 本章沒有直接量測 🔴 |
-| JDBC 連線 `setReadOnly(true)` | 🔴 **沒有**（要 `DataSourceTransactionManager` + `enforceReadOnly`） | T2-B |
-| 擋住明確的 `save()` | 🔴 **沒有** | T2-D |
+| JDBC 連線 `setReadOnly(true)` | HibernateJpaDialect 預設會傳遞；H2 忽略、MySQL 可觀察 true | T2-B 與本次 MySQL 回歸 |
+| 擋住明確的 `save()` | H2 實驗沒有擋；目標資料庫與驅動需另驗 | T2-D |
 | 改變隔離級別 | 🔴 **沒有** | T2-E |
 | 把查詢導向唯讀副本 | 🔴 **沒有** —— 那要自己寫 `AbstractRoutingDataSource`（01 章 1.11 的分池） | —— |
 
@@ -1150,11 +1126,16 @@ public void saveAll(Collection<Order> orders) {
 
     // ① 一次批次 UPDATE，逐筆看更新了幾列
     int[] updated = jdbc.batchUpdate(UPDATE_HEAD,
-            list.stream().map(JdbcOrderRepository::headParams).toArray(SqlParameterSource[]::new));
+            list.stream().map(this::headParams).toArray(SqlParameterSource[]::new));
 
     List<Order> existing = new ArrayList<>();
     List<Order> maybeNew = new ArrayList<>();
+    if (updated.length != list.size()) throw new IllegalStateException("批次回傳長度不符");
     for (int i = 0; i < list.size(); i++) {
+        if (updated[i] != 0 && updated[i] != 1) {
+            // 包括 SUCCESS_NO_INFO(-2)、EXECUTE_FAILED(-3)，不可當作「新單」。
+            throw new IllegalStateException("無法判別批次 UPDATE 結果：" + updated[i]);
+        }
         (updated[i] == 1 ? existing : maybeNew).add(list.get(i));
     }
 
@@ -1169,7 +1150,7 @@ public void saveAll(Collection<Order> orders) {
             throw new OptimisticLockingFailureException("這些訂單已被其他交易修改：" + present);
         }
         jdbc.batchUpdate(INSERT_HEAD, maybeNew.stream()
-                .map(JdbcOrderRepository::headParams).toArray(SqlParameterSource[]::new));
+                .map(this::headParams).toArray(SqlParameterSource[]::new));
     }
 
     // ③ 舊單的明細全刪（一次批次），然後所有訂單的明細一次批次插入
@@ -1185,72 +1166,45 @@ public void saveAll(Collection<Order> orders) {
 }
 ```
 
-**round trip 從 `3N ~ 4N` 變成固定 4 次**（`UPDATE` / `SELECT IN` / `INSERT` / 明細）。
+`lineParams` 放在 `JdbcOrderRepository` 內，與 2.15.1 的欄位／SQL 常數共用：
+
+```java
+private List<SqlParameterSource> lineParams(Order order) {
+    List<SqlParameterSource> result = new ArrayList<>();
+    for (int i = 0; i < order.lines().size(); i++) {
+        OrderLine line = order.lines().get(i);
+        result.add(new MapSqlParameterSource()
+                .addValue("orderId", order.id()).addValue("lineNo", i + 1)
+                .addValue("productId", line.productId()).addValue("quantity", line.quantity())
+                .addValue("unitPriceMinor", line.unitPrice().minorUnits())
+                .addValue("currency", line.unitPrice().currency().getCurrencyCode()));
+    }
+    return result;
+}
+```
+
+這裡合併的是 JDBC batch API 呼叫，混合新舊單時最多五階段（UPDATE、SELECT IN、INSERT、DELETE 明細、INSERT 明細），不是固定四個網路 round trip。驅動是否重寫、參數上限與分批大小會影響實際傳輸。
 
 ⚠️ **這一版有三個必須說清楚的代價**：
 
 | 代價 | 說明 |
 |---|---|
 | **① 錯誤訊息變差** | 樂觀鎖失敗時說的是「這些訂單」，不是「哪一張的哪一個欄位」 |
-| **② `updated[i]` 的可信度依驅動而異** | JDBC 允許回傳 `SUCCESS_NO_INFO`（-2）；🔴 **本章只在 H2 上驗證** |
-| **③ 「先 `UPDATE` 全部再判斷」對「全部都是新單」的情況多跑一次批次** | 匯入場景（全新資料）可以走一個專門的 `insertAll()` |
+| **② `updated[i]` 的可信度依驅動而異** | JDBC 允許回傳 `SUCCESS_NO_INFO`（-2）；UPDATE 僅接受 0／1，H2／MySQL 回歸見 5.8.7b |
+| **③ 「先 `UPDATE` 全部再判斷」對「全部都是新單」的情況多跑一次批次** | 匯入場景（全新資料）可另設新增專用埠；本課未實作該 API |
 
-### 5.8.7b 🔴 ★★ 這段程式碼在 MySQL 上會壞掉（06 章驗證的結果）
+### 5.8.7b 批次 INSERT 與 UPDATE 的回傳值要分開驗證
 
-上表第 ② 項寫著「`updated[i]` 的可信度依驅動而異，本章只在 H2 上驗證」。
-**06 章用真的 MySQL 8.0.46 跑了一次，結果是最壞的那一種**：
+原探針 ⑰ 執行的是 INSERT，不能用來推論 `UPDATE_HEAD`。使用 MySQL 8.0.46／Connector/J 8.3.0，並同時開 `rewriteBatchedStatements=true`、`useServerPrepStmts=true` 的回歸結果：
 
-```
-=== ★ MySQL 8（真的） —— 05 章欠的五根探針 ===
-  [17] rewriteBatchedStatements=true   [-2, -2, -2, -2, -2] 🔴 變成 SUCCESS_NO_INFO(-2)
-                                       —— 05 章 5.8.7 的判斷會壞掉
+```text
+INSERT 五筆：[-2, -2, -2, -2, -2]  // SUCCESS_NO_INFO
+UPDATE 五筆：[1, 1, 1, 1, 0]       // 最後一筆版本過期，可辨識
 ```
 
-**對照沒有開 `rewriteBatchedStatements` 時**：
+本版維持 `saveAll`，未新增 `insertAll`／`updateAll` 埠。5.8.7 在 UPDATE 階段只接受 0／1，其他值直接失敗，交由外層交易 rollback，避免把未知結果誤當新單。INSERT 的 -2 表示成功但不知道列數，不能套用 UPDATE 的新舊分類規則。若換驅動後 UPDATE 也回 -2，需重新設計寫入策略並測試樂觀鎖，不能僅假設關閉某個參數就解決。
 
-```
-  [15] executeBatch 的回傳陣列內容      [1, 1, 1] ✅ 都是實際列數      ← MySQL
-  [15] executeBatch 的回傳陣列內容      [1, 1, 1] ✅ 都是實際列數      ← H2
-```
-
-🔴 **所以 5.8.7 那段程式碼會在【同時滿足兩個條件】時靜默失效**：
-
-1. 資料庫是 MySQL，而且
-2. JDBC URL 有 `rewriteBatchedStatements=true`（**而 5.8.9 正是叫你加上它**）
-
-**失效的方式**：`updated[i]` 全部是 `-2`，永遠不等於 `1`
-→ **每一張訂單都被判定成「新單」** → 全部走 `INSERT`
-→ **舊訂單撞主鍵，整批爆掉**（如果幸運），或者
-→ **樂觀鎖的檢查完全沒有執行**（如果那些 id 剛好都不存在）。
-
-⚠️ **這是本課至今最尖銳的一個例子**：
-**5.8.9 建議的那個效能設定，會讓 5.8.7 的正確性設計失效** ——
-而兩節相隔不到兩頁，都是本章寫的。
-
-**修法（三選一）**：
-
-| 修法 | 寫法 | 取捨 |
-|---|---|---|
-| **① 不要在同一批裡混新舊** | 呼叫端明確分成 `insertAll()` 與 `updateAll()` | ✅ **最好** —— 順便讓語意變清楚 |
-| **② 不靠 `updated[i]`，先查一次** | 先 `SELECT id, version FROM orders WHERE id IN (...)` 決定新舊 | 多一次 round trip，但完全可攜 |
-| **③ 那一段不開 `rewriteBatchedStatements`** | 用兩個 `DataSource`（一個給批次、一個給一般） | ⚠️ 複雜，而且很容易被下一個人「整理」掉 |
-
-📌 **shop-service 選 ①**，並在 `saveAll()` 上加一條斷言：
-
-```java
-for (int i = 0; i < list.size(); i++) {
-    if (updated[i] == Statement.SUCCESS_NO_INFO) {
-        throw new IllegalStateException(
-                "這個 JDBC 驅動不回傳實際更新列數（SUCCESS_NO_INFO）——"
-              + "saveAll() 無法判斷新舊。請改用 insertAll() / updateAll()，"
-              + "或關掉 rewriteBatchedStatements（05 章 5.8.7b）");
-    }
-    (updated[i] == 1 ? existing : maybeNew).add(list.get(i));
-}
-```
-
-⚠️ **「壞掉的時候大聲失敗」比「靜默走錯分支」好太多** ——
-而這一行 `if` 是**只有在真的 MySQL 上跑過才寫得出來的**。
+舊碼若將 -2 分進 `maybeNew`，後面還有 present 查詢，通常先拋版本衝突；原文「必然直接 INSERT 撞主鍵」也不正確。固定這些驅動探針是為了保護實際依賴，不把 INSERT 的觀察外推成 UPDATE 的結論。
 
 ### 5.8.8 一萬筆的實測：`batch_size` 該設多少
 
@@ -1311,15 +1265,15 @@ INSERT INTO t (a,b) VALUES (3,4);
 INSERT INTO t (a,b) VALUES (1,2),(3,4);
 ```
 
-⚠️ **它有兩個副作用**：
+⚠️ **以下行為要分開驗證**：
 
-1. **`getGeneratedKeys()` 的行為會變**（多值 `INSERT` 只回第一個 id）。
+1. **需要 `getGeneratedKeys()` 時另測回傳鍵的數量與對應順序**，不能假設所有驅動／SQL 型態只回第一個 id。
 2. **`executeBatch()` 的回傳陣列可能變成 `SUCCESS_NO_INFO`（-2）** ——
-   5.8.7 那個 `updated[i] == 1` 的判斷**會壞掉**（🔴 **已證實，見 5.8.7b**）。
+   這是 INSERT 的觀察；UPDATE 的列數另測，5.8.7 對未知回傳值直接失敗（見 5.8.7b）。
 3. 🔴 **批次失敗時「哪些寫進去了」也會變**（部分寫入 → 全有全無）——
    **見 5.10.1b**。
 
-🔴 **本章沒有 MySQL，這三點都沒有驗證；06 章補上了，而三點【全部】成立。**
+06 章探針及本次回歸分別確認 INSERT／UPDATE 結果與失敗原子性；不能宣稱三項結論全部由同一支 INSERT 探針證實。
 📌 **但它們共同指向一個結論**：
 **「批次 + 逐筆判斷更新結果」這個組合在 MySQL 上要特別小心** ——
 5.8.7 那段程式碼上線前必須在真的 MySQL 上驗證一次。
@@ -1616,16 +1570,23 @@ try (Stream<PersistableRow> stream = repo.streamAllWithFetchSize()) {
 // ④ keyset 分批（04 章 4.7 的寫法用在批次上）
 long lastId = 0;
 while (true) {
-    List<PersistableRow> chunk = tx.execute(s -> repo.chunkAfter(lastId, 1000));
+    final long after = lastId;
+    List<PersistableRow> chunk = tx.execute(s -> repo.chunkAfter(after, 1000));
     if (chunk.isEmpty()) break;
     chunk.forEach(this::export);
     lastId = chunk.get(chunk.size() - 1).getId();
 }
 
 // ⑤ 純 JDBC + RowCallbackHandler（02 章 2.5.7）
-jdbc.setFetchSize(500);
-jdbc.query("SELECT id, payload FROM persistable_row",
-        rs -> { export(rs.getString("payload")); });
+// URL 必須有 useCursorFetch=true&useServerPrepStmts=true。
+// 每個 statement 設定，不修改共用 JdbcTemplate 的全域 fetchSize。
+jdbc.query(connection -> {
+    var ps = connection.prepareStatement("SELECT id, payload FROM persistable_row",
+            java.sql.ResultSet.TYPE_FORWARD_ONLY, java.sql.ResultSet.CONCUR_READ_ONLY);
+    ps.setFetchSize(500);
+    return ps;
+}, (org.springframework.jdbc.core.RowCallbackHandler)
+        rs -> export(rs.getString("payload")));
 ```
 
 ### 5.11.2 實測：20 萬筆
@@ -1636,7 +1597,7 @@ jdbc.query("SELECT id, payload FROM persistable_row",
   ② Stream（不 clear）          489 ms｜情境裡最多 200,000 個受管實體｜迴圈中堆積  +98 MB
   ③ Stream + 每千筆 clear       119 ms｜情境裡最多   1,000 個受管實體｜迴圈中堆積  +85 MB
   ④ keyset 分批（每批 1000）    291 ms｜每批最多     1,000 個物件｜迴圈中堆積 +115 MB（200 批）
-  ⑤ JDBC RowCallbackHandler      46 ms｜同時只有       1 列在記憶體｜迴圈中堆積  +12 MB
+  ⑤ JDBC RowCallbackHandler      46 ms｜應用程式每次處理 1 列（未量測驅動緩衝上界）｜迴圈中堆積  +12 MB
   ★ 「情境裡最多幾個受管實體」是這一節唯一重要的數字 ——
     它會不會隨資料量成長，決定了這段程式碼在 2000 萬筆時會不會 OOM
 ```
@@ -1646,7 +1607,7 @@ jdbc.query("SELECT id, payload FROM persistable_row",
 > **`Stream<T>` 讀 20 萬筆，持久化情境裡累積了 200,000 個受管實體 ——
 > 和 `findAll()` 一模一樣。**
 
-**它「是」串流的部分**：資料庫的 `ResultSet` 是一列一列讀進來的（沒有一次全撈）。
+**它「是」串流的部分**：API 逐列消耗 `ResultSet`；驅動是否先緩衝全部結果，還要看 5.11.4 的取數模式。
 **它「不是」串流的部分**：每一列被轉成 entity 之後，**就永遠留在持久化情境裡了**。
 
 📌 **所以 `Stream` 只換掉了問題的一半**，而剩下的那一半（持久化情境）
@@ -1674,9 +1635,9 @@ jdbc.query("SELECT id, payload FROM persistable_row",
 | ② `Stream` 不 clear | 200,000 | 🔴 **會**（= 全部） |
 | ③ `Stream` + clear | **1,000** | ✅ **不會**（= clear 間隔） |
 | ④ keyset 分批 | **1,000** | ✅ **不會**（= 批次大小） |
-| ⑤ JDBC callback | **1** | ✅ **不會** |
+| ⑤ JDBC callback | **0**（沒有 entity；應用程式每次處理一列） | persistence context 不成長，驅動緩衝另看 5.11.4 |
 
-**「會不會隨資料量成長」就是「這段程式碼會不會在某一天 OOM」。**
+這裡只比較 persistence context；總記憶體還包括驅動緩衝與輸出佇列，必須一起控制才有界。
 
 ### 5.11.4 ⚠️ MySQL 的 `Stream` 還有一個坑
 
@@ -1684,23 +1645,14 @@ jdbc.query("SELECT id, payload FROM persistable_row",
 **在 MySQL 上預設不成立。**
 
 **MySQL Connector/J 預設會把整個 `ResultSet` 讀進 driver 的記憶體。**
-要真的串流，需要**三個條件同時成立**：
+有兩套替代設定，不能列成三個同時成立的條件：
 
-```java
-@QueryHints(@QueryHint(name = HINT_FETCH_SIZE, value = "" + Integer.MIN_VALUE))   // ① 不是 500，是 MIN_VALUE
-@Query("SELECT r FROM PersistableRow r")
-Stream<PersistableRow> streamAll();
-```
+| 模式 | 設定 | 驅動緩衝與限制 |
+|---|---|---|
+| 本課 JDBC 正向範例：伺服器游標 | `useCursorFetch=true`、`useServerPrepStmts=true`、正 fetchSize=500 | 每批讀取，客戶端會保留一批；不是「只佔一列」 |
+| Connector/J 逐列模式 | forward-only／read-only，fetchSize=`Integer.MIN_VALUE` | 不需要 useCursorFetch；未消耗／關閉結果前不要在同連線執行其他查詢 |
 
-| 條件 | 說明 |
-|---|---|
-| ① `fetchSize = Integer.MIN_VALUE` | ⚠️ **MySQL 專用的魔術值**，`500` 是無效的（會被忽略） |
-| ② `useCursorFetch=true`（另一種做法） | 走伺服器端游標，此時 `fetchSize` 才吃正常數值 |
-| ③ 那條連線上**不能有其他查詢** | 串流期間該連線被獨佔，中途發別的 SQL 會爆 |
-
-⚠️ **③ 特別容易踩**：
-在 `stream.forEach(...)` 裡面呼叫另一個 Repository 方法 →
-它想用同一條連線 → **`Streaming result set … is still active`**。
+只有 `useServerPrepStmts=true` 加正 fetchSize，實測仍是 `ResultsetRowsStatic`（整批緩衝）；加 useCursorFetch 才是 `ResultsetRowsCursor`。`RowCallbackHandler` 只控制應用程式不累積清單。JPA Stream 還要另外控制 persistence context；不要在逐列模式中觸發 LAZY 的額外查詢。
 
 📌 **這是我推薦 ④（keyset 分批）而不是 ③ 的主要理由**：
 
@@ -2131,8 +2083,8 @@ void 規則18_saveAll的round_trip不隨筆數線性成長() {
 | 「例外拋出來就會回滾」 | 🔴 **checked Exception 預設【提交】** | **5.5.1** |
 | 「外層 catch 住內層的例外就沒事了」 | 🔴 `UnexpectedRollbackException`，**外層寫的也不見了** | **5.5.2** |
 | 「`readOnly = true` 只是一個提示」 | 它改掉 `FlushMode`、關掉 dirty checking 的寫回 | 5.3.1、5.3.2 |
-| 「`readOnly = true` 可以防止寫入」 | 🔴 **明確 `save()` 照樣寫進去** | 5.3.3 |
-| 「`readOnly = true` 會把連線設成唯讀」 | 🔴 **不會**（那是 `DataSourceTransactionManager` 的事，而且預設關） | 5.3.4 |
+| 「`readOnly = true` 可以防止寫入」 | H2 實驗中明確 `save()` 可寫入；不能外推到 MySQL | 5.3.3、5.3.4 |
+| 「`readOnly = true` 會把連線設成唯讀」 | HibernateJpaDialect 預設會準備連線，H2 忽略旗標；另有 enforceReadOnly 的 SQL 機制 | 5.3.4 |
 | 「`save()` 就是寫入資料庫」 | `save()` 只是登記；`INSERT` 在 flush 才送出 | 5.4.1 |
 | 「我這段只是在查詢，不會寫」 | 🔴 **一個 JPQL 查詢會強迫先 flush，把待寫的 `UPDATE` 送出去** | **5.4.2** |
 | 「先 delete 再 save 就不會撞唯一鍵」 | 🔴 **flush 順序是 INSERT 在 DELETE 之前** | **5.4.4** |
@@ -2147,7 +2099,7 @@ void 規則18_saveAll的round_trip不隨筆數線性成長() {
 | 「`rewriteBatchedStatements` 只是一個效能參數」 | 🔴 **它改變 `executeBatch()` 的【語意】**：回傳值變 `-2`、失敗從部分寫入變全有全無 | **5.8.7b、5.10.1b** |
 | 「分批提交只是效能考量」 | 🔴 **它放棄了原子性，必須設計成可重跑** | 5.10.3 |
 | 「`Stream<T>` 是串流，不會 OOM」 | 🔴 **20 萬筆 = 情境裡 200,000 個受管實體，和 `findAll()` 一樣** | **5.11.2** |
-| 「加 `fetchSize=500` 就會串流」 | 🔴 **MySQL 要 `Integer.MIN_VALUE` 這個魔術值** | 5.11.4 |
+| 「加 `fetchSize=500` 就會串流」 | MySQL 需 useCursorFetch + 正 fetchSize，或 forward-only/read-only + MIN_VALUE 逐列模式 | 5.11.4 |
 | 「`REQUIRES_NEW` 是內層獨立的標準解」 | ⚠️ **它多借一條連線；池子不夠會自我死鎖** | **5.12.2** |
 | 「交易大小看做了幾句 SQL」 | 🔴 **看的是時間長度**（4 倍的總耗時差在一句 `sleep`） | 5.12.1 |
 | 「記憶體假實作測過了就沒問題」 | 🔴 **它沒有交易，所以它在原子性上會騙你** | **5.13.3** |
@@ -2347,18 +2299,36 @@ public void exportAll(OutputStream out) {
 **重寫（keyset 分批，每批一個交易）**：
 
 ```java
-public void exportAll(OutputStream out, String resumeFromId) {
+// 本方法位於 ExportService Bean，由外部經 Spring proxy 呼叫。
+// chunkReader 與 ExportService 是不同 Bean；避免 self-invocation。
+@Transactional(propagation = Propagation.NEVER)
+public void exportAll(OutputStream out, String resumeFromId) throws IOException {
     String lastId = resumeFromId == null ? "" : resumeFromId;
     while (true) {
         // ★ 每一批一個【短】交易；批次之間連線是還回去的
-        List<OrderExportRow> chunk = exportPort.nextChunk(lastId, 1000);
+        List<OrderExportRow> chunk = chunkReader.readChunk(lastId, 1000);
         if (chunk.isEmpty()) break;
 
-        for (OrderExportRow row : chunk) out.write(row.toCsv().getBytes());
+        for (OrderExportRow row : chunk) out.write(row.toCsv().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         out.flush();
 
         lastId = chunk.get(chunk.size() - 1).orderId();
         progress.save(lastId);                    // ★ (iii) 斷點
+    }
+}
+```
+
+匯出入口用 `NEVER` 拒絕外層交易，避免呼叫端已持有的連線一路被占住。`NOT_SUPPORTED` 只會掛起外層交易，不能釋放它已持有的連線。讀取交易由另一個 Bean 建立；回傳的是已物化投影，沒有待載入的 Entity：
+
+```java
+@Service
+public class OrderExportReader {
+    private final OrderExportPort exportPort;
+    public OrderExportReader(OrderExportPort exportPort) { this.exportPort = exportPort; }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    public List<OrderExportRow> readChunk(String afterId, int size) {
+        return List.copyOf(exportPort.nextChunk(afterId, size));
     }
 }
 ```
@@ -2376,7 +2346,7 @@ public List<OrderExportRow> nextChunk(String afterId, int size) {
              WHERE o.id > :afterId
                AND o.id <= (SELECT max(id) FROM (
                        SELECT id FROM orders WHERE id > :afterId
-                        ORDER BY id FETCH FIRST :size ROWS ONLY) t)
+                        ORDER BY id LIMIT :size) t)
              ORDER BY o.id, l.line_no
             """, params, ROW_MAPPER);
 }
@@ -2386,10 +2356,12 @@ public List<OrderExportRow> nextChunk(String afterId, int size) {
 
 | 要求 | 怎麼滿足 |
 |---|---|
-| **(i) 記憶體不隨資料量成長** | ✅ 每批 1000 筆；**而且不走 entity**（`OrderExportRow` 是投影，沒有持久化情境） |
+| **(i) 記憶體不隨訂單總量成長** | 每批最多 1000 張訂單，但 join 列數還取決於每張明細上限；**而且不走 entity**（`OrderExportRow` 是投影，沒有持久化情境） |
 | **(ii) SQL 句數** | ✅ **每批 1 句**（子查詢先取這一批的 id 上界，再一次 join 撈明細）→ 總句數 = 筆數 / 1000 |
-| **(iii) 中斷續跑** | ✅ `progress.save(lastId)`；重跑時傳 `resumeFromId` |
+| **(iii) 中斷續跑** | checkpoint 支援至少一次重試；輸出成功與 progress 寫入之間仍有故障窗口 |
 | **(iv) 不長時間佔連線** | ✅ 每批一個交易，`out.write` 在交易**外面** |
+
+若需精確續傳，必須另設 exportId、可定位的持久檔案與 offset／checkpoint 協調；socket flush 與資料庫 progress 不是同一個原子提交，可能重複輸出。每批快照也不代表整份匯出是一致快照。
 
 ⚠️ **三個容易寫錯的地方**：
 
@@ -2590,10 +2562,10 @@ void 規則_entity的主鍵不可以用IDENTITY() {
 所以本章對它的所有說明**都是根據文件寫的，不是實測的**。
 **06 章在真的 MySQL 上把它跑起來了 —— 結果是「語法支援，而且真的擋住 `UPDATE`」。**
 
-⚠️ **而 06 章也找到了一個本章【講錯】的地方**：
-5.8.7 那段 `saveAll()` 的樂觀鎖判斷，
-**在 MySQL + `rewriteBatchedStatements=true` 下會靜默失效**（5.8.7b 已補上修正）。
-📌 **那個 bug 是「只用 H2 測」永遠找不到的** —— 這就是 06 章存在的理由。
+⚠️ **原探針推論也需要修正**：
+批次 INSERT 回 -2，不能直接推論 `saveAll()` 的版本 UPDATE 也相同。
+5.8.7b 已補實際 UPDATE 的結果，5.8.7 對未知結果直接失敗。
+📌 **驅動回傳值必須在目標資料庫驗證，不能只用 H2 結果外推** —— 這就是 06 章存在的理由。
 
 ---
 
@@ -2619,13 +2591,13 @@ void 規則_entity的主鍵不可以用IDENTITY() {
 | 組 | 實驗 | 結果 |
 |---|---|---|
 | **T1** | 交易邊界 | ✅ **一個交易 → 失敗時 0 張留下；兩個交易 → 2 張都留下**<br>✅ `MANDATORY` 讓「沒有交易就呼叫 Repository」立刻拋 `IllegalTransactionStateException`（讀寫方法都擋）；`nextId()` 用 `SUPPORTS` 放行 |
-| **T2** | `readOnly = true` | ✅ `FlushMode`：**`AUTO` → `COMMIT`**<br>✅ dirty checking：讀寫交易 **1 句 `UPDATE`**，唯讀交易 **0 句**<br>🔴 **`connection.isReadOnly()` 兩邊都是 `false`**（`JpaTransactionManager` 不設它）<br>🔴 **唯讀交易裡明確 `save()` + `flush()` 照樣寫進去**<br>🔴 **`setEnforceReadOnly(true)` 在 H2 上讓交易開不起來**（`SET TRANSACTION READ ONLY` 語法錯誤） |
+| **T2** | `readOnly = true` | ✅ `FlushMode`：**`AUTO` → `COMMIT`**<br>✅ dirty checking：讀寫交易 **1 句 `UPDATE`**，唯讀交易 **0 句**<br>🔴 **H2 的 `connection.isReadOnly()` 兩邊都是 `false`**（忽略旗標；MySQL JPA 唯讀交易可讀到 true）<br>🔴 **H2 唯讀交易裡明確 `save()` + `flush()` 可寫入**，不能外推到 MySQL<br>🔴 **`setEnforceReadOnly(true)` 在 H2 上讓交易開不起來**（`SET TRANSACTION READ ONLY` 語法錯誤） |
 | **T3** | flush 時機 | ✅ `save()` 回來時 `INSERT` **還沒送出**（送出的是 2 句白跑的 `SELECT`）<br>✅ **一個 JPQL `count` 查詢強迫先 flush**，把 `UPDATE` 插在它前面<br>✅ **`findById()` 不觸發 flush**<br>🔴 **`replaceLines()` 不呼叫 `save()` → `DuplicateKeyException`（同一主鍵兩個實例）**；加上 `save()`（`merge`）就正常，實際 SQL 是 **1 `UPDATE` + 1 `DELETE`** |
 | **T4** | 回滾規則 | ✅ `RuntimeException` → 回滾（0 列）<br>🔴 **checked Exception → 【提交】（1 列）**<br>🔴 **內層 `REQUIRED` 失敗 + 外層 catch → `UnexpectedRollbackException`，外層寫的也不見了**<br>✅ 改成 `REQUIRES_NEW` → 外層那筆留下（1 列） |
 | **T5** | ★★ 主鍵策略與批次 | **`batch_size` 沒設 / 設 20 的句數對照**：<br>`IDENTITY` **20 → 20（完全沒變）**；`SEQUENCE` 22 → 3；自己給 id 40 → 21；**+`Persistable` 20 → 1**<br>**JDBC 層 round trip**：`Persistable` **20 → 1**；🔴 **`IDENTITY` 20 → 20，`addBatch` 一次都沒被呼叫** |
 | **T6** | 1 萬筆的批次 | `batch_size` **沒設 337 ms / 1：176 ms（`addBatch=0`）/ 20：117 ms / 50：79 ms / 100：68 ms / 500：66 ms / 1000：48 ms**<br>round trip **10,000 → 10**<br>✅ **只 `flush()` 不 `clear()` → 情境裡仍有 10,000 個受管實體**；`flush+clear` → **0**<br>對照：純 `JdbcTemplate.batchUpdate` 每批 500 → **19 ms** |
 | **T7** | 批次 ≠ 交易 | 🔴 **沒有交易：10 筆裡 9 筆成功**（`updateCounts = [1,1,1,1,-3,1,1,1,1,1]`），**H2 在失敗後繼續跑完**<br>✅ 包在交易裡 → 整組回滾（只剩原本那 1 列）<br>🔴 **分批提交：第 3 批失敗，前 2 批（20 筆）已提交** |
-| **T8** | ★★ 讀 20 萬筆 | **受管實體上限**：`findAll()` **200,000**／`Stream` 不 clear **200,000**／`Stream`+clear **1,000**／keyset 分批 **1,000**／JDBC callback **1**<br>**時間**：435 / 489 / **119** / 291 / **46** ms |
+| **T8** | ★★ 讀 20 萬筆 | **受管實體上限**：`findAll()` **200,000**／`Stream` 不 clear **200,000**／`Stream`+clear **1,000**／keyset 分批 **1,000**／JDBC callback **0**（應用程式每次處理一列，驅動緩衝另計）<br>**時間**：435 / 489 / **119** / 291 / **46** ms |
 | **T9** | 交易大小 | 🔴 **交易裡放 600 ms 的外部呼叫：12 個請求 / 3 條連線 = 2,429 ms**<br>✅ 移出交易 → **606 ms（快 4 倍）**<br>🔴 **池子 1 條連線 + `REQUIRES_NEW` → `CannotCreateTransactionException`（自我死鎖）** |
 | **契約** | **17 條 × 4 個實作** | 🔴 **第一次執行：記憶體假實作第 16 條紅**（`saveAll` 部分成功了）<br>→ 讓假實作自己做 snapshot 回滾後 **68 個全綠**<br>⚠️ 而**把 `saveAll()` 改成真批次時，舊的 14 條契約一條都沒紅** |
 
@@ -2663,12 +2635,12 @@ void 規則_entity的主鍵不可以用IDENTITY() {
 
 | 沒驗證的 | 影響哪一節 | 哪一站會補 |
 |---|---|---|
-| ~~`rewriteBatchedStatements=true` 的副作用~~ | 5.8.9 | ✅ **06 章 6.4 已補：`executeBatch()` 回傳 `[-2,-2,-2,-2,-2]`（`SUCCESS_NO_INFO`）—— 5.8.7 那段判斷【真的會壞掉】** |
+| ~~`rewriteBatchedStatements=true` 的副作用~~ | 5.8.9 | ✅ INSERT 回 -2；帶版本 UPDATE 實測回 0／1。已更正推論並在 5.8.7 加入未知結果防護 |
 | **MySQL 上 round trip 的真實成本**（本章的 7 倍在 MySQL 上應該是幾十倍） | 5.8.8 | **06 章、07-mysql 站** |
 | ~~MySQL 的 `executeBatch()` 在失敗後會不會繼續~~ | 5.10.1 | ⚠️ **06 章 6.4 已補，而答案分兩種**：沒開 `rewriteBatchedStatements` 時和 H2 一樣繼續（`[1,1,-3,1,1]`）；<br>🔴 **開了之後整批不進去**（`[-3,…]`）→ 已補 **5.10.1b** |
-| ~~`SUCCESS_NO_INFO`（-2）對 5.8.7 那段判斷邏輯的影響~~ | 5.8.7 | ✅ **06 章 6.4 已補 —— 見下方的 🔴 修正** |
+| ~~`SUCCESS_NO_INFO`（-2）對 5.8.7 那段判斷邏輯的影響~~ | 5.8.7 | ✅ 見 5.8.7b；區分 INSERT 與 UPDATE，未知結果直接失敗 |
 | ~~`setEnforceReadOnly(true)` 在 MySQL 上的行為~~ | 5.3.4 | ✅ **06 章 6.4 已補：`SET TRANSACTION READ ONLY` 語法支援，而且【真的擋住 `UPDATE`】** |
-| MySQL 的 `Stream` 串流三條件 | 5.11.4 | ⚠️ **06 章 6.4 部分驗證**：`fetchSize=Integer.MIN_VALUE` 可以跑；「連線獨佔」與大資料量的記憶體行為仍未量測 |
+| MySQL 的兩種取數模式 | 5.11.4 | ⚠️ **06 章 6.4 部分驗證**：`fetchSize=Integer.MIN_VALUE` 可以跑；「連線獨佔」與大資料量的記憶體行為仍未量測 |
 | 持久化情境「快照」的實際記憶體大小 | 5.9.3 | —— |
 | Open Session In View 開/關的完整請求流程差異 | 5.6.2 | —— |
 | `IDENTITY` 的 `AUTO_INCREMENT` 鎖在高併發下的成本 | 5.8.4 | 07-mysql 站 |

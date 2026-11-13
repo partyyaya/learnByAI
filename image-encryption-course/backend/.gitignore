@@ -1,6 +1,6 @@
 node_modules/
-data/encrypted/*.enc
-data/*.db
-data/*.db-journal
+# 執行時產生的資料（加密檔、含明文 key 的 demo meta、SQLite 與 WAL 檔）全部不進版控
+data/*
+!data/.gitkeep
 *.log
 .env

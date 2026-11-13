@@ -389,35 +389,22 @@ class B3ConfirmAndReturnTest {
 | routing key 打錯 | ❌ **抓不到**（會收到 ack） | ✅ 抓到（NO_ROUTE） | ✅ |
 | exchange 不存在 | ⚠️ channel 會被 broker 關掉（抓得到，但形式很醜） | ❌ | ✅ |
 
-**正確的 callback 該做什麼**（本站建議的樣子）：
+**callback 負責觀測，Outbox 的最終狀態由單一流程決定**：
 
 ```java
-@Component
-public class ReliablePublisher {
-
-    private final RabbitTemplate rabbit;
-    private final OutboxRepository outbox;     // 02 章會做這張表
-
-    @PostConstruct
-    void wire() {
-        rabbit.setConfirmCallback((corr, ack, cause) -> {
-            if (ack) {
-                outbox.markSent(corr.getId());                    // 確認送到了 → 標記完成
-            } else {
-                log.error("broker nack, id={} cause={}", corr.getId(), cause);
-                outbox.markFailed(corr.getId(), cause);           // ← 留下可以重來的憑據
-            }
-        });
-        rabbit.setReturnsCallback(ret -> {
-            // ⚠️ 這裡幾乎一定是程式 bug（routing key / exchange 錯了），不是暫時性故障
-            log.error("NO_ROUTE! exchange={} routingKey={} replyText={} body={}",
-                    ret.getExchange(), ret.getRoutingKey(), ret.getReplyText(),
-                    new String(ret.getMessage().getBody()));
-            alerting.pageOncall("訊息路由不到，這是設定錯誤");    // ← 要吵醒人
-        });
-    }
-}
+rabbit.setConfirmCallback((corr, ack, cause) -> {
+    if (corr == null) return; // 未帶 CorrelationData 的發送也可能觸發 callback
+    log.debug("publish attempt={} ack={} cause={}", corr.getId(), ack, cause);
+});
+rabbit.setReturnsCallback(ret -> log.error("NO_ROUTE exchange={} rk={} reply={}",
+        ret.getExchange(), ret.getRoutingKey(), ret.getReplyText()));
 ```
+
+不能在 confirm callback 看見 ack=true 就 markSent：同一則可能先 return、再正向 confirm，
+導致路由錯誤被覆蓋成成功。02.5.3 的 `ConfirmedRabbitSender` 等 future 後同時檢查
+ACK 與 `getReturned()`，由背景 Pump 在原資料庫交易更新狀態。
+這個教學成品選擇有界等待，HTTP 只寫 Outbox；非同步 relay 則需另外設計認領租約、
+結果狀態機與 callback 的獨立交易，不能在沒有交易的 callback 直接呼叫 modifying repository。
 
 ⚠️ **兩個 callback 的語意完全不同，處理方式也該不同**：
 
@@ -427,7 +414,7 @@ public class ReliablePublisher {
 
 📌 **confirm callback 是在另一條執行緒上跑的。**
 它**不是**在你 `convertAndSend()` 的那條執行緒上。
-所以：① 不要在 callback 裡用 `@Transactional`（沒有交易上下文）、
+所以：① 呼叫端的交易不會跨到 callback；呼叫另一顆交易 bean 可以開新交易，但不會加入原交易、
 ② 不要在 callback 裡做慢的事（會卡住整個 confirm 的處理）、
 ③ `ThreadLocal`（含 MDC 裡的 traceId）**在這裡是空的** —— 10 章會處理這件事。
 

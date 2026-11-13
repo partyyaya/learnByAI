@@ -511,7 +511,7 @@ CREATE TABLE outbox (
   aggregate_id    VARCHAR(64)  NOT NULL,      -- 'ORD-1001'
   event_type      VARCHAR(64)  NOT NULL,      -- 'order.created'
   payload         TEXT         NOT NULL,      -- JSON
-  status          VARCHAR(16)  NOT NULL,      -- PENDING / SENT / FAILED
+  status          VARCHAR(16)  NOT NULL,      -- PENDING / SENT / FAILED / UNROUTABLE
   attempts        INT          NOT NULL DEFAULT 0,
   created_at      DATETIME(6)  NOT NULL,
   next_retry_at   DATETIME(6)  NOT NULL,      -- ⚠️ 見下方
@@ -528,7 +528,7 @@ CREATE TABLE outbox (
 | `aggregate_type` / `aggregate_id` | 這則訊息在講哪一個東西 | 出事時你沒辦法回答「訂單 9527 的訊息送了嗎」 |
 | `event_type` | 決定送到哪個 exchange / topic | 輪詢器不知道要送去哪 |
 | `payload` | 訊息本體（**快照，不是參考**） | 見下方 ⚠️ |
-| `status` | 三態：待送 / 已送 / 放棄 | 分不出「還沒送」跟「送不出去」 |
+| `status` | 四態：待送 / 已送 / 重試耗盡 / 路由錯誤 | 分不出「還沒送」跟「送不出去」 |
 | `attempts` | 已經試幾次了 | **無限重試**（00 章 0.5.2 那個風暴的資料庫版） |
 | `created_at` | 排序用（先進先出） | 訊息順序會亂 |
 | **`next_retry_at`** | **下次可以再試的時間** | ⚠️ **這是最常被漏掉的欄位**，見下方 |
@@ -565,7 +565,7 @@ outbox.save(new OutboxMessage(msgId, "Order", orderId, "order.created", "{}"));
 //   → 事件的意思是「當時發生了什麼」，不是「現在長怎樣」
 
 // ✅ 對：在交易裡就把當下的狀態序列化好
-String payload = objectMapper.writeValueAsString(OrderCreatedEvent.from(order));
+String payload = objectMapper.writeValueAsString(new OrderCreatedEvent(msgId, order.getId()));
 outbox.save(new OutboxMessage(msgId, "Order", order.getId(), "order.created", payload));
 ```
 
@@ -654,7 +654,7 @@ private String payload;
 ```
 
 📌 **順便：其他欄位也都明確寫了 `length`。**
-不寫的話 Hibernate 會給 `varchar(255)` —— 對 `status`（最長 7 個字元）是浪費，
+不寫的話 Hibernate 會給 `varchar(255)` —— 對 `status`（加入 UNROUTABLE 後最長 10 個字元）是浪費，
 對 `last_error`（堆疊訊息）則是**又一個會截斷的地方**。
 **Outbox 是基礎設施，它的 DDL 值得手寫，不要靠 `ddl-auto` 猜。**
 
@@ -664,23 +664,42 @@ private String payload;
 
 ### 2.4.3 寫入端：一個交易，兩張表
 
-```java
-    /** ✅ 寫法 D：訂單與 outbox 在同一個交易裡 */
-    @Service
-    static class OutboxOrderService {
-        @Autowired OrderRepository orders;
-        @Autowired OutboxRepository outbox;
+後續成品統一使用這個 DTO；`eventId` 等於 Outbox 主鍵，`orderId` 是業務 ID。
+放在 `src/main/java/com/example/lab11/events/OrderCreatedEvent.java`：
 
-        @Transactional
-        public String placeOrder(String id) {
-            orders.save(new Order(id, "alice", 1000));
-            String msgId = UUID.randomUUID().toString();
-            outbox.save(new OutboxMessage(msgId, "Order", id, "order.created",
-                    "{\"orderId\":\"" + id + "\"}"));
-            return msgId;                    // 兩張表、一個交易、一起成功或一起失敗
-        }
-    }
+```java
+package com.example.lab11.events;
+
+public record OrderCreatedEvent(String eventId, String orderId) {}
 ```
+
+```java
+@Service
+public class OutboxOrderService {
+    private final OrderRepository orders;
+    private final OutboxRepository outbox;
+    private final ObjectMapper json;
+    public OutboxOrderService(OrderRepository orders, OutboxRepository outbox, ObjectMapper json) {
+        this.orders=orders; this.outbox=outbox; this.json=json;
+    }
+    @Transactional
+    public String placeOrder(String id) {
+        orders.save(new Order(id, "alice", 1000));
+        String msgId=UUID.randomUUID().toString();
+        try {
+            String payload=json.writeValueAsString(new OrderCreatedEvent(msgId, id));
+            outbox.save(new OutboxMessage(msgId, "Order", id, "order.created", payload));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("event serialization failed", e); // 一起回滾
+        }
+        return msgId;
+    }
+}
+```
+
+這裡的 import 使用 Jackson 的 `ObjectMapper`、`JsonProcessingException`、
+`com.example.lab11.events.OrderCreatedEvent`，以及 Spring 的 `Service`、`Transactional`。
+JSON 在交易中序列化一次；讀出端用原始 UTF-8 bytes 發送，不能再對這個 String 做 JSON 序列化。
 
 **驗證：交易回滾時，outbox 那一列也一起回滾**
 
@@ -702,7 +721,7 @@ private String payload;
     @Service
     static class OutboxRelay {
         @Autowired OutboxRepository outbox;
-        @Autowired RabbitTemplate rabbit;
+        @Autowired ConfirmedRabbitSender sender; // 完整類別見 2.5.3
 
         @Transactional(propagation = Propagation.REQUIRES_NEW)
         public int pump(int batchSize) {
@@ -710,12 +729,16 @@ private String payload;
             int sent = 0;
             for (OutboxMessage m : batch) {
                 try {
-                    rabbit.convertAndSend("", Q, m.getPayload());
-                    outbox.markSent(m.getId());
-                    sent++;
-                } catch (Exception e) {
-                    outbox.markRetry(m.getId(), Instant.now().plusSeconds(5), e.getMessage());
+                    sender.sendJson(m.getId(), "", Q, m.getPayload());
+                } catch (ConfirmedRabbitSender.UnroutableMessageException e) {
+                    outbox.markUnroutable(m.getId(), "NO_ROUTE");
+                    continue;
+                } catch (org.springframework.amqp.AmqpException e) {
+                    outbox.markRetry(m.getId(), Instant.now().plusSeconds(5), "publish failed");
+                    continue;
                 }
+                outbox.markSent(m.getId()); // DB 失敗向外拋，整批回滾
+                sent++;
             }
             return sent;
         }
@@ -886,17 +909,25 @@ public interface OutboxRepository extends JpaRepository<OutboxMessage, String> {
     @Modifying
     @Query("""
            update OutboxMessage m
-           set m.attempts = m.attempts + 1, m.nextRetryAt = :next, m.lastError = :err,
-               m.status = case when m.attempts + 1 >= 5 then 'FAILED' else 'PENDING' end
+           set m.status = case when m.attempts + 1 >= 5 then 'FAILED' else 'PENDING' end,
+               m.attempts = m.attempts + 1, m.nextRetryAt = :next, m.lastError = :err
            where m.id = :id
            """)
     void markRetry(@Param("id") String id, @Param("next") Instant next, @Param("err") String err);
+
+    @Modifying
+    @Query("update OutboxMessage m set m.status = 'UNROUTABLE', m.lastError = :err where m.id = :id")
+    void markUnroutable(@Param("id") String id, @Param("err") String err);
 
     long countByStatus(String status);
 }
 ```
 
-⚠️ **那個 `value = "-2"` 是 JPA 規格裡的魔術數字**：
+MySQL 的單表 UPDATE 可能由左至右計算 SET：先判斷舊 attempts，再加一，
+才會在第 5 次失敗轉 FAILED。不要把 attempts 的賦值移到 status 前面。
+Repository 的 modifying 方法由 Pump 的交易呼叫；不能直接在 broker callback 裡裸呼叫。
+
+⚠️ **那個 `value = "-2"` 是 Hibernate 支援的延伸值，並非可跨 provider 的 JPA 標準值**：
 
 | `jakarta.persistence.lock.timeout` | 對應的 SQL |
 |---|---|
@@ -1004,58 +1035,140 @@ public class OutboxPoller {
 
 **正確的版本 —— 把交易方法放到另一顆 bean 上**：
 
+先放入下列兩個共用類別（各自一個 `.java` 檔）。必須沿用 01 章的
+`publisher-confirm-type: correlated`、`publisher-returns: true`、`template.mandatory: true`。
+confirm future 完成前 Spring 已經填入相應的 return，故等待後一起檢查。
+
+```java
+package com.example.lab11.messaging;
+
+import java.nio.charset.StandardCharsets;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import org.springframework.amqp.AmqpException;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageDeliveryMode;
+import org.springframework.amqp.core.MessageProperties;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.stereotype.Component;
+
+@Component
+public class ConfirmedRabbitSender {
+    public static class UnroutableMessageException extends AmqpException {
+        public UnroutableMessageException(String message) { super(message); }
+    }
+    private final RabbitTemplate rabbit;
+    public ConfirmedRabbitSender(RabbitTemplate rabbit) { this.rabbit=rabbit; }
+
+    public void sendJson(String eventId, String exchange, String routingKey, String json) {
+        MessageProperties p=new MessageProperties();
+        p.setContentType(MessageProperties.CONTENT_TYPE_JSON);
+        p.setContentEncoding("UTF-8");
+        p.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+        p.setMessageId(eventId); // 穩定的業務訊息 ID，重送保持相同
+        sendMessage(exchange, routingKey, new Message(json.getBytes(StandardCharsets.UTF_8), p));
+    }
+    public void sendMessage(String exchange, String routingKey, Message message) {
+        // correlation 是「這次送出」的識別，不是 AMQP messageId；每次嘗試都不同
+        CorrelationData cd=new CorrelationData(UUID.randomUUID().toString());
+        try {
+            rabbit.send(exchange, routingKey, message, cd); // raw JSON，不經 MessageConverter
+            CorrelationData.Confirm confirm=cd.getFuture().get(5, TimeUnit.SECONDS);
+            if (cd.getReturned()!=null)
+                throw new UnroutableMessageException(cd.getReturned().getReplyText());
+            if (!confirm.isAck()) throw new AmqpException("broker nack: "+confirm.getReason());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AmqpException("interrupted while waiting for confirm", e);
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+            throw new AmqpException("publish outcome unknown; retry with same eventId", e);
+        }
+    }
+}
+```
+
+Gauge 只註冊一次，之後更新同一個 AtomicLong。反覆 `gauge(name, 新的 Number)`
+只會取得既有 meter，無法替換它觀察的物件。
+
+```java
+package com.example.lab11.messaging;
+
+import java.util.concurrent.atomic.AtomicLong;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OutboxMetrics {
+    private final AtomicLong pending=new AtomicLong();
+    private final AtomicLong failed=new AtomicLong();
+    private final AtomicLong unroutable=new AtomicLong();
+    public OutboxMetrics(MeterRegistry meters) {
+        meters.gauge("outbox.pending", pending);
+        meters.gauge("outbox.failed", failed);
+        meters.gauge("outbox.unroutable", unroutable);
+    }
+    public void refresh(long p, long f, long u) {
+        pending.set(p); failed.set(f); unroutable.set(u);
+    }
+}
+```
+
+以下放在與 Entity／Repository 相同的 package，補入上述兩個共用類別及 Spring、
+SLF4J、`Instant`、`PageRequest` 的 import：
+
 ```java
 @Component
 public class OutboxPoller {
-
-    private static final Logger log = LoggerFactory.getLogger(OutboxPoller.class);
-    private final OutboxPump pump;                    // ← 另一顆 bean
-
-    /** 每 500 ms 跑一次；上一輪還沒跑完就不會重疊（fixedDelay 的語意） */
+    private final OutboxPump pump;
+    public OutboxPoller(OutboxPump pump) { this.pump=pump; }
     @Scheduled(fixedDelay = 500)
     public void poll() {
         int sent;
-        do {
-            sent = pump.pumpOneBatch();               // ✅ 跨 bean 呼叫 → 走代理 → 有交易
-        } while (sent > 0);
+        do { sent=pump.pumpOneBatch(); } while (sent>0);
     }
 }
 
 @Component
 public class OutboxPump {
-
-    private static final Logger log = LoggerFactory.getLogger(OutboxPump.class);
     private final OutboxRepository outbox;
-    private final RabbitTemplate rabbit;
-    private final MeterRegistry meters;
-
+    private final ConfirmedRabbitSender sender;
+    private final OutboxMetrics metrics;
+    public OutboxPump(OutboxRepository outbox, ConfirmedRabbitSender sender, OutboxMetrics metrics) {
+        this.outbox=outbox; this.sender=sender; this.metrics=metrics;
+    }
     @Transactional
-    public int pumpOneBatch() {                       // ⚠️ 必須是 public
-        var batch = outbox.pickBatch(Instant.now(), PageRequest.of(0, 200));
-        int sent = 0;
-        for (OutboxMessage m : batch) {
+    public int pumpOneBatch() {
+        var batch=outbox.pickBatch(Instant.now(), PageRequest.of(0, 20));
+        int sent=0;
+        for (OutboxMessage m:batch) {
             try {
-                CorrelationData cd = new CorrelationData(m.getId());
-                rabbit.convertAndSend(exchangeOf(m), m.getEventType(), m.getPayload(), cd);
-                // ⚠️ 要等 confirm 才能標記 SENT —— 理由見 01 章 1.4.3
-                if (!cd.getFuture().get(5, TimeUnit.SECONDS).isAck())
-                    throw new IllegalStateException("broker nack");
-                outbox.markSent(m.getId());
-                sent++;
-            } catch (Exception e) {
-                // 指數退避：1, 2, 4, 8, 16... 秒，上限 5 分鐘
-                long backoff = Math.min(300, 1L << Math.min(m.getAttempts(), 8));
+                sender.sendJson(m.getId(), "order.x", m.getEventType(), m.getPayload());
+            } catch (ConfirmedRabbitSender.UnroutableMessageException e) {
+                outbox.markUnroutable(m.getId(), trim(e.getMessage()));
+                continue; // 修正路由並人工重設 PENDING，避免無效重送
+            } catch (org.springframework.amqp.AmqpException e) {
+                long backoff=Math.min(300, 1L << Math.min(m.getAttempts(), 9));
                 outbox.markRetry(m.getId(), Instant.now().plusSeconds(backoff), trim(e.getMessage()));
-                log.warn("outbox send failed id={} attempts={} backoff={}s",
-                        m.getId(), m.getAttempts() + 1, backoff, e);
+                continue;
             }
+            outbox.markSent(m.getId()); // DB 錯誤向外拋，回滾；不把它當 broker 錯誤吞掉
+            sent++;
         }
-        meters.gauge("outbox.pending", outbox.countByStatus("PENDING"));
-        meters.gauge("outbox.failed",  outbox.countByStatus("FAILED"));
+        metrics.refresh(outbox.countByStatus("PENDING"), outbox.countByStatus("FAILED"),
+                outbox.countByStatus("UNROUTABLE"));
         return sent;
+    }
+    private static String trim(String error) {
+        return error==null ? "unknown" : error.substring(0, Math.min(500, error.length()));
     }
 }
 ```
+
+只有 Pump 擁有 DB 狀態更新權，confirm／return callback 不寫資料庫，
+不會發生 return 先記 UNROUTABLE、正向 confirm 又覆蓋成 SENT 的競態。
+網路逾時仍可能代表「已送到但確認遺失」，重送必須沿用 eventId，由 03 章去重。
+metrics 在提交前取樣，若整批回滾，下一輪會重新校正；不是交易稽核紀錄。
 
 ⚠️ **還有兩件不能忘的事**：
 
@@ -1075,12 +1188,12 @@ public class Lab11Application { ... }
 | 決定 | 為什麼 |
 |---|---|
 | **交易方法放在另一顆 bean** | 見上方實測：自我呼叫 → **沒有交易 → `SKIP LOCKED` 的鎖立刻釋放 → 三台互搶** |
-| `@Scheduled(fixedDelay = 500)` | ⚠️ **`fixedDelay` 不是 `fixedRate`。** `fixedRate` 會在上一輪還沒跑完時就啟動下一輪 → 同一個行程裡兩個輪詢器互搶 |
+| `@Scheduled(fixedDelay = 500)` | ⚠️ **`fixedDelay` 不是 `fixedRate`。** 同一個同步排程的 `fixedRate` 不會自行重疊；`fixedDelay` 另保證上一輪結束後才等 500 ms。多個 bean／實例或 `@Async` 才需額外防重入 |
 | `do { } while (sent > 0)` | **一輪撈到撈不到為止。** 只撈一批的話，尖峰時積壓永遠追不上（每 500 ms 只送 200 則 = 400 則/秒） |
-| `batchSize = 200` | 太小追不上、太大會讓那個交易開太久（鎖住 200 列的期間別台都跳過它們） |
+| `batchSize = 20` | 太小追不上、太大會讓那個交易開太久（鎖住 200 列的期間別台都跳過它們） |
 | **等 `confirm` 才 `markSent`** | 01 章 1.4.3：沒等 confirm 就標記 SENT，等於把「可能沒送到」記成「送到了」—— **Outbox 的價值瞬間歸零** |
 | 指數退避 + `attempts >= 5` 轉 `FAILED` | 沒有退避 = 資料庫版的 00 章 0.5.2 風暴；沒有上限 = 毒藥訊息永遠佔著批次的位置 |
-| `meters.gauge("outbox.pending")` | **這是你唯一的告警來源。** `PENDING` 持續上升 = 送不出去；`FAILED > 0` = 有人要去看 |
+| `OutboxMetrics.refresh(...)` | **監控 pending、failed 與 unroutable。** `PENDING` 持續上升 = 送不出去；`FAILED > 0` = 有人要去看 |
 
 ⚠️ **關於 `@Transactional` 開在 `pumpOneBatch()` 上的另一個重要細節**：
 整批的 `SELECT ... FOR UPDATE` 與所有 `markSent` 在**同一個交易**裡。
@@ -1467,7 +1580,8 @@ broker 掛 30 秒，那 30 秒裡的**每一筆**都命中，命中率 100%。
 
 **⑨ 「`@Scheduled(fixedRate = 500)` 跟 `fixedDelay = 500` 差不多」**
 
-`fixedRate` 會在上一輪還沒跑完時就啟動下一輪 → **同一個行程裡兩個輪詢器互搶**。
+同一個同步 `fixedRate` 任務不會自行重疊，即使 scheduler pool 有多條執行緒。
+`fixedDelay` 是在上一輪完成後再等待；多實例、重複註冊或 `@Async` 才是另一些並行來源。
 `SKIP LOCKED` 會救你不重送，但你白白浪費一倍的資料庫連線。
 
 **⑩ 「outbox 表的 `payload` 存 ID 就好，輪詢器再去查」**

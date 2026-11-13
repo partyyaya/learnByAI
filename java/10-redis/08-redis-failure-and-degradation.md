@@ -483,43 +483,53 @@ Session（11 章）、預扣庫存（12 章）——**例外會照樣往上丟�
 
 ```java
 public class CacheCircuitBreaker {
-
     public enum State { CLOSED, OPEN, HALF_OPEN }
+    public record Permit(long generation, boolean probe) {}
 
-    private final int failureThreshold;    // 連續失敗幾次就跳閘
-    private final long openMillis;         // 跳閘後多久才試探
+    private final int failureThreshold;
+    private final long openNanos;
+    private State state = State.CLOSED;
+    private int consecutiveFailures;
+    private long openedAt, generation;
+    private final java.util.concurrent.atomic.AtomicLong skipped = new java.util.concurrent.atomic.AtomicLong();
 
-    private volatile State state = State.CLOSED;
-    private final AtomicInteger consecutiveFailures = new AtomicInteger();
-    private final AtomicLong openedAt = new AtomicLong();
-    private final AtomicInteger probeInFlight = new AtomicInteger();   // HALF_OPEN 只放一個出去
+    public CacheCircuitBreaker(int failureThreshold, long openMillis) {
+        if (failureThreshold < 1 || openMillis < 0) throw new IllegalArgumentException();
+        this.failureThreshold = failureThreshold;
+        this.openNanos = java.time.Duration.ofMillis(openMillis).toNanos();
+    }
 
-    /** 這一次要不要真的去碰 Redis */
-    public boolean allowRequest() {
-        State s = state;
-        if (s == State.CLOSED) return true;
-        if (s == State.OPEN) {
-            if (System.currentTimeMillis() - openedAt.get() < openMillis) { skipped.incrementAndGet(); return false; }
+    // 只在短暫的記憶體狀態轉換持鎖；真正 Redis I/O 在鎖外。
+    public synchronized Permit tryAcquire() {
+        if (state == State.CLOSED) return new Permit(generation, false);
+        if (state == State.OPEN && System.nanoTime() - openedAt >= openNanos) {
             state = State.HALF_OPEN;
-            probeInFlight.set(0);
+            return new Permit(generation, true);       // 轉換狀態與發出唯一 probe 同步完成
         }
-        if (probeInFlight.compareAndSet(0, 1)) return true;   // HALF_OPEN：只放一個
         skipped.incrementAndGet();
-        return false;
+        return null;                                  // OPEN 等待中，或 HALF_OPEN 已有 probe
     }
 
-    public void onSuccess() {
-        consecutiveFailures.set(0);
-        if (state != State.CLOSED) { state = State.CLOSED; probeInFlight.set(0); }
+    public synchronized void onSuccess(Permit p) {
+        if (p.generation() != generation) return;       // 忽略上一輪仍在途的回應
+        if (state == State.HALF_OPEN && p.probe()) {
+            state = State.CLOSED;
+            generation++;
+        }
+        if (state == State.CLOSED) consecutiveFailures = 0;
     }
 
-    public void onFailure() {
-        probeInFlight.set(0);
-        if (state == State.HALF_OPEN || consecutiveFailures.incrementAndGet() >= failureThreshold) {
+    public synchronized void onFailure(Permit p) {
+        if (p.generation() != generation) return;
+        if ((state == State.HALF_OPEN && p.probe()) ||
+                (state == State.CLOSED && ++consecutiveFailures >= failureThreshold)) {
             state = State.OPEN;
-            openedAt.set(System.currentTimeMillis());
+            openedAt = System.nanoTime();              // 間隔使用單調時鐘
+            generation++;                             // 先前請求不能重設新一輪狀態
         }
     }
+
+    public synchronized State state() { return state; }
 }
 ```
 
@@ -540,13 +550,14 @@ public class CacheCircuitBreaker {
 public class CircuitBreakingCache implements Cache {
 
     private <T> T guard(Supplier<T> call) {
-        if (!breaker.allowRequest()) throw new CacheUnavailableException(getName());   // ← 注意這裡
+        var permit = breaker.tryAcquire();
+        if (permit == null) throw new CacheUnavailableException(getName());
         try {
             T r = call.get();
-            breaker.onSuccess();
+            breaker.onSuccess(permit);
             return r;
         } catch (RuntimeException e) {
-            breaker.onFailure();
+            breaker.onFailure(permit);
             throw e;                      // 交給 CacheErrorHandler 吞掉（8.3）
         }
     }
@@ -808,7 +819,10 @@ public class TwoLevelCache implements Cache {
         }
     }
 
-    @Override public void put(Object key, Object value) { local.put(key, ...); redis.put(key, value); }
+    @Override public void put(Object key, Object value) {
+        local.put(key, value == null ? NULL : value);
+        redis.put(key, value);
+    }
 
     /** ⚠️ 清除一定要兩級都清，而且本地要先清 */
     @Override public void evict(Object key) { local.invalidate(key); redis.evict(key); }
@@ -827,12 +841,26 @@ public class TwoLevelCache implements Cache {
 **包覆順序也不能反**：
 
 ```
-TwoLevelCache（本地兜底）
-  └── CircuitBreakingCache（熔斷）
-        └── TransactionAwareCacheDecorator（07 章 7.7.4）
+TransactionAwareCacheDecorator（提交後才更新兩層）
+  └── TwoLevelCache（本地兜底）
+        └── CircuitBreakingCache（熔斷）
               └── FailSoftRedisCache（07 章 7.6.4）
                     └── RedisCache
 ```
+
+最外層交易 decorator 必須包住整個 TwoLevelCache；否則 L1 立即寫入、只有 Redis
+等提交，回滾後便會在故障時讀出未提交值。組裝時，底層 manager 設為
+`setTransactionAware(false)`，先取得原始快取再包成以下順序，避免重複／錯置交易層：
+
+```java
+Cache exposed = new TransactionAwareCacheDecorator(
+        new TwoLevelCache(new CircuitBreakingCache(rawRedisCache, breaker), local));
+```
+
+此處是組裝片段，`CircuitBreakingCache`／`TwoLevelCache` 建構子分別接收上列依賴。
+`put`、`evict`、`clear` 由最外層延後；`get` 仍會立即讀取。
+`putIfAbsent`、`evictIfPresent` 等要求立即回傳結果的操作不會自動延後，
+不要以它們在交易內發布未提交值；需要時另外設計提交後動作。
 
 > ⚠️ **熔斷必須在本地兜底的「裡面」。**
 > 反過來的話，跳閘時最外層就直接回了，**本地那一份永遠不會被用到**。
@@ -1199,7 +1227,7 @@ lab10:
     disconnected-behavior: REJECT_COMMANDS     # 8.4.7（三層都上線之後才開）
   cache:
     prefix: "lab10:v1:"                        # 07 章 7.4.2
-    transaction-aware: true                    # 07 章 7.7.4
+    transaction-aware: false                   # 關掉 07 的內層；8.5.3 在整條鏈最外層包交易 decorator
     degrade-on-failure: true                   # 8.3
     circuit-breaker:
       enabled: true                            # 8.4
@@ -1247,14 +1275,14 @@ management:
 ② 應用層（熔斷）
     熔斷器狀態            : CLOSED
     products 這個 cache 的裝飾鏈 :
+      → TransactionAwareCacheDecorator
       → TwoLevelCache
       → CircuitBreakingCache
-      → TransactionAwareCacheDecorator
       → FailSoftRedisCache
 ③ Spring Cache 層
     errorHandler          : DegradingCacheErrorHandler
     吞掉的錯誤（目前）    : get 0、put 0、evict 0
-    cacheManager          : FailSoftRedisCacheManager（transactionAware = 07 章 7.7.4）
+    cacheManager          : 組裝完成後對外提供最外層交易 decorator；底層 manager 不再重複包交易層
 ```
 
 **那條裝飾鏈是這兩章的成果**，由外到內每一層都對應一節：
@@ -1263,7 +1291,7 @@ management:
 |---|---|---|
 | `TwoLevelCache` | Redis 讀不到時拿本地那一份 | 8.5.3 |
 | `CircuitBreakingCache` | Redis 很慢時主動不碰 | 8.4 |
-| `TransactionAwareCacheDecorator` | 清除延到交易提交後 | 07 章 7.7.4 |
+| `TransactionAwareCacheDecorator` | 將兩層的 put／evict／clear 延到提交後 | 07 章 7.7.4 |
 | `FailSoftRedisCache` | 反序列化失敗當作沒命中 | 07 章 7.6.4 |
 | `RedisCache` | 真的去 Redis | 07 章 7.4 |
 

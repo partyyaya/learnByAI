@@ -1997,11 +1997,11 @@ org.apache.kafka.common.errors.InvalidTopicException: Topic 'ch07claim_order_cre
 📌 **防法有三層**：
 
 1. **不要在請求執行緒上 `.get()`。** 用非同步 + callback（寫法 C）。
-2. **如果非同步做不到，把 `delivery.timeout.ms` 調到你的請求逾時之內**（例如 3000）。
+2. **如果非同步做不到，把 `delivery.timeout.ms` 調到你的請求逾時之內**（例如 delivery=3000、request=1000、linger=0，並設定 max.block.ms=1000）。
 3. **根本解：[02 章的 Outbox](./02-outbox-and-transactional-consistency.md)** ——
    請求執行緒只寫資料庫，送訊息交給背景輪詢器。**它卡多久都不影響使用者。**
 
-**接著比較三種送法。** 為了讓失敗立刻回來，這三組都改成 `retries=0` + `delivery.timeout.ms=3000`：
+**接著比較三種送法。** 為了讓失敗立刻回來，這三組都改成 `retries=0`、`delivery.timeout.ms=3000`、`request.timeout.ms=1000`、`linger.ms=0`：
 
 ```java
         // ── 寫法 A：送出去就不管了
@@ -2032,7 +2032,7 @@ org.apache.kafka.common.errors.InvalidTopicException: Topic 'ch07claim_order_cre
   topic：RF=3、min.insync.replicas=3，然後停掉一台 broker → acks=all 必定失敗
   停掉之後 ISR 已經不足，目前 topic 裡有 0 則
 
-  ── 以下三種送法都改成 retries=0 + delivery.timeout.ms=3000，讓失敗立刻回來 ──
+  ── 以下三種送法都改成 retries=0 + delivery.timeout.ms=3000 + request.timeout.ms=1000 + linger.ms=0 ──
 
   ── 寫法 A：kafka.send(...)，回傳的 Future 丟掉 ──
      送出 200 則   呼叫端接到的例外 0 個   broker 上多了 0 則
@@ -2087,8 +2087,9 @@ org.apache.kafka.common.errors.NotEnoughReplicasException: Messages are rejected
 | 保證順序嗎 | ✅（同一個 key） | ✅ | ✅ |
 | 適合 | ❌ 幾乎沒有場景 | 批次工具、測試 | ✅ **業務程式碼** |
 
-📌 **本站的建議：寫法 C + [Outbox](./02-outbox-and-transactional-consistency.md)。**
-callback 負責「知道這一則成不成功」，Outbox 負責「行程在知道之前就掛掉」那個縫
+📌 **本站成品採用 Outbox + 背景有界等待**：HTTP 只寫資料庫，Pump 等 broker 結果後再更新 DB。
+寫法 C 可用來觀測；若用 callback 更新 Outbox，須另做認領租約與獨立交易，不能直接套到目前 Pump
+（它靠同一交易持有 SKIP LOCKED）
 （[01 章 1.3.8](./01-reliable-delivery-three-hops.md) 那張表的倒數第二列）。
 
 ### 7.9.2 ⚠️ `ProducerListener` 是「一顆 template 一個」
@@ -2133,7 +2134,7 @@ spring:
       properties:
         enable.idempotence: true
         max.in.flight.requests.per.connection: 5
-        delivery.timeout.ms: 120000          # ⚠️ 若在請求執行緒上 .get()，改成 3000（7.9.1）
+        delivery.timeout.ms: 120000          # 必須 >= request.timeout.ms + linger.ms（7.9.1）
         request.timeout.ms: 30000
         # ── 吞吐與延遲（7.6） ──
         linger.ms: 0                         # ⚠️ 同步送的話「必須」是 0
@@ -2193,33 +2194,40 @@ docker exec kafka-lab /opt/kafka/bin/kafka-configs.sh --bootstrap-server localho
 **送訊息的那一段**：
 
 ```java
+package com.example.lab11.messaging;
+
+import com.example.lab11.events.OrderCreatedEvent;
+import java.util.concurrent.TimeUnit;
+import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.stereotype.Service;
+
 @Service
 public class OrderEventPublisher {
-
-    private final KafkaTemplate<String, OrderEvent> kafka;
-
-    public OrderEventPublisher(KafkaTemplate<String, OrderEvent> kafka) { this.kafka = kafka; }
-
-    public void publish(OrderEvent event) {
-        kafka.send(Topics.ORDER_CREATED, event.orderId(), event)    // ← key = aggregateId（7.3.4）
-             .whenComplete((result, ex) -> {
-                 if (ex != null) {
-                     // ⚠️ 這裡是另一條執行緒，不要在這裡丟例外 —— 沒有人會接
-                     log.error("送出失敗 orderId={} : {}", event.orderId(), ex.toString());
-                     outbox.markFailed(event.eventId(), ex);        // 02 章的 Outbox
-                 } else {
-                     outbox.markSent(event.eventId());
-                 }
-             });
+    private final KafkaTemplate<Object, Object> kafka; // 10.7.1 成品設定也沿用此型別
+    public OrderEventPublisher(KafkaTemplate<Object, Object> kafka) { this.kafka=kafka; }
+    public void publish(OrderCreatedEvent event) {
+        try {
+            kafka.send("order.created.v1", event.orderId(), event).get(5, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted", e);
+        } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException e) {
+            throw new IllegalStateException("Kafka outcome failed or unknown", e);
+        }
     }
 }
 ```
 
-📌 **三個重點**：
-① key 是 `orderId`（7.3.4）；
-② 用 `whenComplete` 而不是 `.get()`（7.9.1）；
-③ ⚠️ **callback 裡丟例外沒有意義** —— 那條執行緒是 producer 的網路執行緒，
-沒有人會接住它，而且丟了會影響後續訊息的處理。
+這個方法由**背景** Pump 呼叫。Kafka 版 Pump 將 Outbox JSON 解析為
+`OrderCreatedEvent` 再呼叫 `publish`，正常回傳後在原 DB 交易 markSent；
+失敗 markRetry，DB 錯誤向外拋。不能直接把已序列化 JSON String 交給 JsonSerializer 再編碼。
+每個事件以 `orderId` 當 key，`eventId` 留給下游去重；業務重送不受 Kafka producer 冪等保證。
+
+`get(5s)` 只限制等待 future 的時間，不會取消底層 send；`send()` 本身也可能因 metadata／buffer
+等待至 `max.block.ms`。HTTP 的時限要涵蓋兩者，不能只縮短 get。
+`delivery.timeout.ms` 必須至少是 `request.timeout.ms + linger.ms`，否則 producer 建立就失敗。
+本課程一般設定保留 120000/30000/0；短逾時實驗才使用 3000/1000/0。
+
 
 ---
 

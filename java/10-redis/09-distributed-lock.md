@@ -1449,21 +1449,59 @@ A：拿鎖(TTL 200ms) ─┬─ [ GC 停頓 400ms，程式自己完全不知道 
 B：              拿鎖 ──── 寫入 ────
 ```
 
-```java
-// A：拿鎖 → 被 GC 停住 400ms（鎖 TTL 只有 200ms）
-String ta = simple.tryLock(key, Duration.ofMillis(200), ...);
-Long fa = useFencing ? redis.opsForValue().increment("fence:counter") : null;
-new Thread(() -> {
-    sleepQuiet(400);                  // ← STW
-    store.write("v", myValue, fa);    // 它以為自己還持有鎖
-}).start();
+先把「取得所有權」與「分配 fence」放在同一段 Lua。兩個 key 都使用
+同一個資源 hash tag；counter 不可過期、不可被驅逐，也不能在釋放鎖時刪掉。
 
-// B：A 的鎖過期後拿到鎖，正常寫入
-sleepQuiet(250);
-String tb = simple.tryLock(key, Duration.ofMillis(3000), ...);
-Long fb = useFencing ? redis.opsForValue().increment("fence:counter") : null;
-store.write("v", newValue, fb);
+```lua
+-- scripts/fenced-lock-acquire.lua
+-- KEYS[1] = lock:{resource}，KEYS[2] = fence:{resource}
+-- ARGV[1] = 唯一 owner，ARGV[2] = 租約毫秒
+local ttl = tonumber(ARGV[2])
+if not ttl or ttl < 1 or ttl > 2147483647 or ttl ~= math.floor(ttl) then
+    return redis.error_reply('invalid lock ttl')
+end
+if redis.call('EXISTS', KEYS[1]) == 1 then return {} end
+redis.call('INCR', KEYS[2])
+-- GET 保留 Redis 64-bit 整數字串，避免經過 Lua double 後失去精度。
+local fence = redis.call('GET', KEYS[2])
+redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+return {ARGV[1], fence}
 ```
+
+```java
+public record FencedLease(String owner, long fence) {}
+
+public FencedLease tryAcquire(String resourceTag, Duration ttl) {
+    String owner = UUID.randomUUID().toString();
+    List<?> r = redis.execute(acquireFenced,
+            List.of("lock:{" + resourceTag + "}", "fence:{" + resourceTag + "}"),
+            owner, String.valueOf(ttl.toMillis()));
+    if (r == null || r.isEmpty()) return null;
+    return new FencedLease(String.valueOf(r.get(0)), Long.parseLong(String.valueOf(r.get(1))));
+}
+// acquireFenced：RedisScript<List>，載入上面的 fenced-lock-acquire.lua。
+// resourceTag 由伺服器編碼產生，不能讓原始輸入的 {} 改變 hash tag。
+// 釋放仍使用 9.3.3 的 owner 比對 Lua，只刪 lock key，不動 fence counter。
+
+// A：原子取得鎖與 token，再模擬 400ms 停頓
+FencedLease a = fenced.tryAcquire("product-1", Duration.ofMillis(200));
+if (a == null) throw new IllegalStateException("A did not acquire");
+Thread oldOwner = new Thread(() -> {
+    sleepQuiet(400);
+    store.write("v", myValue, useFencing ? a.fence() : null);
+});
+oldOwner.start();
+sleepQuiet(250);
+FencedLease b = fenced.tryAcquire("product-1", Duration.ofSeconds(3));
+if (b == null) throw new IllegalStateException("B did not acquire");
+store.write("v", newValue, useFencing ? b.fence() : null);
+oldOwner.join();
+```
+
+⚠️ 不能寫成 `tryLock()` 成功後再單獨 `INCR`：若 A 停在兩者之間，
+租約過期後 B 先取得 token，恢復的舊 A 反而取得更大的 token。
+上述 Lua 只處理同一 master 上的授予順序，**非同步複製切換仍可能遺失 counter 或鎖**。
+正式正確性保證還需要不倒退的協調序號與資源端檢查；不能把這個單機實驗當成 HA 證明。
 
 `FencedStore` 只接受「token 比上一次大」的寫入——
 真實世界裡這個檢查在資料庫（`UPDATE ... WHERE fence_token < ?`）：
@@ -1491,7 +1529,7 @@ synchronized void write(String k, int v, Long token) {
 > 📌 **fencing token 的關鍵是「檢查發生在被保護的資源上」，不是在鎖上。**
 >
 > ```
->       ┌─ Redis：發 token（單調遞增，INCR 就夠了）
+>       ┌─ 協調機制：原子授予所有權與 token，且切換後序號不可倒退
 >  鎖 ──┤
 >       └─ 資料庫：UPDATE ... WHERE fence_token < :myToken   ← 真正的防線在這裡
 > ```

@@ -1,6 +1,6 @@
 # 通用基礎知識教學
 
-> 整理命令列工具、CSS 排版、JavaScript 非同步、瀏覽器 API、網路通訊與安全部署等共通知識，可依學習順序閱讀，也可按工作需求查閱。
+> 整理命令列工具、CSS 排版、網路通訊與安全部署等共通知識，可依學習順序閱讀，也可按工作需求查閱。JavaScript 語言、非同步、瀏覽器 API 與 Web Worker 已整合到 [JavaScript 課程](../javascript-course/README.md)。
 
 ---
 
@@ -15,20 +15,17 @@
 | [bash.md](./bash.md) | Bash 常用指令 — 檔案、程序、網路與 Nginx／Docker 操作 |
 | [windows.md](./windows.md) | Windows 常用指令 — CMD、PowerShell、程序與服務管理 |
 
-### 2. 前端排版、非同步與瀏覽器實務
-
-先掌握排版與樣式，再理解非同步流程、瀏覽器提供的能力，最後處理需要背景執行緒的運算。
+### 2. 前端排版
 
 | 檔案 | 主題 |
 |------|------|
 | [css-flex-variables-property.md](./css-flex-variables-property.md) | Flex 排版細節、CSS 變數與 `@property` — 尺寸分配、溢位、主題繼承與型別動畫 |
-| [promise-async-await-then.md](./promise-async-await-then.md) | Promise、then 與 async/await — 非同步流程與原理手作 |
-| [browser-native-apis.md](./browser-native-apis.md) | 瀏覽器原生 API — Observer、排程、請求取消、跨分頁通訊與資源清理 |
-| [web-worker.md](./web-worker.md) | Web Worker — 背景運算、通訊與原生／Vue／React 整合 |
+
+Promise／async-await、瀏覽器原生 API 與 Web Worker 在 [JavaScript 課程](../javascript-course/README.md)的第 11、15、16 章。
 
 ### 3. 網路與即時通訊
 
-先建立 HTTP 基礎，再比較伺服器單向推送與雙向通訊。若不熟悉請求與回應，可先讀 HTTP，再回到瀏覽器 API 篇的 fetch 範例。
+先建立 HTTP 基礎，再比較伺服器單向推送與雙向通訊。若不熟悉請求與回應，可先讀 HTTP，再回到 [JavaScript 課程第 14 章](../javascript-course/14-fetch-and-network-requests.md)的 fetch 範例。
 
 | 檔案 | 主題 |
 |------|------|
@@ -65,7 +62,7 @@
 ## 適合對象
 
 - 想搞懂 HTTP/HTTPS 原理的後端或全端工程師
-- 想補強非同步、瀏覽器 API 與效能處理的前端工程師
+- 想補強 CSS 排版與即時通訊的前端工程師
 - 需要管理 SSL 憑證的 DevOps / SRE 工程師
 - 對網站安全性有興趣的開發者
 - 準備將網站從 HTTP 升級到 HTTPS 的人
@@ -73,9 +70,9 @@
 ## 環境需求
 
 - 命令列篇：Linux／macOS 的 Shell，或 Windows 的 CMD／PowerShell；部分指令依環境選用。
-- 瀏覽器篇：瀏覽器與開發者工具；需要模組或安全環境的範例搭配本機開發伺服器。
+- 前端排版與互動範例：瀏覽器與開發者工具；需要模組的範例搭配本機開發伺服器。
 - 網路與部署篇：依章節使用 curl、openssl、certbot、Nginx 等工具；實際申請公開憑證時準備網域與可驗證的部署環境。
 
 ---
 
-> 已熟悉命令列可從 [Flex 與 CSS 變數](./css-flex-variables-property.md) 或 [Promise 與 async/await](./promise-async-await-then.md) 開始；只想學網站上線則從 [HTTP 與 HTTPS](./http-https.md) 接到安全與部署篇。
+> 已熟悉命令列可從 [Flex 與 CSS 變數](./css-flex-variables-property.md) 開始；只想學網站上線則從 [HTTP 與 HTTPS](./http-https.md) 接到安全與部署篇。

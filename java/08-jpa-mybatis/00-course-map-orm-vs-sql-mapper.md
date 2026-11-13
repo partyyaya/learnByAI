@@ -211,7 +211,9 @@ CREATE TABLE stock (
   reserved_qty INT        NOT NULL DEFAULT 0,
   version      BIGINT     NOT NULL DEFAULT 0,
   PRIMARY KEY (product_id),
-  CONSTRAINT fk_stock_product FOREIGN KEY (product_id) REFERENCES product(id)
+  CONSTRAINT fk_stock_product FOREIGN KEY (product_id) REFERENCES product(id),
+  CONSTRAINT ck_stock_qty CHECK (qty >= 0),
+  CONSTRAINT ck_stock_reserved CHECK (reserved_qty >= 0 AND reserved_qty <= qty)
 ) ENGINE=InnoDB;
 
 CREATE TABLE orders (                            -- ★ 不叫 order：保留字（07 站 1.11）
@@ -232,7 +234,8 @@ CREATE TABLE orders (                            -- ★ 不叫 order：保留字
   UNIQUE KEY uk_orders_order_no (order_no),
   KEY idx_orders_customer_placed (customer_id, placed_at),
   KEY idx_orders_status_placed (status, placed_at),
-  CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id) REFERENCES customer(id)
+  CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id) REFERENCES customer(id),
+  CONSTRAINT ck_orders_discount CHECK (discount_amount >= 0 AND discount_amount <= total_amount)
 ) ENGINE=InnoDB;
 
 CREATE TABLE order_item (
@@ -249,6 +252,8 @@ CREATE TABLE order_item (
   CONSTRAINT fk_order_item_product FOREIGN KEY (product_id) REFERENCES product(id)
 ) ENGINE=InnoDB;
 ```
+
+成品 stock.qty 是總量、reserved_qty 是預扣量，可用量 = qty - reserved_qty；預扣不減總量，出貨才扣總量（06 章 6.11）。上述 CHECK 是跨站契約的一部分。既有實驗庫須重建或用遷移補上約束，不能只改 Java。
 
 📌 **這一章從頭到尾用的都是這份 schema，而且它是「先有 schema、後有實體」**。
 這個方向本身就是一個選擇（0.6.5 會回來處理「誰主導 schema」這個問題）。
@@ -1402,7 +1407,7 @@ import jakarta.validation.constraints.*;   // NotNull、Size……   ★ 兩份�
 @Entity @Table(name = "customer")
 public class CustomerE {
     @Id private UUID id;
-    @Column(nullable = false) @NotNull @Size(max = 255)     // ★ 一個給 DDL，一個給驗證
+    @Column(nullable = false) @NotNull @Size(max = 255)     // 映射中繼資料與 Bean Validation 各有範圍（01 章 1.11）
     private String email;
 }
 ```
@@ -1410,9 +1415,9 @@ public class CustomerE {
 ⚠️ **`@Column(nullable = false)` 與 `@NotNull` 不是同一件事**：
 
 ```
-@Column(nullable = false)  →  影響【Hibernate 產生 DDL】時的 NOT NULL；
-                              本課 ddl-auto: none，所以它【什麼都不做】
-@NotNull                   →  Bean Validation。Hibernate 在 flush 前會跑一次，
+@Column(nullable = false)  →  提供 NOT NULL 映射中繼資料；
+                              ddl-auto: none 不建表，但 Hibernate nullability 檢查仍可能生效
+@NotNull                   →  有 Validator 整合時，Hibernate 在 persist／flush 前驗證，
                               不通過就拋 ConstraintViolationException（不會送到資料庫）
 ```
 

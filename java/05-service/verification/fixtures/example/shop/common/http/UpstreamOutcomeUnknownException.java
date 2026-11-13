@@ -1,0 +1,1 @@
+package example.shop.common.http; public class UpstreamOutcomeUnknownException extends RuntimeException { public UpstreamOutcomeUnknownException(String client,String detail) {super(client+detail);} public UpstreamOutcomeUnknownException(String client,Throwable cause) {super(client,cause);} }

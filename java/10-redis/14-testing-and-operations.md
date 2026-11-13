@@ -817,9 +817,21 @@ static void props(DynamicPropertyRegistry r) { r.add("spring.data.redis.database
 
 ```java
 @Test
-void 你的每一段_Lua_都要在這裡跑一次() {
-    cmd.set("{order:1}:stock", "100");        // ← 自己準備，不依賴別的測試
-    // …
+void 實際庫存腳本的回傳契約必須一致() throws IOException {
+    String script = new ClassPathResource("scripts/deduct-stock.lua").getContentAsString(StandardCharsets.UTF_8);
+    String key = "{order:1}:stock";
+    cmd.set(key, "100");
+    List<Object> ok = cmd.eval(script, ScriptOutputType.MULTI, new String[]{key}, "3");
+    assertThat(ok).containsExactly(1L, 97L);
+    List<Object> soldOut = cmd.eval(script, ScriptOutputType.MULTI, new String[]{key}, "98");
+    assertThat(soldOut).containsExactly(0L, 97L);
+    cmd.del(key);
+    List<Object> missing = cmd.eval(script, ScriptOutputType.MULTI, new String[]{key}, "1");
+    assertThat(missing).containsExactly(-1L, 0L);
+    cmd.set(key, "100");
+    assertThatThrownBy(() -> cmd.eval(script, ScriptOutputType.MULTI, new String[]{key}, "-1"))
+            .hasMessageContaining("quantity must be a positive int");
+    assertThat(cmd.get(key)).isEqualTo("100");
 }
 ```
 
@@ -943,13 +955,16 @@ void 你的每一段_Lua_都要在這裡跑一次() {
 ```
 [F1] ✅ 跨槽 Lua 如預期丟出 CROSSSLOT
 [F1] hash tag Lua → 100/A
-[F1] 12 章 deduct-stock.lua → 97
+[F1] 12 章實際 deduct-stock.lua → [1,97] / [0,97] / [-1,0]；負數被拒絕
 [F1] 節點數 = 3，覆蓋的槽 = 16384
 ```
 
 📌 **最後那一個測試是這一節的重點：把你專案裡的每一段 Lua 都列進去。**
 13.7.6 那張表是「上 Cluster 前的檢查清單」，
 **這個測試是「上 Cluster 後不會退化的保險」。**
+`ClassPathResource` 位於 `org.springframework.core.io`，其餘加入 java.io.IOException、
+java.nio.charset.StandardCharsets。腳本放在 src/main/resources/scripts，
+不得為了測試方便另外內嵌一份舊實作。
 
 ⚠️ **它也擋得住 13.7.3 那個最難查的問題**（Lua 碰到沒宣告在 `KEYS` 的 key，
 「有時候成功有時候失敗」）：在 Cluster 上跑，**不合規的 Lua 一定會炸**。
@@ -965,8 +980,10 @@ class F2_SentinelFailoverTest {
     static final GenericContainer<?> HA = new GenericContainer<>(DockerImageName.parse("redis:7.2"))
             .withCreateContainerCmdModifier(/* 固定 6480/6481/26479-26481 */)
             .withCommand("sh", "-c", """
-                    redis-server --port 6480 --dir /d --daemonize yes --save ''
-                    redis-server --port 6481 --dir /d --daemonize yes --save '' --replicaof 127.0.0.1 6480
+                    set -eu
+                    mkdir -p /d/master /d/replica
+                    redis-server --port 6480 --dir /d/master --daemonize yes --save ''
+                    redis-server --port 6481 --dir /d/replica --daemonize yes --save '' --replicaof 127.0.0.1 6480
                     sleep 1
                     for p in 26479 26480 26481; do
                       printf 'port %s\\ndir /d\\nsentinel monitor mymaster 127.0.0.1 6480 2\\n\\
@@ -985,9 +1002,9 @@ class F2_SentinelFailoverTest {
         RedisURI uri = RedisURI.Builder.sentinel("127.0.0.1", 26479, "mymaster")
                 .withSentinel("127.0.0.1", 26480).withSentinel("127.0.0.1", 26481)
                 .withTimeout(Duration.ofMillis(500)).build();
-        ClientResources res = ClientResources.builder()
-                .reconnectDelay(Delay.exponential(50, 1000, TimeUnit.MILLISECONDS, 2))   // 13.5.4
-                .build();
+        ClientResources.Builder resourcesBuilder = ClientResources.builder();
+        new RedisHaConfig().reconnectResourcesCustomizer().customize(resourcesBuilder);
+        ClientResources res = resourcesBuilder.build();
         RedisCommands<String, String> cmd = RedisClient.create(res, uri).connect().sync();
         cmd.set("hb", "0");
 
@@ -1021,9 +1038,10 @@ Tests run: 1, Failures: 0, Errors: 0, Time elapsed: 8.710 s
 ```
    assertThat(recovered).isLessThan(2000 + 3000)
                                            ↑
-   它守的不是 Sentinel（Sentinel 不會壞），
-   守的是 13.5.3 那個 reconnectDelay ——
-   ⚠️ 有人把 ClientResources 那個 bean 刪掉，這個測試會紅（會變成 9 秒那一組）。
+   它檢查包含 Sentinel 偵測、選舉與客戶端重連的整體時間預算。
+   此獨立客戶端測試直接套用 13.5.4 的 customizer；
+   另需 Boot 接線測試，確認真正被注入的 ClientResources 也套用同一設定。
+   不要以一次切換剛好很快，證明所有 bean 都接對了。
 ```
 
 ### 14.6.5 測試分層：`@Tag` 與 CI 的兩條路
@@ -1062,25 +1080,34 @@ Total time:  8.955 s
 
 ### 14.7.1 Lettuce 的兩個延遲指標
 
-⚠️ **Lettuce 的命令延遲指標預設是關的**，而且 Spring Boot 不會自動幫你開：
+本站 Boot 3.2.5 + Actuator 在使用 **Boot 管理的 ClientResources** 時，
+會自動註冊 Lettuce 的 Micrometer 延遲 recorder。13.5.4 改用 resource builder
+customizer，因此能保留這項自動設定。自行 `ClientResources.builder().build()`
+再宣告成 bean 則會繞過它；那不是 Boot 預設沒有指標。
+
+若需要 histogram 與本地連線維度，新增下面的 **customizer**，
+與 13 章的 reconnect customizer 各自設定不同欄位。不要再宣告第二顆同名 ClientResources：
 
 ```java
 @Configuration
 public class MetricsConfig {
 
-    @Bean(destroyMethod = "shutdown")
-    ClientResources lettuceClientResources(MeterRegistry registry) {
+    @Bean
+    @Order(Ordered.LOWEST_PRECEDENCE)
+    ClientResourcesBuilderCustomizer latencyMetricsCustomizer(MeterRegistry registry) {
         MicrometerOptions options = MicrometerOptions.builder()
                 .histogram(true)              // ⚠️ 開了才有 P95 / P99（預設只有 count / mean / max）
                 .localDistinction(true)
                 .build();
-        return ClientResources.builder()
-                .commandLatencyRecorder(new MicrometerCommandLatencyRecorder(registry, options))
-                .reconnectDelay(Delay.exponential(50, 1000, TimeUnit.MILLISECONDS, 2))   // 13.5.4
-                .build();
+        return builder -> builder.commandLatencyRecorder(
+                new MicrometerCommandLatencyRecorder(registry, options));
     }
 }
 ```
+
+`ClientResourcesBuilderCustomizer` 位於 `org.springframework.boot.autoconfigure.data.redis`；
+`@Order`、`Ordered` 位於 `org.springframework.core.annotation` 與 `org.springframework.core`。
+LOWEST_PRECEDENCE 讓這個明確的 recorder 設定在 Boot 的預設 customizer 之後套用。
 
 打 500 次 `SET` ＋ 500 次 `GET` 之後：
 
@@ -1378,7 +1405,7 @@ public class HotKeyDetector {
 - [ ] 每一個 cache 都有 TTL，而且是 per-cache 設的（7.4.3）
 - [ ] ⚠️ 快取 `null` 的 TTL **比正常值短**（7.5.4）
 - [ ] key 有**版本化前綴**，改版後舊資料讀得回來或讀不到都不會 500（7.6.3、7.6.4）
-- [ ] ⚠️ `transactionAware` 有開，`@CacheEvict` 不會在交易提交前就放行（7.7.4）
+- [ ] ⚠️ 交易同步涵蓋整個快取；加入 L1 後 decorator 在最外層，底層 manager 不重複包（7.7.4、8.5.3）
 - [ ] 沒有任何地方靠 `@Cacheable` 的自呼叫（7.2.3）
 - [ ] 穿透／擊穿／雪崩三種都有對策（7.8）
 
@@ -1387,7 +1414,7 @@ public class HotKeyDetector {
 - [ ] `CacheErrorHandler` 有裝，⚠️ **而且 `evict` 失敗不是靜默吞掉**（8.3.1）
 - [ ] 熔斷器有裝，⚠️ **跳閘時丟例外而不是回 `null`**（8.4.3）
 - [ ] ⚠️ **readiness 探針裡沒有 Redis**（8.6.3）
-- [ ] 有本地快取兜底，而且知道它救不了哪一種（8.5.5）
+- [ ] 有本地快取兜底，交易回滾不會發布 L1 值，而且知道它救不了哪一種（8.5.3、8.5.5）
 - [ ] **做過一次「把 Redis 拔掉 60 秒」的演練，而且有報告**（8.10）
 - [ ] 知道恢復的第二波（快取空了、連線風暴）會發生什麼（8.7）
 
@@ -1399,7 +1426,7 @@ public class HotKeyDetector {
 - [ ] ⚠️ **鎖不能降級**：Redis 掛掉時該失敗，不是「跳過鎖繼續做」（9.11）
 - [ ] 限流的 `INCR` 與 `EXPIRE` 在**同一段 Lua** 裡（10.2.2）
 - [ ] `429` 有回 `Retry-After` / `RateLimit-*`（10.7）
-- [ ] 冪等鍵有三個狀態、有回應重放、⚠️ **在交易外面**（10.9.3、10.9.5、10.9.9）
+- [ ] Redis 冪等協調有 owner 與原子完成；**DB 唯一請求紀錄、業務與回應在同一交易**（10.9.4、10.9.9）
 - [ ] ⚠️ **限流可以 fail-open，冪等不行**（10.11.1）
 
 ### 14.9.6 Session 與庫存（11、12 章）
@@ -1409,7 +1436,7 @@ public class HotKeyDetector {
 - [ ] JWT 有 `jti` 黑名單或短 TTL ＋ refresh rotation（11.10）
 - [ ] ⚠️ **`UPDATE … WHERE stock > 0` 還在**（12.2.6、12.9.3 第 33 條）
 - [ ] Redis 預扣的 Lua 分得出「庫存 0」與「key 不存在」（12.4.2）
-- [ ] 有回補 ＋ 對帳任務，兩個方向分開處理（12.5）
+- [ ] 確定回滾才補償；對帳只觀測，停止全部寫入並查證未知結果後才重建（12.5、12.9.1）
 
 ### 14.9.7 高可用（13 章）
 
@@ -1430,7 +1457,7 @@ public class HotKeyDetector {
 - [ ] 快取測試斷言了 **key 的完整字串與 TTL**（14.4.3）
 - [ ] 併發測試有**起跑線**、**沒有 `@Transactional`**、**有正確實作的對照組**（14.5）
 - [ ] Cluster 的 `CROSSSLOT` 有「要求它失敗」的測試（14.6.3）
-- [ ] Sentinel failover 有 CI 測試，⚠️ **而且它守著 `reconnectDelay`**（14.6.4）
+- [ ] Sentinel failover 有時間預算測試，另有 Boot 接線測試驗證 `reconnectDelay`（14.6.4）
 - [ ] `lettuce.command.*` 指標有接，**`histogram(true)` 有開**（14.7.1）
 - [ ] 14.7.3 那張告警表逐列確認過
 - [ ] 有 big key 巡檢與 hot key 埋點（14.8）
@@ -1438,43 +1465,56 @@ public class HotKeyDetector {
 ### 14.9.9 一份可以照抄的 `redis.conf`（03 章 3.9 那句話的回收）
 
 前面十四章的每一個 `CONFIG SET` 都只改到記憶體裡，**重啟就沒了**（03 章 3.9）。
-這一節把它們收斂成一份設定檔。⚠️ **每一行後面的節號就是「為什麼要這一行」。**
+這一節把它們收斂成一份設定檔。節號說明每個設定的理由。**Redis 設定不支援這種行尾註解，註解必須獨立成行。**
 
 ```conf
 ################################ 網路與安全 ################################
-bind 0.0.0.0                       # ⚠️ 依你的網段收斂，不要真的對公網開
+# ⚠️ 依你的網段收斂，不要真的對公網開
+bind 0.0.0.0
 protected-mode yes
 port 6379
 tcp-keepalive 300
-maxclients 10000                   # 連線數上限（06 章 6.7：算一次「實例數 × 連線池」）
+# 連線數上限（06 章 6.7：算一次「實例數 × 連線池」）
+maxclients 10000
 
 # ⚠️ 00 章 0.4.5：實驗機才開 DEBUG，正式環境**不要有這一行**
 # enable-debug-command yes
 
 ################################ 記憶體與淘汰（04 章） ################################
-maxmemory 6gb                      # 實體記憶體的 60～70%，留給 fork 與碎片（4.2.1、4.5.3）
-maxmemory-policy allkeys-lru       # ⚠️ 快取那台用這個；狀態那台見下方（4.9.1）
-maxmemory-samples 5                # 5 已經 99% 準確，最多調到 10（4.3.4）
+# 實體記憶體的 60～70%，留給 fork 與碎片（4.2.1、4.5.3）
+maxmemory 6gb
+# ⚠️ 快取那台用這個；狀態那台見下方（4.9.1）
+maxmemory-policy allkeys-lru
+# 5 已經 99% 準確，最多調到 10（4.3.4）
+maxmemory-samples 5
 
 ################################ 延遲防線（03 章） ################################
-slowlog-log-slower-than 5000       # 5 毫秒（3.5.1）
+# 5 毫秒（3.5.1）
+slowlog-log-slower-than 5000
 slowlog-max-len 512
-latency-monitor-threshold 100      # ⚠️ 預設 0 ＝ 關閉（3.6.3）
-lazyfree-lazy-user-del yes         # 所有 DEL 自動變 UNLINK（3.4.2 ④、01 章 1.3.2）
+# ⚠️ 預設 0 ＝ 關閉（3.6.3）
+latency-monitor-threshold 100
+# 所有 DEL 自動變 UNLINK（3.4.2 ④、01 章 1.3.2）
+lazyfree-lazy-user-del yes
 lazyfree-lazy-user-flush yes
 lazyfree-lazy-expire yes
 lazyfree-lazy-eviction yes
 lazyfree-lazy-server-del yes
-replica-lazy-flush yes             # 全量同步時清空舊資料也交給背景（13 章 13.2.8）
-io-threads 1                       # ⚠️ 確認瓶頸真的在 I/O 之前不要開（3.2.3）
+# 全量同步時清空舊資料也交給背景（13 章 13.2.8）
+replica-lazy-flush yes
+# ⚠️ 確認瓶頸真的在 I/O 之前不要開（3.2.3）
+io-threads 1
 
 ################################ 腳本（05 章） ################################
-busy-reply-threshold 5000          # 腳本跑超過 5 秒才開始對別人回 BUSY（5.8.1）
+# 腳本跑超過 5 秒才開始對別人回 BUSY（5.8.1）
+busy-reply-threshold 5000
 
 ################################ 編碼門檻（02 章 2.8.4） ################################
-hash-max-listpack-entries 512      # ⚠️ 網路文章常寫 128，那是 ziplist 時代的值
+# ⚠️ 網路文章常寫 128，那是 ziplist 時代的值
+hash-max-listpack-entries 512
 hash-max-listpack-value 64
-list-max-listpack-size -2          # 負數 ＝ 每個節點 8 KB
+# 負數 ＝ 每個節點 8 KB
+list-max-listpack-size -2
 set-max-intset-entries 512
 set-max-listpack-entries 128
 set-max-listpack-value 64
@@ -1482,52 +1522,65 @@ zset-max-listpack-entries 128
 zset-max-listpack-value 64
 
 ################################ 複製（13 章） ################################
-replica-read-only yes              # 13.2.2：永遠不要改成 no
-repl-backlog-size 64mb             # ⚠️ 預設 1mb ＝ 只能容忍 0.2 秒的斷線（13.2.8）
+# 13.2.2：永遠不要改成 no
+replica-read-only yes
+# ⚠️ 預設 1mb ＝ 只能容忍 0.2 秒的斷線（13.2.8）
+repl-backlog-size 64mb
 repl-backlog-ttl 3600
 repl-diskless-sync yes
-client-output-buffer-limit replica 512mb 128mb 60   # 13.2.8：寫入量大時要調
-min-replicas-to-write 0            # ⚠️ 設 1 之前先處理 NOREPLICAS（13.2.6）
+# 13.2.8：寫入量大時要調
+client-output-buffer-limit replica 512mb 128mb 60
+# ⚠️ 設 1 之前先處理 NOREPLICAS（13.2.6）
+min-replicas-to-write 0
 min-replicas-max-lag 10
 
 ################################ 事件通知 ################################
-notify-keyspace-events ""          # ⚠️ 11 章的 indexed session 需要 Egx；
-                                   #    但 13.7.8：Cluster 上只收得到 1/N，不要拿它做「一定要發生」的事
+# ⚠️ 11 章的 indexed session 需要 Egx；
+notify-keyspace-events ""
+# 13.7.8：Cluster 上只收得到 1/N，不要拿它做「一定要發生」的事
 ```
 
-**兩種角色的差異**（04 章 4.9.1 那張表的設定檔版本）：
+**兩種角色擇一附加**（04 章 4.9.1 那張表的設定檔版本），不要把兩份都加入同一台：
 
 ```conf
 ############ ① 快取那台：掉了可以重算，但不要讓資料庫被冷啟動打爆（4.8.2） ############
 maxmemory-policy allkeys-lru
-save 300 10000                     # 只開 RDB，而且設得寬鬆
+# 只開 RDB，而且設得寬鬆
+save 300 10000
 appendonly no
 
 ############ ② 狀態那台：Session、冪等鍵、限流計數、預扣庫存 ############
-maxmemory-policy noeviction        # ⚠️ 不是 allkeys-lru（11 章 11.6.4：被驅逐的是別人的購物車）
-save ""                            # RDB 交給 AOF 的 base 檔（4.6.1）
+# ⚠️ 不是 allkeys-lru（11 章 11.6.4：被驅逐的是別人的購物車）
+maxmemory-policy noeviction
+# RDB 交給 AOF 的 base 檔（4.6.1）
+save ""
 appendonly yes
-appendfsync everysec               # 斷電最多掉 1 秒（4.6.2、4.7）
+# 斷電最多掉 1 秒（4.6.2、4.7）
+appendfsync everysec
 auto-aof-rewrite-percentage 100
 auto-aof-rewrite-min-size 64mb
-stop-writes-on-bgsave-error yes    # ⚠️ 它會讓寫入全部失敗——但你要的就是被通知（4.9.3）
+# ⚠️ 它會讓寫入全部失敗——但你要的就是被通知（4.9.3）
+stop-writes-on-bgsave-error yes
 ```
 
-**危險命令：用 ACL，不要用 `rename-command`**（後者在 Redis 7 已經不建議）：
+**應用與監控使用不同 ACL 帳號**（密碼須替換，以下命令白名單是起點）：
 
 ```conf
-# 給應用程式用的帳號：能做業務，不能做維運
-user app on >「你的密碼」 ~* &* +@all -flushall -flushdb -keys -debug -shutdown -replicaof -acl
-# 預設帳號關掉
+# 應用帳號：只允許本站業務命令及所列 namespace。Redis 7 的腳本內部命令也要授權。
+# 若部署 Spring Session，另加實際 session 前綴、所需命令及 channel，並跑登入／過期測試。
+user app reset on >CHANGE_ME_APP ~lab10:* ~shop:* ~stock:* ~lock:* ~fence:* ~rl:* ~idem:* resetchannels -@all +ping +hello +select +client|setname +client|setinfo +time +get +set +del +unlink +exists +expire +pexpire +ttl +pttl +incr +incrby +decr +decrby +hget +hmget +hset +hgetall +zadd +zcard +zrange +zrem +zremrangebyscore +scan +eval +evalsha +script|load
+# 監控帳號：只讀維運指標，不可修改設定或資料。
+user monitor reset on >CHANGE_ME_MONITOR resetkeys resetchannels -@all +ping +hello +info +config|get +slowlog|get +slowlog|len +latency|latest +latency|doctor
 user default off
 ```
 
-> ⚠️ **不要偷懶寫 `-@dangerous`。**
-> `@dangerous` 這個分類裡面有 **`info`、`config|get`、`slowlog|get`、`latency|*`**——
-> 一關下去，**03 章那四個觀測工具與你的監控採集會全部沒有權限**，
-> 而症狀是「監控圖表突然全空」。**要擋就一條一條列出來。**
->
-> 用 `ACL CAT dangerous` 可以自己看一次那份清單。
+⚠️ 白名單要依實際功能調整；Cluster 的 topology discovery、Spring Session、pipeline／交易等
+各自可能需要更多命令。以整合測試和 `ACL LOG` 核對需求，不要遇到 NOPERM 就加 `+@all`。
+`EVAL` 本身可執行不代表腳本能任意操作：腳本內命令仍受此帳號的命令與 key 權限限制。
+
+驗收：app 的正常 GET／SET／Lua 應成功，但 `CONFIG SET`、`FLUSHDB`、`ACL SETUSER`
+必須回 NOPERM；monitor 可看 INFO、CONFIG GET，但 CONFIG SET 必須被拒絕。
+這裡沒有把監控權限塞進應用帳號，也沒有以「禁幾個命令」宣稱所有維運能力都已關閉。
 
 ⚠️ **最後三件事，每一件都出過事：**
 
@@ -1729,7 +1782,7 @@ user default off
 然後把**你所有的 Lua** 都在上面跑一次。⚠️ **列出失敗的那幾段。**
 
 **練習七（40 分鐘）**：把 14.6.4 的 Sentinel failover 測試接進 CI。
-然後：① 把 `ClientResources` 那個 bean 註解掉，確認測試會紅；
+然後：① 移除重連 customizer，確認 Boot 接線測試能偵測設定變回預設；
 ② 把 `down-after-milliseconds` 從 2000 改成 5000，**調整斷言而不是放寬它**。
 
 **練習八（30 分鐘）**：接上 14.7.1 的指標，壓一次你的服務，

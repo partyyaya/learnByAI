@@ -6,7 +6,7 @@
 
 ## 這個倉庫有什麼？
 
-- 多條主題課程（演算法、TypeScript、Node.js／Express／NestJS、Vue、Nuxt、Browser AI、PWA、Electron、Docker、Nginx）
+- 多條主題課程（演算法、JavaScript、TypeScript、Node.js／Express／NestJS、Vue、Nuxt、Browser AI、PWA、Electron、Docker、Nginx）
 - 每個主題都有獨立 `README` 與章節路線，適合循序學習
 - 內容偏重「實作 + 心智模型」，不是只背指令或 API
 - 可依需求走「完整路線」或「針對弱項補課」
@@ -16,7 +16,8 @@
 | 主題 | 課程入口 | 內容重點 | 章節數 |
 |------|----------|----------|--------|
 | 演算法 | [algorithm/README.md](./algorithm/README.md) | 資料結構、回溯、Heap、貪心、圖論與 DP，由基礎到題型應用 | 15 + 2 選修 |
-| 通用基礎 | [common/README.md](./common/README.md) | 命令列、CSS、非同步、瀏覽器 API、HTTP、認證與部署 | 12 篇 + 1 示範 |
+| 通用基礎 | [common/README.md](./common/README.md) | 命令列、CSS、HTTP、即時通訊、認證與部署 | 9 篇 + 1 示範 |
+| JavaScript | [javascript-course/README.md](./javascript-course/README.md) | 型別與比較、閉包、`this` 與原型、事件迴圈、Promise、DOM、fetch、瀏覽器 API、Web Worker、效能除錯 | 19 |
 | TypeScript | [typescript/README.md](./typescript/README.md) | 型別系統、泛型、進階型別、框架整合 | 16 |
 | Node.js／Express／NestJS | [nodejs-course/README.md](./nodejs-course/README.md) | Node 執行模型、HTTP、文章 API、PostgreSQL／Prisma、Session、交易與測試 | 已完成 00–23；全課規劃 35 章 |
 | 前端 gRPC | [grpc-frontend-course/README.md](./grpc-frontend-course/README.md) | gRPC-Web、Proto、前後端對接、Streaming 與上線實戰 | 8 |
@@ -70,7 +71,7 @@
 
 | 順序 | 核心課程 | 建議讀法與驗收 |
 |------|----------|----------------|
-| 1 | [通用基礎](./common/README.md) 的 CSS、Promise／async-await、HTTP 與瀏覽器 API；[JavaScript 補強](./react/02-javascript-core-for-react.md) | 先能排版、處理事件與非同步請求，再進框架；這些教材屬於補強，完全新手仍需先具備 HTML、CSS、JavaScript 基本語法 |
+| 1 | [JavaScript](./javascript-course/README.md)；[通用基礎](./common/README.md) 的 CSS 與 HTTP | 先能排版、處理事件與非同步請求，再進框架；JavaScript 課程以寫過程式的讀者為對象，完全新手仍需先具備 HTML、CSS 與基本程式概念 |
 | 2 | [TypeScript](./typescript/README.md) | 優先完成 01–12，練習資料型別、縮窄、泛型、模組與框架整合；13–16 可後讀 |
 | 3 | [React](./react/README.md) 或 [Vue 基礎](./vue/basics/README.md) | 擇一完成元件、表單、路由、狀態管理與 API 串接；能說明 UI 狀態與伺服器資料的差別 |
 | 4 | [前端測試](./frontend-testing-course/README.md) | 配合自己的功能練單元、元件、整合與 E2E 測試，包含載入失敗、操作失敗與可近用性 |
@@ -103,7 +104,7 @@
 
 | 順序 | 核心課程 | 建議讀法與驗收 |
 |------|----------|----------------|
-| 1 | 前端路線的 Web／JavaScript 基礎 → [TypeScript](./typescript/README.md) → [React](./react/README.md) 或 [Vue 基礎](./vue/basics/README.md) | 先能完成頁面與非同步資料串接，熟悉模組、型別與錯誤處理 |
+| 1 | 前端路線的 Web 基礎與 [JavaScript](./javascript-course/README.md) → [TypeScript](./typescript/README.md) → [React](./react/README.md) 或 [Vue 基礎](./vue/basics/README.md) | 先能完成頁面與非同步資料串接，熟悉模組、型別與錯誤處理 |
 | 2 | [Node.js 後端與全端服務開發](./nodejs-course/README.md) | 先完成 00–07 的執行模型與 HTTP；需要獨立 API 時接 08–13 的 Express／PostgreSQL，再進 14–23 的 NestJS、認證、交易與測試 |
 | 3 | [Next.js](./react/nextjs/README.md) 或 [Nuxt](./vue/nuxt/README.md) | 按所選框架順序學；Next.js 著重 03、05、07–10，Nuxt 著重 05–11，完成伺服器端資料讀寫、認證與渲染邊界 |
 | 4 | [資料庫設計與實戰](./database-course/README.md)、[REST API 設計](./java/03-rest-api/README.md) | 資料庫先讀 00–03 與 09，搭配框架 CRUD 進度學；REST API 課取資源、狀態碼、錯誤與冪等觀念，Java 範例可選讀 |

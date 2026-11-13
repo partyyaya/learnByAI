@@ -3063,35 +3063,70 @@ REUSE           重用同一句 SQL 的 PreparedStatement
 BATCH           把同一句 SQL 的呼叫【攢起來】，等 flushStatements() 才送
 ```
 
-⚠️ **`@Mapper` 注入進來的那個是 `SIMPLE`。** 要用 `BATCH` 得自己開一個 `SqlSession`：
+本站預設注入的 mapper 使用 SIMPLE；要批次時，另建 BATCH SqlSessionTemplate，讓 Spring 管理交易。以下兩個測量 helper 只委派給另一個 bean，不再手動 openSession／commit：
 
 ```java
-    /** ExecutorType.BATCH 要自己開 SqlSession —— @Mapper 注入進來的那個是 SIMPLE。 */
+    @org.springframework.beans.factory.annotation.Autowired KeyBatchService batchWriter;
+
     private void batchInsert(List<SeqRow> data) {
-        try (var session = sqlSessionFactory.openSession(
-                org.apache.ibatis.session.ExecutorType.BATCH, false)) {
-            KeyMapper m = session.getMapper(KeyMapper.class);
-            for (SeqRow r : data) m.insertNoKey(r);
-            session.flushStatements();      // ★ 送出攢著的那一批
-            session.commit();
-        }
+        batchWriter.insertRows(data, Integer.MAX_VALUE);
     }
 
-    /** BATCH executor，但每 50 筆 flush 一次（跟 06 章 6.3.10 同一個做法）。 */
     private void batchInsertChunked(List<SeqRow> data) {
-        try (var session = sqlSessionFactory.openSession(
-                org.apache.ibatis.session.ExecutorType.BATCH, false)) {
-            KeyMapper m = session.getMapper(KeyMapper.class);
-            int n = 0;
-            for (SeqRow r : data) {
-                m.insertNoKey(r);
-                if (++n % 50 == 0) session.flushStatements();
-            }
-            session.flushStatements();
-            session.commit();
-        }
+        batchWriter.insertRows(data, 50);
     }
 ```
+
+下面是實際被 Spring 代理的完整服務；計時應包含交易提交。歷史效能數字來自舊 helper，不能當成本次修正後重新量出的數據，需自行重跑。
+
+```java
+package com.example.lab.ch07;
+
+import org.apache.ibatis.session.ExecutorType;
+import org.apache.ibatis.session.SqlSessionFactory;
+import org.mybatis.spring.SqlSessionTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import java.util.List;
+
+/** 從另一個 bean 呼叫 public 方法，才能經過 Spring 的交易代理。 */
+@Service
+public class KeyBatchService {
+    private final SqlSessionTemplate batch;
+
+    public KeyBatchService(SqlSessionFactory factory) {
+        this.batch = new SqlSessionTemplate(factory, ExecutorType.BATCH);
+    }
+
+    /** 加入既有交易；該交易不能已用同一 factory 的 SIMPLE SqlSession。 */
+    @Transactional
+    public void insertRows(List<SeqRow> rows, int chunkSize) {
+        write(rows, chunkSize);
+    }
+
+    /** 明確獨立交易：成功後不會因外層稍後回滾而撤銷。 */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void insertRowsInNewTransaction(List<SeqRow> rows, int chunkSize) {
+        write(rows, chunkSize);
+    }
+
+    private void write(List<SeqRow> rows, int chunkSize) {
+        if (chunkSize <= 0) throw new IllegalArgumentException("chunkSize 必須大於 0");
+        KeyMapper mapper = batch.getMapper(KeyMapper.class);
+        int n = 0;
+        for (SeqRow row : rows) {
+            mapper.insertNoKey(row); // BATCH 此刻的回傳值不是實際影響列數。
+            if (++n % chunkSize == 0) batch.flushStatements();
+        }
+        batch.flushStatements();
+        // flush 不等於 commit；例外離開此方法，Spring 回滾整個交易。
+    }
+}
+```
+
+insertRows 加入外層交易；若同一交易已先使用此 factory 的 SIMPLE session，切換成 BATCH 會被拒絕。請讓批次用例從專用邊界開始，或明確呼叫 insertRowsInNewTransaction；後者會暫停外層交易，其提交獨立有效，必須符合業務原子性需求。新交易也可能等待外層已持有的鎖，不能把它當成無條件解法。
+
 
 **先在 `Base07` 那個 context（【沒有】 `rewriteBatchedStatements`）上量**：
 
@@ -3211,7 +3246,7 @@ class K5Batch extends Base07 { … }
 ② 🔴 SQL 的形狀跟筆數綁定：insertMany(3 筆) 與 insertMany(1000 筆) 是【兩句不同的 SQL】。
    ★ 這正是 05 章 5.5.3 那個「in 子句的參數個數爆炸」——
      而 MyBatis 【沒有】 in_clause_parameter_padding 這種東西。
-     修法：自己把批次大小固定（例如一律補到 500 筆，不足的用重複值填）。
+     修法：每 500 筆組一句，尾批使用實際筆數；接受尾批的 SQL 形狀，或改用 JDBC batch。INSERT 不能用重複列補滿，否則會多插資料或撞唯一約束。重複值 padding 只適用於語意允許的 IN 集合，不適用於 VALUES。
 ```
 
 📌 **`ExecutorType.BATCH` 還有兩個坑，08 章 8.7 會處理**：
@@ -3220,8 +3255,9 @@ class K5Batch extends Base07 { … }
 ① BATCH 模式下，insert / update 的【回傳值不是影響列數】——
    它是 Integer.MIN_VALUE（因為那一刻還沒送出去）。
    ⚠️ 所以 7.10.3 那個「影響 0 列 = 衝突」的判斷【在 BATCH 模式下完全不能用】。
-② 它跟 Spring 的交易同步要小心：openSession() 開的是一個【獨立的】SqlSession，
-   它【不參與】外面那個 Spring 交易（7.12）。
+② SqlSession 的物件不同，不代表 JDBC 交易獨立。本站的 SpringManagedTransactionFactory
+   在外層交易內會取 Spring 綁定的連線；交易外 openSession(BATCH,false) 也不保證 autoCommit=false。
+   交易原子性由上面的 Spring 邊界保證（7.12），不能靠 session.commit() 猜測。
 ```
 
 ### 7.10.5 悲觀鎖：比 JPA 直白
@@ -3728,22 +3764,19 @@ DataSourceTransactionManager / JpaTransactionManager
                           ★ 這是 mybatis-spring 的核心：它【不自己管交易】
 ```
 
-⚠️ **兩個會破壞這件事的寫法**：
+**手動 session 與交易管理要分開看。** 本站 factory 預設使用 SpringManagedTransactionFactory：
 
 ```java
-// ① 自己 openSession（7.10.4 的 BATCH 就是）→ 它【不參與】外面那個交易
-try (var s = sqlSessionFactory.openSession(ExecutorType.BATCH, false)) { … }
-//                                                            ↑ autoCommit = false，
-//                                                              而它是【另一條連線、另一個交易】
-
-// ② @Transactional(propagation = REQUIRES_NEW) → 那是另一條連線（03 章 3.9.4）
+// 這不是「保證獨立交易」的 API：
+try (var raw = sqlSessionFactory.openSession(ExecutorType.BATCH, false)) {
+    // Spring 交易內可能拿到相同 CONNECTION_ID；raw.commit() 不會代替外層提交。
+    // 交易外的 autoCommit 由 DataSource／TransactionFactory 決定；false 不保證關閉它。
+}
 ```
 
-📌 **① 那個坑在 7.10.4 是刻意的**（批次匯入本來就該是獨立交易），
-**而它在別的場合是災難**：外面的交易回滾了，那個 `BATCH` session 已經 commit 了。
-**要讓 BATCH 參與外面的交易，得用 `SqlSessionTemplate` 的
-`ExecutorType` 建構子並讓它走 Spring 的交易同步** ——
-或者更簡單：**用 `<foreach>`（7.10.4 ④），它不需要另一個 session。**
+`verification/` 驗證兩個分支：交易內手動 session 與 Spring 共用連線、外層回滾仍撤銷資料；交易外的上述寫法在本站預設連線池中仍為 autoCommit=true。這是機制對照，不是建議的批次寫法。
+
+成品批次改用 7.10.4 的 KeyBatchService。一般方法以 REQUIRED 參與 Spring 交易，flush 後出錯仍整批回滾；需要獨立提交才明確使用 REQUIRES_NEW，並測外層回滾不會撤銷該筆。純 MyBatis 使用 JdbcTransactionFactory 時是另一套機制，不可套用到本站的 Spring factory。
 
 ---
 
@@ -3915,12 +3948,15 @@ public final class MapperSanity {
                     try {
                         return cfg.getMappedStatement(n).getSqlCommandType()
                                 != org.apache.ibatis.mapping.SqlCommandType.SELECT;
-                    } catch (Exception e) { return false; }
+                    } catch (Exception e) { throw new AssertionError("statement 解析失敗：" + n, e); }
                 })
                 .sorted().toList();
-        System.out.println("   shop.mybatis 裡非 SELECT 的 statement：" + writes
-                + (writes.isEmpty() ? "  ✅" : "  🔴"));
+        if (!writes.isEmpty()) throw new AssertionError("查詢側不准有寫入：" + writes);
     }
+
+    @Test
+    void 查詢側只准_SELECT() { assertOnlySelect(); }
+
 ```
 
 **實測**：
@@ -3935,55 +3971,85 @@ public final class MapperSanity {
 
 ### 7.14.3 斷言三：旁路寫入要維護 `version`
 
-**06 章 6.10.3 那條斷言的 MyBatis 版**，而它在 MyBatis 上**比在 JPA 上好做**——
-因為 SQL 都在 `MappedStatement` 裡，不需要掃原始碼。
+**以下 helper 真的會讓測試失敗**，使用 JSqlParser 4.5（依賴見 08 章 8.9.1）。每個 UPDATE 要提供有效的參數案例；動態分支要列足，缺案例或展開／解析失敗都不能跳過。只在成品寫入 namespace 執行；實驗壞版本另以 assertThrows 驗證。
 
 ```java
-    @Test
-    void 旁路寫入必須維護_version() {
-        var cfg = sqlSessionFactory.getConfiguration();
-        // ① 哪些表有 @Version（問 JPA 的 metamodel，06 章 6.10.2）
-        Set<String> versioned = emf.getMetamodel().getEntities().stream()
-                .filter(e -> hasVersion(e.getJavaType()))
-                .map(e -> {
-                    var t = e.getJavaType().getAnnotation(jakarta.persistence.Table.class);
-                    return (t != null ? t.name() : e.getName()).toLowerCase();
-                })
-                .collect(java.util.stream.Collectors.toSet());
+package com.example.lab.guard;
 
-        // ② 掃 MyBatis 的每一句 UPDATE
-        List<String> bad = new ArrayList<>();
-        for (String id : cfg.getMappedStatementNames()) {
-            if (!id.startsWith("com.example.lab")) continue;
-            org.apache.ibatis.mapping.MappedStatement ms;
-            try { ms = cfg.getMappedStatement(id); } catch (Exception e) { continue; }
-            if (ms.getSqlCommandType() != org.apache.ibatis.mapping.SqlCommandType.UPDATE) continue;
-            String sql = ms.getBoundSql(new org.apache.ibatis.binding.MapperMethod.ParamMap<>())
-                           .getSql().toLowerCase().replaceAll("\\s+", " ");
-            for (String table : versioned) {
-                if (sql.contains("update " + table) && !sql.contains("version")) {
-                    bad.add(id + " → " + cut(sql));
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.schema.Column;
+import net.sf.jsqlparser.expression.LongValue;
+import net.sf.jsqlparser.expression.operators.arithmetic.Addition;
+import net.sf.jsqlparser.statement.update.Update;
+import org.apache.ibatis.mapping.SqlCommandType;
+import org.apache.ibatis.session.SqlSessionFactory;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/** 檢查受管表的 UPDATE 確實 version=version+1；其他並行條件／列數仍需交易測試。 */
+public final class VersionWriteGuard {
+    private VersionWriteGuard() {}
+
+    public static void assertMaintained(SqlSessionFactory factory, String namespacePrefix,
+                                         Set<String> versionedTables,
+                                         Map<String, List<Object>> cases) {
+        var cfg = factory.getConfiguration();
+        int checked = 0;
+        for (String id : new java.util.TreeSet<>(cfg.getMappedStatementNames())) {
+            if (!id.startsWith(namespacePrefix)) continue;
+            var ms = cfg.getMappedStatement(id); // 解析失敗不得當成「跳過」。
+            if (ms.getSqlCommandType() != SqlCommandType.UPDATE) continue;
+            List<Object> args = cases.get(id);
+            if (args == null || args.isEmpty()) throw new AssertionError("UPDATE 缺少參數案例：" + id);
+            for (Object arg : args) {
+                checked++;
+                String sql = ms.getBoundSql(arg).getSql();
+                try {
+                    if (!(CCJSqlParserUtil.parse(sql) instanceof Update))
+                        throw new AssertionError("不是可辨認的 UPDATE：" + id);
+                    Update update = (Update) CCJSqlParserUtil.parse(sql);
+                    if (update.getJoins() != null && !update.getJoins().isEmpty())
+                        throw new AssertionError("多表 UPDATE 須另定契約：" + id);
+                    if (!versionedTables.contains(update.getTable().getName().toLowerCase(java.util.Locale.ROOT))) continue;
+                    boolean maintained = false;
+                    for (var assignment : update.getUpdateSets()) {
+                      for (int i = 0; i < assignment.getColumns().size(); i++) {
+                        Column lhs = assignment.getColumns().get(i);
+                        var rhs = assignment.getExpressions().get(i);
+                        if (lhs.getColumnName().equalsIgnoreCase("version") && rhs instanceof Addition a
+                                && a.getLeftExpression() instanceof Column previous
+                                && previous.getColumnName().equalsIgnoreCase("version")
+                                && a.getRightExpression() instanceof LongValue step && step.getValue() == 1) {
+                            maintained = true;
+                        }
+                      }
+                    }
+                    if (!maintained) throw new AssertionError("沒有 version=version+1：" + id + " → " + sql);
+                } catch (net.sf.jsqlparser.JSQLParserException e) {
+                    throw new AssertionError("UPDATE 無法解析：" + id, e);
                 }
             }
         }
-        bad.forEach(b -> System.out.println("   🔴 " + b));
-        System.out.println("   → " + (bad.isEmpty() ? "✅ 沒有違例" : bad.size() + " 處違例"));
+        if (checked == 0) throw new AssertionError("沒有檢查到任何 UPDATE，請確認 namespace 範圍");
     }
+}
 ```
 
-📌 **它比 06 章 6.10.3 那個「掃原始碼」的版本好三點**：
-
+```java
+@Test
+void 旁路寫入必須維護_version() {
+    // Ord7Mapper 另有刻意錯誤版本；本例只測維護版本的 statement。
+    String id = "com.example.lab.ch07.Ord7Mapper.markPaidVersioned";
+    var args = new org.apache.ibatis.binding.MapperMethod.ParamMap<Object>();
+    args.put("id", UUID.randomUUID()); args.put("status", St7Status.PAID); args.put("version", 0L);
+    Map<String, List<Object>> examples = Map.of(id, List.of(args));
+    com.example.lab.guard.VersionWriteGuard.assertMaintained(
+            sqlSessionFactory, id, Set.of("orders"), examples);
+}
 ```
-① 它掃的是【執行期真的註冊了什麼】，不是原始碼的字串 —— 註解與 XML 都掃到。
-② 動態 SQL（<if> / <set>）展開後的樣子也掃得到（getBoundSql 會展開）。
-③ 它不會有「註解裡的 SQL 被誤判」這種偽陽性。
-```
 
-⚠️ **而它有一個 06 章那個版本沒有的限制**：
-`getBoundSql(空參數)` 對含 `<if test="...">` 的動態 SQL **可能展開不完整**
-（條件為 false 的分支不會出現）。
-**所以它是一個「抓得到大部分」的檢查，不是一個完備的證明。**
-📌 **08 章 8.4 講完動態 SQL 之後會給一個更完整的版本。**
+實務上 prefix 用完整寫入 mapper namespace，examples 必須涵蓋該範圍每一個 UPDATE；可從 JPA metamodel 建立 versionedTables。這個保守 helper 只認得 version=version+1，不以「字串包含 version」當證明；其他合法形狀須明列契約並加測試。版本條件、原子條件與影響 0 列的處理仍需真實交易測試，它也不會自動證明動態案例已窮舉。
 
 ### 7.14.4 斷言四：每一個查詢的每一個欄位都不是 null
 

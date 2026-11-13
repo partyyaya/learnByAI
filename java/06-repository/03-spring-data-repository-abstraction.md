@@ -282,6 +282,7 @@ public interface SpringDataOrderRepository extends JpaRepository<OrderEntity, St
 
 // ② application 看到的是【自己定義的埠】—— 只有七個方法（00 章 0.12.2）
 public interface OrderRepository {
+    // 完整埠另含 0.12.2 的 default saveAndReload；此處只節錄抽象操作。
     String nextId();
     void save(Order order);
     void saveAll(Collection<Order> orders);
@@ -590,7 +591,12 @@ public class JpaOrderRepository implements OrderRepository {
 
     private final SpringDataOrderRepository repo;
 
-    public JpaOrderRepository(SpringDataOrderRepository repo) { this.repo = repo; }
+    private final jakarta.persistence.EntityManager em;
+
+    public JpaOrderRepository(SpringDataOrderRepository repo, jakarta.persistence.EntityManager em) {
+        this.repo = repo;
+        this.em = em;
+    }
 
     @Override
     public Optional<Order> findById(String orderId) {
@@ -739,6 +745,8 @@ List<OrderEntity> findExpired(@Param("status") OrderStatus status,
 ---
 
 ## 3.7 ★ 明細：全刪重插 vs 逐筆 diff
+
+> 本節 SQL 數量是尚未加上 3.10.3 聚合版本保護的 diff 實驗。完成版只改明細時還需要一次帶版本條件的父列 UPDATE；不能把「父列零更新」當作正確性的保證。
 
 **02 章 2.8.4 欠了這個比較**，這一節還它。
 
@@ -1442,25 +1450,57 @@ public void save(Order order) {
 > 📌 **「load-then-copy」是 DDD 轉接器最常見的寫法，也是最常見的樂觀鎖破口。**
 > **而它之所以危險，是因為 `@Version` 就在那裡，看起來一切都有保護。**
 
-### 3.10.3 第一條紅燈的修法
+### 3.10.3 呼叫端版本與整個聚合的版本，都要保護
+
+只加 `entity.getVersion() != order.version()` 還不夠。`mappedBy` 的明細改動不一定讓父列 dirty，3.7 的原始 diff 實驗因此沒有父 `UPDATE`。父版本沒變，下一份過期明細仍能覆蓋成功。
+
+以下取代 3.10.2 的整個 `save`。轉接器另注入 `EntityManager em`；`OrderEntity` 建構子接受 id、customerId、status、totalMinor、currency、createdAt，明細轉換／`replaceLines` 沿用 3.7。
 
 ```java
-} else {
-    // ★★ 這一段是【必要】的，不是防禦性程式碼。
-    //
-    // JPA 的 @Version 只保護「載入之後到 flush 之前」這段期間；
-    // 而我們是先 findById 把【現況】載進來，再把領域物件的欄位蓋上去 ——
-    // 呼叫端手上那個過期的 version 從頭到尾沒有被比對過。
-    // 少了這三行，「拿著過期的 version 存回去」會【靜默覆蓋】。
-    if (entity.getVersion() != order.version()) {
-        throw new OptimisticLockingFailureException(
-                "訂單 " + order.id() + " 已被其他交易修改（本次帶的 version="
-                        + order.version() + "，資料庫是 " + entity.getVersion() + "）");
+@Override
+public void save(Order order) {
+    OrderEntity entity = repo.findById(order.id()).orElse(null);
+    if (entity == null) {
+        entity = new OrderEntity(order.id(), order.customerId(), order.status(),
+                order.total().minorUnits(), order.total().currency().getCurrencyCode(),
+                order.createdAt());
+        entity.replaceLines(toLineEntities(order));
+        repo.save(entity);
+        em.flush();
+        return;
     }
+    if (entity.getVersion() != order.version()) {
+        throw new OptimisticLockingFailureException("訂單版本衝突：" + order.id());
+    }
+    long before = entity.getVersion();
     entity.setStatus(order.status());
-    …
+    entity.setTotalMinor(order.total().minorUnits());
+    entity.setCurrency(order.total().currency().getCurrencyCode());
+    entity.replaceLines(toLineEntities(order));
+    repo.save(entity);
+    em.flush(); // header dirty 時，Hibernate 已以 @Version 做 CAS 並遞增
+
+    if (entity.getVersion() == before) {
+        // child-only / no-op 也屬於一次聚合保存；同步 CAS，不等到 commit 才加版本。
+        int changed = em.createQuery("""
+                UPDATE OrderEntity e SET e.version = e.version + 1
+                 WHERE e.id = :id AND e.version = :version
+                """)
+                .setParameter("id", order.id()).setParameter("version", before)
+                .executeUpdate();
+        if (changed != 1) {
+            throw new OptimisticLockingFailureException("訂單版本衝突：" + order.id());
+        }
+        em.refresh(entity); // JPQL bulk update 不同步 persistence context
+    }
 }
 ```
+
+`save` 與所有明細 SQL 必須在同一個寫入交易內；CAS 失敗要讓例外離開交易邊界，連先前 flush 的明細一起 rollback。父欄位有變時用 Hibernate 的版本更新，否則用條件更新補一次，因此既有聚合每次保存版本增加 1。不要只在記憶體比較、也不要在 bulk update 後忽略 context 同步。
+
+代價是每次保存同步 flush，會影響跨多張訂單的批次合併；這裡優先提供與 JDBC 一致的版本契約。延後到 commit 的 force increment 不能直接滿足 2.15.4 在交易內取得新版本的要求。
+
+新增契約：同版本讀取兩份，第一份只改明細並保存；第二份再保存必須衝突，第一份明細保持不變。`verification/` 以同構映射執行上面的實際方法，另測 header 更新、連續重載保存與 rollback。下面 56 條是原來測試的歷史紀錄，不涵蓋這條新增契約。
 
 **修好之後**：
 

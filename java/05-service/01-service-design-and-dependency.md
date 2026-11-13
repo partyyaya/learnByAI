@@ -528,10 +528,12 @@ public class OrderApplicationService implements OrderService {
         Instant now = clock.instant();
 
         // ① 冪等
-        var existing = idempotency.findOrderId(cmd.actor().id(), cmd.idempotencyKey());
+        var intent = CreateOrderIntent.from(cmd);
+        var existing = idempotency.find(cmd.actor().id(), cmd.idempotencyKey());
         if (existing.isPresent()) {
-            return orders.findById(existing.get()).orElseThrow(
-                    () -> new IllegalStateException("冪等紀錄指向不存在的訂單：" + existing.get()));
+            existing.get().requireSameIntent(cmd.idempotencyKey(), intent);
+            return orders.findById(existing.get().orderId()).orElseThrow(
+                    () -> new IllegalStateException("冪等紀錄指向不存在的訂單：" + existing.get().orderId()));
         }
 
         // ② 載入（含授權與「缺資料」的例外）
@@ -549,7 +551,7 @@ public class OrderApplicationService implements OrderService {
 
         // ⑤ 存
         orders.save(order);
-        idempotency.record(cmd.actor().id(), cmd.idempotencyKey(), order.id(), now);
+        idempotency.record(cmd.actor().id(), cmd.idempotencyKey(), intent, order.id(), now);
 
         // ⑥ 券計數（原子）
         if (ctx.coupon() != null && !coupons.tryConsume(ctx.coupon().code())) {
@@ -3546,7 +3548,9 @@ public class OrderQueryService {
         return new PageResponse<>(
                 page.getContent().stream().map(p -> toView(p, locale)).toList(),
                 PageResponse.PageInfo.offset(page.getNumber(), page.getSize(),
-                                             page.getTotalElements()));
+                        page.getTotalElements(), PageResponse.CountRelation.EQUAL,
+                        page.hasNext() && page.getPageable().getOffset() + page.getSize() < 10_000,
+                        10_000)); // 與 04-controller 的 offset 可存取上限一致
     }
 
     /**
@@ -3659,8 +3663,8 @@ public class OrderExpirationJob {
         for (Order order : expired) {
             try {
                 // ★ 每一筆一個交易 —— 一筆失敗不影響其他筆
-                executor.cancelInNewTransaction(order.id(), now);
-                cancelled++;
+                if (executor.cancelInNewTransaction(order.id(), now)) cancelled++;
+                else skipped++;
             } catch (OrderNotCancellableException | OrderAlreadyCancelledException e) {
                 // ★ 預期的：別的實例或使用者剛好在同一時間付款/取消了 → 跳過
                 skipped++;
@@ -3711,18 +3715,21 @@ public class OrderCancellationExecutor {
      * @throws OrderAlreadyCancelledException 已被取消
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void cancelInNewTransaction(String orderId, Instant now) {
+    public boolean cancelInNewTransaction(String orderId, Instant now) {
         // ★★ 重新讀一次 —— 因為排程查出來到現在可能過了幾百毫秒，
         //    而那期間使用者可能已經付款了（02 章 2.11 的樂觀鎖會處理更嚴格的情況）
         Order order = orders.findById(orderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Order", orderId));
 
+        // 候選快照可能已過期：付款已 commit 的最新版本不會被樂觀鎖拒絕。
+        if (!order.isExpired(now)) return false;
         var result = order.cancel(
                 Actor.SYSTEM, CancelReason.PAYMENT_TIMEOUT, null, now);
 
         orders.save(order);
         result.stockReleases().forEach(r -> stock.release(r.productId(), r.quantity()));
         events.publish(OrderCancelledEvent.from(order, result, now));
+        return true;
     }
 }
 ```

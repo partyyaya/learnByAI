@@ -1204,59 +1204,78 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 符合 RFC 4180 的最小 CSV 解析器（支援引號、逃脫引號、欄位內換行） */
+/** CSV 狀態機示例：支援引號、逃脫引號與欄位內換行；不是完整 RFC／方言實作。 */
 public final class SimpleCsv {
 
     private SimpleCsv() { }
 
-    /** 解析一整份 CSV。回傳每一列的欄位清單 */
+    /**
+     * 教學用小檔解析器：接受 CRLF／LF，保留引號內換行；不實作方言、BOM 與資源限制。
+     * 用狀態區分「沒讀到資料」與「讀到合法的空欄位」，並拒絕不完整引號。
+     */
     public static List<List<String>> parse(Reader source) throws IOException {
         List<List<String>> rows = new ArrayList<>();
-        List<String> currentRow = new ArrayList<>();
+        List<String> row = new ArrayList<>();
         StringBuilder field = new StringBuilder();
-        boolean inQuotes = false;
-
+        boolean inQuotes = false, afterQuote = false, fieldStarted = false, recordStarted = false;
         int c;
         while ((c = source.read()) != -1) {
             char ch = (char) c;
-
             if (inQuotes) {
                 if (ch == '"') {
-                    // 看下一個字元：是逃脫的引號還是結束引號？
-                    int next = source.peek();
-                    if (next == '"') {
-                        source.read();          // 吃掉第二個引號
-                        field.append('"');
+                    if (source.peek() == '"') {
+                        source.read();
+                        field.append('"'); // 引號內兩個引號代表一個字面引號。
                     } else {
                         inQuotes = false;
+                        afterQuote = true;
                     }
                 } else {
-                    field.append(ch);           // 引號內的逗號與換行都是普通字元
+                    field.append(ch);
                 }
                 continue;
             }
-
+            if (afterQuote && ch != ',' && ch != '\r' && ch != '\n') {
+                throw new IOException("閉合引號後只允許逗號或換行");
+            }
             switch (ch) {
-                case '"' -> inQuotes = true;
+                case '"' -> {
+                    if (fieldStarted) throw new IOException("引號只能出現在欄位開頭");
+                    inQuotes = true;
+                    fieldStarted = true;
+                    recordStarted = true;
+                }
                 case ',' -> {
-                    currentRow.add(field.toString());
+                    row.add(field.toString());
                     field.setLength(0);
+                    fieldStarted = false;
+                    afterQuote = false;
+                    recordStarted = true; // 例如 a, 的最後一欄仍是空欄位。
                 }
-                case '\r' -> { /* 忽略，等 \n */ }
-                case '\n' -> {
-                    currentRow.add(field.toString());
+                case '\r', '\n' -> {
+                    if (ch == '\r') {
+                        if (source.peek() != '\n') throw new IOException("本例不接受單獨 CR，請使用 CRLF／LF");
+                        source.read();
+                    }
+                    row.add(field.toString());
+                    rows.add(List.copyOf(row));
+                    row.clear();
                     field.setLength(0);
-                    rows.add(List.copyOf(currentRow));
-                    currentRow.clear();
+                    fieldStarted = false;
+                    afterQuote = false;
+                    recordStarted = false;
                 }
-                default -> field.append(ch);
+                default -> {
+                    field.append(ch);
+                    fieldStarted = true;
+                    recordStarted = true;
+                }
             }
         }
-
-        // 最後一列可能沒有換行結尾
-        if (field.length() > 0 || !currentRow.isEmpty()) {
-            currentRow.add(field.toString());
-            rows.add(List.copyOf(currentRow));
+        if (inQuotes) throw new IOException("CSV 引號未閉合，資料可能遭截斷");
+        if (recordStarted) {
+            row.add(field.toString());
+            rows.add(List.copyOf(row));
         }
         return rows;
     }
@@ -1278,7 +1297,8 @@ public final class SimpleCsv {
     }
 
     private static String escape(String value) {
-        if (value == null) return "";
+        if (value == null) value = ""; // 本例寫成空字串；CSV 無法保留 null 與空字串的區別。
+        if (value.isEmpty()) return "\"\""; // 單一空欄位也能往返，避免被當成空檔。
         boolean needsQuotes = value.indexOf(',') >= 0 || value.indexOf('"') >= 0
                 || value.indexOf('\n') >= 0 || value.indexOf('\r') >= 0;
         if (!needsQuotes) return value;
@@ -1357,11 +1377,11 @@ id,name,price,note
 1001,"鍵盤, 無線",2990,普通
 1002,"22"" 螢幕",8990,"說明：
 第二行"
-1003,滑鼠,890,
+1003,滑鼠,890,""
 ```
 
 > **實務上請用函式庫**：`Apache Commons CSV`、`OpenCSV`、`univocity-parsers`（最快）。
-> 上面這 100 行只處理了基本情況——真實的 CSV 還有 BOM、不同分隔符、編碼偵測、
+> 上面的狀態機只處理了基本情況——真實的 CSV 還有 BOM、不同分隔符、編碼偵測、
 > 欄位數不一致、Excel 的方言差異。**自己寫 CSV 解析器是典型的「以為很簡單」陷阱。**
 
 ```xml
@@ -1374,7 +1394,7 @@ id,name,price,note
 ```
 
 ```java
-// Commons CSV 的等價寫法：4 行取代上面 100 行
+// 正式用途改用 CSV 函式庫；仍要按需求配置格式與輸入限制。
 // try (var reader = Files.newBufferedReader(file);
 //      var parser = org.apache.commons.csv.CSVFormat.DEFAULT
 //              .builder().setHeader().setSkipHeaderRecord(true).build()
@@ -2642,6 +2662,8 @@ public final class Json {
                 // ③ 反序列化時忽略 JSON 裡「我們不認識的欄位」。
                 //    這是「向前相容」的關鍵：對方 API 加了新欄位，我們不該壞掉。
                 .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
+                // 一次只讀一份完整 JSON，拒絕陣列結束後還有第二份文件或壞掉的尾端。
+                .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
 
                 // ④ 不要輸出 null 欄位，讓 payload 更小、語意更清楚
                 .setSerializationInclusion(JsonInclude.Include.NON_NULL)
@@ -3259,7 +3281,7 @@ public class Todo {
         if (tag == null || tag.isBlank()) {
             throw new InvalidTodoException("tag", tag, "標籤不可為空");
         }
-        String normalized = tag.strip().toLowerCase();
+        String normalized = tag.strip().toLowerCase(java.util.Locale.ROOT);
         if (tags.size() >= MAX_TAGS && !tags.contains(normalized)) {
             throw new InvalidTodoException("tags", tags.size(), "標籤最多 " + MAX_TAGS + " 個");
         }
@@ -3267,11 +3289,11 @@ public class Todo {
     }
 
     public boolean removeTag(String tag) {
-        return tag != null && tags.remove(tag.strip().toLowerCase());
+        return tag != null && tags.remove(tag.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     public boolean hasTag(String tag) {
-        return tag != null && tags.contains(tag.strip().toLowerCase());
+        return tag != null && tags.contains(tag.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     // ⚠️ 存取子沒有 `get` 前綴時，Jackson 的預設內省**找不到任何屬性** ——
@@ -3384,10 +3406,14 @@ public class TodoFileStore {
             if (json.startsWith("﻿")) {
                 json = json.substring(1);
             }
-            if (json.isBlank()) {
-                return new ArrayList<>();
-            }
+            if (json.isBlank()) throw new IllegalArgumentException("已存在的資料檔不可空白；空清單應寫成 []");
             List<Todo> todos = Json.fromJson(json, new TypeReference<List<Todo>>() { });
+            if (todos == null) throw new IllegalArgumentException("資料檔必須是 JSON 陣列，不可為 null");
+            var ids = new java.util.HashSet<Long>();
+            for (Todo todo : todos) {
+                if (todo == null || !ids.add(todo.id()))
+                    throw new IllegalArgumentException("資料列不可為 null，id 不可重複");
+            }
             return new ArrayList<>(todos);
 
         } catch (NoSuchFileException e) {
@@ -3473,6 +3499,10 @@ public class TodoFileStore {
     public Path getDataFile() { return dataFile; }
 }
 ```
+
+空清單的磁碟格式是 `[]`，不是空白檔／`null`。只有檔案不存在才視為首次執行；
+既有檔案空白、JSON 尾端損壞或有重複 id 都應停止載入並回報 STORAGE_ERROR，讓使用者還原備份。
+不要自動把讀取失敗轉成空資料後繼續覆寫。
 
 ### `JsonFileTodoRepository.java`
 

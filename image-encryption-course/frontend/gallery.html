@@ -34,6 +34,12 @@
     <button id="up">上傳</button>
   </div>
 
+  <div class="upload">
+    <input id="friendName" placeholder="對方的 username">
+    <button id="addFriend">加為好友</button>
+    <small>加了之後，對方能看你標成 friends 的圖</small>
+  </div>
+
   <div id="grid" class="grid"></div>
 
   <script type="module" src="./secure-image.js"></script>
@@ -57,10 +63,22 @@
       else alert((await r.json()).error || 'upload failed');
     };
 
+    addFriend.onclick = async () => {
+      const r = await fetch('/api/friends', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: friendName.value }),
+      });
+      alert(r.ok ? '已加入' : (await r.json()).error);
+    };
+
     async function loadList() {
-      const list = await fetch('/api/images', {
+      const r = await fetch('/api/images', {
         headers: { Authorization: `Bearer ${jwt}` },
-      }).then(r => r.json());
+      });
+      // JWT 過期（2 小時）就回登入頁
+      if (r.status === 401) { localStorage.removeItem('jwt'); location.href = '/login.html'; return; }
+      const list = await r.json();
       grid.innerHTML = '';
       for (const img of list) {
         const card = document.createElement('div');

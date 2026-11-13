@@ -766,8 +766,12 @@ public class SplitPitfalls {
     public static void main(String[] args) {
 
         // ① split 的參數是「正規表達式」，不是普通字串
-        System.out.println("a.b.c".split(".").length);      // 0！. 在 regex 是「任意字元」
-        System.out.println("a.b.c".split("\\.").length);    // 3  ✅ 要轉義
+        // "." 在正規表達式中會匹配這裡的每一個字元，包括 a、b、c 和句點。
+        // 因此每個字元都被當成分隔符，切分後只剩空字串；
+        // split(regex) 預設又會移除尾端所有空字串，最後得到長度為 0 的陣列。
+        System.out.println("a.b.c".split(".").length);      // 0，不是預期的 3
+        // Java 字串 "\\." 傳給正規表達式後是 \.，才表示「句點本身」。
+        System.out.println("a.b.c".split("\\.").length);    // 3，結果為 ["a", "b", "c"]
         System.out.println("1|2|3".split("\\|").length);    // 3  ✅ | 也要轉義
 
         // ② 尾端的空字串默認被丟掉
@@ -787,23 +791,60 @@ public class SplitPitfalls {
 ### 字串串接的效能
 
 ```java
+int n = 10_000;
+
 // ❌ 迴圈裡用 + 串接：每一圈都建一個新 String
 String result = "";
-for (int i = 0; i < 10_000; i++) {
-    result += i + ",";          // O(n²) 的時間與記憶體
+for (int i = 0; i < n; i++) {
+    result += i + ",";          // 反覆複製已累積的內容，時間為 O(n²)，推導見下方
 }
 
 // ✅ 用 StringBuilder
 StringBuilder sb = new StringBuilder();
-for (int i = 0; i < 10_000; i++) {
+for (int i = 0; i < n; i++) {
     sb.append(i).append(',');
 }
-String result = sb.toString();
+String built = sb.toString();   // 累積 append 加上最後轉換，整體時間為 O(n)
 ```
 
+**為什麼只有一層迴圈，卻是 O(n²)？** 關鍵是「每一圈的工作量會變大」。
+`String` 不可變，`result += ...` 必須產生包含舊內容與新片段的新字串，
+不能直接在原本的 `String` 尾端追加。因此前面累積的內容會被反覆複製。
+
+先用「每圈追加一個字元」來看：第 1 圈產生長度 1 的字串，第 2 圈產生長度 2 的字串，
+第 n 圈產生長度 n 的字串。整個迴圈需要寫入的字元數是：
+
+```text
+1 + 2 + 3 + ... + n = n × (n + 1) / 2 → O(n²)
+```
+
+上面的數字加逗號範例，每圈片段長度雖然不完全相同，但有固定上限（`int` 的位數有限），
+所以仍可用 O(n²) 分析。**一層迴圈不一定是 O(n)**；還要把迴圈內的複製成本算進去。
+
+**`StringBuilder` 為什麼是 O(n)？** 它使用可修改的內部緩衝區，容量足夠時直接把新內容寫到尾端，
+不必每圈複製整段舊內容。容量不足時才配置較大的緩衝區並搬移內容。
+以 JDK 21 的倍增型擴容策略分析，各次搬移量形成幾何級數，總量仍與最終長度成正比；
+因此追加一個字元的成本是**攤銷 O(1)**，不是保證每次呼叫都只花 O(1)。
+擴容規則可參考 [JDK 21 `ensureCapacity` 文件](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/StringBuilder.html#ensureCapacity(int))。
+
+若最終字串長度為 **L**，追加一段長度 k 的字串需要攤銷 O(k)，所有 `append` 合計 O(L)；
+最後一次 `toString()` 另需 O(L) 產生結果，兩者相加仍是 **O(L)**。
+本例每圈追加的長度有固定上限，所以 L 與 n 成正比，整體就是 **O(n)**。
+這個結論以「迴圈結束後才呼叫一次 `toString()`」為前提；若每圈都轉出完整字串，仍會反覆複製。
+
+**記憶體要區分「累計配置量」與「同時仍需保留的資料量」**：
+
+| 做法（每圈追加長度有固定上限） | 總時間 | 累計配置的字串／緩衝區空間 | 同時仍需保留的資料量 |
+|---|---|---|---|
+| 迴圈中 `result += ...` | O(n²) | O(n²)，包含隨後可回收的中間字串 | O(n)，假設沒有另外保留每圈結果 |
+| `StringBuilder.append`，最後一次 `toString()` | 攤銷 O(n) | O(n)，包含擴容與最終字串 | O(n) |
+
+也就是說，原本「O(n²) 的時間與記憶體」應更精確地說成「O(n²) 的時間與累計配置量」。
+舊字串不再被引用後可由 GC 回收；實際 JVM 堆積用量還會受回收時機影響。
+
 > 但**單次串接不用改**。第 00 章練習 3 我們用 `javap` 看過，Java 9+ 的編譯器會把
-> `name + ":" + count` 最佳化成 `invokedynamic`，比手動 `StringBuilder` 還快。
-> **只有迴圈裡的串接才需要 `StringBuilder`。** 第 07 章會再深入。
+> `name + ":" + count` 編譯成 `invokedynamic`，讓執行期選擇串接策略；不代表所有情況都比手動 builder 快。
+> 本節建議 `StringBuilder` 的情境是**在迴圈中持續累積同一份結果**，避免每圈複製越來越長的字串。第 07 章會再深入。
 
 ### 格式化
 
@@ -910,16 +951,39 @@ System.out.println(a * b);      // 30
 System.out.println(a / b);      // 3   ← 整數除法
 System.out.println(a % b);      // 1
 
-a += 5;   // a = a + 5
-a -= 2;
-a *= 2;
-a /= 4;
+a += 5;   // a = a + 5  → 15
+a -= 2;   // a = a - 2  → 13
+a *= 2;   // a = a * 2  → 26
+a /= 4;   // a = a / 4  → 6   ← 一樣是整數除法
+a %= 4;   // a = a % 4  → 2
 
-// 複合賦值有隱含強制轉型（這是它和 a = a + b 唯一的差別）
-byte x = 10;
-// x = x + 5;      // ❌ 編譯錯誤
-x += 5;            // ✅ 編譯器自動加 (byte)
+// 位元運算也有對應的複合賦值：&=、|=、^=、<<=、>>=、>>>=（後面「位元運算」會用到）
 ```
+
+### 為什麼 `x = x + 5` 不行，`x += 5` 卻可以
+
+```java
+byte x = 10;
+// x = x + 5;      // ❌ 編譯錯誤：incompatible types: possible lossy conversion from int to byte
+x += 5;            // ✅ 實際上是 x = (byte) (x + 5)
+```
+
+`x = x + 5` 卡在兩件事：
+
+1. **`x + 5` 的結果是 `int`，不是 `byte`。** Java 做算術時，`byte`、`short`、`char` 一律先提升成 `int` 才運算（1.6 的隱含提升；JVM 的加減乘除指令最小就是 `int` 版本，沒有 `byte` 版本）。所以就算 `x` 是 `byte`、`5` 也很小，`x + 5` 的型別仍是 `int`。
+2. **把 `int` 塞回 `byte` 是縮小轉換，必須自己寫 `(byte)`。** 編譯器只看型別、不看執行時的值：它不知道 `x` 當下是 10 還是 127，`x + 5` 有可能超出 `byte` 的範圍（-128 ~ 127），所以要你明確寫出轉型，表示「超出範圍的後果我自己負責」。
+
+那 `byte x = 10;` 為什麼可以？因為 `10` 是**編譯期常數**，編譯器能確定它放得進 `byte`，所以放行。`x + 5` 裡有變數，值要到執行時才知道，就不放行。
+
+`+=`、`-=`、`*=`、`/=`、`%=` 這類複合賦值，語言規格直接定義成「算完之後自動轉回左邊變數的型別」，所以 `x += 5` 等於 `x = (byte) (x + 5)`，編譯器不會擋。代價是轉型藏起來了，溢位也跟著藏起來：
+
+```java
+byte y = 120;
+y += 10;
+System.out.println(y);   // -126  ← 沒有編譯錯誤，也沒有例外，直接繞成負數
+```
+
+> `x = x + 5` 的編譯錯誤其實是在保護你；`x += 5` 只是幫你省掉 `(byte)`，溢位的風險一模一樣。實務上很少拿 `byte` / `short` 做算術，用 `int` 就不會遇到這個問題。
 
 ### 自增自減
 
@@ -977,27 +1041,71 @@ String level = score >= 90 ? "A"
 
 ### 位元運算（實務用得少，但權限旗標會用到）
 
+`int` 在記憶體裡是 32 個 0 或 1（位元）。位元運算就是把兩個數字的位元**上下對齊、一位一位地算**。為了好讀，下面只畫最右邊的 4 位，左邊沒畫出來的位元都是 0。
+
+| 運算子 | 名稱 | 規則 | 例子 |
+|---|---|---|---|
+| `&` | AND | 兩邊都是 1 才是 1 | `0110 & 0011` → `0010` |
+| `\|` | OR | 有一邊是 1 就是 1 | `0110 \| 0011` → `0111` |
+| `^` | XOR | 兩邊不同才是 1 | `0110 ^ 0011` → `0101` |
+| `~` | NOT | 每一位反過來 | `~0110` → `1001`（左邊沒畫的 28 位也全變成 1，所以值是 -7） |
+| `<<` | 左移 | 往左移，右邊補 0；左移 n 位等於乘以 2ⁿ | `0001 << 2` → `0100` |
+| `>>` | 右移 | 往右移，左邊補原本的正負號位元；右移 n 位等於除以 2ⁿ | `0100 >> 1` → `0010` |
+| `>>>` | 無號右移 | 往右移，左邊一律補 0 | 只有負數時結果和 `>>` 不同 |
+
+```java
+System.out.println(8 << 2);      // 32          ← 左移 2 位 = 乘以 4
+System.out.println(-8 >> 1);     // -4          ← 左邊補 1，仍然是負數
+System.out.println(-8 >>> 1);    // 2147483644  ← 左邊補 0，負數變成很大的正數
+```
+
+實務上最常見的用法是**權限旗標**：讓每個權限各佔一個位元，好幾個權限就能存在同一個 `int` 裡。
+
 ```java
 public class BitOps {
-    // 實務案例：用位元旗標表示權限
+    // 1 << n 就是「只有第 n 位是 1」的數字，每個權限各佔一位、互不重疊
     static final int READ   = 1;      // 0001
     static final int WRITE  = 1 << 1; // 0010 = 2
     static final int DELETE = 1 << 2; // 0100 = 4
     static final int ADMIN  = 1 << 3; // 1000 = 8
 
     public static void main(String[] args) {
-        int perms = READ | WRITE;                     // 0011 = 3
+        // 組合：| 把兩邊的 1 合在一起
+        int perms = READ | WRITE;                     // 0001 | 0010 → 0011
 
-        System.out.println((perms & READ) != 0);      // true  有讀取權
-        System.out.println((perms & DELETE) != 0);    // false 沒有刪除權
+        // 檢查：& 把 READ 以外的位元都清成 0，剩下的不是 0 就代表那一位是 1
+        System.out.println((perms & READ) != 0);      // 0011 & 0001 → 0001，true  有讀取權
+        System.out.println((perms & DELETE) != 0);    // 0011 & 0100 → 0000，false 沒有刪除權
 
-        perms |= DELETE;                              // 加上刪除權 → 0111
+        // 加上：| 只把 DELETE 那一位設成 1，其他位元不動
+        perms |= DELETE;                              // 0011 | 0100 → 0111
         System.out.println((perms & DELETE) != 0);    // true
 
-        perms &= ~WRITE;                              // 移除寫入權 → 0101
+        // 移除：~WRITE 是「只有寫入那一位是 0、其他全是 1」的遮罩，& 上去只清掉那一位
+        perms &= ~WRITE;                              // 0111 & 1101 → 0101
         System.out.println((perms & WRITE) != 0);     // false
+
+        // 切換：^ 讓那一位反過來，有就拿掉、沒有就加上
+        perms ^= WRITE;                               // 0101 ^ 0010 → 0111
+
+        // 要「全部都有」得用 == 比對；!= 0 只代表「至少有一個」
+        int need = READ | ADMIN;                      // 1001
+        System.out.println((perms & need) != 0);      // 0111 & 1001 → 0001，true  ← 只有讀取權也算過
+        System.out.println((perms & need) == need);   // 0001 不等於 1001，false     ← 沒有 ADMIN
     }
 }
+```
+
+兩個常見錯誤：
+
+```java
+// ❌ 括號不能省：!= 的優先順序比 & 高，這行會被當成 perms & (READ != 0)，
+//    也就是 int & boolean → 編譯錯誤。另外 Java 不能直接拿 int 當條件，所以 != 0 也省不掉
+// if (perms & READ != 0) { }
+
+// ❌ 不要用 + / - 加減權限：本來就有（或本來就沒有）時會進位、借位，弄壞別的位元
+int p = READ | WRITE | DELETE;   // 0111
+p += DELETE;                     // 0111 + 0100 → 1011 ← 刪除權沒了，還多出 ADMIN
 ```
 
 > 現代 Java 更推薦用 `EnumSet`（第 05 章）表達權限集合，可讀性好得多。
@@ -1077,7 +1185,32 @@ public class SwitchOldStyle {
 }
 ```
 
-**fall-through 偶爾有用**（多個 case 共用邏輯），但 95% 的情況是 bug。
+**為什麼會這樣**：`case` 只是「從這裡開始執行」的入口，不是一個獨立的區塊。
+進入某個 `case` 之後，程式會一路往下執行，經過下面其他的 `case` 標籤也不會停，直到碰到 `break`（或 `return`、`throw`）或 `switch` 結尾為止。
+這種「掉進下一個 case」的行為叫 **fall-through**。傳入 `"GOLD"` 時實際的執行順序：
+
+```
+case "GOLD"   → rate = 0.8
+（沒有 break，繼續往下）
+case "SILVER" → rate = 0.9   ← 把 0.8 蓋掉
+break         → 離開 switch，回傳 0.9
+```
+
+fall-through 唯一刻意的用法，是讓**多個 case 共用同一段程式碼**：把 case 疊在一起，中間不寫任何程式碼。
+
+```java
+String type;
+switch (day) {
+    case "SAT":
+    case "SUN":
+        type = "假日";   // "SAT" 從 case "SAT" 進來，往下掉到這裡；"SUN" 直接進來
+        break;
+    default:
+        type = "平日";
+}
+```
+
+判斷原則：**case 之間沒有程式碼 → 刻意共用；case 底下有程式碼卻沒有 `break` → 幾乎都是忘了寫。** 下一節的箭頭語法直接寫成 `case "SAT", "SUN" -> "假日";`，連共用都不需要靠 fall-through。
 
 ### 【Java 14+】箭頭語法 `switch`：預設就該用這個
 
@@ -1129,13 +1262,14 @@ public class SwitchYield {
 
 ### 搭配 enum：編譯器幫你檢查有沒有漏
 
+`enum`（列舉）是「只有固定幾個值」的型別。下面的 `OrderStatus` 只可能是這五個值之一，不會出現第六種。enum 的完整用法第 02 章會講，這裡先看它和 `switch` 搭配的效果。
+
 ```java
 public class OrderStateMachine {
 
     enum OrderStatus { CREATED, PAID, SHIPPED, DELIVERED, CANCELLED }
 
-    // 沒有 default，但涵蓋了所有 enum 值 → 編譯通過
-    // 之後有人在 enum 新增 REFUNDED，這裡會「編譯失敗」，強迫你來處理
+    // 五個值都列了，所以不用寫 default
     static String nextAction(OrderStatus status) {
         return switch (status) {
             case CREATED   -> "等待付款";
@@ -1154,8 +1288,40 @@ public class OrderStateMachine {
 }
 ```
 
-> **這是實務上非常有價值的特性。** 用 `if-else` 或有 `default` 的 `switch`，新增狀態時程式照跑，
-> 只是行為悄悄變成 default——上線才發現。用**沒有 default 的 switch 表達式 + enum**，編譯器會替你把關。
+**為什麼可以不寫 `default`**：`switch` 表達式一定要產生一個值，所以編譯器會檢查「每一種可能的輸入都有對應的 case」。前一節的 `String` 版本可能收到任何字串，永遠列不完，所以一定要有 `default`；`OrderStatus` 只有五個值，五個都列了，編譯器確定不會漏，就不需要 `default`。
+
+**之後新增狀態會怎樣**：假設有人在 enum 加了 `REFUNDED`（已退款）：
+
+```java
+enum OrderStatus { CREATED, PAID, SHIPPED, DELIVERED, CANCELLED, REFUNDED }
+```
+
+`nextAction` 一個字都沒改，重新編譯卻會失敗：
+
+```
+error: the switch expression does not cover all possible input values
+        return switch (status) {
+               ^
+```
+
+編譯器逼你回來決定 `REFUNDED` 該回傳什麼。專案裡每個對 `OrderStatus` 做 `switch` 的地方都會一起報錯，一個都漏不掉。
+
+**如果當初寫了 `default`**：
+
+```java
+return switch (status) {
+    case CREATED   -> "等待付款";
+    case PAID      -> "準備出貨";
+    case SHIPPED   -> "等待收貨確認";
+    case DELIVERED -> "訂單完成";
+    default        -> "無後續動作";   // 本來是寫給 CANCELLED 的
+};
+```
+
+加了 `REFUNDED` 照樣編譯通過，已退款的訂單默默拿到「無後續動作」。沒有錯誤、沒有警告，通常要等上線後有人反映才發現。用 `if-else` 寫也是一樣，最後那個 `else` 會默默接住新狀態。
+
+> **規則**：對 enum 做 `switch` 時，用 `switch` 表達式（會產生值的寫法，例如 `return switch` 或 `String x = switch`），列出所有值，**不要寫 `default`**。
+> 只有表達式會做這個檢查：`switch` 當陳述句用、只執行動作不產生值時，漏掉的 enum 值只是什麼都不做，編譯器不會報錯。
 
 `switch` 支援的型別：`byte` / `short` / `char` / `int`（含包裝型別）、`String`、`enum`。
 Java 21 起還支援**模式比對**（比對型別、解構 record），第 12 章會講。
@@ -1198,6 +1364,43 @@ public class ForEachDemo {
     }
 }
 ```
+
+**冒號右邊能放什麼**：只有兩種。
+
+1. **陣列**：任何型別的陣列都可以，包括 `int[]` 這種基本型別陣列。
+2. **實作了 `Iterable` 介面的物件**：`List`、`Set`、`Queue` 這些集合都是（集合家族第 05 章會講）。for-each 背後其實是呼叫物件的 `iterator()` 方法一個一個取元素，只有 `Iterable` 保證有這個方法。
+
+其他東西放上去都會編譯失敗（`for-each not applicable to expression type`）。最常踩到的幾個：
+
+| 不能直接用 | 原因 | 改成 |
+|---|---|---|
+| `Map` | `Map` 不是 `Iterable` | 依需要選 `map.entrySet()`、`map.keySet()`、`map.values()` |
+| `String` | `String` 不是 `Iterable` | `str.toCharArray()`，轉成 `char[]` |
+| enum 型別，例如 `OrderStatus` | 型別本身不是物件 | `OrderStatus.values()`，回傳所有值的陣列（上一節的 `main` 就是這樣寫） |
+| `Stream` | `Stream` 不是 `Iterable` | `stream.forEach(...)`（第 06 章） |
+
+```java
+Map<String, Integer> stock = Map.of("A001", 5, "B002", 0);
+// for (String key : stock) { }                      // ❌ 編譯錯誤
+for (Map.Entry<String, Integer> e : stock.entrySet()) {
+    System.out.println(e.getKey() + " 庫存 " + e.getValue());
+}
+
+// for (char c : "Java") { }                         // ❌ 編譯錯誤
+for (char c : "Java".toCharArray()) {
+    System.out.print(c + " ");                       // J a v a
+}
+
+int[] scores = {90, 85, 70};
+int total = 0;
+for (int s : scores) {                               // ✅ 基本型別陣列也可以
+    total += s;
+}
+System.out.println(total);                           // 245
+```
+
+另外，冒號右邊是 `null` 時會直接丟 `NullPointerException`，錯誤訊息會寫 `Cannot invoke "java.util.List.iterator()"`
+，也就是上面說的 `iterator()`。所以方法沒有資料可回傳時，要回傳空集合（`List.of()`），不要回傳 `null`。
 
 > ⚠️ `for-each` **不能**在迴圈中增刪集合元素（會丟 `ConcurrentModificationException`），
 > 也不能改變參考本身。第 05 章會講 `Iterator.remove()` 和 `removeIf`。
@@ -1629,12 +1832,33 @@ public class VarargsDemo {
 
 **規則**：可變參數必須是**最後一個**參數，一個方法只能有一個。
 
-實務上最常見的用途就是日誌與例外訊息：
+實務上最常見的用途是**「格式字串 + 數量不定的值」**。1.9 節用過的 `printf`、`String.format`、`formatted` 其實都是可變參數方法：
 
 ```java
-// 這就是 SLF4J 的 API 長相
-logger.info("訂單 {} 由使用者 {} 建立，金額 {}", orderId, userId, amount);
+// JDK 裡 String.format 的宣告
+public static String format(String format, Object... args)
+
+String.format("商品 %s 數量 %d", name, qty);                  // args = {name, qty}
+String.format("商品 %s 數量 %d 金額 %.2f", name, qty, price);  // args = {name, qty, price}
 ```
+
+格式字串裡有幾個 `%s`、`%d`，後面就跟幾個值，JDK 不必為「兩個值」「三個值」各寫一個版本。參數型別是 `Object...`，所以什麼型別都收（`int`、`double` 這類基本型別會自動裝箱，1.7 節講過）。
+
+組例外訊息時最常這樣用：
+
+```java
+throw new IllegalArgumentException("訂單 %s 的金額 %s 不合法".formatted(orderId, amount));
+// 訊息：訂單 A1001 的金額 -50 不合法
+```
+
+寫日誌也是同一個概念。實務上最常用的日誌工具是 SLF4J（第 04 章會正式介紹，包括 `logger` 怎麼建立），它的佔位符是 `{}`，後面的值依序填進去：
+
+```java
+logger.info("訂單 {} 由使用者 {} 建立，金額 {}", orderId, userId, amount);
+// 印出：訂單 A1001 由使用者 42 建立，金額 2990
+```
+
+能接這麼多個值，是因為 `logger.info` 有一個 `info(String format, Object... arguments)` 的可變參數版本。
 
 ### 遞迴
 
@@ -1791,17 +2015,17 @@ public class Buggy {
 <details>
 <summary>參考解答</summary>
 
-五個 bug：
+五個 bug 和改法：
 
-**① 時間戳用 `int`**——`currentTimeMillis()` 約 1.77×10^12，遠超 `int` 上限，強制轉型後是垃圾值。
+**① 時間戳改用 `long`**：`long totalMillis = System.currentTimeMillis();`。`currentTimeMillis()` 回傳約 1.77×10^12，遠超 `int` 上限，轉成 `int` 會變成垃圾值。
 
-**② 用 `double` 算錢**——`19.99 * 3` 得到 `59.97000000000001`。
+**② 金額改用 `BigDecimal`，用字串建構**：`new BigDecimal("19.99")`，乘法用 `multiply`。用 `double` 算 `19.99 * 3` 會得到 `59.97000000000001`。
 
-**③ `==` 比字串**——`new String("PAID")` 不在字串池，永遠不等於常值 `"PAID"`，`if` 不會進去。
+**③ 字串比較改用 `equals`，常值放左邊**：`"PAID".equals(status)`。`==` 比的是「是不是同一個物件」，`new String("PAID")` 和常值 `"PAID"` 不是同一個，`if` 永遠進不去。
 
-**④ 整數除法**——`7 / 9` 是 `0`，完成率變成 `0.0%`。
+**④ 除之前先把一邊轉成 `double`**：`(double) completed / all`。兩個 `int` 相除是整數除法，`7 / 9` 是 `0`，完成率變成 `0.0%`。
 
-**⑤ `split("|")`**——`|` 是 regex 的「或」，`split("|")` 會把字串拆成單一字元，得到 5。
+**⑤ `split` 的 `|` 要轉義**：`csv.split("\\|")`。`split` 的參數是正規表示式，`|` 在裡面代表「或」，不轉義會把字串拆成一個一個字元，得到 5 而不是 3。
 
 修正版：
 

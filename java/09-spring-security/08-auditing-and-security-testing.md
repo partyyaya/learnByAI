@@ -42,7 +42,7 @@
 - 解釋為什麼「監聽 `AuthenticationSuccessEvent` 當登入紀錄」在無狀態 API 上是錯的（8.2.2）。
 - 說出 URL 層與方法層的授權事件**預設值不一樣**，以及怎麼補（8.2.3）。
 - 設計一張稽核表，說出六個必要欄位各自回答什麼問題（8.3.1、8.3.3）。
-- 解釋為什麼稽核寫入要用 `REQUIRES_NEW`，以及不用會發生什麼（8.3.4）。
+- 區分成功稽核與失敗稽核的交易邊界，說明失敗紀錄何時需要 `REQUIRES_NEW`（8.3.4）。
 - 說出稽核程式最容易寫出來的資安漏洞（8.3.5）。
 - 用 `@CreatedBy` / `AuditorAware` 自動填「誰做的」，並說出它在背景執行緒上為什麼失效（8.4）。
 - 正確地把 `MockMvc` 接上 Security，並寫一個「哨兵測試」證明它真的接上了（8.5.1、8.5.2）。
@@ -637,7 +637,7 @@ import java.time.LocalDateTime;
 
 /**
  * 8.3 的稽核寫入點。
- * ⚠️ 前兩個方法的差別【只有 propagation】—— 8.3.4 會量出它造成的差異。
+ * ⚠️ 兩種寫法用來觀察 propagation；最終呼叫方式見 8.3.4—— 8.3.4 會量出它造成的差異。
  */
 @Service
 @Profile("a1 | a2 | a3 | a4 | au | ac")
@@ -682,9 +682,10 @@ public class AuditLog {
                   (at, actor, actor_id, action, target_type, target_id, outcome, reason,
                    client_ip, user_agent, trace_id)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                Timestamp.valueOf(LocalDateTime.now()),
+                Timestamp.valueOf(LocalDateTime.now(java.time.ZoneOffset.UTC)),
                 actor,                                            // 誰
-                null,                                             // actor_id
+                auth != null && auth.getPrincipal() instanceof com.example.lab09.shop.LocalIdentity local
+                        && (actorOverride == null || actorOverride.equals(auth.getName())) ? local.userId() : null, // actor_id
                 action,                                           // 做了什麼
                 targetType, targetId,                             // 對什麼做
                 outcome.name(),                                   // 結果
@@ -694,15 +695,8 @@ public class AuditLog {
                 null);                                            // trace_id（7.6.1 的那個編號）
     }
 
-    // ⚠️ 上面有【兩欄永遠寫 null】，這是本節示範程式的簡化，不是建議做法：
-    //   actor_id  —— 8.3.3 說「actor 與 actor_id 兩個都要」，因為帳號會改名。
-    //                要填它，principal 得是你自己的型別（`AppPrincipal.userId()`）；
-    //                但登入【失敗】那一筆本來就沒有 principal，所以這一欄註定可空。
-    //   trace_id  —— 7.6.1 的那個編號。真正的做法是從 MDC / 分散式追蹤的 context 拿
-    //                （`MDC.get("traceId")` 或 Micrometer 的 `Tracer.currentSpan()`），
-    //                而不是在這裡再生一個——**兩邊生出來的編號對不起來就失去意義了**。
-    //   📌 這兩欄是「欄位開好、但要接上別的東西才填得了」的典型：
-    //      schema 先留著，接上之後不用改表。
+    // 登入失敗／登出後沒有可用 principal 時 actor_id 可空；actor 一律使用事件上的名稱。
+    // trace_id 尚未接 MDC／Tracer，維持 null，不能在這裡另產無法關聯的編號。
 
     private static HttpServletRequest currentRequest() {
         var attrs = RequestContextHolder.getRequestAttributes();
@@ -825,14 +819,17 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 8.3.4 的主角：一個「先寫稽核、再做事」的交易方法。兩個版本的差別只有【稽核怎麼寫】。 */
+/** 8.3.4：對照錯誤的同交易失敗紀錄，與成功同交易／失敗回滾後獨立記錄。 */
 @Service
 @Profile("a1 | a2 | a3 | a4 | au | ac")
 public class NoteService {
 
     private final JdbcTemplate jdbc;
     private final AuditLog audit;
-    public NoteService(JdbcTemplate jdbc, AuditLog audit) { this.jdbc = jdbc; this.audit = audit; }
+    private final NoteChanges changes;
+    public NoteService(JdbcTemplate jdbc, AuditLog audit, NoteChanges changes) {
+        this.jdbc=jdbc; this.audit=audit; this.changes=changes;
+    }
 
     /** 🔴 版本一：稽核跟業務在【同一個交易】裡 */
     @Transactional
@@ -843,13 +840,15 @@ public class NoteService {
         if (fail) throw new IllegalStateException("餘額不足");      // ← 業務規則不通過
     }
 
-    /** ✅ 版本二：稽核走【自己的交易】（REQUIRES_NEW） */
-    @Transactional
+    /** ✅ 版本二：成功隨業務提交，失敗在內層交易結束後獨立保存。 */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.NEVER)
     public void updateV2(long id, String body, boolean fail) {
-        audit.writeInOwnTransaction("NOTE_UPDATE", "note", String.valueOf(id),
-                fail ? AuditLog.Outcome.FAILURE : AuditLog.Outcome.SUCCESS, fail ? "餘額不足" : null);
-        jdbc.update("UPDATE note SET body=? WHERE id=?", body, id);
-        if (fail) throw new IllegalStateException("餘額不足");
+        try { changes.update(id, body, fail); }
+        catch (RuntimeException error) {
+            audit.writeInOwnTransaction("NOTE_UPDATE", "note", String.valueOf(id),
+                    AuditLog.Outcome.FAILURE, error.getClass().getSimpleName());
+            throw error;
+        }
     }
 
     // ── 下面兩個只是為了讓 8.3.4 的測試好寫 ──
@@ -865,6 +864,33 @@ public class NoteService {
 }
 ```
 
+內層交易放在另一個 Spring bean，避免 self-invocation；外層用 NEVER 拒絕在既有交易內呼叫，確保 catch 涵蓋內層的 SQL、flush 與 commit 失敗：
+
+```java
+package com.example.lab09.ch08;
+
+import org.springframework.context.annotation.Profile;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+@Profile("a1 | a2 | a3 | a4 | au | ac")
+public class NoteChanges {
+    private final JdbcTemplate jdbc;
+    private final AuditLog audit;
+    public NoteChanges(JdbcTemplate jdbc, AuditLog audit) { this.jdbc=jdbc; this.audit=audit; }
+    @Transactional
+    public void update(long id,String body,boolean fail) {
+        int rows=jdbc.update("UPDATE note SET body=? WHERE id=?",body,id);
+        if(rows!=1) throw new IllegalStateException("NOTE_NOT_FOUND");
+        if(fail) throw new IllegalStateException("餘額不足");
+        // 成功紀錄加入同一交易；業務 SQL 或 commit 失敗時不會留下假成功。
+        audit.write("NOTE_UPDATE","note",String.valueOf(id),AuditLog.Outcome.SUCCESS,null);
+    }
+}
+```
+
 **輸出**：
 
 ```
@@ -872,8 +898,8 @@ public class NoteService {
 版本                                             業務結果                    note 的內容      稽核紀錄
 ──────────────────────────────────────────────────────────────────────────────────────────────────
 🔴 v1：audit.write()（同一個交易）                 丟 IllegalStateException   原本的內容       0 筆
-✅ v2：REQUIRES_NEW（自己的交易）                  丟 IllegalStateException   原本的內容       1 筆
-       → NOTE_UPDATE FAILURE 餘額不足
+✅ v2：成功同交易／失敗回滾後另記                  丟 IllegalStateException   原本的內容       1 筆
+       → NOTE_UPDATE FAILURE IllegalStateException
 ```
 
 **v1 的三件事一起發生**：
@@ -892,18 +918,22 @@ public class NoteService {
 **✅ 三種修法**：
 
 ```
-① @Transactional(propagation = REQUIRES_NEW)（v2）
-   —— 最直接。代價是這個請求同時佔【兩條】資料庫連線，連線池要留餘裕。
+① v2：由不開交易的外層呼叫另一個 @Transactional bean，成功稽核用 REQUIRED 跟業務提交；
+   失敗回到外層才用 REQUIRES_NEW 記錄。不可在 commit 前獨立寫 SUCCESS。
+   若在仍持有業務交易的監聽器裡寫 REQUIRES_NEW，會同時佔【兩條】連線，連線池要留餘裕。
       （08 站 08 章量過連線池的行為；`max_connections` 不夠時這裡會先卡住。）
 
 ② 稽核不走資料庫，走 log 檔 / 訊息佇列
    —— 沒有交易問題；代價是查詢與關聯要另外做（11 站的題目）。
 
-③ @TransactionalEventListener(phase = AFTER_COMPLETION) ＋ REQUIRES_NEW
-   —— ⚠️ 只有 phase 沒有 REQUIRES_NEW 一樣寫不進去：
+③ 交易事件：AFTER_COMMIT 記已提交的成功，AFTER_ROLLBACK 記失敗，寫 DB 時另開 REQUIRES_NEW
+   —— 也可用 AFTER_COMPLETION 取得完成時機，但必須辨別交易結果，不能一律記 SUCCESS。
+      ⚠️ 只有 phase 沒有 REQUIRES_NEW 一樣可能寫不進去：
       AFTER_COMPLETION 時外層交易已經結束，沒有新交易就沒有東西可以 commit。
       這是「我明明加了 @TransactionalEventListener 為什麼還是沒寫進去」的標準答案。
 ```
+
+參考 [Spring 交易事件與各階段](https://docs.spring.io/spring-framework/reference/data-access/transaction/event.html)；事件處理方式仍需設計失敗時的可靠保存。
 
 > 📌 **這個問題是 03 章 3.5.6 的另一面。**
 > 那裡是「`@PostAuthorize` 回了 403，但 `UPDATE` 已經 commit 了」——
@@ -929,8 +959,8 @@ public class NoteService {
 **這是稽核程式最容易犯的錯**：
 
 ```java
-❌ log.warn("login failed: {}", event.getAuthentication());        // 密碼進 log
-❌ audit.write(..., event.getAuthentication().toString());         // 密碼進資料庫
+❌ structuredLogger.record(event.getAuthentication());             // 序列化整個物件可能取出 credentials
+⚠️ token.toString() 目前會遮密碼，但仍不該把整個 token 當稽核格式
 ❌ objectMapper.writeValueAsString(event);                         // 密碼進 ELK
 
 ✅ 只取你明確要的兩個欄位：
@@ -949,7 +979,7 @@ public class NoteService {
 > 📌 **為什麼 Spring 要留著明碼？** 因為 `ProviderManager` 要拿它去比對。
 > 認證成功後 `ProviderManager.eraseCredentials()` 會把它清掉——
 > 但**失敗的那條路沒有清**（失敗時整個 token 就被丟進事件了）。
-> 所以「登入失敗事件」是全系統唯一一個手上有明碼密碼的地方，剛好也是最多人寫監聽器的地方。
+> 所以「登入失敗事件」是可能持有明碼密碼的地方之一，剛好也是最多人寫監聽器的地方。
 
 ### 8.3.6 要記什麼、絕對不能記什麼
 
@@ -1769,7 +1799,7 @@ void everyWriteEndpointHasAnExplicitRule() {
 ```
 □ JWT 的 payload 裡沒有密碼、卡號、任何機密                            （5.2.1 ★ base64 一行就讀出來）
 □ 一定有 exp，而且夠短                                               （5.3.2 ★ jjwt 不設也不報錯）
-□ 驗簽用 `verifyWith(key)`，【不相信 token 自己宣稱的 alg】             （5.2.6 ★ RS256→HS256 金鑰混淆）
+□ 固定驗證金鑰，並在 parser.sig() 明確限制允許的演算法             （5.2.6 ★ RS256→HS256 金鑰混淆）
 □ signWith 有寫死演算法（`Jwts.SIG.HS256`），不靠金鑰長度自動選          （5.2.3）
 □ 沒有任何地方用 split(".") 自己讀 payload 當驗證                      （5.8.1 ★ 等於零驗證）
 □ refresh token 【不是】JWT，而且有 rotation ＋ 重用偵測               （5.6.1、5.6.3）
@@ -1809,7 +1839,7 @@ void everyWriteEndpointHasAnExplicitRule() {
 □ 有宣告 AuthorizationEventPublisher bean（不然方法層的拒絕沒有紀錄）    （8.2.3）
 □ 「登入」稽核看的是 InteractiveAuthenticationSuccessEvent
   或你自己的 /login 端點，不是 AuthenticationSuccessEvent             （8.2.2 ★ 無狀態下會爆量）
-□ 稽核寫入用 REQUIRES_NEW（或走 log / 佇列）                          （8.3.4 ★ 不然會跟著業務回滾）
+□ 成功與業務同交易；失敗在回滾後以 REQUIRES_NEW 獨立保存              （8.3.4）
 □ 監聽器裡【沒有】把整個 Authentication / event 印出來或序列化          （8.3.5 ★ 裡面有明碼密碼）
 □ 稽核表是 append-only（應用程式的帳號沒有 UPDATE / DELETE 權限）       （8.3.6）
 □ 稽核的保留期限已經決定、而且有歸檔計畫                                （8.3.6）
@@ -1860,6 +1890,15 @@ import org.springframework.security.authorization.SpringAuthorizationEventPublis
  */
 @Configuration
 public class ShopAuditConfig {
+    @Bean
+    com.example.lab09.ch08.AuditLog auditLog(org.springframework.jdbc.core.JdbcTemplate jdbc) {
+        return new com.example.lab09.ch08.AuditLog(jdbc);
+    }
+    @Bean
+    com.example.lab09.ch08.AuditListener auditListener(com.example.lab09.ch08.AuditLog audit) {
+        return new com.example.lab09.ch08.AuditListener(audit);
+    }
+
 
     @Bean
     AuthorizationEventPublisher authorizationEventPublisher(ApplicationEventPublisher publisher) {
@@ -1873,39 +1912,78 @@ public class ShopAuditConfig {
 ```java
 package com.example.lab09.shop;
 
-import com.example.lab09.ch08.AuditLog;                 // 8.3.2
+import com.example.lab09.ch08.AuditLog;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
-/**
- * 08 章的 shop 落地：把「成功 / 失敗的業務操作」記進稽核。
- * ⚠️ 用到的既有零件：`OrderRepo` / `Order`（03 章 3.10 的訂單表）、`AuditLog`（8.3.2）。
- */
+/** 外層不開交易；跨 bean 呼叫包含了內層交易的提交，才能捕捉 commit 失敗。 */
 @Service
 public class ShopOrderService {
-
-    private final OrderRepo orders;
+    private final ShopOrderChanges changes;
     private final AuditLog audit;
-    public ShopOrderService(OrderRepo orders, AuditLog audit) { this.orders = orders; this.audit = audit; }
-
-    @Transactional
+    public ShopOrderService(ShopOrderChanges changes,AuditLog audit) { this.changes=changes; this.audit=audit; }
     @PreAuthorize("hasAuthority('order:refund')")
-    public void refund(long orderId, String reason) {
-        Order o = orders.findById(orderId).orElseThrow();
-        try {
-            o.refund();                                        // 業務規則可能丟例外
-            // ★ 用 REQUIRES_NEW —— 業務回滾時稽核要留著（8.3.4）
-            audit.writeInOwnTransaction("ORDER_REFUND", "order", String.valueOf(orderId),
-                    AuditLog.Outcome.SUCCESS, reason);
-        } catch (RuntimeException e) {
-            audit.writeInOwnTransaction("ORDER_REFUND", "order", String.valueOf(orderId),
-                    AuditLog.Outcome.FAILURE, e.getClass().getSimpleName());   // ★ 類別名，不是訊息全文（7.6.1）
-            throw e;
+    @org.springframework.transaction.annotation.Transactional(
+            propagation=org.springframework.transaction.annotation.Propagation.NEVER)
+    public void refund(long orderId,String reason) {
+        try { changes.refund(orderId,reason); }
+        catch(RuntimeException error) {
+            audit.writeInOwnTransaction("ORDER_REFUND","order",String.valueOf(orderId),
+                    AuditLog.Outcome.FAILURE,error.getClass().getSimpleName());
+            throw error;
         }
     }
 }
 ```
+
+```java
+package com.example.lab09.shop;
+
+import com.example.lab09.ch08.AuditLog;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class ShopOrderChanges {
+    private final ShopOrderRepo orders;
+    private final AuditLog audit;
+    public ShopOrderChanges(ShopOrderRepo orders,AuditLog audit) { this.orders=orders; this.audit=audit; }
+    @Transactional
+    @org.springframework.security.access.prepost.PreAuthorize("hasAuthority('order:refund')")
+    public void refund(long id,String reason) {
+        if (reason == null || reason.isBlank() || reason.length()>120)
+            throw new IllegalArgumentException("退款原因必填且最多 120 字元");
+        // 本課 order:refund 是客服／管理員對全部訂單的權限；只允許 PAID -> REFUNDED。
+        if(orders.refundPaid(id)!=1) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.CONFLICT,"ORDER_NOT_REFUNDABLE");
+        audit.write("ORDER_REFUND","order",String.valueOf(id),AuditLog.Outcome.SUCCESS,reason);
+    }
+}
+```
+
+```java
+package com.example.lab09.shop;
+
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.*;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ShopRefundController {
+    private final ShopOrderService orders;
+    public ShopRefundController(ShopOrderService orders) { this.orders=orders; }
+    public record RefundReq(@NotBlank @Size(max=120) String reason) {}
+    @PostMapping("/api/orders/{id}/refund")
+    public ResponseEntity<Void> refund(@PathVariable long id,@Valid @RequestBody RefundReq body) {
+        orders.refund(id,body.reason());return ResponseEntity.noContent().build();
+    }
+}
+```
+
+沿用 03 章的 `ShopOrderRepo`／`ShopOrder`，不要再引用 00 章記憶體版的 `OrderRepo`／`Order`。此處只示範資料庫狀態退款，未串金流；正式付款退款需要金流端冪等、對帳與可靠事件流程。
+
+稽核寫入若失敗，本課採取請求失敗的政策；不能宣稱任何 DB 故障都一定留下稽核。需要更高可靠度時設計持久 outbox／外部稽核管道。成功後提交監聽器亦不是自動可靠投遞。
 
 **③ shop 的測試組合**：
 
@@ -1926,10 +2004,10 @@ ShopJwtTest                 token：過期、篡改、撤銷後失效           
          ＋ oauth2Login 接 Google，用 (provider, sub) 綁到同一個 app_user
 授權      RBAC 五張表（角色 → 權限）＋ URL 層規則 ＋ 方法層 @PreAuthorize ＋ 資源層查詢條件
 身分載體   後台：session cookie（CSRF 開）／ API：Authorization 標頭的 JWT（CSRF 關）
-撤銷      停用帳號 → 同時踢 session ＋ bump token_version
+撤銷      停用帳號 → 提交後踢表單／OIDC session ＋ bump token_version ＋ 撤銷 refresh family
 跨來源     CORS 逐一列舉網域、只註冊在 /api/**
 防護      登入速率限制（帳號＋IP、指數退避）＋ 安全標頭 ＋ 統一錯誤出口 ＋ actuator 收斂
-稽核      登入 / 登出 / 授權拒絕 / 每一個寫入操作，REQUIRES_NEW 寫進 audit_log
+稽核      登入 / 登出 / 授權拒絕獨立保存；業務成功與業務同交易，失敗於回滾後獨立保存
 測試      哨兵 ＋ 授權矩陣 ＋ 覆蓋掃描 ＋ 真登入整合測試
 ```
 
@@ -1946,8 +2024,8 @@ ShopJwtTest                 token：過期、篡改、撤銷後失效           
 **③ 監聽 `AuthorizationGrantedEvent` 記「成功的存取」**（8.2.4）
 → 每一條授權決策各發一次，量大又沒有業務意義。成功的操作在業務層記。
 
-**④ 稽核用預設的 `@Transactional`**（8.3.4）
-→ 業務回滾時稽核一起消失，而且**最該記的那些（失敗）剛好全部不見**。
+**④ 所有稽核一律用同一種交易傳播**（8.3.4）
+→ 成功應隨業務一起提交；失敗應在業務交易失敗後獨立保存。過早以 REQUIRES_NEW 記 SUCCESS，會留下業務已回滾的假成功。
 
 **⑤ 在監聽器裡印整個 `Authentication` / 把 event 序列化**（8.3.5）
 → 明碼密碼進 log / 資料庫 / ELK。`toString()` 的 `[PROTECTED]` 是假象。
@@ -2023,7 +2101,7 @@ ShopJwtTest                 token：過期、篡改、撤銷後失效           
 
 ```
 8.2  事件      認證事件預設都有；🔴 方法層的授權事件要自己開；GRANTED 太吵不要記
-8.3  稽核      六個欄位；🔴 REQUIRES_NEW；🔴 事件裡有明碼密碼；append-only
+8.3  稽核      成功隨業務提交、失敗回滾後獨立保存；事件白名單取欄位；append-only
 8.4  JPA      @CreatedBy ＋ AuditorAware；🔴 換執行緒就不見
 8.5  測試工具   🔴 springSecurity()；@WithMockUser 三個坑；post-processor；自訂註解
 8.6  矩陣      一張表釘住「誰能打哪一支」；覆蓋掃描擋「新端點忘了設規則」
@@ -2044,7 +2122,7 @@ ShopJwtTest                 token：過期、篡改、撤銷後失效           
 □ 為什麼「監聽 AuthenticationSuccessEvent 當登入紀錄」在無狀態 API 上是錯的？
 □ URL 層與方法層的授權事件，預設值差在哪？為什麼這個差異特別危險？
 □ 稽核表的六個必要欄位各回答什麼問題？為什麼 actor 要有兩欄？
-□ 為什麼稽核寫入要 REQUIRES_NEW？不用會怎樣？
+□ 哪些稽核要跟業務同交易？哪些要獨立交易？為什麼不能提早寫 SUCCESS？
 □ @TransactionalEventListener(AFTER_COMPLETION) 為什麼單獨用沒效？
 □ 登入失敗事件裡有什麼不該記的東西？toString() 的 [PROTECTED] 為什麼靠不住？
 □ 稽核的 actor 為什麼不能從 SecurityContextHolder 讀？

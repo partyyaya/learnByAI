@@ -996,12 +996,12 @@ version  = 你設的 baselineVersion
 **Step ① 的正確 dump 指令**（也是 6.9.3 要用的）：
 
 ```bash
-# 只要 schema，不要資料；把 AUTO_INCREMENT 的當前值等噪音去掉
-mysqldump -h prod-host -u readonly -p \
-  --no-data --skip-comments --skip-add-drop-table --skip-set-charset \
-  --routines --triggers shop \
-  | sed -E 's/ AUTO_INCREMENT=[0-9]+//' \
-  | grep -v '^/\*!' \
+# schema-audit 帳號需能讀取 view/routine/trigger/event 定義，不能只有一般 SELECT。
+mysqldump -h prod-host -u schema_audit -p \
+  --no-data --skip-comments --skip-dump-date --skip-add-drop-table --skip-set-charset \
+  --skip-lock-tables --no-tablespaces --set-gtid-purged=OFF \
+  --routines --triggers --events --ignore-table=shop.flyway_schema_history shop \
+  | sed -E 's/ AUTO_INCREMENT=[0-9]+//g' \
   > src/main/resources/db/migration/V1__initial_schema.sql
 ```
 
@@ -1983,7 +1983,7 @@ UPDATE ord SET note = remark WHERE note IS NULL;
 // 每一輪：先算出這批的 id 上界，再用它當 WHERE
 long lastId = 0;
 var ps = c.prepareStatement(
-    "UPDATE ord SET note = remark WHERE id > ? AND note IS NULL ORDER BY id LIMIT " + size);
+    "UPDATE ord SET note = remark WHERE id > ? AND id <= ? AND note IS NULL");
 var qs = c.prepareStatement(
     "SELECT MAX(id) FROM (SELECT id FROM ord WHERE id > ? ORDER BY id LIMIT " + size + ") x");
 while (true) {
@@ -1995,12 +1995,15 @@ while (true) {
         if (rs.wasNull()) break;
     }
     ps.setLong(1, lastId);
-    ps.executeUpdate();
-    lastId = next;
+    ps.setLong(2, next);                    // 上界必須實際套到 UPDATE
+    ps.executeUpdate();                     // 本例 c 是此作業專用的 autocommit 連線
+    lastId = next;                          // 該批已成功提交，才推進游標
 }
 ```
 
-**實測結果**：
+選界查詢取的是最多 size 個主鍵，因此 UPDATE 嚴格限制 `(lastId, next]`；即使這段全部已回填、影響 0 列，也要推進游標。否則先用所有 id 選界、UPDATE 卻只挑 note 為 NULL 的列，會跨到之後的批次。若改用手動交易，必須每批 commit 成功後才保存進度；不要在既有業務交易上切換 autocommit。
+
+**原實驗的效能記錄**（下列歷史數字不是修正後重新量測的效能保證）：
 
 | 做法 | 總耗時 | 最長單輪 | 🔴 **線上寫入的最長停頓** |
 |---|---|---|---|
@@ -2912,23 +2915,26 @@ so the table cannot already have triggers.
 ✅ **一組實務上可用的參數**：
 
 ```bash
+# chunk-size 是目標值，chunk-time 會動態調整每塊耗時；sleep 在每塊之間讓路。
+# max-load 超過就暫停，critical-load 超過就放棄；max-lag 控制從庫延遲。
+# no-drop-old-table 保留舊表，確認無誤再清理；第一次先 dry-run。
 pt-online-schema-change \
   --alter "MODIFY customer_id BIGINT NOT NULL" \
   --host $DB_HOST --port 3306 --user $MIGRATE_USER --ask-pass \
   D=shop,t=ord \
   \
-  --chunk-size 1000 \                  `# 小一點，換更短的停頓（6.6.5 的結論）` \
-  --chunk-time 0.5 \                   `# 或者讓它自己調整到每塊 0.5 秒` \
-  --sleep 0.05 \                       `# 每塊之間讓路` \
+  --chunk-size 1000 \
+  --chunk-time 0.5 \
+  --sleep 0.05 \
   \
-  --max-load "Threads_running=40" \    `# 超過就暫停（等於 6.6.5 的負載出口）` \
-  --critical-load "Threads_running=100" \  `# 超過就【放棄】` \
-  --max-lag 2 \                        `# 從庫延遲超過 2 秒就暫停（07 章）` \
+  --max-load "Threads_running=40" \
+  --critical-load "Threads_running=100" \
+  --max-lag 2 \
   \
   --set-vars "lock_wait_timeout=5,innodb_lock_wait_timeout=5" \
-  --no-drop-old-table \                `# 🔴 換名後【保留】舊表，確認沒事再手動刪` \
+  --no-drop-old-table \
   \
-  --dry-run                            `# 🔴 第一次永遠先 dry-run`
+  --dry-run
 ```
 
 ⚠️ **`--no-drop-old-table` 是我最推薦的一個參數。**
@@ -3827,11 +3833,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @Testcontainers
 class MigrationTest {
+    private static final String MIGRATION_USER = "migration_test";
+    private static final String MIGRATION_PASSWORD = "migration-test-only";
 
     // 🔴 版本要跟正式環境【完全一樣】（含小版本 —— 8.0.29 的 INSTANT 行為不同，6.7.2）
     @Container
     static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.0.46")
             .withDatabaseName("shop")
+            .withUsername("root").withPassword("test-container-only") // 只供可拋棄容器管理
             .withCommand(
                     "--character-set-server=utf8mb4",
                     "--collation-server=utf8mb4_0900_ai_ci",
@@ -3843,17 +3852,21 @@ class MigrationTest {
     private Flyway flyway(String schema) {
         return Flyway.configure()
                 .dataSource(MYSQL.getJdbcUrl().replace("/shop", "/" + schema),
-                        MYSQL.getUsername(), MYSQL.getPassword())
+                        MIGRATION_USER, MIGRATION_PASSWORD)
                 .locations("classpath:db/migration")
                 .load();
     }
 
     private void createSchema(String name) throws SQLException {
+        if (!name.matches("[a-z][a-z0-9_]*")) throw new IllegalArgumentException("非法測試 schema 名稱");
+        // 只有這裡使用容器管理員；不能用只有 shop.* 的預設 test 使用者建其他 schema。
         try (Connection c = DriverManager.getConnection(
                 MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
              Statement st = c.createStatement()) {
+            st.execute("CREATE USER IF NOT EXISTS 'migration_test'@'%' IDENTIFIED BY 'migration-test-only'");
             st.execute("DROP DATABASE IF EXISTS " + name);
             st.execute("CREATE DATABASE " + name + " CHARACTER SET utf8mb4");
+            st.execute("GRANT ALL PRIVILEGES ON " + name + ".* TO 'migration_test'@'%'");
         }
     }
 
@@ -3888,7 +3901,7 @@ class MigrationTest {
 
         try (Connection c = DriverManager.getConnection(
                 MYSQL.getJdbcUrl().replace("/shop", "/no_failures"),
-                MYSQL.getUsername(), MYSQL.getPassword());
+                MIGRATION_USER, MIGRATION_PASSWORD);
              var rs = c.createStatement().executeQuery(
                      "SELECT script FROM flyway_schema_history WHERE success = 0")) {
             var failed = new ArrayList<String>();
@@ -3909,7 +3922,7 @@ class MigrationTest {
         createSchema("path_b");
         Flyway.configure()
                 .dataSource(MYSQL.getJdbcUrl().replace("/shop", "/path_b"),
-                        MYSQL.getUsername(), MYSQL.getPassword())
+                        MIGRATION_USER, MIGRATION_PASSWORD)
                 .locations("classpath:db/migration")
                 .target(previousVersion)                          // 先到上一版
                 .load().migrate();
@@ -3920,43 +3933,99 @@ class MigrationTest {
                 .isEqualTo(dumpSchema("path_a"));
     }
 
-    /** 把一個 schema 的結構讀成可比較的字串（不靠 mysqldump，純 information_schema）。 */
+    /** 比對欄位、索引、CHECK、FK 及其規則；方法實作見下方 SchemaFingerprint。 */
     private String dumpSchema(String schema) throws SQLException {
-        var sb = new StringBuilder();
         try (Connection c = DriverManager.getConnection(
                 MYSQL.getJdbcUrl().replace("/shop", "/" + schema),
-                MYSQL.getUsername(), MYSQL.getPassword());
-             Statement st = c.createStatement()) {
-
-            try (var rs = st.executeQuery("""
-                    SELECT TABLE_NAME, COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE,
-                           COLUMN_DEFAULT, EXTRA, GENERATION_EXPRESSION, COLLATION_NAME
-                    FROM information_schema.columns
-                    WHERE TABLE_SCHEMA = DATABASE()
-                      AND TABLE_NAME <> 'flyway_schema_history'
-                    ORDER BY TABLE_NAME, COLUMN_NAME""")) {
-                while (rs.next()) {
-                    for (int i = 1; i <= 8; i++) sb.append(rs.getString(i)).append('|');
-                    sb.append('\n');
-                }
-            }
-            try (var rs = st.executeQuery("""
-                    SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX,
-                           COLUMN_NAME, SUB_PART, INDEX_TYPE
-                    FROM information_schema.statistics
-                    WHERE TABLE_SCHEMA = DATABASE()
-                      AND TABLE_NAME <> 'flyway_schema_history'
-                    ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX""")) {
-                while (rs.next()) {
-                    for (int i = 1; i <= 7; i++) sb.append(rs.getString(i)).append('|');
-                    sb.append('\n');
-                }
-            }
+                MIGRATION_USER, MIGRATION_PASSWORD)) {
+            return SchemaFingerprint.read(c);
         }
-        return sb.toString();
     }
 }
 ```
+
+容器 root 僅供隔離測試建立／清理 schema，不能沿用到正式應用。Flyway 與指紋查詢改用僅獲授權各測試 schema 的 migration_test。容器啟動仍由 Testcontainers 管理；手動 Docker 的回歸則替換容器端點與生命週期，執行相同四條測試邏輯。
+
+```java
+package com.example.shop.migration;
+
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+
+/** MySQL 8.0.46：比較資料表結構；view/routine/trigger/event 另由黃金 dump 守門。 */
+public final class SchemaFingerprint {
+    private SchemaFingerprint() {}
+
+    public static String read(Connection c) throws SQLException {
+        StringBuilder out = new StringBuilder();
+        try (var st = c.createStatement()) {
+            out.append("tables\n");
+            try (var rs = st.executeQuery("""
+                    SELECT TABLE_NAME, TABLE_TYPE, ENGINE, TABLE_COLLATION
+                    FROM information_schema.tables
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+                      AND TABLE_NAME <> 'flyway_schema_history'
+                    ORDER BY TABLE_NAME""")) { appendRows(out, rs, 4); }
+            out.append("columns\n");
+            try (var rs = st.executeQuery("""
+                    SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_TYPE, IS_NULLABLE,
+                           COLUMN_DEFAULT, EXTRA, GENERATION_EXPRESSION, COLLATION_NAME
+                    FROM information_schema.columns
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'flyway_schema_history'
+                    ORDER BY TABLE_NAME, ORDINAL_POSITION""")) { appendRows(out, rs, 9); }
+            out.append("indexes\n");
+            try (var rs = st.executeQuery("""
+                    SELECT TABLE_NAME, INDEX_NAME, NON_UNIQUE, SEQ_IN_INDEX,
+                           COLUMN_NAME, SUB_PART, INDEX_TYPE, COLLATION, EXPRESSION, IS_VISIBLE
+                    FROM information_schema.statistics
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'flyway_schema_history'
+                    ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX""")) { appendRows(out, rs, 10); }
+            out.append("constraints\n");
+            try (var rs = st.executeQuery("""
+                    SELECT t.TABLE_NAME, t.CONSTRAINT_NAME, t.CONSTRAINT_TYPE, t.ENFORCED,
+                           ck.CHECK_CLAUSE
+                    FROM information_schema.table_constraints t
+                    LEFT JOIN information_schema.check_constraints ck
+                      ON ck.CONSTRAINT_SCHEMA = t.CONSTRAINT_SCHEMA
+                     AND ck.CONSTRAINT_NAME = t.CONSTRAINT_NAME
+                    WHERE t.TABLE_SCHEMA = DATABASE() AND t.TABLE_NAME <> 'flyway_schema_history'
+                    ORDER BY t.TABLE_NAME, t.CONSTRAINT_NAME""")) { appendRows(out, rs, 5); }
+            out.append("constraint-columns\n");
+            try (var rs = st.executeQuery("""
+                    SELECT TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION, COLUMN_NAME,
+                           CASE WHEN REFERENCED_TABLE_SCHEMA = DATABASE() THEN '<self>'
+                                ELSE REFERENCED_TABLE_SCHEMA END,
+                           REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME,
+                           POSITION_IN_UNIQUE_CONSTRAINT
+                    FROM information_schema.key_column_usage
+                    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME <> 'flyway_schema_history'
+                    ORDER BY TABLE_NAME, CONSTRAINT_NAME, ORDINAL_POSITION""")) { appendRows(out, rs, 8); }
+            out.append("foreign-key-rules\n");
+            try (var rs = st.executeQuery("""
+                    SELECT TABLE_NAME, CONSTRAINT_NAME, UNIQUE_CONSTRAINT_NAME,
+                           MATCH_OPTION, UPDATE_RULE, DELETE_RULE, REFERENCED_TABLE_NAME
+                    FROM information_schema.referential_constraints
+                    WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_NAME <> 'flyway_schema_history'
+                    ORDER BY TABLE_NAME, CONSTRAINT_NAME""")) { appendRows(out, rs, 7); }
+        }
+        return out.toString();
+    }
+
+    private static void appendRows(StringBuilder out, ResultSet rs, int columns) throws SQLException {
+        while (rs.next()) {
+            for (int i = 1; i <= columns; i++) {
+                String value = rs.getString(i);
+                if (value == null) out.append("-1:");
+                else out.append(value.length()).append(':').append(value);
+            }
+            out.append('\n');
+        }
+    }
+}
+```
+
+`<self>` 將同 schema 的 FK 參照正規化，讓 path_a／path_b 可比較；外部 schema 名稱保留，避免跨庫參照被誤判相同。NULL 與文字以長度前綴區分，避免 SQL NULL 與字串 "null" 混淆。新增負例必須能抓到「欄位與索引相同，但少了 CHECK／FK 或改了 ON DELETE」；視圖、預存程序、trigger、event 則由下一節完整 dump 守門。
 
 📌 **注意 `dumpSchema()` 比對的東西**，它正好補上了 6.2.3 裡 `validate` 漏掉的那七項：
 
@@ -3966,7 +4035,8 @@ IS_NULLABLE           → 抓「NOT NULL 變成 NULL」
 COLUMN_DEFAULT        → 抓「DEFAULT 改了」
 COLLATION_NAME        → 抓「定序漂移」（00 章的 emoji 事故）
 GENERATION_EXPRESSION → 抓「生成欄位的定義改了」
-statistics 那一段     → 抓「少了索引 / 少了唯一約束 / 索引欄位順序不同」
+statistics 那一段     → 抓索引、方向、前綴、運算式與可見性
+constraints / FK      → 抓 CHECK、FK 欄位對應與 ON DELETE／ON UPDATE 規則
 兩邊都掃              → 抓「資料庫多了 Entity 沒有的欄位」
 ```
 
@@ -3984,27 +4054,25 @@ statistics 那一段     → 抓「少了索引 / 少了唯一約束 / 索引欄
 黃金 schema 補上這一塊：**把遷移跑完的結構 dump 出來，當成一個檔案放進版控。**
 
 ```bash
-#!/bin/bash
-# ci/dump-golden-schema.sh —— 產生 / 更新黃金 schema
+#!/usr/bin/env bash
+# ci/dump-golden-schema.sh —— 保留可執行的 MySQL DDL，僅排除已知噪音
 set -euo pipefail
-CONTAINER=${1:?用法: dump-golden-schema.sh <容器名> <資料庫名>}
-DB=${2:?}
+DUMP_CONTAINER=${1:?用法: dump-golden-schema.sh <容器名> <資料庫名>}
+DUMP_DATABASE=${2:?}
+DUMP_USER=${DUMP_USER:-root}
+: "${DUMP_PASSWORD:?請由測試環境或 Secret 提供 DUMP_PASSWORD}"
 
-docker exec "$CONTAINER" mysqldump -uroot -proot \
-    --no-data --skip-comments --skip-add-drop-table --skip-set-charset \
-    --routines --triggers "$DB" \
-  | sed -E 's/ AUTO_INCREMENT=[0-9]+//' \
-  | grep -v '^/\*!' \
-  | grep -v 'flyway_schema_history'
+docker exec -e MYSQL_PWD="$DUMP_PASSWORD" "$DUMP_CONTAINER" mysqldump -u"$DUMP_USER" \
+    --no-data --skip-comments --skip-dump-date --skip-add-drop-table --skip-set-charset \
+    --skip-lock-tables --no-tablespaces --set-gtid-purged=OFF \
+    --routines --triggers --events \
+    --ignore-table="$DUMP_DATABASE.flyway_schema_history" "$DUMP_DATABASE" \
+  | sed -E 's/ AUTO_INCREMENT=[0-9]+//g'
 ```
 
-📌 **三個正規化步驟，每一個都是必要的**：
+正規化只移除自增計數器；Flyway history 在 dump 階段用 ignore-table 排除，GTID 用 OFF 排除執行狀態。保留 `/*!...*/`：它是可執行的 MySQL SQL，view／routine／trigger／event 定義可能就在裡面，不能用 grep 整行刪除。小版號固定，DEFINER 與物件定義的差異仍交由 reviewer 審查。
 
-```
-sed 's/ AUTO_INCREMENT=[0-9]+//'   → 拿掉自增計數器的當前值（它每次都不一樣）
-grep -v '^/\*!'                     → 拿掉版本相依的條件註解
-grep -v 'flyway_schema_history'     → 拿掉 Flyway 自己的表
-```
+產生／比較都要用同一份工具與選項。巡檢帳號需可讀取這些物件的定義，不能只拿具 SELECT 的應用帳號；本腳本沒有授予或修改正式環境權限。
 
 **CI 的守門**：
 
@@ -4021,19 +4089,26 @@ docker run -d --name ci-mysql -e MYSQL_ROOT_PASSWORD=root \
   --character-set-server=utf8mb4 --collation-server=utf8mb4_0900_ai_ci
 trap 'docker rm -f ci-mysql >/dev/null 2>&1' EXIT
 
-until docker exec ci-mysql mysqladmin -uroot -proot ping --silent 2>/dev/null; do sleep 1; done
+READY=false
+for ((attempt=0; attempt<60; attempt++)); do
+  if docker exec -e MYSQL_PWD=root ci-mysql mysql -h127.0.0.1 -uroot -e 'SELECT 1' >/dev/null 2>&1; then
+    READY=true; break
+  fi
+  sleep 1
+done
+[[ "$READY" == true ]] || exit 1
 docker exec ci-mysql mysql -uroot -proot -e 'CREATE DATABASE shop CHARACTER SET utf8mb4'
 mvn -q flyway:migrate -Dflyway.url=jdbc:mysql://127.0.0.1:3399/shop \
                       -Dflyway.user=root -Dflyway.password=root
 
 # ② dump 出來跟版控的黃金檔比
-ci/dump-golden-schema.sh ci-mysql shop > "$ACTUAL"
+DUMP_PASSWORD=root ci/dump-golden-schema.sh ci-mysql shop > "$ACTUAL"
 
 if ! diff -u "$GOLDEN" "$ACTUAL"; then
   echo ""
   echo "🔴 遷移產生的 schema 與 golden-schema.sql 不一致。"
   echo "   如果這是【預期的】變更，請執行："
-  echo "     ci/dump-golden-schema.sh ci-mysql shop > $GOLDEN"
+  echo "     另起保留的驗證容器，再以 DUMP_PASSWORD=... ci/dump-golden-schema.sh <容器名> shop > $GOLDEN 更新"
   echo "   然後把它一起提交，讓 reviewer 看得到 schema 的 diff。"
   exit 1
 fi
@@ -4055,15 +4130,14 @@ echo "✅ schema 與黃金檔一致"
 📌 **這也是「正式環境的 schema 到底跟版控一不一致」的唯一可靠答案**：
 
 ```bash
-# 每天一次的巡檢（用唯讀帳號連正式環境）
-mysqldump -h prod-host -u readonly -p --no-data --skip-comments \
-    --skip-add-drop-table --skip-set-charset --routines --triggers shop \
-  | sed -E 's/ AUTO_INCREMENT=[0-9]+//' | grep -v '^/\*!' \
-  | grep -v 'flyway_schema_history' \
-  > /tmp/prod-schema.sql
+# 每天一次；選項與 ci/dump-golden-schema.sh 相同，需可讀物件定義的專用帳號。
+mysqldump -h prod-host -u schema_audit -p \
+  --no-data --skip-comments --skip-dump-date --skip-add-drop-table --skip-set-charset \
+  --skip-lock-tables --no-tablespaces --set-gtid-purged=OFF \
+  --routines --triggers --events --ignore-table=shop.flyway_schema_history shop \
+  | sed -E 's/ AUTO_INCREMENT=[0-9]+//g' > /tmp/prod-schema.sql
 
-diff -u src/main/resources/db/golden-schema.sql /tmp/prod-schema.sql \
-  || echo "🔴 正式環境的 schema 與版控不一致，請查是誰手改了"
+diff -u src/main/resources/db/golden-schema.sql /tmp/prod-schema.sql
 ```
 
 ⚠️ **這個巡檢第一次跑的時候，幾乎一定會有 diff。** 那些 diff 就是你的技術債清單。
@@ -4507,38 +4581,74 @@ ANALYZE TABLE customer;
 
 ### 6.10.5 多資料源與多租戶
 
-**多資料源**：每個資料源一組 Flyway。Spring Boot 的 auto-config 只管一個，
-所以第二個要手動配：
+**多資料源**：每個資料源一組 Flyway，而且兩組都要明確配置。只宣告 reportFlyway 會讓 Boot 的 `@ConditionalOnMissingBean(Flyway.class)` 不成立，主庫的預設 Flyway 不會保留。
+
+以下各自用 initMethod=migrate 執行，兩個 EntityManagerFactory 分別依賴對應遷移；既有 dependsOn 也保留。`app.flyway.primary.*`／`app.flyway.report.*` 的 url、user、password 必須提供專用遷移帳號，資料庫先由環境建立。Web 應用的原生主／從池仍需各自配置，不能把這兩條遷移連線當成一般查詢池。正式環境若採獨立 migration Job，就把兩組遷移移到該 Job，不再於 Web 啟動執行。
 
 ```java
 package com.example.shop.config;
 
 import org.flywaydb.core.Flyway;
-import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.config.BeanFactoryPostProcessor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import javax.sql.DataSource;
+import java.util.Arrays;
+import java.util.stream.Stream;
 
 @Configuration
 public class SecondaryFlywayConfig {
-
-    @Bean(initMethod = "migrate")
-    public Flyway reportFlyway(
-            @Qualifier("reportDataSource") DataSource ds) {
-        return Flyway.configure()
-                .dataSource(ds)
-                .locations("classpath:db/migration-report")   // 🔴 獨立的目錄
-                .table("flyway_schema_history")                // 各自的 history 表
-                .load();
+    // 專用遷移連線：帳號只在各自 schema 有 DDL 權限，不使用 Web 應用的 DML 帳號。
+    @Bean
+    DataSource primaryMigrationDataSource(
+            @Value("${app.flyway.primary.url}") String url,
+            @Value("${app.flyway.primary.user}") String user,
+            @Value("${app.flyway.primary.password}") String password) {
+        return new DriverManagerDataSource(url, user, password);
     }
 
-    // 🔴 讓第二個 EntityManagerFactory 等它
     @Bean
-    static BeanFactoryPostProcessor reportEmfDependsOnFlyway() {
-        return bf -> bf.getBeanDefinition("reportEntityManagerFactory")
-                       .setDependsOn("reportFlyway");
+    DataSource reportMigrationDataSource(
+            @Value("${app.flyway.report.url}") String url,
+            @Value("${app.flyway.report.user}") String user,
+            @Value("${app.flyway.report.password}") String password) {
+        return new DriverManagerDataSource(url, user, password);
+    }
+
+    @Bean(initMethod = "migrate")
+    @Primary
+    public Flyway primaryFlyway(@Qualifier("primaryMigrationDataSource") DataSource ds) {
+        return Flyway.configure().dataSource(ds)
+                .locations("classpath:db/migration")
+                .table("flyway_schema_history").load();
+    }
+
+    @Bean(initMethod = "migrate")
+    public Flyway reportFlyway(@Qualifier("reportMigrationDataSource") DataSource ds) {
+        return Flyway.configure().dataSource(ds)
+                .locations("classpath:db/migration-report")
+                .table("flyway_schema_history").load();
+    }
+
+    @Bean
+    static BeanFactoryPostProcessor emfDependsOnFlyway() {
+        return bf -> {
+            var dependencies = java.util.Map.of(
+                    "entityManagerFactory", "primaryFlyway",
+                    "reportEntityManagerFactory", "reportFlyway");
+            dependencies.forEach((emf, migration) -> {
+                var definition = bf.getBeanDefinition(emf);
+                String[] old = definition.getDependsOn();
+                definition.setDependsOn(Stream.concat(
+                        old == null ? Stream.empty() : Arrays.stream(old), Stream.of(migration))
+                        .distinct().toArray(String[]::new));
+            });
+        };
     }
 }
 ```

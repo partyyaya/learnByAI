@@ -138,6 +138,36 @@ public class Main {
 }
 ```
 
+### `main` 不是關鍵字
+
+`main` 只是一個普通的方法名稱，剛好是 JVM 約定的入口：執行 `java Main` 時，JVM 會到 `Main` 類別裡，找簽章完全是 `public static void main(String[] args)` 的方法來呼叫（第 00 章 0.8 節逐字拆解過）。
+
+因為不是關鍵字，`main` 可以拿來當類別名稱、變數名稱：
+
+```java
+public class main {                          // ✅ 編譯得過，但違反命名慣例
+    public static void main(String[] args) {
+        int main = 1;                        // ✅ 變數也可以叫 main
+        System.out.println(main);            // 1
+    }
+}
+```
+
+真正的關鍵字就不行，例如 `int class = 1;` 會直接編譯錯誤。
+
+能用不代表該用：類別名稱一律大寫開頭，想用這個字當類別名稱就寫 `Main`（就像上面的範例），不要寫 `main`。Java 區分大小寫，類別 `Main` 和方法 `main` 是兩個不同的名字，不會衝突。
+
+**每個類別都可以有自己的 `main`。** 下一節的 `Todo` 也寫了 `main`，只是為了讓範例能直接執行看結果。JVM 只會執行指令指定的那個類別：`java Main` 執行 `Main` 的 `main`，`java Todo` 執行 `Todo` 的 `main`，其他類別的 `main` 不會被呼叫。真實專案通常只有一個入口類別有 `main`。
+
+**入口方法的名稱寫錯，編譯會過，執行才失敗。** 例如寫成 `public static void Main(String[] args)`，它是一個合法的普通方法，javac 不會抱怨；直到 `java Todo` 才報錯：
+
+```
+Error: Main method not found in class Todo, please define the main method as:
+   public static void main(String[] args)
+```
+
+中文環境顯示的是「錯誤: 在類別 Todo 中找不到主要方法」。
+
 ### `new` 到底做了什麼
 
 ```
@@ -188,6 +218,46 @@ Todo t = new Todo("寫第 02 章", 1);
 // Todo t2 = new Todo();     // ❌ 編譯錯誤！
 ```
 
+### 建構子的名稱：一個字都不能差
+
+建構子的名稱**必須和類別名稱一模一樣，大小寫也算**。Java 區分大小寫，`Todo` 和 `todo` 是兩個不同的名字。寫錯時的錯誤訊息很容易讓人看不懂：
+
+```java
+public class Todo {
+    // ❌ 大小寫不同
+    public todo(String title) { }      // error: invalid method declaration; return type required
+
+    // ❌ 換成別的名字
+    public create(String title) { }    // 同一個錯誤
+}
+```
+
+錯誤訊息的意思是「方法宣告不合法，缺少回傳型別」。名稱和類別不同，編譯器就不把它當建構子，而是當成一個**忘了寫回傳型別的方法**。
+
+反過來的陷阱更隱蔽：名稱對了，卻**多寫了回傳型別**。
+
+```java
+public class Todo {
+    private String title;
+
+    // ❌ 多了 void → 這不是建構子，而是一個剛好叫 Todo 的普通方法
+    public void Todo(String title) {
+        this.title = title;
+    }
+}
+```
+
+```java
+// new Todo("寫第 02 章");    // ❌ 編譯錯誤：找不到接收 String 的建構子
+Todo t = new Todo();          // 編譯通過：類別裡沒有任何建構子，編譯器補了一個無參數的（見下一小節）
+                              // title 是 null，那個 void Todo(...) 從頭到尾沒被呼叫
+```
+
+這種寫法 javac 連警告都不會給（加上 `-Xlint:all` 也一樣），只能靠自己看出來。
+
+判斷是不是建構子只看兩點：**名稱和類別完全相同（含大小寫）**，以及**沒有回傳型別，連 `void` 都不能寫**。
+如果想用別的名字建立物件，例如 `Todo.of(...)`，要用 2.7 節的靜態工廠方法。它是普通的 `static` 方法，名字可以自己取。
+
 ### 預設建構子的規則（考題也常出）
 
 - 你**沒寫任何建構子** → 編譯器自動加一個 `public Todo() {}`（第 00 章我們用 `javap` 看過）。
@@ -223,7 +293,7 @@ public class Todo {
         if (priority < 1 || priority > 5) {
             throw new IllegalArgumentException("優先度需在 1~5，收到: " + priority);
         }
-        this.title = title.strip();
+        this.title = title.strip();      // 去掉頭尾空白（含全形空白）："  寫報告 " → "寫報告"
         this.priority = priority;
         this.done = done;
     }
@@ -315,6 +385,11 @@ public void setName(String name) {
 
 ### 四種可見範圍
 
+存取修飾子寫在欄位、方法、建構子前面，決定**哪些地方的程式碼可以使用它**。表格裡有兩個名詞後面才會完整介紹，先知道意思就好：
+
+- **package**：類別所屬的「資料夾」。檔案第一行 `package com.example.todo;` 就是在宣告這件事，`package` 宣告相同的類別就是「同 package」（2.13 節）。
+- **子類別**：用 `extends` 繼承另一個類別的類別，例如 `class UrgentTodo extends Todo`（第 03 章）。
+
 | 修飾子 | 同類別 | 同 package | 子類別（不同 package） | 任何地方 |
 |---|---|---|---|---|
 | `private` | ✅ | ❌ | ❌ | ❌ |
@@ -322,16 +397,89 @@ public void setName(String name) {
 | `protected` | ✅ | ✅ | ✅ | ❌ |
 | `public` | ✅ | ✅ | ✅ | ✅ |
 
+由上往下一列比一列寬，每一列都包含上一列的範圍。注意第二列：**什麼都不寫不等於 `public`**，而是只有同 package 看得到，所以叫 package-private。
+
+實際放到兩個 package 裡，看哪些寫法編譯得過：
+
 ```java
 package com.example.todo;
 
 public class AccessDemo {
-    private   int secret = 1;      // 只有這個類別
-              int packageLevel = 2; // 同 package（測試常用）
-    protected int forSubclass = 3;  // 子類別 + 同 package
-    public    int open = 4;         // 全開
+    private   int secret = 1;        // 只有 AccessDemo 自己
+              int packageLevel = 2;  // 不寫：同 package
+    protected int forSubclass = 3;   // 同 package，再加上其他 package 的子類別
+    public    int open = 4;          // 任何地方
+
+    void inSameClass() {
+        System.out.println(secret);  // ✅ 自己的類別裡，四個都能用
+    }
 }
 ```
+
+```java
+package com.example.todo;            // 和 AccessDemo 同 package
+
+class SamePackage {
+    void test(AccessDemo d) {
+        // d.secret                  // ❌ secret has private access in AccessDemo
+        System.out.println(d.packageLevel);   // ✅
+        System.out.println(d.forSubclass);    // ✅ protected 也包含同 package
+        System.out.println(d.open);           // ✅
+    }
+}
+```
+
+```java
+package com.example.report;          // 不同 package
+
+import com.example.todo.AccessDemo;
+
+class SubInOtherPackage extends AccessDemo {  // 子類別
+    void test() {
+        // secret                    // ❌ private 連子類別都看不到
+        // packageLevel              // ❌ packageLevel is not public in AccessDemo; cannot be accessed from outside package
+        System.out.println(forSubclass);      // ✅ 自己繼承來的 protected 欄位
+        System.out.println(open);             // ✅
+        // new AccessDemo().forSubclass       // ❌ forSubclass has protected access in AccessDemo
+    }
+}
+
+class OtherPackage {                 // 不同 package，也不是子類別
+    void test(AccessDemo d) {
+        // d.secret、d.packageLevel、d.forSubclass  // ❌ 三個都不行
+        System.out.println(d.open);           // ✅ 只剩 public
+    }
+}
+```
+
+**`protected` 的細節：只能用「自己身上」的那一份。** `SubInOtherPackage` 最後一行 ❌ 常讓人意外：明明是子類別，為什麼不能用 `forSubclass`？
+
+關鍵在「這是誰的欄位」。`SubInOtherPackage` 的物件建立時，身上就帶著一份從 `AccessDemo` 繼承來的 `forSubclass`，寫 `this.forSubclass`（平常省略 `this`）拿到的就是這一份。
+`new AccessDemo()` 是**另一個獨立的物件**，它的 `forSubclass` 屬於那個物件，不屬於你。
+
+```java
+class SubInOtherPackage extends AccessDemo {
+    void test(AccessDemo other, SubInOtherPackage sameKind) {
+        System.out.println(this.forSubclass);       // ✅ 自己身上那一份
+        System.out.println(sameKind.forSubclass);   // ✅ 變數型別是自己這個類別，也可以
+        // System.out.println(other.forSubclass);   // ❌ 變數型別是 AccessDemo，就不行
+    }
+}
+```
+
+規則：在不同 package 的子類別裡，`protected` 成員只能透過**自己這個類別型別**的變數（包括 `this`）存取，不能透過父類別型別的變數存取。道理是：`AccessDemo` 型別的變數，可能指向別人寫的另一個子類別物件；`protected` 的用意是讓子類別處理自己的內部狀態，不是讓它去動別的子類別的物件。這個限制只在不同 package 時才有，同 package 的類別本來就能用 `protected` 成員。
+
+**類別本身的修飾子。** 上面講的都是欄位和方法。修飾子也能寫在類別前面，但**最外層的類別**（直接寫在 `.java` 檔裡、不在其他類別裡面的類別）只有兩種寫法：
+
+| 寫法 | 誰能用 | 一個 `.java` 檔裡 |
+|---|---|---|
+| `public class AccessDemo` | 任何 package（其他 package 要先 `import`） | 最多一個，而且檔名必須是 `AccessDemo.java` |
+| `class SamePackage`（不寫） | 只有同 package；在其他 package 使用會出現 `SamePackage is not public in com.example.todo; cannot be accessed from outside package` | 可以有好幾個 |
+| `private class`、`protected class` | 編譯錯誤：`modifier private not allowed here` | — |
+
+最外層類別不能是 `private`，因為「其他類別都不能用」的類別沒有存在的意義；`protected` 講的是子類別存取成員，套在最外層類別上也沒有意義。寫在其他類別**裡面**的巢狀類別（2.12 節）就可以用 `private`。
+
+> **怎麼選：從最嚴的 `private` 開始，真的需要才放寬。** 欄位一律 `private`（下一小節說明原因）；要給外部呼叫的方法才 `public`；只給同 package 用的輔助方法不寫修飾子；`protected` 只在刻意設計給子類別擴充時才用（第 03 章）。
 
 ### 為什麼欄位一定要 `private`
 
@@ -383,26 +531,21 @@ public class GoodTodo {
 **封裝的真正價值：把「不變條件（invariant）」的檢查收在一個地方。**
 「標題不可為空」這條規則只寫一次，不管誰、從哪裡、什麼時候改標題，都逃不掉。
 
-### `package-private` 的實務用途
+### `package-private` 的實務用途：讓測試呼叫得到內部方法
 
-不寫修飾子的成員在同 package 可見。因為 Maven 的測試目錄與產品目錄**共用同一組 package**，
-所以測試可以看到 package-private 的成員：
-
-```
-src/main/java/com/example/todo/TodoList.java     ← package com.example.todo
-src/test/java/com/example/todo/TodoListTest.java ← 同一個 package！
-```
+package-private 沒有關鍵字，**前面什麼修飾子都不寫**就是。下面的 `applyDiscount` 和 `discountPercent` 前面沒有 `public`，也沒有 `private`，所以兩個都是 package-private：
 
 ```java
 package com.example.todo;
 
 public class PriceCalculator {
 
+    // public：給外部呼叫的入口
     public long finalPriceInCents(long listPrice, String memberLevel) {
         return applyDiscount(listPrice, discountPercent(memberLevel));
     }
 
-    // 不是 public API，但想單獨測試 → package-private
+    // ↓ 下面兩個方法前面什麼都沒寫 = package-private
     long applyDiscount(long listPrice, int percent) {
         return listPrice * (100 - percent) / 100;
     }
@@ -416,6 +559,62 @@ public class PriceCalculator {
     }
 }
 ```
+
+**為什麼不寫成 `private`？** 這兩個方法只是 `finalPriceInCents` 的內部步驟，不想讓別的 package 直接呼叫，照理應該是 `private`。
+但折扣計算容易算錯，想針對它們單獨寫測試，而 `private` 方法連測試類別都呼叫不到。
+
+**為什麼測試呼叫得到？** 因為 Maven 專案（第 00 章建過）的測試放在 `src/test/java` 底下**相同的資料夾路徑**，`package` 宣告和產品程式碼一模一樣，所以測試和 `PriceCalculator` 屬於同一個 package：
+
+```
+src/main/java/com/example/todo/PriceCalculator.java      ← package com.example.todo;
+src/test/java/com/example/todo/PriceCalculatorTest.java  ← package com.example.todo;（同一個 package）
+```
+
+所以測試可以直接呼叫 package-private 的方法：
+
+```java
+package com.example.todo;
+
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class PriceCalculatorTest {
+
+    private final PriceCalculator calc = new PriceCalculator();
+
+    @Test
+    @DisplayName("打 8 折：10000 分變 8000 分")
+    void applyDiscount_twentyPercent() {
+        assertThat(calc.applyDiscount(10_000, 20)).isEqualTo(8_000);   // ✅ 同 package，呼叫得到
+    }
+}
+```
+
+其他 package 的程式還是呼叫不到，內部細節沒有外洩：
+
+```java
+package com.example.report;
+
+import com.example.todo.PriceCalculator;
+
+class Report {
+    void run() {
+        PriceCalculator calc = new PriceCalculator();
+        calc.finalPriceInCents(10_000, "GOLD");    // ✅ public
+        // calc.applyDiscount(10_000, 20);         // ❌ applyDiscount(long,int) is not public in PriceCalculator; cannot be accessed from outside package
+    }
+}
+```
+
+三種寫法的比較：
+
+| `applyDiscount` 寫成 | 其他 package 的程式 | 同 package 的測試 |
+|---|---|---|
+| `private` | ❌ 呼叫不到 | ❌ 測不到 |
+| 不寫（package-private） | ❌ 呼叫不到 | ✅ 測得到 |
+| `public` | ✅ 誰都能呼叫，等於承諾它是對外 API，以後很難改 | ✅ 測得到 |
 
 > **不要為了測試把方法改成 `public`。** 用 package-private 表達「這是內部細節，但測試可以碰」。
 > 第 11 章會討論「該不該測私有方法」（簡答：通常透過公開方法測，但複雜的計算邏輯值得單獨測）。
@@ -465,10 +664,10 @@ public class Order {
 
     public enum Status { CREATED, PAID, SHIPPED, CANCELLED }
 
-    private final String id;
-    private Status status;
-    private final long totalCents;
-    private LocalDateTime paidAt;
+    private final String id;               // final：只能在建構子設定一次，之後再改會編譯錯誤
+    private Status status;                 // 不加 final：付款、取消時要改
+    private final long totalCents;         // final：訂單金額建立後就不會變
+    private LocalDateTime paidAt;          // 不加 final：付款時才設定
 
     public Order(String id, long totalCents) {
         if (id == null || id.isBlank()) {
@@ -545,7 +744,7 @@ public class Order {
 public class StaticDemo {
 
     private static int instanceCount = 0;     // 靜態欄位：全類別共用一份
-    private final int id;
+    private final int id;                     // final：只能在建構子設定一次，之後不能再改
 
     public StaticDemo() {
         instanceCount++;                       // 每次建立就加一
@@ -598,7 +797,7 @@ import java.util.regex.Pattern;
 
 public final class MoneyUtils {
 
-    // ① 常數：static final，命名全大寫
+    // ① 常數：static final；名稱慣例是全大寫、單字間用底線分隔（不是語法要求）
     public static final BigDecimal TAX_RATE = new BigDecimal("0.05");
     public static final int SCALE = 2;
 
@@ -629,7 +828,18 @@ public final class MoneyUtils {
 }
 ```
 
-也常見於**靜態工廠方法**，語意比建構子清楚：
+上面的 `TAX_RATE`、`SCALE` 與 `AMOUNT_PATTERN` 採用 **`UPPER_SNAKE_CASE`（全大寫，單字間用底線分隔）**。
+這是 Java 常數的命名慣例，目的是讓讀者一眼辨識「這是固定設定或可重用的固定物件」，
+也方便與一般變數、欄位的 `lowerCamelCase`（例如 `taxRate`、`instanceCount`）區分。
+
+**必須大寫嗎？Java 語法沒有強制。** 例如 `public static final int scale = 2;` 也能編譯，
+只是未遵循常數命名慣例；若專案有設定 Checkstyle 等命名檢查，才可能因此無法通過檢查。
+名稱大小寫不會改變欄位的行為：`static` 表示欄位屬於類別、由各實例共用，
+`final` 表示欄位初始化後不能重新賦值。若欄位指向可變物件，`final` 仍不會禁止修改物件內容。
+因此，**不是所有 `static` 欄位都要大寫，也不是寫成大寫就會自動成為常數**；
+例如前面的 `instanceCount` 會持續變動，就使用一般欄位命名。
+
+`static` 也常見於**靜態工廠方法**，語意比建構子清楚：
 
 ```java
 public class Duration2 {
@@ -818,7 +1028,7 @@ public final class Money {                      // ① final：不能被繼承�
         Objects.requireNonNull(amount, "amount 不可為 null");
         Objects.requireNonNull(currency, "currency 不可為 null");
         return new Money(new BigDecimal(amount).setScale(2, RoundingMode.HALF_UP),
-                         currency.toUpperCase());
+                         currency.toUpperCase(java.util.Locale.ROOT));
     }
 
     // ③ 「修改」一律回傳新物件
@@ -880,6 +1090,9 @@ public final class Money {                      // ① final：不能被繼承�
     }
 }
 ```
+
+幣別代碼用 `Locale.ROOT` 正規化，避免土耳其語系把 inr 轉成帶點的 İNR。
+這個不可變示例的兩位小數是教學契約，並非所有幣別／支付商都適用；通用換算見第 14 章 14.5。
 
 ### 不可變帶來什麼好處
 
@@ -2213,7 +2426,7 @@ public final class HttpConfig {
         }
 
         public Builder method(String method) {
-            this.method = method == null ? null : method.toUpperCase();
+            this.method = method == null ? null : method.toUpperCase(java.util.Locale.ROOT);
             return this;
         }
 

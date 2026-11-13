@@ -519,21 +519,22 @@
 |---|---|---|---|
 | `RECORD` | 每一則 listener 正常回傳後 | **1 則** | 慢（8.4.2 量了） |
 | **`BATCH`（預設）** | 一整批 `poll()` 都處理完之後 | **一批**（≤ `max.poll.records`） | ✅ 合理的預設 |
-| `TIME` | 每隔 `ackTime` 毫秒 | 那段時間內處理的量 | ⚠️ 跟自動提交同一類問題 |
-| `COUNT` | 每 `ackCount` 則 | `ackCount` 則 | ⚠️ 同上 |
-| `COUNT_TIME` | 兩者任一先到 | 同上 | ⚠️ 同上 |
+| `TIME` | poll 批次處理完，且距上次提交已達 ackTime | 自上次提交以來已處理的量 | 時間是觸發門檻，不是精準定時器 |
+| `COUNT` | poll 批次處理完，且累計已處理數達 ackCount | 可能超過 ackCount，需算整批 | 可跨多批延後提交 |
+| `COUNT_TIME` | poll 批次處理完，且時間／筆數任一達門檻 | 自上次提交以來已處理的量 | 門檻可能在批次途中達到，仍等批次結束 |
 | `MANUAL` | 你呼叫 `ack.acknowledge()`，**但排進佇列、等這批結束才送** | 看你怎麼寫 | 需要注入 `Acknowledgment` |
-| `MANUAL_IMMEDIATE` | 你呼叫 `ack.acknowledge()`，**立刻送出** | 看你怎麼寫 | 同上 |
+| `MANUAL_IMMEDIATE` | 在 consumer 執行緒呼叫 `ack.acknowledge()`，立刻送出；其他執行緒會排隊 | 看你怎麼寫 | 同上 |
 
 ⚠️ **`MANUAL` 與 `MANUAL_IMMEDIATE` 的差別常被忽略**：
 `MANUAL` 呼叫 `acknowledge()` **不會立刻提交**，它只是把這個位移排進佇列，
 等**這一批處理完**才真的送出去。
 📌 **要「處理完這一則就馬上落到 broker」，必須用 `MANUAL_IMMEDIATE`。**
 
-⚠️ **`TIME` / `COUNT` / `COUNT_TIME` 這三個看起來像是「折衷」，實際上它們把
-[01 章 1.5.2](./01-reliable-delivery-three-hops.md) 那個故障搬回來了** ——
-提交時機跟「處理到哪」脫鉤，所以**可能提交到還沒處理完的位置**。
-📌 **除非你非常清楚自己在做什麼，否則不要用。**
+`TIME`、`COUNT`、`COUNT_TIME` 都只提交容器已處理的 offset，且在 poll 批次處理完成後檢查門檻，
+不會因時間或筆數達標就提交到尚未處理的位置。它們與 Kafka 原生 auto commit 不同。
+代價是提交延後，崩潰後可能重做更多筆；COUNT 的重複量也不一定剛好 ackCount。
+以上假設同步 listener 完成業務後才回傳；若自行丟到背景執行緒就回傳，容器仍會誤以為處理完成。
+`MANUAL_IMMEDIATE` 只有在 consumer 執行緒 acknowledge 才立即提交；混用執行緒會使時機難以預期。
 
 ### 8.4.2 提交要多少錢 ★★
 
@@ -1816,7 +1817,7 @@ class ConsumerLagReporter {
 - [ ] 說出 `onPartitionsRevoked` 在「優雅關閉」與「當掉」兩種情況下的差別。
 - [ ] 說出 `onPartitionsLost` 為什麼通常要自己覆寫。
 - [ ] 列出 Spring 七種 `AckMode`，並說出 `MANUAL` 與 `MANUAL_IMMEDIATE` 的差別。
-- [ ] 說出 `TIME` / `COUNT` 為什麼把 [01 章 1.5.2](./01-reliable-delivery-three-hops.md) 那個故障搬了回來。
+- [ ] 說明 TIME／COUNT 與原生 auto commit 的差別，以及批次結束與門檻如何共同決定提交時機。
 - [ ] 量化 `RECORD` 相對 `BATCH` 的吞吐代價，並算出「一次提交」大約要多久。
 - [ ] 說出 8.4.2 那張表裡哪三列是雜訊、哪一列可以下結論，以及判斷的依據。
 - [ ] 說出 `commitAsync` 的兩個風險，並寫出「平常 async、關閉時 sync」的範本。

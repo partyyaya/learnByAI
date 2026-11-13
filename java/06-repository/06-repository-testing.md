@@ -630,34 +630,26 @@ H2 讀統計值（46 µs），**MySQL 的 InnoDB 沒有精確的列數統計，�
 
 ```
                                         H2                        MySQL 8
-[17] rewriteBatchedStatements=true   （沒有這個參數）     🔴 [-2,-2,-2,-2,-2]
+[17] rewriteBatchedStatements=true   （沒有這個參數）     INSERT [-2,-2,-2,-2,-2]；UPDATE [1,1,1,1,0]
 [18] SET TRANSACTION READ ONLY       🔴 語法錯誤          ✅ 支援，而且【真的擋住 UPDATE】
-[19] fetchSize 串流                   fetchSize=500       fetchSize=-2147483648（MySQL 的魔術值）
+[19] fetchSize 串流                   fetchSize=500       MIN_VALUE 逐列，或 useCursorFetch=true + 正 fetchSize
 [20] covering index                  兩種查詢都同一個索引   ✅ 只查 id：type=range
                                                           🔴 查 name：key=null, type=ALL
 [21] NOT NULL 違反的訊息               NULL not allowed     Column 'name' cannot be null
                                      for column "NAME"
 ```
 
-**⑰ 🔴 這一根證實了 05 章 5.8.7 的程式碼會壞掉。**
+**⑰ INSERT 的回傳值不能推論 UPDATE。**
 
-```
-[17] rewriteBatchedStatements=true   [-2, -2, -2, -2, -2] 🔴 變成 SUCCESS_NO_INFO(-2)
-                                     —— 05 章 5.8.7 的判斷會壞掉
-```
+原探針得到的 `[-2,-2,-2,-2,-2]` 是批次 INSERT。正式設定下另外執行帶版本條件的 UPDATE，MySQL 8.0.46／Connector/J 8.3.0 回傳 `[1,1,1,1,0]`，最後一筆 stale version 可辨識。
 
-05 章 5.8.7 的 `saveAll()` 用 `updated[i] == 1` 判斷「這張訂單是新的還是舊的」。
-**開了 `rewriteBatchedStatements=true`（而 5.8.9 正是叫你開它）之後，
-`updated[i]` 全部是 `-2`，永遠不等於 1 → 每一張訂單都被判定成新單。**
-
-⚠️ **兩節相隔不到兩頁，一節的效能建議讓另一節的正確性設計失效。**
-（05 章已經補上 5.8.7b，包含修法與一行「壞掉就大聲失敗」的斷言。）
+因此 05 章 5.8.7 保留 `saveAll`，直接檢查 UPDATE 階段只接受 0／1。JDBC 仍允許 -2／-3，出現未知結果就讓交易失敗，不能歸類成新單；本課沒有提供 insertAll／updateAll API。此處是修正原來探針的推論，不是證明 UPDATE 在 MySQL 必然失效。
 
 **⑱ `SET TRANSACTION READ ONLY`** ——
 05 章 5.3.4 在 H2 上連跑都跑不起來，所以那一節的說明**是根據文件寫的**。
 ✅ **現在證實了：MySQL 支援它，而且真的擋住 `UPDATE`。**
 📌 **所以 `setEnforceReadOnly(true)` 在 MySQL 上是一個有效的防線** ——
-它擋得住 05 章 5.3.3 那個「唯讀交易裡明確 `save()` 照樣寫進去」的情況。
+這是 JDBC 額外 SQL 的驗證，與 JPA 的 flush／connection readOnly 機制分開看；H2 的明確 save 成功不能外推到 MySQL。
 
 **⑳ covering index —— 這一項只有 MySQL 看得到**：
 
@@ -1018,18 +1010,45 @@ repo = new JdbcOrderRepository(new NamedParameterJdbcTemplate(ds),
 
 契約要在 MySQL 上跑，**需要一份 MySQL 版的 DDL**：
 
-```java
-/** ★ 06 章 6.6：同一份 schema，MySQL 版（TIMESTAMP → DATETIME(6)，沒有 FETCH FIRST）。 */
-public static void createSchemaMySql(DataSource ds) {
-    jdbc.execute("""
-            CREATE TABLE orders (
-                id           VARCHAR(26)  NOT NULL,
-                …
-                created_at   DATETIME(6)  NOT NULL,      -- ★ 不是 TIMESTAMP
-                …
-            )""");
-}
+```sql
+-- shop-service 的訂單資料表
+-- MySQL 8的一次性 migration。索引不使用 MySQL 不支援的 IF NOT EXISTS。
+-- 由 Flyway/Liquibase 記錄已執行版本；不能反覆當作啟動 SQL 執行。
+
+CREATE TABLE IF NOT EXISTS orders (
+    id           VARCHAR(26)  NOT NULL,
+    customer_id  VARCHAR(26)  NOT NULL,
+    status       VARCHAR(20)  NOT NULL,
+    total_minor  BIGINT       NOT NULL,
+    currency     CHAR(3)      NOT NULL,
+    created_at   DATETIME(6) NOT NULL,
+    version      BIGINT       NOT NULL,
+    CONSTRAINT pk_orders PRIMARY KEY (id),
+    -- ★ 不變量 I3 的第四道防線（0.8）——「抓 bug」，不是「擋併發」
+    CONSTRAINT ck_orders_total CHECK (total_minor >= 0),
+    -- ★ 可執行的文件：幣別只有這三種
+    CONSTRAINT ck_orders_currency CHECK (currency IN ('TWD', 'JPY', 'USD'))
+);
+
+-- ★ findExpiredPendingPayment 的索引：欄位順序就是查詢條件的順序（07-mysql 站 03 章）
+CREATE INDEX ix_orders_pending  ON orders (status, created_at, id);
+CREATE INDEX ix_orders_customer ON orders (customer_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS order_line (
+    order_id         VARCHAR(26) NOT NULL,
+    line_no          INT         NOT NULL,
+    product_id       VARCHAR(26) NOT NULL,
+    quantity         INT         NOT NULL,
+    unit_price_minor BIGINT      NOT NULL,
+    currency         CHAR(3)     NOT NULL,
+    CONSTRAINT pk_order_line PRIMARY KEY (order_id, line_no),
+    CONSTRAINT fk_order_line_order FOREIGN KEY (order_id) REFERENCES orders (id),
+    -- ★ 不變量：明細數量必須大於 0
+    CONSTRAINT ck_order_line_qty CHECK (quantity > 0)
+);
 ```
+
+以上是完整 MySQL migration，建立空 schema 時執行一次；H2 的完整版本見 0.12.3。兩份索引都使用普通 CREATE INDEX，由 migration 工具記錄版本。
 
 ⚠️ **`TIMESTAMP` → `DATETIME(6)` 這一行改動很重要**：
 
@@ -1376,7 +1395,7 @@ DEBUG o.s.t.c.cache.DefaultCacheAwareContextLoaderDelegate --
 | MySQL 深分頁的真實成本 | 04 章 4.7.1 | 🔴 **27 倍**（H2 是 14 倍）—— 04 章的推測正確且低估 |
 | **MySQL 對 keyset 兩種寫法的處理** | 04 章 4.7.4 | 🔴 **快慢完全對調** —— 04 章的結論是錯的（已補 4.7.4b） |
 | `count(*)` 的成本 | 04 章 4.2.3 | 🔴 **MySQL 6,887 µs vs H2 46 µs（150 倍）** |
-| `rewriteBatchedStatements` 的副作用 | 05 章 5.8.9 | 🔴 **`executeBatch` 回 `[-2,…]`，5.8.7 的判斷會壞**（已補 5.8.7b） |
+| `rewriteBatchedStatements` 的副作用 | 05 章 5.8.9 | INSERT 回 `[-2,…]`；UPDATE 實測回 0／1。5.8.7 對未知 UPDATE 結果直接失敗，見 5.8.7b |
 | MySQL 批次失敗後會不會繼續 | 05 章 5.10.1 | ⚠️ **沒開 `rewriteBatchedStatements` 時和 H2 一樣繼續**（⑭a）；<br>🔴 **開了之後變成全有全無，一筆都不進去**（⑭b）→ 已補 05 章 5.10.1b |
 | `setEnforceReadOnly` 在 MySQL 上 | 05 章 5.3.4 | ✅ **支援，而且真的擋住 `UPDATE`**（探針 ⑱） |
 
@@ -1384,7 +1403,7 @@ DEBUG o.s.t.c.cache.DefaultCacheAwareContextLoaderDelegate --
 
 | 項目 | 出處 | 狀態 |
 |---|---|---|
-| MySQL 的 `Stream` 串流三條件 | 05 章 5.11.4 | ⚠️ `fetchSize=Integer.MIN_VALUE` **可以跑**；「連線獨佔」與大資料量的記憶體行為**沒量** |
+| MySQL 的兩種取數模式 | 05 章 5.11.4 | ⚠️ `fetchSize=Integer.MIN_VALUE` **可以跑**；「連線獨佔」與大資料量的記憶體行為**沒量** |
 | covering index 的效果 | 04 章練習 3 | ✅ **`type=range` vs `type=ALL` 看得到**；🔴 沒有量時間差 |
 | `TIMESTAMP` 的時區行為 | 04 章、05 章 | ⚠️ 只驗證了 **`DATETIME(6)` + `serverTimezone=UTC` 是對的**；🔴 **`TIMESTAMP` 型別本身沒測** |
 

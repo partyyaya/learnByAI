@@ -487,7 +487,7 @@ public enum Priority {
         if (input == null || input.isBlank()) {
             return MEDIUM;
         }
-        String normalized = input.strip().toUpperCase();
+        String normalized = input.strip().toUpperCase(java.util.Locale.ROOT);
         for (Priority p : values()) {
             if (p.name().equals(normalized)) return p;
         }
@@ -604,7 +604,7 @@ public class Todo {
         if (tag == null || tag.isBlank()) {
             throw new InvalidTodoException("tag", tag, "標籤不可為空");
         }
-        String normalized = tag.strip().toLowerCase();
+        String normalized = tag.strip().toLowerCase(java.util.Locale.ROOT);
         if (tags.size() >= MAX_TAGS && !tags.contains(normalized)) {
             throw new InvalidTodoException("tags", tags.size(), "標籤最多 " + MAX_TAGS + " 個");
         }
@@ -612,11 +612,11 @@ public class Todo {
     }
 
     public boolean removeTag(String tag) {
-        return tag != null && tags.remove(tag.strip().toLowerCase());
+        return tag != null && tags.remove(tag.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     public boolean hasTag(String tag) {
-        return tag != null && tags.contains(tag.strip().toLowerCase());
+        return tag != null && tags.contains(tag.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     // ⚠️ 存取子沒有 `get` 前綴時，Jackson 的預設內省**找不到任何屬性** ——
@@ -3976,6 +3976,7 @@ void fallsBackWhenBlank(String value) {
 系統屬性（`System.getProperty`）和環境變數不同，**是可以改的**：
 
 ```java
+@org.junit.jupiter.api.parallel.Isolated
 class ConfigSystemPropertyTest {
 
     private String original;
@@ -4008,8 +4009,9 @@ class ConfigSystemPropertyTest {
 > 1. **忘記在 `@AfterEach` 還原 → 污染後續測試。** 而且失敗會出現在
 >    **別的測試類別**，你完全想不到是這裡造成的。
 > 2. **平行執行時一定壞掉**（11.18 節）。系統屬性是整個 JVM 共用的，
->    兩個測試同時改就競態了。要加 `@Execution(SAME_THREAD)`
->    和 `@ResourceLock(Resources.SYSTEM_PROPERTIES)`。
+>    兩個測試同時改就可能競態。需要整個類別獨占時用 `@Isolated`；
+>    用 `@ResourceLock(Resources.SYSTEM_PROPERTIES)` 時，所有讀寫同一資源的測試都必須標記同一把鎖。
+>    `@Execution(SAME_THREAD)` 只限制與父節點使用同一執行緒，不保證與其他類別互斥。
 >
 > **所以：能用注入就用注入（正解一），不要碰全域狀態。**
 > 只有在「無法修改那段程式碼」時才用正解二，而且務必寫好清理。
@@ -5608,17 +5610,20 @@ junit.jupiter.execution.parallel.config.dynamic.factor = 1
 **必須排除的測試：**
 
 ```java
-// 這個類別要獨占執行（例如它改了系統屬性）
-@Execution(ExecutionMode.SAME_THREAD)
+// 這個類別要獨占執行（例如它改了系統屬性），包含其生命週期方法。
+@org.junit.jupiter.api.parallel.Isolated
 class ConfigSystemPropertyTest { }
 
-// 或用資源鎖：所有標記同一個資源的測試不會同時跑
+// 或用資源鎖：所有讀寫此資源的測試都需標同一把鎖（包含只讀者）。
 @ResourceLock(Resources.SYSTEM_PROPERTIES)
 class ConfigSystemPropertyTest { }
 
 @ResourceLock(value = "todo-file", mode = ResourceAccessMode.READ_WRITE)
 class FileWritingTest { }
 ```
+
+`SAME_THREAD` 不等於全域獨占；類別平行設定下，它仍可能與別的類別重疊。
+`@Isolated` 才會讓該類別執行時沒有其他測試同時執行；詳見 [JUnit 同步與隔離文件](https://docs.junit.org/5.11.4/user-guide/#writing-tests-parallel-execution-synchronization)。
 
 > ⚠️ **平行執行會把所有「隱藏的共用狀態」變成隨機失敗。**
 > 開啟之前，先確認：

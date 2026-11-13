@@ -1134,7 +1134,7 @@ jdbc.query("SELECT payload FROM big",
 > | 資料庫 | 預設行為 | 要串流的話 |
 > |---|---|---|
 > | **H2**（in-process） | 沒有網路，不適用 | — |
-> | MySQL | 🔴 **驅動預設把整個結果集抓回記憶體** | `setFetchSize(Integer.MIN_VALUE)` ⚠️ 是這個怪值，不是一個正數 |
+> | MySQL | 🔴 **驅動預設把整個結果集抓回記憶體** | forward-only/read-only + `Integer.MIN_VALUE`；或 `useCursorFetch=true` + `useServerPrepStmts=true` + 正 fetchSize（兩種替代模式，見 05 章 5.11.4） |
 > | PostgreSQL | 🔴 同上 | `setFetchSize(n)` **而且必須關掉 autoCommit** |
 >
 > 🔴 **【本章未驗證】MySQL 與 PostgreSQL 的串流行為**（本機沒有這兩個資料庫）——
@@ -1595,7 +1595,7 @@ public void save(Order order) {
 > 而**更新路徑只有 1～2 次來回**（UPDATE + 明細維護）。
 >
 > 📌 **如果你的場景真的是「大量新增」（匯入、批次建單）**，
-> **正確的解法不是換 upsert，是換 `insertAll()`**（05 章 5.8 的批次）——
+> **匯入場景可以另設新增專用 API，或採 05 章 5.8 的受測 `saveAll()`**（本課沒有實作 `insertAll()`）——
 > **因為那個場景你【本來就知道】它們是新的。**
 
 ### 2.8.6 決策表
@@ -2145,36 +2145,30 @@ jdbc.setExceptionTranslator(new ConstraintNameTranslator(Map.of(
 **而寫下那句 `INSERT` 的地方【知道】。**
 
 ```java
-/**
- * ★ 這一句 INSERT 只可能違反兩條約束：
- *    - pk_customer：id 是我方產生的，撞了代表 id 產生器有 bug
- *    - uq_customer_email：email 重複，這是正常的業務情況
- * 所以「DuplicateKeyException 且 id 沒被佔用」→ 一定是 email 撞了。
- */
+// 需要 NamedParameterJdbcTemplate、MapSqlParameterSource、DuplicateKeyException。
+// 由上層寫入交易呼叫（MANDATORY）；只針對本文的 MySQL 8 / H2 customer schema。
 public void register(String id, String email) {
+    var params = new MapSqlParameterSource().addValue("id", id).addValue("email", email);
     try {
-        jdbc.update("INSERT INTO customer (id, email) VALUES (:id, :email)",
-                new MapSqlParameterSource().addValue("id", id).addValue("email", email));
+        jdbc.update("INSERT INTO customer (id, email) VALUES (:id, :email)", params);
     } catch (DuplicateKeyException e) {
-        // ⚠️ 只在【錯誤路徑】上多一次查詢 —— 正常路徑零成本
-        Long idTaken = jdbc.queryForObject("SELECT COUNT(*) FROM customer WHERE id = :id",
-                new MapSqlParameterSource("id", id), Long.class);
-        if (idTaken != null && idTaken > 0) {
-            throw new IllegalStateException("id 產生器產生了重複的 id：" + id, e);   // 這是 bug
+        // MySQL RR 普通 SELECT 可能仍讀舊快照；FOR UPDATE 是 current read。
+        var ids = jdbc.queryForList("SELECT id FROM customer WHERE id = :id FOR UPDATE",
+                params, String.class);
+        if (!ids.isEmpty()) {
+            throw new IllegalStateException("id 產生器產生重複 id", e);
         }
-        throw new EmailAlreadyRegisteredException(email, e);                        // 這是業務情況
+        var emails = jdbc.queryForList("SELECT id FROM customer WHERE email = :email FOR UPDATE",
+                params, String.class);
+        if (!emails.isEmpty()) throw new EmailAlreadyRegisteredException(email, e);
+        throw e; // 無法證明是 email 約束，不猜測業務原因
     }
 }
 ```
 
-**實驗 G9-D**：
+**G9-D 的適用範圍**：這張表只有主鍵與 email 唯一鍵，失敗的 INSERT 在 MySQL／H2 不會使整個交易失效。錯誤路徑最多追加兩次 current read，正常路徑不追加查詢。MySQL RR 測試先建立舊快照，再由另一連線插入並提交，仍必須判為 id 衝突。
 
-```
-=== G9-D 在呼叫點翻譯 ===
-  攔在呼叫點：id 沒撞 → 一定是 email 撞了 → 「這個 email 已經被註冊了」
-  ★ 代價：多一次查詢，而且只在【錯誤路徑】上發生（正常路徑零成本）
-  ★ 好處：不依賴任何資料庫的訊息格式，換 MySQL 不用改
-```
+這不是跨所有資料庫的解法：例如 PostgreSQL 的失敗 statement 會使交易進入失敗狀態，必須先用 savepoint／rollback 等方式恢復。不要為了重查就把原本 INSERT 改成獨立提交，會破壞上層業務交易的原子性。不同 schema 或無法確認的衝突，保留原始資料存取例外。
 
 **三種做法的比較**：
 
@@ -2182,13 +2176,13 @@ public void register(String id, String email) {
 |---|---|---|---|
 | 🔴 **比對例外訊息字串** | **最差**（版本一升就壞） | 零 | **不要用** |
 | **自訂 translator（比對約束名）** | 中（每家一組樣式） | 零 | 約束很多、而且散落在很多地方時 |
-| ✅ **在呼叫點翻譯** | **最好**（不依賴訊息） | **只在錯誤路徑多一次查詢** | **shop-service 的預設做法** |
+| ✅ **在呼叫點翻譯** | 限定資料庫／schema（不依賴訊息格式） | 錯誤路徑最多兩次 current read | **shop-service 的預設做法** |
 
 > 📌 **判準**：
 > **「這句 SQL 可能違反幾條約束？」**
 >
 > - **一條** → 直接翻譯，連查詢都不用（`catch (DuplicateKeyException e) → 那條規則`）。
-> - **兩三條** → 在呼叫點加一次判別查詢（上面的例子）。
+> - **兩三條** → 在呼叫點依交易隔離與資料庫特性判別（上面的例子）。
 > - **很多條、而且到處都在寫** → 才值得寫 translator。
 >
 > ⚠️ **而如果你發現「一句 INSERT 可能違反七條約束」**，
@@ -2461,7 +2455,7 @@ public class BadRepo {
 > 🔴 **【本章未驗證】真實資料庫的批次效益**，以及 MySQL 的 `rewriteBatchedStatements=true`
 > （沒加的話，驅動仍然一句一句送，**批次幾乎沒有效果**）——
 > **05 章 5.8 與 06 章 6.4 會實測**（🔴 06 章探針 ⑰ 發現 `rewriteBatchedStatements=true`
-> 會讓 `executeBatch()` 回傳 `SUCCESS_NO_INFO`，反過來弄壞 05 章 5.8.7 的判斷邏輯）。
+> INSERT 可回傳 `SUCCESS_NO_INFO`；不能因此推論 UPDATE 也相同，見 05 章 5.8.7b 的實測與防護）。
 
 ### 2.13.2 ⚠️ 批次不等於交易
 
@@ -2661,7 +2655,7 @@ import java.util.stream.Collectors;
  *
  * <p>還沒修的（依 00 章 0.12.4 的表）：
  * ② {@code saveAll()} 仍是 N 次來回（05 章 5.8）、
- * ③ {@code save()} 之後記憶體裡的 version 已過期（05 章 5.5）。
+ * ③ {@code save()} 之後記憶體裡的 version 已過期（2.15.4 的 saveAndReload）。
  */
 @Repository
 @Transactional(propagation = Propagation.MANDATORY)   // ★★ 沒有外層交易就直接失敗（00 章 0.9.3）
@@ -2692,6 +2686,13 @@ public class JdbcOrderRepository implements OrderRepository {
     private final NamedParameterJdbcTemplate jdbc;
 
     public JdbcOrderRepository(NamedParameterJdbcTemplate jdbc) { this.jdbc = jdbc; }
+
+    @Override
+    @Transactional(propagation = Propagation.MANDATORY)
+    public Order saveAndReload(Order order) {
+        return OrderRepository.super.saveAndReload(order);
+    }
+
 
     @Override
     public String nextId() {
@@ -3039,6 +3040,36 @@ void 沒有外層交易時save直接失敗() {
 > **兩者測的是不同的東西，缺一不可。**
 
 ---
+
+### 2.15.4 保存後以新物件取得新版本
+
+`Order.version` 是 final，`void save` 不會回寫原物件。需要再次操作或產生回應 ETag 時，使用 0.12.2 的 `saveAndReload`，並接住回傳物件：
+
+Spring 轉接器必須明確覆寫介面 default 方法，不能只依賴類別註解。default 方法內的 self-invocation 不會再經過 save 的代理；以下方法要加到 JdbcTemplate、JdbcClient 與 JPA 三種轉接器中。記憶體 fake 保留 default 方法，僅模擬保存與重載，沒有資料庫交易能力。
+
+```java
+@Override
+@Transactional(propagation = Propagation.MANDATORY)
+public Order saveAndReload(Order order) {
+    return OrderRepository.super.saveAndReload(order);
+}
+```
+
+```java
+@Transactional
+public Order payThenCancel(String id) {
+    Order order = repository.findById(id).orElseThrow();
+    order.markPaid();
+    order = repository.saveAndReload(order); // 例如 version 0 → 1
+    order.cancel();
+    return repository.saveAndReload(order); // 1 → 2
+}
+```
+
+這只是示範連續寫入的版本使用契約，非完整付款／取消 use case。原物件仍是舊版，刻意再次保存它應拋版本衝突。JDBC 的 UPDATE 立即遞增，JPA 必須套用 3.10.3 的同步 flush／CAS，不能只等 commit 才更新。
+
+此 helper 加在共同埠，fake／JdbcClient 也必須遵守保存後可讀到新版本的契約。它不建立獨立交易，須由既有寫入交易包住 save 與 reload。rollback 後物件與版本結果都要丟棄，Controller 只能在 Service 成功提交後回應並產生 ETag。
+
 
 ## 2.16 常見誤區
 

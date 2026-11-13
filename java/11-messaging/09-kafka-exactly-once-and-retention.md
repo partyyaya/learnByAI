@@ -284,16 +284,13 @@ producer 等不到回應就會**認定失敗並重送**，但 broker 其實已�
 | 方法 | 做得到嗎 | 代價 |
 |---|---|---|
 | 冪等 producer | ❌ 只在單一 session 內 | 免費（預設就開） |
-| **交易 + 固定的 `transactional.id`** | ✅ **跨 session**（9.3.5） | 9.3.4：commit 密集時掉一個數量級 |
-| **消費端冪等**（[03 章](./03-idempotent-consumer.md)） | ✅ | 一張去重表 |
+| **Kafka 交易 + transactional.id** | 舊 producer fencing、未完成交易恢復；不去除已提交的業務重送 | 交易提交有額外成本（9.3.4） |
 
-📌 **`transactional.id` 是唯一能跨 session 的機制** ——
-因為它讓新的 producer 在 `initTransactions()` 時
-**認領同一個身分、並把上一個 session 沒完成的交易處理掉**（fence 掉舊的 epoch）。
-9.3.5 會講。
-
-⚠️ **但即使如此，絕大多數系統的答案仍然是「消費端冪等」** ——
-因為交易只在 Kafka 內部有效（9.4）。
+即使用相同 transactional.id，兩個 session 各自開始新交易、送相同內容並成功 commit，
+`read_committed` 仍會看到兩則。Kafka 不會比較 payload 或 eventId 判斷它們是同一筆業務。
+Outbox 在「已送出、DB 尚未標記」之間崩潰仍會重複，下游需以穩定 eventId 去重。
+consume-transform-produce 的 EOS 則把**輸入 offset 與輸出**放在同一個 Kafka 交易中，
+重啟後由已提交 offset 接續，不能將這個保證推廣成任意應用重送去重。
 
 ### 9.2.5 `enable.idempotence=true` 強制了什麼
 
@@ -582,9 +579,9 @@ producer 等不到回應就會**認定失敗並重送**，但 broker 其實已�
 📌 **實務上的起手式：每一批 `poll()` 一個交易**（就像 9.3.3 那樣）——
 它讓「交易邊界」與「批次邊界」重合，最好理解也最好除錯。
 
-### 9.3.5 `transactional.id`：跨 session 的那把鑰匙
+### 9.3.5 `transactional.id`：fencing 與未完成交易恢復
 
-9.2.4 說「`transactional.id` 是唯一能跨 session 的機制」。**理由在 `initTransactions()`**：
+`transactional.id` 讓 coordinator 識別同一個交易 producer 的不同世代；它不去重已提交的業務內容。
 
 ```java
         cfg.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, "order-processor-1");
@@ -597,30 +594,24 @@ producer 等不到回應就會**認定失敗並重送**，但 broker 其實已�
 1. 跟 coordinator **認領 `transactional.id` 這個身分**，拿到一個 `producerEpoch`。
 2. **把舊的 epoch fence 掉** —— 上一個 session 如果還活著，它接下來的寫入全部會被拒絕
    （`ProducerFencedException`）。
-3. **把上一個 session 沒結束的交易處理掉**（commit 或 abort）。
+3. **等待舊世代正在完成的交易結束，或中止未完成交易**；不會把任意未提交交易自動變成成功提交。
 
 📌 **第 2 點解決了「殭屍實例」問題**：
 一個被認為已經死掉、但其實還活著的舊實例，**不可能再寫進任何東西**。
 
-⚠️ **而它的代價是「`transactional.id` 必須是穩定且唯一的」**：
+`transactional.id`／Spring 的 transaction-id-prefix 必須在**同時運作的實例之間唯一**，
+否則不同實例會互相 fence。Spring Kafka 3.1 使用 EOS V2，無須強制每個分區固定一個 ID。
+可用 `<服務名>-<INSTANCE_ID>-`，INSTANCE_ID 由部署系統提供唯一 pod UID／實例名稱；
+Deployment 也可使用，並非必須 StatefulSet。可重用穩定身分來較快 fence 舊實例，
+但隨機且唯一的實例 prefix 不等於失去 Kafka EOS；需同時管理閒置 producer 與交易逾時。
 
-| 怎麼取 | 結果 |
-|---|---|
-| 每次啟動隨機產生 | ❌ 等於沒有跨 session 保護，而且會在 coordinator 上堆積一堆 id |
-| 全部實例共用同一個 | ❌ 它們會互相 fence，**只有最後啟動的那個能寫** |
-| **`<服務名>-<實例序號>`**（例如 StatefulSet 的序號） | ✅ 正解 |
-| **`<服務名>-<分區號>`** | ✅ consume-transform-produce 的標準做法 |
-
-📌 **所以在 Kubernetes 上用交易，通常要用 StatefulSet 而不是 Deployment** ——
-你需要一個**穩定的實例身分**。
-
-**Spring 的寫法**：
+**Spring 的寫法**（獨立的 Kafka EOS 設定；不要與 10 章非交易 DefaultErrorHandler 範例混用）：
 
 ```yaml
 spring:
   kafka:
     producer:
-      transaction-id-prefix: order-processor-   # ← Spring 會自動接上一個後綴
+      transaction-id-prefix: order-processor-${INSTANCE_ID}- # 每個並行實例必須不同；Spring 再加後綴
     consumer:
       isolation-level: read_committed           # ⚠️ 一定要改，預設是 read_uncommitted
       enable-auto-commit: false
@@ -1372,7 +1363,7 @@ compaction 會**毀掉你的資料**，而且救不回來。
 
 ```
    生產者   acks=all + RF≥3 + min.insync.replicas=2 + enable.idempotence   （7.5、9.2）
-            key = aggregateId、whenComplete 接住失敗                        （7.3、7.9）
+            key = aggregateId、背景等待確認再更新 Outbox                        （7.3、7.9）
    消費者   enable-auto-commit=false + ack-mode BATCH                       （8.4）
             max.poll.records 決定重複半徑、max.poll.interval.ms 要夠大       （8.3、8.5）
             isolation.level=read_committed（讀交易型 topic 時）               （9.3）
@@ -1401,7 +1392,7 @@ compaction 會**毀掉你的資料**，而且救不回來。
 - [ ] 解釋「exactly-once 不代表你的處理函式只會跑一次」。
 - [ ] 說出交易的代價跟什麼成正比，並說出「commit 間隔」同時決定的另外兩件事。
 - [ ] 說出 9.3.4 那張表為什麼**不能**引用「28 倍」這個單一數字。
-- [ ] 說出 `transactional.id` 該怎麼取，以及為什麼在 K8s 上通常要用 StatefulSet。
+- [ ] 說出 transaction-id-prefix 如何保持實例間唯一，以及 EOS V2 為何不要求 StatefulSet。
 - [ ] 說出 `initTransactions()` 做的三件事。
 - [ ] 畫出 9.4.2 三種寫法的時間線，並指出當掉的那一刻各自留下什麼。
 - [ ] 說出 `ChainedTransactionManager` 為什麼不算答案。

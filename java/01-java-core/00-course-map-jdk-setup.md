@@ -185,14 +185,25 @@ Java 的規格（JLS / JVMS）是公開的，OpenJDK 是參考實作，任何人
 
 ### ⚠️ Oracle JDK 的授權地雷
 
-這是很多公司踩過的實際成本問題：
+先分清 Oracle JDK、Oracle OpenJDK 與其他發行商；授權要看**實際更新版、取得管道、用途與條款**，
+不能只用「Java 8／17／21」判定。以下為 2026-11-13 核對的 Oracle JDK 摘要：
 
-- **Java 8 / 11 的 Oracle JDK**：商業用途需付費訂閱。
-- **Java 17～20**：曾採用 NFTC 授權，可免費商業使用，但**只到該版本推出後約 3 年**。
-- **Java 21 之後**：回到 NFTC，同樣有時限；且 Oracle 的訂閱是按**整個組織的員工數**計費，不是按裝機數。
+| Oracle JDK 更新範圍 | 官方列示授權 |
+|---|---|
+| 21.0.12 及以前、截至 2026-09 的更新 | NFTC |
+| 21.0.13 起、2026-10 起的後續更新 | OTN／Oracle 客戶支援管道 |
+| 17.0.12 及以前、截至 2024-09 的更新 | NFTC |
+| 17.0.13 起的後續更新 | OTN／Oracle 客戶支援管道 |
+| 25 截至 2028-09 的更新 | 官方目前列示 NFTC |
 
-> **實務結論**：除非公司法務已確認有 Oracle 授權，**開發與部署都用 Temurin 或 Corretto**。
-> 功能上和 Oracle JDK 幾乎沒有差異（同樣源自 OpenJDK），但沒有授權風險。
+OTN 對個人、開發、測試等特定用途有免費使用範圍，不能直接寫成「開發也都要付費」；
+一般商業正式用途則須核對適用授權。Oracle JDK 8／11 也要按更新版本、用途及既有權利確認。
+新版本條款不表示先前依 NFTC 取得的舊 binary 會自動變成付費，但不應為維持舊條款而忽略安全更新。
+依據：[Oracle 官方授權 FAQ](https://www.oracle.com/java/technologies/javase/jdk-faqs.html)；實際隨軟體提供的條款優先。
+
+Oracle Java SE Universal Subscription 的員工計價是**特定訂閱方案**的規則，不能泛化為所有取得方式。
+若團隊選擇 Temurin／Corretto 等 OpenJDK 發行版，也要管理其授權、更新與支援政策。
+本課用 Temurin 練習，既有環境要換發行商時仍須做相容性測試。
 
 本課使用 **Temurin 21**。
 
@@ -1573,7 +1584,7 @@ find . -name "*.java" -o -name "pom.xml" | grep -v target
 
 **授權與風險（通常最急）**
 
-1. Oracle JDK 8 商業使用需要付費訂閱，公司有沒有買？若沒有，**最低成本的動作是先換成 Temurin 8**——這不改任何程式碼，只換 runtime，先把授權風險解掉。
+1. 先查 Oracle JDK 8 的實際 update 版號、取得方式、用途與授權，確認是否有適用權利；需要更換時，可評估仍有安全更新的 OpenJDK 發行版，並先測相容性。不要只因是 Java 8 就判定必須付費，也不要假設換 runtime 完全沒有風險。
 2. Java 8 的公開安全更新狀況如何？有沒有已知 CVE 沒補？
 
 **技術可行性**

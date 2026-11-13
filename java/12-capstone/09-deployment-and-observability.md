@@ -9,7 +9,7 @@
 > - **一個映像檔**（9.3）：多階段建置、分層、非 root、exec form。改一行程式重建 9.5 秒，變的只有 1.59 MB 的那一層（第一版是整個 75.4 MB 的 jar）。
 > - **一個命令起完整的系統**（9.4）：`docker compose --profile app up -d --wait`。migration 是一個一次性的步驟（`shop_migrator`），應用程式等它成功才起；Prometheus、Alertmanager、MySQL 的 exporter 一起。七個服務 17.2 秒（加了 Alertmanager 之後是九個）。
 > - **traceId 跨過 broker**（9.8）：驗收 Q7 綠了 —— **`Skipped` 第一次是 0**。外面帶進來的 `traceparent` 不收。
-> - **19 條告警規則，跟程式碼一起測**（9.10）：`promtool` 的單元測試、一個「規則用到的指標啟動時就要存在」的測試；拿真的停機觸發：停掉 RabbitMQ 之後 **87.5 秒**，通知送到收件人。
+> - **20 條告警規則，跟程式碼一起測**（9.10）：`promtool` 的單元測試、一個「規則用到的指標啟動時就要存在」的測試；拿真的停機觸發：停掉 RabbitMQ 之後 **87.5 秒**，通知送到收件人。
 > - **INV-5**（9.11）：應用程式的帳號只拿一個角色，`inventory_ledger` 與 `audit_logs` 只能 SELECT、INSERT；稽核的一年保留期由一個預存程序做。
 > - **增量對帳**（9.12）：2,000 萬列的帳本，每小時那一次 18～30 ms（全掃是 122～130 秒）；每週一次全掃校正。
 > - **一份會自己跑的上線檢查清單**（9.13），以及 **201 個測試、0 個失敗、0 個跳過、4 分 07 秒**的 `mvn clean verify`（9.15）；一個空的容器裡 4 分 45 秒。
@@ -1034,7 +1034,9 @@ management:
 
 ### 9.10.1 規則
 
-0.6.6 列了七條告警，第 02、04、05、06、07、08 章又各留下幾個「第 09 章接告警」。全部寫成 Prometheus 的規則（`docker/prometheus/alerts.yml`），五組、19 條。每一條的 `annotations.why` 寫「為什麼是這個門檻、從哪一章來」；門檻是判斷的，就寫明是判斷：
+本節終端紀錄中的「19 條」是原版量測；修訂版規則為 20 條，新增停滯規則的驗證見 verification。
+
+0.6.6 列了七條告警，第 02、04、05、06、07、08 章又各留下幾個「第 09 章接告警」。全部寫成 Prometheus 的規則（`docker/prometheus/alerts.yml`），五組、20 條（修訂後含低流量停滯）。每一條的 `annotations.why` 寫「為什麼是這個門檻、從哪一章來」；門檻是判斷的，就寫明是判斷：
 
 | 組 | 告警 | 條件 | 來自 |
 |---|---|---|---|
@@ -1044,6 +1046,7 @@ management:
 | | `ShopOutboxUnroutable` | `shop_outbox_rejected_total{reason="unroutable"}` 增加 | 9.2.1 |
 | | `ShopConsumerLag` | 消費者 p99 延遲 > 60 秒，持續 1 分鐘 | 0.6.4 |
 | | `ShopConsumerQueueBacklog` | 主佇列 ready > 1,000，持續 5 分鐘（判斷） | 0.6.6「消費端是否跟上」 |
+| | `ShopConsumerStalled` | ready + unacked > 0，近 1 分鐘無 ACK，再持續 1 分鐘 | 修訂：低流量停滯 |
 | | `ShopDeadLetters` | 任何一個 DLQ > 0 | 0.6.6、7.5.5 |
 | | `ShopUncountedReservationsOld` | 未計入的熱點預留 > 60 秒 | 7.10 |
 | | `ShopRefundFailed` | `shop_refunds_failed_total` 增加 | 0.5.4、7.8.1 |
@@ -1076,6 +1079,17 @@ management:
 （為什麼有第二個 1 分鐘的窗，9.10.5。）
 
 第 04 章 4.4.4 留下的那一個呢？「告警規則如果寫『任何 ERROR 就告警』，撞號那一行每天會叫醒人 12 次」。這一章的選擇是：**不拿 ERROR 的行數告警**。每一件值得叫醒人的事，都有一個名字明確的指標；ERROR 照實記錄，留給查問題的人（`shop.orders.number_collisions` 讓撞號有了自己的計數器）。
+
+新增 `ShopConsumerStalled` 補低流量盲點：ready + unacked 大於 0，且近 1 分鐘沒有 ACK 進度，
+持續 1 分鐘就 page。12 則 ready 或只有 unacked 都能觸發；閒置空佇列不響，持續 ACK 則不響。
+RabbitMQ 3.13 使用 `/metrics/detailed?family=channel_queue_metrics` 的
+`rabbitmq_detailed_channel_messages_acked_total`，不是較新版才有的 queue_delivery_metrics。
+與 queue_coarse_metrics 一起抓取，按 vhost、queue 聚合各 channel 的 ACK counter。
+
+這是停滯偵測，約 1～2 分鐘加 scrape／evaluation 延遲；不能宣稱保證每則事件 60 秒內告警。
+少量 ACK 掩蓋某一則卡住時，仍須由各業務的 oldest-age 指標補足。
+原有 p99 lag 與 1000 則 backlog 分別觀察已處理延遲與流量積壓，並非低流量停滯的替代品。
+[verification](./verification/README.md) 另含低流量、unacked-only、空佇列與正常 ACK 的 promtool 案例。
 
 ### 9.10.2 ⚠️ 規則也要測：「任何一次」的第一次不會響
 
@@ -1687,7 +1701,7 @@ Binding to target com.example.shop.shared.config.ShopProperties failed:
 | | invisible 的索引 0 個（2.7） | ✅ |
 | | 備份與還原、高可用（0.7 第 11 項） | ⚠️ 不做，列出 |
 | 資料 | outbox 未送出 0、死信 0、INV-3 全掃差異 0 | ✅ |
-| 監控 | Prometheus 抓得到三個目標、19 條規則載入、Alertmanager 接上、現在沒有 firing | ✅（收件人只有本機） |
+| 監控 | Prometheus 抓得到三個目標、20 條規則載入、Alertmanager 接上、現在沒有 firing | ✅（收件人只有本機） |
 | 秘密 | repo 裡沒有正式環境的秘密；每一個都是 `${…}`；少了一個 → 啟動失敗 | ✅（訊息會誤導） |
 | 規格 | 熱點下單：新實例要先暖機（9.6.4） | ⚠️ 沒有實作 |
 
@@ -1708,7 +1722,7 @@ Binding to target com.example.shop.shared.config.ShopProperties failed:
 | `AuditRetentionTest` | ＋1 | 稽核一年：程序刪得掉一年以前的、刪不掉別的（9.11.4） |
 | `IncrementalReconciliationTest` | ＋2 | 水位線不越過還沒 commit 的那一列；天真的版本會留下假差異（9.12） |
 | `AlertMetricsTest` | ＋1 | `alerts.yml` 用到的每一個指標，啟動時就存在（9.10.2） |
-| `docker/prometheus/alerts_test.yml` | 7 組（不在 `mvn` 裡） | 19 條規則；晚註冊的計數器、5 分鐘窗的事後告警（9.10） |
+| `docker/prometheus/alerts_test.yml` | 原版 7 組，低流量另見 verification（不在 `mvn` 裡） | 修訂後 20 條規則；晚註冊的計數器、5 分鐘窗的事後告警（9.10） |
 | `refundResponseLostOnce` | 改 | 模擬金流的 `reset()` 把呼叫次數歸零（9.2.1） |
 | `q5_idorReturns404`、`IdorMatrixTest`、`AuthApiTest.noAccountEnumeration` | 改 | 比較 body 之前把各自的 traceId 換成佔位符，並先確認兩邊都有（9.8.5） |
 | 41 個測試檔、68 句 | 改 | 清理帳與稽核改用 `TestInfra.adminJdbc()`（9.11.3） |
@@ -1749,7 +1763,7 @@ Caused by: org.flywaydb.core.internal.exception.FlywaySqlException: Unable to ob
 | 0.6.6 日誌：JSON、traceId、userId、orderNo | `JsonLogFormatTest`、Q7 | ✅ 09 |
 | 0.6.5 日誌遮罩：email、不記 token | `JsonLogFormatTest`；J0 的 188 個測試日誌掃描（9.7.2） | ✅ 05、09 |
 | 0.6.6 指標 → `/actuator/prometheus` | 管理埠（9.9.1）；`AlertMetricsTest` | ✅ 09 |
-| 0.6.6 告警（七條＋各章留下的） | `alerts.yml` 19 條、`promtool` 7 組、三次演練、Alertmanager（9.10） | ✅ 09（收件人只有本機） |
+| 0.6.6 告警（七條＋各章留下的） | `alerts.yml` 20 條、`promtool` 7 組、三次演練、Alertmanager（9.10） | ✅ 09（收件人只有本機） |
 | US-ORD-5 AC-4 越權告警 | `shop.audit.denied_suspects`、`ShopAccessDeniedSuspects` | ✅ 09（排程沒有測試：5 分鐘才第一次） |
 | **INV-5** | `AppGrantsTest`（9.11） | ✅ 09 |
 | 0.6.7 保留：稽核 1 年、冪等鍵 24 小時 | `AuditRetentionTest`、`JobTraceTest.purgesExpiredIdempotencyKeys` | ✅ 07、09 |
@@ -1800,14 +1814,14 @@ shop/
     │   ├── application-prod.yml                         ← 管理埠 8081、JSON 日誌、graceful、flyway 關、springdoc 關、banner 關
     │   ├── application.yml                              ← prometheus、SLO 桶
     │   ├── logback-json.xml                             ← 新增（9.7）
-    │   └── db/migration/V15～V25                        ← 新增：角色與每個模組的授權、稽核保留、對帳的累計與水位線
+    │   └── db/migration/V15～V28                        ← 新增：角色與每個模組的授權、稽核保留、對帳的累計與水位線
     └── test/
         ├── support/{CapturedLogs,TraceIds}.java         ← 新增；TestInfra：root 起容器、adminJdbc()、連線高峰
         ├── resources/config/application.yml             ← 測試的連線池閒置下限 2（9.14.2）
         └── ……（9.14.1 的那些）
 ```
 
-**11 個新的 migration（V15～V25），只有 2 張新的表**（對帳的累計與水位線）；其他 9 個是授權與一個預存程序。正式程式碼改了 33 個檔案；`git diff --stat ch08..ch09`：111 個檔案，+2,344／−110 行，17 個 commit（下面那一次建置在第 16 個；第 17 個只改了一條告警的說明文字，`promtool` 重跑過）。
+**原版 11 個新的 migration（V15～V25），只有 2 張新的表**（對帳的累計與水位線）；其他 9 個是授權與一個預存程序。正式程式碼改了 33 個檔案；`git diff --stat ch08..ch09`：111 個檔案，+2,344／−110 行，17 個 commit（下面那一次建置在第 16 個；第 17 個只改了一條告警的說明文字，`promtool` 重跑過）。
 
 ```bash
 mvn clean verify
@@ -1880,7 +1894,7 @@ TEST_INFRA MySQL 最多同時 25 條連線（max_connections 151）
 | 應用程式怎麼跑 | IDE、`java -jar` | 映像檔；`docker compose --profile app up -d --wait` |
 | 日誌 | 文字、`+08:00`、沒有 traceId | JSON、UTC、traceId、遮罩 |
 | outbox、稽核的 `trace_id` | 86,947 列、2 列，全部 NULL | 每一列 |
-| 告警 | 0 條 | 19 條，有測試、有收件人 |
+| 告警 | 0 條 | 修訂後 20 條，有測試、有收件人 |
 | 應用程式的資料庫權限 | `ALL PRIVILEGES` | 一個角色；帳與稽核只能新增 |
 | 每小時的對帳（2,000 萬列） | 122～130 秒（全掃，錯的計畫） | 18～30 ms（增量）；每週全掃 5.6 秒 |
 | `mvn clean verify` | 3:45 | 4:07（乾淨的容器 4:45） |
@@ -2030,6 +2044,47 @@ CREATE TABLE inventory_ledger_watermark (
 INSERT INTO inventory_ledger_watermark (id, upto_id) VALUES (1, 0);
 GRANT SELECT, UPDATE ON inventory_ledger_watermark TO shop_app;
 ```
+
+#### 修訂版的追加遷移：V26～V28
+
+全新資料庫使用 02 章修訂版的 V5／V6／V7；已執行舊版 migration 的專案，保留原檔與 checksum，
+先完成既有 V1～V25，再追加下列三檔。不可覆寫已執行檔，也不可用 repair 掩蓋差異。
+V26 同時支援全新 schema、完全舊版、以及先前只補過 claimed_until 的 schema。
+新版 NotificationHandler 須在升級完成後啟用；既有實驗可改用全新隔離資料庫。
+
+**`src/main/resources/db/migration/V26__notification_claim_lease.sql`**
+
+```sql
+-- MySQL 8 沒有 ADD COLUMN IF NOT EXISTS；先查 metadata，再執行至多一句 ALTER。
+SET @claim_columns = CONCAT_WS(', ',
+  IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'notifications' AND column_name = 'claimed_until'), NULL,
+     'ADD COLUMN claimed_until DATETIME(3) NULL'),
+  IF(EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'notifications' AND column_name = 'claim_token'), NULL,
+     'ADD COLUMN claim_token VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL'));
+SET @claim_ddl = IF(@claim_columns = '', 'DO 0', CONCAT('ALTER TABLE notifications ', @claim_columns, ', ALGORITHM=INSTANT'));
+PREPARE claim_stmt FROM @claim_ddl;
+EXECUTE claim_stmt;
+DEALLOCATE PREPARE claim_stmt;
+```
+
+**`src/main/resources/db/migration/V27__ordering_idempotency_key_binary.sql`**
+
+```sql
+ALTER TABLE idempotency_keys MODIFY idem_key VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL, ALGORITHM=COPY, LOCK=SHARED;
+```
+
+**`src/main/resources/db/migration/V28__payment_provider_txn_binary.sql`**
+
+```sql
+ALTER TABLE payments MODIFY provider_txn_id VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL, ALGORITHM=COPY, LOCK=SHARED;
+```
+
+遷移前先查 INFORMATION_SCHEMA.COLUMNS 的型別／collation，抽查既有值的 `HEX(idem_key)`、
+`HEX(provider_txn_id)`，確認呼叫端依精確字串比較，不會自行轉小寫或 trim。
+原本 ai_ci 比較較寬鬆，改 binary 不會把原有兩個不同值合成一個；但不能恢復先前被錯誤視為同鍵的請求。
+兩個 MODIFY 明寫 ALGORITHM=COPY、LOCK=SHARED，允許讀取但會阻擋寫入並重建資料／索引；
+這是明確需要遷移窗口的保守版本。正式上線須先用相同規模副本量測，不能直接在流量高峰執行。
+[verification](./verification/README.md) 用真實 MySQL 與 Flyway 驗證三種 V26 起始狀態及 V27／V28 的精確比較。
 
 **`src/main/java/com/example/shop/shared/audit/internal/AuditRetention.java`**
 
@@ -3860,7 +3915,7 @@ scrape_configs:
     static_configs: [{targets: ["app:8081"]}]        # 管理埠（9.9）：只有從這裡進來才放行
   - job_name: rabbitmq
     metrics_path: /metrics/detailed                    # 每一個佇列一條（/metrics 只有加總，9.9）
-    params: {family: [queue_coarse_metrics]}
+    params: {family: [queue_coarse_metrics, channel_queue_metrics]}
     static_configs: [{targets: ["rabbitmq:15692"]}]
   - job_name: mysql
     static_configs: [{targets: ["mysqld-exporter:9104"]}]
@@ -3935,6 +3990,16 @@ groups:
         annotations:
           summary: "{{ $labels.queue }} 積了 {{ $value }} 則"
           why: "消費者停住時，延遲（上一條）看不到，佇列深度看得到。1000 / 5 分鐘是判斷：一次搶購 500 張落帳、幾秒內消化完"
+      - alert: ShopConsumerStalled
+        expr: |
+          (sum by (vhost, queue) (rabbitmq_detailed_queue_messages{queue=~"shop\\.[a-z-]+\\.[a-z-]+"}) > 0)
+          unless on (vhost, queue)
+          (sum by (vhost, queue) (increase(rabbitmq_detailed_channel_messages_acked_total{queue=~"shop\\.[a-z-]+\\.[a-z-]+"}[1m])) > 0)
+        for: 1m
+        labels: {severity: page}
+        annotations:
+          summary: "{{ $labels.queue }} 有待處理訊息且持續沒有 ACK 進度"
+          why: "含 ready 與 unacked；低流量停住也要告警。1 分鐘 ACK 視窗再持續 1 分鐘，不能取代逐訊息 60 秒 SLO"
       - alert: ShopDeadLetters
         expr: max by (queue) (rabbitmq_detailed_queue_messages{queue=~"shop\\..+\\.dlq"}) > 0
         labels: {severity: ticket}
@@ -5433,7 +5498,7 @@ index d279be6..d0e29af 100644
 +        exec(ExternalLoad.root(), "DELETE FROM inventory_ledger WHERE product_id = ?", HOT);
          exec(c, "DELETE FROM inventory WHERE product_id = ?", HOT);
          exec(c, "DELETE FROM products WHERE id = ?", HOT);
-         redis.sync().del("product:v1:" + HOT, "stock:" + HOT, "available:" + HOT, "trending:24h:top10");   // TestRedis.forgetProducts
+         redis.sync().del("product:v2:" + HOT, "stock:" + HOT, "available:" + HOT, "trending:24h:top10");   // TestRedis.forgetProducts
 @@ -319,7 +327,7 @@ public final class ExternalLoad {
          exec(c, "DELETE FROM orders WHERE buyer_id >= ? AND buyer_id < ?", lo, hi);
          long p0 = PLACE_FIRST_PRODUCT, p1 = PLACE_FIRST_PRODUCT + PLACE_PRODUCTS;
@@ -5541,7 +5606,7 @@ MySQL 不行（`ERROR 1147`，9.2.3）。只能一張表一張表給，並且用
 1. **一個可以部署的東西**（9.3～9.6）：映像檔（分層，改一行搬 1.59 MB）、一個命令起完整的系統、migration 是部署的一個步驟、30 秒的寬限與 graceful、一份有量測在後面的規格（4 CPU、1 GB）。
 2. **一個請求，從頭到尾同一個 traceId**（9.8）：HTTP、資料庫、broker、消費者、排程；回應與錯誤回應裡都有；外面帶進來的不收。**Q7 綠了，`Skipped: 0`。**
 3. **看得到**（9.7、9.9）：一行一個 JSON 的日誌、管理埠上的指標、0.6.6 缺的那幾個指標。
-4. **被叫醒**（9.10）：19 條告警，有單元測試、有「指標存在」的測試、拿真的停機演練過、有人收到（停機之後 87.5 秒）。
+4. **被叫醒**（9.10）：原版 19 條、修訂後 20 條告警，有單元測試、有「指標存在」的測試、拿真的停機演練過、有人收到（停機之後 87.5 秒）。
 5. **改不了歷史**（9.11）：INV-5、稽核只能新增、保留期限變成一個有條件的刪除。
 6. **對帳跟得上帳本的大小**（9.12）：增量、水位線留 5 分鐘、每週全掃校正；以及一個慢了 23 倍的執行計畫。
 
@@ -5582,7 +5647,7 @@ MySQL 不行（`ERROR 1147`，9.2.3）。只能一張表一張表給，並且用
 
 **練習三（30 分鐘）：消費者停住的告警**
 
-9.10.5：`ShopConsumerLag` 對「消費者停住」是瞎的。找一個讓消費者停住、但 broker 照常的方法（例如讓某一個消費者的處理卡在一個鎖上），量 `ShopConsumerQueueBacklog` 多久響；1,000 則、5 分鐘的門檻合不合理？
+9.10.5：讓消費者停住而 broker 照常（例如處理卡在鎖上），只放 12 則訊息，再測 ready=0、全部 unacked 的情況。量 ShopConsumerStalled 多久響，比較原有 1,000 則／5 分鐘門檻為何看不到；恢復 ACK 後確認解除，空佇列應保持安靜。
 
 **練習四（30 分鐘）：告警之間的關係**
 

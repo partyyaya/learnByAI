@@ -115,7 +115,7 @@ mvn test -Pexperiments -Dtest=G1CacheInvalidationTest
   ③ commit 之後寫入新值 + 版本號 1 秒後仍是舊價格：  0 / 200 次  []
 ```
 
-**① 在交易裡刪：200 次有 199 次，1 秒後快取裡還是舊價格。** 而且不是「晚一點會好」：TTL 是 10 分鐘，舊價格會留 10 分鐘。
+**① 在交易裡刪：200 次有 199 次，1 秒後快取裡還是舊價格。** 而且不是「晚一點會好」：這是舊版 10 分鐘 TTL 的量測；修訂版最長 1 秒，見 6.4.2。
 
 原因是時間差。刪除發生在 commit **之前**，從刪除到 commit 之間（`UPDATE`、flush、commit），32 個讀者裡總有人沒命中、去讀 MySQL —— 讀到的是**還沒 commit 的那一刻**，也就是舊價格（REPEATABLE READ 讀不到別人未提交的資料）—— 然後把舊價格寫回快取。等交易 commit，快取裡已經又是舊的了，而且再也沒有人會去刪它。
 
@@ -370,7 +370,7 @@ mvn test -Dtest=OpenApiContractTest -Dopenapi.update=true
 
 | key | 型別 | 內容 | TTL | 誰寫、什麼時候 | Redis 掛了 |
 |---|---|---|---|---|---|
-| `product:v1:{id}` | string（JSON） | 商品頁的欄位 + `version` | 10 分鐘 + 亂數 | 讀的人（沒命中時）；改商品的交易 commit 之後 | 讀 MySQL，本機記憶體留 1 秒（6.9.2） |
+| `product:v2:{id}` | string（JSON） | 商品頁的欄位 + `version` | 最長 1 秒（扣除載入時間） | 讀的人（沒命中時）；改商品的交易 commit 之後 | 讀 MySQL，本機記憶體留 1 秒（6.9.2） |
 | `available:{id}` | string | 一般商品的可售量 | 5 秒 | 讀的人 | 讀 MySQL，本機記憶體留 5 秒 |
 | `stock:{id}` | string（整數） | 熱點商品可以預扣的量 | 無 | 閘門（減）；取消、補貨 commit 之後（加）；對帳（CAS） | 熱點下單 503 |
 | `lock:stock:{id}` | string | 分散式鎖的 token | 2 秒 | 建立 `stock:{id}` 的那一個請求 | —— |
@@ -463,7 +463,7 @@ public void unlockAfterTransaction(Handle h) {
  * 三條規則：
  *  ① 寫入之後「在 commit 之後」把新值寫進快取，而不是在交易裡刪掉（6.2.1：刪在 commit 之前，讀的人會把舊值填回去）
  *  ② 寫進快取一律帶版本號（products.version），Lua 比較：舊的版本蓋不掉新的版本（6.2.1：讀的人慢了一步，一樣會把舊值填回去）
- *  ③ 同一台機器、同一個商品，同一時間只有一個請求去 MySQL 讀（6.2.2：快取過期的瞬間 200 個請求一起打進來）
+ *  ③ 同一台機器、同一個商品，在 1 秒有效期內合併 MySQL 讀取；過期的慢 flight 可以被新 flight 替換（6.2.2：快取過期的瞬間 200 個請求一起打進來）
  */
 @Component
 class ProductCache {
@@ -506,193 +506,51 @@ private void refreshCacheAfterCommit(Product p) {
 
 > ⚠️ **繞過 `ProductService` 改資料庫的人，快取不會知道。** 這件事會先咬到測試：第 04 章的 `OrderFlowTest`、驗收 Q1～Q5 都用 SQL 直接建商品（`INSERT INTO products ...`）、測完刪掉，下一個測試再用**同一個 id** 建一次。
 > 新插入的那一列 `version = 0`，快取裡上一次留下的也是 `version = 0` —— `0 >= 0`，新的值寫不進去，舊的名稱、價格、狀態一直留著。
-> 測試的修法是 `TestRedis.forgetProducts()`：用 SQL 建、刪商品的測試，清理時一併刪掉那個商品的 `product:v1:`、`stock:`、`available:` 三個 key，另外也刪掉熱門排行的 `trending:24h:top10`（全文在 6.11.1）。
-> **正式環境一樣**：維運用 SQL 修資料（改錯的價格、補一個下架），快取裡的值會留到 TTL 到期（最多 10 分鐘多）。修資料的 SOP 要加一步：刪掉那幾個商品的快取 key。
+> 測試的修法是 `TestRedis.forgetProducts()`：用 SQL 建、刪商品的測試，清理時一併刪掉那個商品的 `product:v2:`、`stock:`、`available:` 三個 key，另外也刪掉熱門排行的 `trending:24h:top10`（全文在 6.11.1）。
+> **正式環境一樣**：維運用 SQL 修資料（改錯的價格、補一個下架），快取裡的值會留到 TTL 到期（舊版最多 10 分鐘多；修訂版使用 6.4.2 的 1 秒期限）。修資料的 SOP 要加一步：刪掉那幾個商品的快取 key。
 
-### 6.4.2 ⚠️ 寫入失敗的那一次
+### 6.4.2 寫入失敗、並行修復與重啟：有效期限也要有上限
 
-回到 6.2.1 的那 1 次：③（本專題的寫法）在「改價那一刻快取剛好過期」的情境下，100 次裡有 1 次在 1 秒後仍是舊價格。版本號應該讓這種事不可能發生 —— 除非新值根本沒有寫進去。
+舊版只靠 `pendingEvictions` 的 Set：寫快取失敗，就每 200 ms 重試 DEL。
+有兩個缺口：背景 DEL 成功、移除標記之前，新更新也失敗時，舊 worker 會清掉新標記；
+而行程在 commit 後重啟，整份記憶體標記都消失，共享 Redis 的舊值可能留 10 分鐘。
 
-**第一次追查：重跑，印出現場。** 只跑 ③、100 次，把每一次不一致時 MySQL 與快取裡的版本號都印出來：**0 / 100**。重現不了。
+修訂版在 6.11.1 提供完整 ProductCache：
 
-**第二次：重跑兩次，記下 Redis 失敗的次數。** 第一次執行在第 22 秒就中止了，例外是：
+- 每次失敗放入新的 generation，修復完成只 `remove(id,generation)`；新失敗不會被舊 worker 清掉。
+- 商品核心改用 `product:v2:{id}`、**最長 1 秒 TTL，沒有向上 jitter**；不讀舊的 v1 長期限資料。
+  記憶體修復只是加速，不再是正確過期的唯一依據。
+- 期限從 DB 讀取前計算，載入花掉的時間要扣除；超過期限不回填。
+  afterCommit 的期限也從登記時算，避免舊交易暫停後把舊版本重新寫滿一秒。
+- 本機降級副本與 single-flight 也使用相同期限；新的請求不接手已過期的 flight。
+  關閉 bean 時停止修復 executor，避免測試 context 結束後背景執行緒繼續跑。
 
-```
-org.springframework.dao.QueryTimeoutException: Redis command timed out
-	at com.example.shop.catalog.internal.G1CacheInvalidationTest.expiryAtTheMomentOfWrite(G1CacheInvalidationTest.java:123)
-Caused by: io.lettuce.core.RedisCommandTimeoutException: Command timed out after 500 millisecond(s)
-```
+1 秒是快取快照的期限，前提是讀主庫、Redis 到期正常、資料不繞過既有版本控制流程；
+它不是任意 DB／網路故障下的成功回應期限，也不會撤回已在處理中的舊請求。
+若 DB 無法讀取且沒有有效副本，應依錯誤處理回 503，不繼續延長過期價格。
 
-逾時的是**實驗自己**的 `redis.delete()`（模擬 TTL 到期的那一行）。這是一個重要的線索：**32 條執行緒不停讀同一個 key 的時候，這個環境裡的 Redis 指令真的會偶爾超過 500 ms**（0.10.4 設的逾時）。
+代價是同一商品至少約每秒需要重新驗證一次，跨實例也各自可能載入。
+舊版 10 分鐘 TTL 的效能數字只保留作歷史對照，不能當成修訂版效能承諾；
+第 08 章的快取命中／重新載入／降級場景需要分別量測。
+[verification](./verification/README.md) 包含並行修復、重建實例、慢載入與 single-flight 的測試。
 
-讓實驗自己的 Redis 操作在逾時時重試，再跑一次：
+### 6.4.3 single-flight：合併讀取，也限制舊 flight 的有效時間
 
-```
-  ② commit 之後刪         1 秒後仍是舊價格：  0 / 100 次（累計 Redis 失敗 0 次）
-REDIS_DEGRADED product-cache.get 失敗，5 秒內所有 Redis 呼叫改走降級路徑：Redis command timed out
-  ③ commit 之後寫入新值 + 版本號 1 秒後仍是舊價格：  0 / 100 次（累計 Redis 失敗 2 次）
-```
+完整 `get()` 在 6.11.1，使用 `Flight(future, startedNanos)`，不再只存 future：
 
-這一次有逾時，但發生在**讀的人**身上（`product-cache.get`），所以沒有留下舊價格。
+1. 先讀 Redis；降級時只使用尚未到期的本機副本。
+2. 有未滿 1 秒的 flight 就等待；已滿 1 秒則用 compare-and-replace 換新 flight，重新讀取。
+3. 取得讀取權後，再看一次 Redis／本機副本，關掉「剛沒命中，上一個 loader 卻剛做完」的窗口。
+4. DB 載入前就開始計時；完成時只寫剩餘 TTL。超過 1 秒的慢讀取不能重新取得完整 1 秒快取壽命。
+5. finally 使用 `loading.remove(id, mine)`，舊 loader 完成時不能移除新 flight。
 
-**推測的機制**：那 1 次，逾時剛好發生在**寫的人**身上：
+這允許極慢的舊 loader 與新 loader 短暫並行，代價是多一次 DB 查詢，目的是讓新請求不必加入
+已過期的結果。已在處理中的回應不會被撤回；此處限制的是新請求可重用快取的時間，
+不是無條件保證所有網路延遲下的 HTTP 完成時間。仍須搭配連線／查詢逾時。
 
-1. 讀者在 commit 之前從 MySQL 讀到舊值（版本 7），寫進快取 —— 這一步成功了。
-2. 改價 commit（版本 8），`afterCommit` 要寫入新值 —— **這一步逾時了**，`RedisGuard` 回傳失敗，新值沒有寫進去。
-3. 之後沒有任何人會再寫這個 key：讀的人都命中了快取裡的版本 7。**舊價格留到 TTL 到期，10 分鐘多。**
-
-我沒有辦法讓那 1 次重現，所以這是推測。但第 2 步是**一定會發生的事**：Redis 會逾時、會重啟、網路會斷，`afterCommit` 的寫入不可能每一次都成功。版本號只保證「舊的蓋不掉新的」，**不保證「新的一定寫得進去」**。
-
-修法：寫入失敗的商品記下來，背景每 200 ms 檢查一次，Redis 能用了就**刪掉**那個 key —— 下一次讀取會從 MySQL 讀到新的：
-
-```java
-/** 6.4.2：commit 之後寫入失敗的商品。Redis 恢復之後先刪掉它們的 key —— 在那之前，讀取都走 MySQL（RedisGuard），讀到的是新的 */
-private final Set<Long> pendingEvictions = ConcurrentHashMap.newKeySet();
-
-/** 商品改了、新值卻寫不進去：快取裡可能還是舊的那一份（讀的人先前填的）。記下來，Redis 一恢復就刪掉 */
-private void putOrRemember(Core c) {
-    degraded.remove(c.id());                                            // 這台機器的降級副本：改了就丟掉
-    if (!put(c)) pendingEvictions.add(c.id());
-}
-
-void retryEvictions() {                                                 // 每 200 ms 一次
-    if (pendingEvictions.isEmpty() || !guard.available()) return;
-    for (Long id : pendingEvictions)
-        if (guard.run("product-cache.evict", () -> redis.delete(key(id)))) pendingEvictions.remove(id);
-}
-```
-
-（註解裡「在那之前，讀取都走 MySQL」是 `RedisGuard` 第一版「失敗一次就跳開」時的情況。6.4.5 改成「1 秒內失敗 3 次才跳開」之後，單一次寫入失敗不會跳開：在背景重試刪掉它之前（最多約 200 ms），讀者讀到的是快取裡的舊值 —— 仍在 AC-3 的 1 秒內，`failedWriteAfterCommitIsRepaired` 斷言的就是「1 秒內被刪掉」。）
-
-為什麼是「刪除」而不是「重試寫入」？重試寫入要再讀一次 MySQL 才知道最新的值是什麼；刪除不需要 —— 下一個讀的人會去讀。而且到了重試的時候，「在 commit 之前讀到舊值的讀者」早就寫完了，不會再有人把舊值填回來。
-
-`ProductCacheTest.failedWriteAfterCommitIsRepaired` 用一個「指定時刻丟逾時」的 `StringRedisTemplate` 把這三步做出來：讀者先寫入版本 1 → 改價、寫入版本 2 時丟逾時 → 1 秒內（US-PRD-3 AC-3）舊值被刪掉 → 下一次讀到版本 2。
-
-用最終的程式碼再跑一次 G1 的 ③（`-Donly3=true` 讓「過期瞬間」那個方法跳過 ②）：
-
-```bash
-mvn test -Pexperiments -Dtest='G1CacheInvalidationTest#expiryAtTheMomentOfWrite' -Donly3=true
-```
-
-```
-═══ 6.2.1 同上，但每次改價前快取剛好過期（100 次）═══
-  ③ commit 之後寫入新值 + 版本號 1 秒後仍是舊價格：  0 / 100 次（累計 Redis 失敗 0 次）
-```
-
-> ⚠️ **這個修法還有一個洞：行程在「寫入失敗」到「重試成功」之間死掉。** `pendingEvictions` 只在記憶體裡，重啟就沒了，舊價格會留到 TTL 到期。
-> 要把它補起來，「商品改了」這件事就要跟改價**在同一個交易裡**留下紀錄，由別的程式在 commit 之後可靠地處理 —— 那正是第 07 章 Outbox 的形狀。這一章接受這個洞，並用 TTL（10 分鐘）當最後的上限。
-
-### 6.4.3 single-flight，以及一個藏在 `join()` 裡的 500
-
-```java
-/** 快取 → 沒有的話用 loader 從 MySQL 讀（同一個 id 同一時間只讀一次）→ 寫回快取 */
-Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
-    Optional<String> cached = guard.call("product-cache.get", () -> redis.opsForValue().get(key(id)));
-    if (cached.isPresent()) return Optional.of(parse(cached.get()));
-    if (!guard.available()) {                                           // Redis 不能用：本機的 1 秒副本（6.9.2）
-        Local l = degraded.get(id);
-        if (l != null && l.expiresAt() > System.currentTimeMillis()) return l.core();
-    }
-    CompletableFuture<Optional<Core>> mine = new CompletableFuture<>();
-    CompletableFuture<Optional<Core>> running = loading.putIfAbsent(id, mine);
-    if (running != null) {                                              // 別人正在讀：等它的結果
-        try {
-            return running.join();
-        } catch (java.util.concurrent.CompletionException e) {          // join() 會包一層：拆開，讓 GlobalExceptionHandler 認得原本的例外
-            if (e.getCause() instanceof RuntimeException r) throw r;
-            throw e;
-        }
-    }
-    try {
-        Optional<Core> loaded = loader.apply(id);
-        if (guard.available()) loaded.ifPresent(this::put);             // 讀的人寫入失敗沒關係：下一個讀的人會再試
-        else degraded.put(id, new Local(loaded, System.currentTimeMillis() + DEGRADED_TTL_MS));
-        mine.complete(loaded);
-        return loaded;
-    } catch (RuntimeException e) {
-        mine.completeExceptionally(e);
-        throw e;
-    } finally {
-        loading.remove(id, mine);
-    }
-}
-```
-
-`loading` 是一個 `ConcurrentHashMap<Long, CompletableFuture>`：第一個沒命中的請求放進一個 future、自己去讀；之後到達的人看到 future 已經在了，就等它（`join()`）。讀完之後從 map 移除 —— **single-flight 只合併「同時」的讀取，不是另一層快取**。
-
-> ⚠️ **`ProductCacheTest.singleFlight` 偶發地讀了 2 次。** 整套 `mvn clean verify` 偶爾會紅在這一題：`expected: 1 but was: 2`。用同樣的情境在一個 JVM 裡重複 200 輪、再在 8 個 `yes` 佔滿 CPU（load 33）時重複 200 輪：400 輪都是 1 次，沒有重現。
-> 讀上面這段程式碼，看得到一個窗口：一個請求讀 Redis 沒命中之後、`putIfAbsent` 之前，如果負責讀的那一個剛好讀完、寫進 Redis、從 `loading` 移除，它就會成為新的讀取者，再讀一次 MySQL（多讀一次，資料不會錯）。在「搶到讀取權之後再看一次 Redis」可以關掉這個窗口。
->
-> 📌 **把那個窗口用 latch 釘住，重現了，也修了。** 400 輪重跑等不到它，就不要等：讓它**一定**發生。`ProductCacheTest.singleFlightLateMiss` 用一個 `RedisGuard` 的子類別，讓「慢的那個請求」讀 Redis 沒命中之後停在 latch 上；等負責讀的那個請求**整個做完**（讀 MySQL、寫進 Redis、從 `loading` 移除、`get()` 回來），再放它走：
->
-> ```java
-> RedisGuard pausing = new RedisGuard(java.time.Clock.systemUTC(), new io.micrometer.core.instrument.simple.SimpleMeterRegistry()) {
->     final AtomicBoolean paused = new AtomicBoolean();
->     @Override
->     public <T> Optional<T> call(String what, java.util.function.Supplier<T> action) {
->         Optional<T> r = super.call(what, action);
->         if (Thread.currentThread() == late[0] && what.equals("product-cache.get") && paused.compareAndSet(false, true)) {
->             missed.countDown();                                       // ① 沒有命中……
->             try { loaderDone.await(); } catch (InterruptedException e) { throw new IllegalStateException(e); }
->         }
->         return r;
->     }
-> };
-> // ……
-> Future<?> slow = pool.submit(() -> { late[0] = Thread.currentThread(); return c.get(PRODUCT, loader); });
-> missed.await();
-> pool.submit(() -> c.get(PRODUCT, loader)).get();                      // ② 讀的人整個做完
-> loaderDone.countDown();                                               // ③ 慢的請求醒來
-> slow.get();
-> assertThat(loads.get()).isEqualTo(1);
-> ```
->
-> 修正前：
->
-> ```
-> 6.4.3 追記：慢的請求醒來之後，MySQL 一共被讀了 2 次
-> [ERROR] com.example.shop.catalog.internal.ProductCacheTest.singleFlightLateMiss -- Time elapsed: 0.049 s <<< FAILURE!
-> expected: 1
->  but was: 2
-> ```
->
-> 修法就是上面說的那一句。把「讀快取」抽成 `peek()`，搶到讀取權之後再 `peek()` 一次：
->
-> ```java
-> Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
->     Optional<Optional<Core>> hit = peek(id);
->     if (hit.isPresent()) return hit.get();
->     CompletableFuture<Optional<Core>> mine = new CompletableFuture<>();
->     CompletableFuture<Optional<Core>> running = loading.putIfAbsent(id, mine);
->     if (running != null) { /* 別人正在讀：等它的結果（跟原本一樣） */ }
->     try {
->         // 「讀快取沒有」與「搶讀取權」之間，上一個讀的人可能剛好做完。搶到之後再看一次快取
->         Optional<Optional<Core>> late = peek(id);
->         if (late.isPresent()) {
->             mine.complete(late.get());
->             return late.get();
->         }
->         Optional<Core> loaded = loader.apply(id);
->         // ……（跟原本一樣）
-> ```
->
-> 為什麼再看一次就夠：上一個讀的人是**先**寫快取、**才**從 `loading` 移除的；搶到讀取權（`putIfAbsent` 成功）的人，一定在那次移除之後 —— 它寫的值一定看得到。（它寫入失敗的話看不到，那就再讀一次 MySQL，跟以前一樣。）代價：真的沒命中的那一個請求多一次 Redis 的 GET；等別人結果的請求不受影響。修正後同一個測試是 `MySQL 一共被讀了 1 次`，`ProductCacheTest` 8 個全綠。
->
-> **這證明了「這個交錯會讀 2 次」，沒有證明「偶發的那一次就是它」** —— 那一次的日誌裡沒有分辨得出來的資訊。但讀程式碼只找得到這一條路，而修正之後它不存在了。參考實作的 `ch06` 分支上還是改之前的寫法。
-
-**`join()` 那一段為什麼要 `catch`？** 6.9.2 的降級演練裡出現了 1 個商品詳情的 500。那一次的日誌被我的過濾條件濾掉了，我沒辦法確認是哪一個例外，就去讀程式碼 —— 找到一條**一定會**產生 500 的路：負責讀 MySQL 的那個請求失敗了（例如連線池逾時，`CannotCreateTransactionException`），等它的人從 `join()` 拿到的不是那個例外，而是包了一層的 `CompletionException`。`GlobalExceptionHandler` 認得前者（503，4.8.2），不認得後者 —— 500。
-
-`ProductCacheTest.waitersSeeTheOriginalException` 先證明這條路存在（修正前是紅的）：
-
-```
-Expecting a throwable with cause being an instance of:
-  java.util.concurrent.CompletionException
-java.util.concurrent.ExecutionException: java.util.concurrent.CompletionException: org.springframework.transaction.CannotCreateTransactionException: 模擬：連線池逾時
-```
-
-拆開之後，等待者拿到的就是原本的 `CannotCreateTransactionException`，跟讀 MySQL 的那個人一樣變成 503。
-
-> ⚠️ **但那個 500 不是它造成的。** 修完之後重跑演練，500 還在（2 個）。保留完整日誌再跑，抓到的是另一個例外，在 `RedisGuard` 裡 —— 6.9.2。這條 `CompletionException` 的路是真的（測試證明了），只是不是那一次走的路。**讀程式碼找到「一個」可能的原因，不等於找到了「那一個」原因**；要等修完之後量不到了，才算數。
+`singleFlightLateMiss` 用 latch 暫停較晚的 miss，等第一個 loader 完成後放行，驗證只載入一次。
+等待者的 `join()` 也須拆開 `CompletionException`，把原本的 RuntimeException 傳出去：
+例如 `CannotCreateTransactionException` 應與 loader 本人一樣走 503，不因包了一層而變成 500。
 
 ### 6.4.4 可售量：5 秒，另外存
 
@@ -721,11 +579,13 @@ public int availableForDisplay(long productId, boolean isHot) {
 - **一般商品**：`available:{id}`，TTL 5 秒，**不主動失效**。5 秒就是 AC-4 的上限，一個 TTL 就滿足了，不需要任何寫入端的程式碼。
 - **熱點商品**：直接讀 `stock:{id}` —— 閘門用來擋人的那個數字（6.5）。它比 MySQL 更新（下單在 Redis 先減），也永遠不會因為「快取」而延遲。
 
-**價格用主動失效（1 秒）、庫存用 TTL（5 秒）**，正是 0.4.3 那段 📌 預告的設計：「第 06 章的快取設計會直接從這兩條推出來」。
+**價格用 commit 後更新與最長 1 秒 TTL、庫存用 5 秒 TTL**，正是 0.4.3 那段 📌 預告的設計：「第 06 章的快取設計會直接從這兩條推出來」。
 
 ### 6.4.5 SLO：同一個商品每秒 1,000 次
 
 0.6.2 的第一列：`GET /api/products/{id}`（快取命中），**同一個商品每秒 1,000 次 → p95 20 ms、p99 50 ms**。
+
+以下 G10 數字是原版 10 分鐘快取的歷史量測，不能直接當作修訂版 1 秒 TTL 的效能結果；修訂後須重新壓測。
 
 G10 啟動整個應用程式，用開放式負載（延遲從預定送出的時間算起，4.8.1）打同一個商品 10 秒，一般商品（3）與熱點商品（1，可售量讀 `stock:1`）交錯各 3 輪；另外記這段期間 MySQL 每秒收到幾句、Redis 失敗幾次。這個實驗前後跑了三次，中間改了兩次程式碼 —— 三次都列出來，因為它們各自說明了一件事。
 
@@ -2035,6 +1895,7 @@ import com.example.shop.catalog.ProductStatus;
 import com.example.shop.shared.redis.RedisGuard;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.annotation.PreDestroy;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
@@ -2045,40 +1906,27 @@ import java.math.BigDecimal;
 import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongFunction;
 import java.util.function.Supplier;
 
 /**
- * 6.4 商品詳情的快取（US-PRD-3）。只放「不常變、變了要立刻生效」的部分；可售數量另外處理（AC-4 的 5 秒，6.4.4）。
- *
- * 三條規則：
- *  ① 寫入之後「在 commit 之後」把新值寫進快取，而不是在交易裡刪掉（6.2.1：刪在 commit 之前，讀的人會把舊值填回去）
- *  ② 寫進快取一律帶版本號（products.version），Lua 比較：舊的版本蓋不掉新的版本（6.2.1：讀的人慢了一步，一樣會把舊值填回去）
- *  ③ 同一台機器、同一個商品，同一時間只有一個請求去 MySQL 讀（6.2.2：快取過期的瞬間 200 個請求一起打進來）
- * Redis 不能用的時候（RedisGuard）：讀 MySQL（0.6.3：商品詳情 × Redis 掛了 = 200），但不是每一個請求都讀 ——
- * 結果在這台機器的記憶體裡放 1 秒（US-PRD-3 AC-3 允許的延遲），single-flight 照常（6.9.2：第一版每個請求都讀，MySQL 漲 5.5 倍）。
+ * 6.4 修訂版：正常改價在 afterCommit 寫新值；失敗以帶世代的標記加速修復。
+ * 即使行程重啟而遺失標記，舊值仍受 1 秒的有效期限約束，不依賴記憶體佇列才能過期。
+ * 期限從 DB 載入前／登記 afterCommit 前開始算，慢載入不能把過時資料重新存滿 1 秒。
+ * 載入期限內以 single-flight 合併；超過期限可換新 flight，避免新請求承接過老的載入。
  */
 @Component
 class ProductCache {
-
-    /** 商品頁需要的欄位（不含可售數量）。version 是 products.version */
     record Core(long id, long sellerId, String name, String description, BigDecimal price, long categoryId,
                 ProductStatus status, boolean hot, int version) {}
 
-    static final Duration TTL = Duration.ofMinutes(10);
-    /** Redis 不能用的時候，本機記憶體裡的副本放多久（US-PRD-3 AC-3：改價後 1 秒內要讀到新價格） */
+    static final Duration TTL = Duration.ofSeconds(1);
     static final long DEGRADED_TTL_MS = 1000;
+    record Local(Optional<Core> core, long validUntilNanos) {}
+    record Flight(CompletableFuture<Optional<Core>> result, long startedNanos) {}
 
-    record Local(Optional<Core> core, long expiresAt) {}
-
-    /** 只有在「沒有值」或「現有的版本比較舊」時才寫入。ARGV: 版本、JSON、TTL 毫秒 */
     static final RedisScript<Long> SET_IF_NEWER = RedisScript.of("""
             local cur = redis.call('GET', KEYS[1])
             if cur then
@@ -2091,95 +1939,106 @@ class ProductCache {
     private final StringRedisTemplate redis;
     private final RedisGuard guard;
     private final ObjectMapper json;
-    private final ConcurrentHashMap<Long, CompletableFuture<Optional<Core>>> loading = new ConcurrentHashMap<>();
-    /** 6.4.2：commit 之後寫入失敗的商品。Redis 恢復之後先刪掉它們的 key —— 在那之前，讀取都走 MySQL（RedisGuard），讀到的是新的 */
-    private final Set<Long> pendingEvictions = ConcurrentHashMap.newKeySet();
+    private final ConcurrentHashMap<Long, Flight> loading = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Long> pendingEvictions = new ConcurrentHashMap<>();
+    private final AtomicLong repairGeneration = new AtomicLong();
     private final ConcurrentHashMap<Long, Local> degraded = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService retry;
 
     ProductCache(StringRedisTemplate redis, RedisGuard guard, ObjectMapper json) {
-        this.redis = redis;
-        this.guard = guard;
-        this.json = json;
-        ScheduledExecutorService retry = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "product-cache-retry");
-            t.setDaemon(true);
-            return t;
+        this.redis=redis; this.guard=guard; this.json=json;
+        retry=Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t=new Thread(r, "product-cache-retry"); t.setDaemon(true); return t;
         });
         retry.scheduleWithFixedDelay(this::retryEvictions, 200, 200, TimeUnit.MILLISECONDS);
     }
 
     void retryEvictions() {
-        if (pendingEvictions.isEmpty() || !guard.available()) return;
-        for (Long id : pendingEvictions)
-            if (guard.run("product-cache.evict", () -> redis.delete(key(id)))) pendingEvictions.remove(id);
-    }
-
-    int pendingEvictions() { return pendingEvictions.size(); }
-
-    static String key(long id) { return "product:v1:" + id; }
-
-    /** 快取 → 沒有的話用 loader 從 MySQL 讀（同一個 id 同一時間只讀一次）→ 寫回快取 */
-    Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
-        Optional<String> cached = guard.call("product-cache.get", () -> redis.opsForValue().get(key(id)));
-        if (cached.isPresent()) return Optional.of(parse(cached.get()));
-        if (!guard.available()) {                                           // Redis 不能用：本機的 1 秒副本
-            Local l = degraded.get(id);
-            if (l != null && l.expiresAt() > System.currentTimeMillis()) return l.core();
-        }
-        CompletableFuture<Optional<Core>> mine = new CompletableFuture<>();
-        CompletableFuture<Optional<Core>> running = loading.putIfAbsent(id, mine);
-        if (running != null) {                                              // 別人正在讀：等它的結果
-            try {
-                return running.join();
-            } catch (java.util.concurrent.CompletionException e) {          // join() 會包一層：拆開，讓 GlobalExceptionHandler 認得原本的例外（6.4.3）
-                if (e.getCause() instanceof RuntimeException r) throw r;
-                throw e;
-            }
-        }
-        try {
-            Optional<Core> loaded = loader.apply(id);
-            if (guard.available()) loaded.ifPresent(this::put);             // 讀的人寫入失敗沒關係：下一個讀的人會再試
-            else degraded.put(id, new Local(loaded, System.currentTimeMillis() + DEGRADED_TTL_MS));
-            mine.complete(loaded);
-            return loaded;
-        } catch (RuntimeException e) {
-            mine.completeExceptionally(e);
-            throw e;
-        } finally {
-            loading.remove(id, mine);
-        }
-    }
-
-    /** 寫入：版本比快取裡的新才寫。TTL 加一點亂數，避免同一批商品在同一秒一起過期。@return false = Redis 失敗或正在退避 */
-    boolean put(Core c) {
-        long ttl = TTL.toMillis() + ThreadLocalRandom.current().nextLong(60_000);
-        return guard.run("product-cache.put", () -> redis.execute(SET_IF_NEWER, List.of(key(c.id())), String.valueOf(c.version()), write(c), String.valueOf(ttl)));
-    }
-
-    /** 商品改了、新值卻寫不進去：快取裡可能還是舊的那一份（讀的人先前填的）。記下來，Redis 一恢復就刪掉 */
-    private void putOrRemember(Core c) {
-        degraded.remove(c.id());                                            // 這台機器的降級副本：改了就丟掉
-        if (!put(c)) pendingEvictions.add(c.id());
-    }
-
-    /**
-     * 商品改了：登記在 commit 之後寫入新值（沒有交易就現在寫）。
-     * 傳 Supplier 而不是值：@Version 在 flush 時才加 1，交易裡讀到的 version 還是舊的 —— 要在 commit 之後才組出 Core
-     */
-    void putAfterCommit(Supplier<Core> after) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) { putOrRemember(after.get()); return; }
-        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override
-            public void afterCommit() { putOrRemember(after.get()); }
+        if (!guard.available()) return;
+        pendingEvictions.forEach((id, generation) -> {
+            if (guard.run("product-cache.evict", () -> redis.delete(key(id))))
+                pendingEvictions.remove(id, generation); // 只移除這一代；不能清掉另一筆更新的新標記
         });
     }
+    int pendingEvictions() { return pendingEvictions.size(); }
+    static String key(long id) { return "product:v2:"+id; } // 舊 v1 有 10 分鐘 TTL，不能繼續信任
 
-    private Core parse(String s) {
-        try { return json.readValue(s, Core.class); } catch (JsonProcessingException e) { throw new IllegalStateException(e); }
+    Optional<Core> get(long id, LongFunction<Optional<Core>> loader) {
+        Optional<String> cached=guard.call("product-cache.get", () -> redis.opsForValue().get(key(id)));
+        if (cached.isPresent()) return Optional.of(parse(cached.get()));
+        if (!guard.available()) {
+            Local local=degraded.get(id);
+            if (local!=null && System.nanoTime()<local.validUntilNanos()) return local.core();
+        }
+        Flight mine;
+        while (true) {
+            long now=System.nanoTime();
+            Flight running=loading.get(id);
+            if (running!=null && now-running.startedNanos()<TTL.toNanos()) return join(running);
+            mine=new Flight(new CompletableFuture<>(), now);
+            if (running==null ? loading.putIfAbsent(id, mine)==null : loading.replace(id, running, mine)) break;
+        }
+        try {
+            // 成為 loader 前另一條可能已完成：再看一次，避免兩次 DB 載入接力。
+            cached=guard.call("product-cache.get", () -> redis.opsForValue().get(key(id)));
+            if (cached.isPresent()) {
+                Optional<Core> result=Optional.of(parse(cached.get())); mine.result().complete(result); return result;
+            }
+            Local local=degraded.get(id);
+            if (!guard.available() && local!=null && System.nanoTime()<local.validUntilNanos()) {
+                mine.result().complete(local.core()); return local.core();
+            }
+            long began=mine.startedNanos();
+            Optional<Core> loaded=loader.apply(id);
+            if (remainingMillis(began)>0) {
+                if (guard.available()) loaded.ifPresent(c -> put(c, began));
+                else degraded.put(id, new Local(loaded, began+TTL.toNanos()));
+            }
+            mine.result().complete(loaded);
+            return loaded;
+        } catch (RuntimeException e) {
+            mine.result().completeExceptionally(e); throw e;
+        } finally {
+            loading.remove(id, mine); // 過期的舊 loader 不能移除替換它的新 flight
+        }
     }
-
-    private String write(Core c) {
-        try { return json.writeValueAsString(c); } catch (JsonProcessingException e) { throw new IllegalStateException(e); }
+    private Optional<Core> join(Flight f) {
+        try { return f.result().join(); }
+        catch (CompletionException e) {
+            if (e.getCause() instanceof RuntimeException cause) throw cause;
+            throw e;
+        }
+    }
+    private static long remainingMillis(long began) {
+        return Math.max(0, TimeUnit.NANOSECONDS.toMillis(TTL.toNanos()-(System.nanoTime()-began)));
+    }
+    boolean put(Core core) { return put(core, System.nanoTime()); }
+    private boolean put(Core core, long began) {
+        long remaining=remainingMillis(began);
+        if (remaining<=0) return true; // 太舊不回填；不是 Redis 故障
+        return guard.run("product-cache.put", () -> redis.execute(SET_IF_NEWER, List.of(key(core.id())),
+                String.valueOf(core.version()), write(core), String.valueOf(remaining)));
+    }
+    private void putOrRemember(Core core, long began) {
+        degraded.remove(core.id());
+        if (!put(core, began)) pendingEvictions.put(core.id(), repairGeneration.incrementAndGet());
+    }
+    void putAfterCommit(Supplier<Core> after) {
+        long began=System.nanoTime(); // 在 commit 前登記，暫停很久再回來時不能延長舊快照的期限
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) { putOrRemember(after.get(), began); return; }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override public void afterCommit() { putOrRemember(after.get(), began); }
+        });
+    }
+    @PreDestroy
+    void close() { retry.shutdownNow(); }
+    private Core parse(String value) {
+        try { return json.readValue(value, Core.class); }
+        catch (JsonProcessingException e) { throw new IllegalStateException(e); }
+    }
+    private String write(Core core) {
+        try { return json.writeValueAsString(core); }
+        catch (JsonProcessingException e) { throw new IllegalStateException(e); }
     }
 }
 ```
@@ -3339,7 +3198,7 @@ public final class TestRedis {
 
     public static void forgetProducts(StringRedisTemplate redis, long... ids) {
         List<String> keys = new ArrayList<>();
-        for (long id : ids) keys.addAll(List.of("product:v1:" + id, "stock:" + id, "available:" + id));
+        for (long id : ids) keys.addAll(List.of("product:v2:" + id, "stock:" + id, "available:" + id));
         redis.delete(keys);
         redis.delete("trending:24h:top10");
     }

@@ -73,9 +73,14 @@ docker run -d --name redis-ha \
 
 ```bash
 docker exec redis-ha sh -c '
-  redis-server --port 6380 --daemonize yes --dir /lab --logfile /lab/m.log
-  redis-server --port 6381 --daemonize yes --dir /lab --logfile /lab/r1.log --replicaof 127.0.0.1 6380
-  redis-server --port 6382 --daemonize yes --dir /lab --logfile /lab/r2.log --replicaof 127.0.0.1 6380
+  set -eu
+  mkdir -p /lab/m /lab/r1 /lab/r2
+  redis-server --port 6380 --daemonize yes --dir /lab/m --logfile /lab/m.log
+  redis-server --port 6381 --daemonize yes --dir /lab/r1 --logfile /lab/r1.log --replicaof 127.0.0.1 6380
+  redis-server --port 6382 --daemonize yes --dir /lab/r2 --logfile /lab/r2.log --replicaof 127.0.0.1 6380
+  redis-cli -p 6380 ping
+  redis-cli -p 6381 ping
+  redis-cli -p 6382 ping
 '
 ```
 
@@ -937,18 +942,18 @@ RedisClient client = RedisClient.create(res, uri);
 📌 **本站的建議：有上界的指數退避。**
 
 ```java
-@Bean(destroyMethod = "shutdown")
-ClientResources lettuceClientResources() {
-    return ClientResources.builder()
-            // 50 ms 起跳，最多退到 1 秒 —— 既跟得上 failover，也不會打爆恢復中的 Redis
-            // ⚠️ 注意參數順序：(lower, upper, TimeUnit, base)，TimeUnit 在第三個
-            .reconnectDelay(Delay.exponential(50, 1000, TimeUnit.MILLISECONDS, 2))
-            .build();
+@Bean
+public ClientResourcesBuilderCustomizer reconnectResourcesCustomizer() {
+    // org.springframework.boot.autoconfigure.data.redis.ClientResourcesBuilderCustomizer
+    // 交由 Boot 建立、共用及 shutdown 唯一的 ClientResources。
+    return builder -> builder.reconnectDelay(
+            Delay.exponential(50, 1000, TimeUnit.MILLISECONDS, 2));
 }
 ```
 
-> 📌 Spring Boot 會自動用 context 裡的 `ClientResources` bean。
-> ⚠️ **記得 `destroyMethod = "shutdown"`**，否則 JVM 關閉時 netty 的執行緒不會停。
+> 📌 **這是 Boot 的 ClientResourcesBuilderCustomizer，不是手動建立第二顆 ClientResources。**
+> Boot 仍負責套用其他 customizer（包含 Actuator 指標）與關閉資源；
+> 若曾照舊版教材手動宣告 `lettuceClientResources` bean，請移除，改用此 customizer。
 
 ### 13.5.5 Spring Boot 的 Sentinel 設定
 
@@ -1512,8 +1517,10 @@ String key = "{inventory}:stock:" + productId;      // 💥 全部落在同一�
 |---|---|---|---|
 | 09 分散式鎖 | `SET lock:x token NX PX` | ✅ 單 key，沒問題 | —— |
 | 09 釋放鎖的 Lua | `KEYS[1]` 一個 key | ✅ 沒問題 | —— |
+| 09 fencing 授予 Lua | 鎖與 counter 共兩個 key | ⚠️ 必須同槽 | `lock:{resource}` 與 `fence:{resource}`；另外處理 failover 後序號不可倒退 |
 | 09 Redisson `RLock` | 單 key Hash | ✅ 沒問題 | ⚠️ 但 `RedissonMultiLock` 要注意 |
-| 10 限流（滑動窗 / 令牌桶） | `KEYS[1]` 一個 key | ✅ 沒問題 | —— |
+| 10 滑動日誌 / 令牌桶 | `KEYS[1]` 一個 key | ✅ 單 key | —— |
+| 10 滑動計數器 | `KEYS[1]` 當前窗 + `KEYS[2]` 前一窗 | ⚠️ 必須同槽 | 同一維度共用 hash tag，例如 `rl:{user:alice}:10` 與 `rl:{user:alice}:9`（10.3.3） |
 | 10 多維度限流 | ⚠️ 一次檢查 `user:x` + `ip:y` + `api:z` | ❌ **CROSSSLOT** | 拆成三次呼叫，或用 hash tag 綁在一起（⚠️ 但那會讓同一個 tag 的流量集中） |
 | 10 冪等鍵 | `SET idem:x NX` | ✅ 單 key | —— |
 | 11 Spring Session | `spring:session:sessions:<id>` + `…:sessions:expires:<id>` + `…:expirations:<ts>` | ⚠️ **同一個 session 的 key 分散在不同節點**（13.7.7 實測），但**能用**——因為每個操作都是單 key 的 | 不用改，但要知道它散開了 |
@@ -1870,11 +1877,10 @@ spring:
 public class RedisHaConfig {
 
     /** 13.5.4：把 failover 後的恢復從 9.3 秒縮到 6.7 秒，同時不打爆剛恢復的 Redis。 */
-    @Bean(destroyMethod = "shutdown")
-    ClientResources lettuceClientResources() {
-        return ClientResources.builder()
-                .reconnectDelay(Delay.exponential(50, 1000, TimeUnit.MILLISECONDS, 2))
-                .build();
+    @Bean
+    public ClientResourcesBuilderCustomizer reconnectResourcesCustomizer() {
+        return builder -> builder.reconnectDelay(
+                Delay.exponential(50, 1000, TimeUnit.MILLISECONDS, 2));
     }
 
     /** 13.3.2：明著寫出來，即使它是預設值。 */

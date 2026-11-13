@@ -1607,7 +1607,7 @@ public class BruteForceScenarios {
         @Override
         protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res, FilterChain chain)
                 throws ServletException, IOException {
-            if ("POST".equals(req.getMethod()) && "/login".equals(req.getServletPath())) {
+            if ("POST".equals(req.getMethod()) && (req.getContextPath()+"/login").equals(req.getRequestURI())) {
                 String username = String.valueOf(req.getParameter("username"));
                 String ip = clientIp(req);
                 if (attempts.isLocked(username, ip)) {
@@ -2500,25 +2500,102 @@ public class ShopCorsConfig {
 }
 ```
 
-**② 這條 chain 需要的四個零件，各自從哪裡來**：
+**② 共用零件與正式的登入限制**：
 
-```
-JwtAuthenticationFilter                 05 章 5.4.1（API chain 用它驗 token）
-LockoutFilter ＋ LoginAttemptService     7.4.2（本章；@Component，注入即可）
-AuthenticationFailureHandler            7.3.3 的 uniformFailureHandler() bean（登入失敗統一一句）
-OAuth2UserService<OidcUserRequest,…>    06 章 6.9 的 shopOidcUserService() bean（把 Google 的人綁到 app_user）
+保留 ShopAuthConfig（02）、ShopMethodSecurityConfig（03）、ShopSessionConfig（04）、ShopTokenConfig（05）、ShopOidcConfig（06）。本節只替換 ShopAuthzConfig 的 chain。
+JWT filter 在 API chain 內建立，不假設它是既有 bean。下面的成品計數器不受實驗 b2／b3 profile 影響：
+
+```java
+package com.example.lab09.shop;
+
+import org.springframework.context.event.EventListener;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.authentication.event.*;
+import org.springframework.security.web.authentication.WebAuthenticationDetails;
+import java.time.*;
+import java.util.*;
+
+/** 單節點的有界計數器；多節點改用 Redis 原子操作，不能直接複製這份 Map。 */
+public class ShopLoginProtection implements PasswordLoginGate {
+    private record Key(String username,String ip) {}
+    private record Attempt(int failures,Instant lockedUntil,Instant touchedAt) {}
+    private final Map<Key,Attempt> table=new LinkedHashMap<>(128,.75f,true);
+    private final Clock clock;
+    public ShopLoginProtection() { this(Clock.systemUTC()); }
+    public ShopLoginProtection(Clock clock) { this.clock=clock; }
+    private static Key key(String username,String ip) {
+        return new Key(username.trim().toLowerCase(Locale.ROOT),ip);
+    }
+    @EventListener public synchronized void failed(AbstractAuthenticationFailureEvent event) {
+        if (!(event.getAuthentication() instanceof UsernamePasswordAuthenticationToken)) return;
+        cleanup();
+        var auth=event.getAuthentication();
+        String ip=auth.getDetails() instanceof WebAuthenticationDetails d ? d.getRemoteAddress() : "?";
+        Key key=key(auth.getName(),ip); Attempt old=table.get(key);
+        int failures=old==null ? 1 : Math.min(old.failures()+1,25);
+        long minutes=failures<5 ? 0 : Math.min(60,1L << Math.min(failures-5,20));
+        table.put(key,new Attempt(failures,clock.instant().plus(Duration.ofMinutes(minutes)),clock.instant()));
+        while(table.size()>10000) table.remove(table.keySet().iterator().next());
+    }
+    @EventListener public synchronized void succeeded(AuthenticationSuccessEvent event) {
+        var auth=event.getAuthentication();
+        if (!(auth instanceof UsernamePasswordAuthenticationToken)) return;
+        String ip=auth.getDetails() instanceof WebAuthenticationDetails d ? d.getRemoteAddress() : "?";
+        table.remove(key(auth.getName(),ip));
+    }
+    @Override public synchronized Duration remaining(String username,String ip) {
+        cleanup(); Attempt a=table.get(key(username,ip));
+        if(a==null || !clock.instant().isBefore(a.lockedUntil())) return Duration.ZERO;
+        return Duration.between(clock.instant(),a.lockedUntil());
+    }
+    private void cleanup() {
+        Instant cutoff=clock.instant().minus(Duration.ofHours(24));
+        table.values().removeIf(a->a.touchedAt().isBefore(cutoff));
+    }
+}
 ```
 
-⚠️ **四個都是既有的 bean，這一節不新增類別** —— 它只是把它們接到兩條 chain 上。
-如果你的專案裡還沒有其中任何一個，先回去把那一節做完再接。
+```java
+package com.example.lab09.shop;
+
+import jakarta.servlet.*;
+import jakarta.servlet.http.*;
+import org.springframework.web.filter.OncePerRequestFilter;
+import java.io.IOException;
+
+/** 只處理表單；JSON API 在 ShopTokenController 中解析完帳號、驗密碼前檢查同一個 gate。 */
+public class ShopLoginLockoutFilter extends OncePerRequestFilter {
+    private final PasswordLoginGate gate;
+    public ShopLoginLockoutFilter(PasswordLoginGate gate) { this.gate=gate; }
+    @Override protected void doFilterInternal(HttpServletRequest req,HttpServletResponse res,FilterChain chain)
+            throws ServletException,IOException {
+        if ("POST".equals(req.getMethod()) && (req.getContextPath()+"/login").equals(req.getRequestURI())) {
+            var wait=gate.remaining(String.valueOf(req.getParameter("username")),req.getRemoteAddr());
+            if (!wait.isZero()) {
+                res.setStatus(429);res.setHeader("Retry-After",String.valueOf(Math.max(1,wait.toSeconds())));
+                res.setContentType("application/json;charset=UTF-8");
+                res.getWriter().write("{\"error\":\"LOGIN_RATE_LIMITED\"}");return;
+            }
+        }
+        chain.doFilter(req,res);
+    }
+}
+```
+
+表單與 JSON 登入都在驗密碼前查同一個 gate；兩者都補 WebAuthenticationDetails，失敗事件才會計到相同 IP。正式帳密帳號採 ASCII 名稱並在讀取前正規化大小寫；需支援 Unicode 名稱時，必須讓限速 key 與資料庫 collation 完全一致，不能只 lowerCase。
+`ShopLoginProtection` 適用單節點且只示範帳號＋IP 限制；多節點或分散來源攻擊需搭配共享計數、整體 IP／帳號風險限制及 MFA。
 
 **③ 兩條 chain 各自加上這一章的東西**：
 
 ```java
 package com.example.lab09.shop;
 
+import com.example.lab09.ch05.*;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.*;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -2527,88 +2604,71 @@ import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest;
 import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.AuthenticationFailureHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.security.web.header.writers.*;
+import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
 import org.springframework.web.cors.CorsConfigurationSource;
-
-import com.example.lab09.ch05.JwtAuthenticationFilter;                   // 05 章 5.4.1
-import com.example.lab09.ch07.BruteForceScenarios;                       // 7.4.2
-import com.example.lab09.ch07.BruteForceScenarios.LockoutFilter;         // 7.4.2
-
 import java.time.Duration;
 
-/**
- * 07 章的 shop 落地：在 06 章的兩條 chain 上補 CORS、安全標頭、登入速率限制。
- * ⚠️ 這個類別【取代】06 章 6.9 的同名設定（同名 bean，舊的要刪掉）。
- */
+/** 取代 ShopAuthzConfig；保留認證、方法授權、session、token 與 OIDC 共用設定。 */
 @Configuration
 public class ShopWebHardeningConfig {
+    @Bean ShopLoginProtection shopLoginProtection() { return new ShopLoginProtection(); }
 
-    /** ① API：無狀態 ＋ JWT（05 章 5.9）＋ CORS（07 章） */
-    @Bean
-    @Order(1)
-    SecurityFilterChain apiChain(HttpSecurity http,
-                                 CorsConfigurationSource cors,
-                                 JwtAuthenticationFilter jwtFilter) throws Exception {
-        return http
-                .securityMatcher("/api/**")
-                .authorizeHttpRequests(a -> a
-                        .requestMatchers("/api/auth/**").permitAll()
-                        .requestMatchers("/api/admin/**").hasAuthority("user:manage")
-                        .anyRequest().authenticated())
-                .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                // ★ 07 章：一定要寫這一行（7.2.6 —— 宣告了自訂 bean 之後就不再自動掛）
-                .cors(c -> c.configurationSource(cors))
-                // ✅ CSRF 可以關，理由是【身分載體是 Authorization 標頭，不是 cookie】（04 章 4.5.2）
-                //    —— 不是因為「我們有 CORS」（7.2.9）
-                .csrf(AbstractHttpConfigurer::disable)
-                .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
-                .build();
+    @Bean @Order(1)
+    SecurityFilterChain apiChain(HttpSecurity http, AuthenticationManager am,
+            @Qualifier("corsConfigurationSource") CorsConfigurationSource cors,
+            JwtService jwt, TokenVersionRevocation revocation) throws Exception {
+        return http.securityMatcher("/api/**", "/error").authenticationManager(am)
+            .authorizeHttpRequests(a->a
+                .requestMatchers("/error").permitAll()
+                .requestMatchers("/api/auth/login","/api/auth/refresh","/api/auth/register").permitAll()
+                .requestMatchers(HttpMethod.GET,"/api/products/**").permitAll()
+                .requestMatchers(HttpMethod.POST,"/api/orders/*/refund").hasAuthority("order:refund")
+                .requestMatchers(HttpMethod.DELETE,"/api/orders/**").hasAuthority("order:delete")
+                .requestMatchers("/api/reports/**").hasAuthority("report:read")
+                .requestMatchers("/api/admin/**").hasAuthority("user:manage")
+                .anyRequest().authenticated())
+            .sessionManagement(s->s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+            .cors(c->c.configurationSource(cors))
+            // 身分僅讀 Authorization: Bearer；不從 cookie 取 token，也不啟用 Basic。
+            .csrf(AbstractHttpConfigurer::disable)
+            // 在 chain 裡 new，沒有一般 Servlet filter 的自動註冊問題。
+            .addFilterBefore(new JwtAuthenticationFilter(jwt,revocation),UsernamePasswordAuthenticationFilter.class)
+            .exceptionHandling(e->e.authenticationEntryPoint(ApiErrors::write401).accessDeniedHandler(ApiErrors::write403))
+            .build();
     }
-
-    /** ② 後台網頁：session ＋ formLogin ＋ oauth2Login（06 章）＋ 安全標頭 ＋ 登入鎖定（07 章） */
-    @Bean
-    @Order(2)
-    SecurityFilterChain webChain(HttpSecurity http,
-                                 SessionRegistry registry,
-                                 LockoutFilter lockoutFilter,                                  // 7.4.2
-                                 AuthenticationFailureHandler uniformFailureHandler,           // 7.3.3
-                                 OAuth2UserService<OidcUserRequest, OidcUser> shopOidcUserService  // 06 章 6.9
-                                 ) throws Exception {
-        return http
-                .authorizeHttpRequests(a -> a
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()   // ✅ 只開這兩支
-                        .requestMatchers("/actuator/**").hasRole("ADMIN")                    // 7.6.2
-                        .requestMatchers("/login/**", "/oauth2/**", "/error").permitAll()
-                        .anyRequest().authenticated())
-                // ★ 07 章：登入速率限制，放在帳密 Filter【之前】（7.4.2）
-                .addFilterBefore(lockoutFilter, UsernamePasswordAuthenticationFilter.class)
-                .formLogin(f -> f
-                        // ★ 07 章：登入失敗一律同一句，真正的原因只進 log（7.3.3）
-                        .failureHandler(uniformFailureHandler)
-                        // ★ 讓認證事件裡的 IP 跟 LockoutFilter 看到的一致（7.4.2）
-                        .authenticationDetailsSource(BruteForceScenarios.ProxyAwareDetails.SOURCE)
-                        // ⚠️ 不設 targetUrlParameter —— 用 Spring 預設的 SavedRequest（7.7.1）
-                        .permitAll())
-                .oauth2Login(o -> o.userInfoEndpoint(u -> u.oidcUserService(shopOidcUserService)))   // 06 章 6.9
-                .sessionManagement(s -> s.sessionFixation(fx -> fx.changeSessionId())
-                        .maximumSessions(5).sessionRegistry(registry))                           // 04 章 4.8
-                .logout(l -> l.logoutSuccessUrl("/login?logout").invalidateHttpSession(true))
-                // ✅ 這條 chain 的身分載體是 cookie → CSRF 必須開著（04 章 4.5.1）
-                // ★ 07 章：補齊安全標頭（7.5.4）
-                .headers(h -> {
-                    h.contentSecurityPolicy(c -> c.policyDirectives(
-                            "default-src 'self'; script-src 'self'; style-src 'self'; "
-                          + "img-src 'self' data:; frame-ancestors 'none'; "
-                          + "base-uri 'self'; form-action 'self'; object-src 'none'"));
-                    h.httpStrictTransportSecurity(hsts -> hsts
-                            .maxAgeInSeconds(Duration.ofDays(365).toSeconds()).includeSubDomains(true));
-                    h.referrerPolicy(r -> r.policy(
-                            ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
-                    h.permissionsPolicy(p -> p.policy("geolocation=(), camera=(), microphone=(), payment=()"));
-                })
-                .build();
+    @Bean @Order(2)
+    SecurityFilterChain webChain(HttpSecurity http, AuthenticationManager am, SessionRegistry registry,
+            ShopLoginProtection protection,
+            OAuth2UserService<OidcUserRequest,OidcUser> shopOidcUserService) throws Exception {
+        // 不以 authenticationManager(am) 取代這條 chain 的 OAuth2 providers；
+        // 掛上 am 的既有 Dao provider，保留其密碼／狀態政策與 OAuth2 provider 共存。
+        http.getSharedObject(org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder.class)
+                .parentAuthenticationManager(null); // 避免失敗後再回退到另一個 Dao provider
+        for (var provider : ((org.springframework.security.authentication.ProviderManager)am).getProviders())
+            http.authenticationProvider(provider);
+        return http.authorizeHttpRequests(a->a
+                .requestMatchers("/actuator/health","/actuator/info").permitAll()
+                .requestMatchers("/actuator/**").hasRole("ADMIN")
+                .requestMatchers("/login/**","/oauth2/**","/error").permitAll()
+                .anyRequest().authenticated())
+            .addFilterBefore(new ShopLoginLockoutFilter(protection),UsernamePasswordAuthenticationFilter.class)
+            .formLogin(f->f.failureHandler(ApiErrors::write401).permitAll())
+            .oauth2Login(o->o.userInfoEndpoint(u->u.oidcUserService(shopOidcUserService)))
+            .sessionManagement(s->s.sessionFixation(f->f.changeSessionId())
+                .maximumSessions(5).sessionRegistry(registry)
+                .expiredSessionStrategy(event->{
+                    var res=event.getResponse();res.setStatus(401);res.setContentType("application/json;charset=UTF-8");
+                    res.getWriter().write("{\"error\":\"SESSION_EXPIRED\"}");
+                }))
+            .logout(l->l.logoutSuccessUrl("/login?logout").invalidateHttpSession(true))
+            // web chain 保留預設 CSRF。
+            .headers(h->{
+                h.contentSecurityPolicy(c->c.policyDirectives("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"));
+                h.httpStrictTransportSecurity(v->v.maxAgeInSeconds(Duration.ofDays(365).toSeconds()).includeSubDomains(true));
+                h.referrerPolicy(r->r.policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN));
+                h.permissionsPolicy(p->p.policy("geolocation=(), camera=(), microphone=(), payment=()"));
+            }).build();
     }
 }
 ```
@@ -2616,8 +2676,10 @@ public class ShopWebHardeningConfig {
 **④ 三個設定檔的變動**：
 
 ```properties
-# ★ 讓 Spring 看得到原始請求的 scheme 與 IP —— 一次修好 HSTS（7.5.2）與 IP 鎖定（7.4.4）
-server.forward-headers-strategy=framework
+# 本機直連先忽略 Forwarded／X-Forwarded-*，不能讓客戶端控制限速 IP
+server.forward-headers-strategy=none
+# 部署在可信代理後才改 framework：邊界代理必須移除客戶端傳入的兩種轉送標頭並重寫，
+# 且以網路規則禁止繞過代理直連應用；應用程式統一使用 request.getRemoteAddr()。
 
 # ★ 錯誤回應不吐細節（7.6.1）—— 這三個都是 Boot 的預設值，明確寫出來避免有人改掉
 server.error.include-message=never
@@ -2688,7 +2750,7 @@ actuator     只開 health/info，其餘 ROLE_ADMIN，換到 9001 埠
 → 攻擊者五個請求就能把任何人鎖在門外。要鎖「帳號＋IP」，全域計數只用來升級驗證。
 
 **⑩ 直接相信 `X-Forwarded-For`**（7.4.4）
-→ 那是請求方自己寫的。要先設 `server.forward-headers-strategy` 並確認前面真的有你的代理。
+→ 那是請求方自己寫的。須由可信邊界代理清洗與重寫、禁止直連，再決定是否啟用轉送標頭處理。
 
 **⑪ `.headers(disable)` 或 `frameOptions().disable()`**（7.5.3、7.5.5）
 → 為了一個具體問題關掉一整組。只關那一個，或改用 CSP `frame-ancestors` 列舉。

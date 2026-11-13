@@ -14,7 +14,7 @@
 </head>
 <body>
   <h1>Ch04 · AES-GCM + 簽名 URL Demo</h1>
-  <p>後端用 AES-256-GCM 全檔加密，imgKey 用 masterKey wrap 存 DB。前端透過短效簽名 URL 取 key，再用 WebCrypto 解密。</p>
+  <p>後端用 AES-256-GCM 全檔加密，每張圖的 key 用 master key 包裝後才存檔（master key 只在伺服器）。前端透過 60 秒有效的簽名 URL 取得這張圖的 key，再用 WebCrypto 解密。</p>
 
   <section>
     <h2>1. 上傳</h2>
@@ -34,8 +34,6 @@
   </section>
 
   <script>
-    let lastId = null;
-
     document.getElementById('upload').addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -44,7 +42,6 @@
       fd.append('image', file);
       const { id } = await fetch('/api/upload', { method: 'POST', body: fd })
         .then((r) => r.json());
-      lastId = id;
       uploadResult.textContent = `已上傳，id=${id}`;
 
       const { keyUrl, encUrl } = await fetch(`/api/image/${id}/sign`).then((r) => r.json());
@@ -67,25 +64,17 @@
       decImg.onload = () => URL.revokeObjectURL(url);
     });
 
-    // Combined format: [iv(12) | tag(16) | ciphertext]
+    // 檔案格式：[iv(12) | ciphertext | tag(16)]
+    // WebCrypto 的 AES-GCM 要的就是「密文 + tag」連在一起，直接傳 subarray(12)，不用再複製
     async function decryptGcm(combinedBuf, keyHex) {
       const u8 = new Uint8Array(combinedBuf);
-      const iv = u8.subarray(0, 12);
-      const tag = u8.subarray(12, 28);
-      const ct = u8.subarray(28);
-
-      // WebCrypto 期望 tag 接在密文尾
-      const ctWithTag = new Uint8Array(ct.length + 16);
-      ctWithTag.set(ct, 0);
-      ctWithTag.set(tag, ct.length);
-
       const key = await crypto.subtle.importKey(
         'raw', hexToBytes(keyHex), { name: 'AES-GCM' }, false, ['decrypt']
       );
       const plain = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv, tagLength: 128 },
+        { name: 'AES-GCM', iv: u8.subarray(0, 12), tagLength: 128 },
         key,
-        ctWithTag,
+        u8.subarray(12),
       );
       return new Uint8Array(plain);
     }

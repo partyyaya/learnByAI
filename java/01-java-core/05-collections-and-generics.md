@@ -2135,7 +2135,7 @@ public class Todo {
         if (tag == null || tag.isBlank()) {
             throw new InvalidTodoException("tag", tag, "標籤不可為空");
         }
-        String normalized = tag.strip().toLowerCase();       // 統一小寫，避免 "Work" / "work" 重複
+        String normalized = tag.strip().toLowerCase(java.util.Locale.ROOT);       // 統一小寫，避免 "Work" / "work" 重複
         if (tags.size() >= MAX_TAGS && !tags.contains(normalized)) {
             throw new InvalidTodoException("tags", tags.size(),
                     "標籤最多 " + MAX_TAGS + " 個");
@@ -2144,11 +2144,11 @@ public class Todo {
     }
 
     public boolean removeTag(String tag) {
-        return tag != null && tags.remove(tag.strip().toLowerCase());
+        return tag != null && tags.remove(tag.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     public boolean hasTag(String tag) {
-        return tag != null && tags.contains(tag.strip().toLowerCase());
+        return tag != null && tags.contains(tag.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     /** ✅ 回傳不可變拷貝，外部改不到內部集合（5.8 節） */
@@ -2221,7 +2221,7 @@ public enum Priority {
         if (input == null || input.isBlank()) {
             return MEDIUM;
         }
-        String normalized = input.strip().toUpperCase();
+        String normalized = input.strip().toUpperCase(java.util.Locale.ROOT);
         for (Priority p : values()) {
             if (p.name().equals(normalized)) return p;
         }
@@ -2330,7 +2330,7 @@ public class IndexedTodoRepository implements TodoRepository {
     /** ✅ O(1)：直接從索引拿 id，不用掃全部 */
     public List<Todo> findByTag(String tag) {
         if (tag == null) return List.of();
-        Set<Long> ids = byTag.getOrDefault(tag.strip().toLowerCase(), Set.of());
+        Set<Long> ids = byTag.getOrDefault(tag.strip().toLowerCase(java.util.Locale.ROOT), Set.of());
         List<Todo> result = new ArrayList<>(ids.size());
         for (Long id : ids) {
             Todo todo = byId.get(id);

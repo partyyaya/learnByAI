@@ -2862,7 +2862,7 @@ public record Todo(
         }
         var normalized = new LinkedHashSet<String>();
         for (String tag : raw) {
-            String trimmed = tag == null ? "" : tag.strip().toLowerCase();
+            String trimmed = tag == null ? "" : tag.strip().toLowerCase(java.util.Locale.ROOT);
             if (trimmed.isEmpty()) {
                 throw new InvalidTodoException("標籤不可為空白");
             }
@@ -2910,7 +2910,7 @@ public record Todo(
 
     public Todo withTag(String tag) {
         var merged = new LinkedHashSet<>(tags);
-        merged.add(tag == null ? "" : tag.strip().toLowerCase());
+        merged.add(tag == null ? "" : tag.strip().toLowerCase(java.util.Locale.ROOT));
         return new Todo(id, title, priority, createdAt, completion, merged);
     }
 
@@ -3132,6 +3132,37 @@ public class TodoService {
 > **「改了物件但忘記 save」在記憶體版會過，換成 JSON 檔案版就資料遺失。**
 > 不可變版本強迫你把新物件存回去，否則改動就消失了——**編譯器和邏輯都會提醒你**。
 
+### TodoStatistics：取消狀態需要語意遷移
+
+第 07 章統計雖然仍能編譯，但 `!isDone()` 包含已取消的事項，不能再代表待辦。
+在 `TodoStatistics.java` 替換以下三個方法；其餘方法保留。這不是修改第 07 章的舊版模型契約，
+而是完成第 12 章升級時的呼叫端調整。
+
+```java
+public List<Todo> pendingSorted() {
+    return todos.stream().filter(Todo::isPending)
+            .sorted(Comparator.comparingInt((Todo t) -> t.priority().weight()).reversed()
+                    .thenComparing(Todo::createdAt)).toList();
+}
+
+public Map<String, List<String>> pendingTitlesByTag() {
+    return todos.stream()
+            .flatMap(t -> t.tags().stream().map(tag -> Map.entry(tag, t)))
+            .collect(Collectors.groupingBy(Map.Entry::getKey, TreeMap::new,
+                    Collectors.mapping(Map.Entry::getValue,
+                            Collectors.filtering(Todo::isPending,
+                                    Collectors.mapping(Todo::title, Collectors.toList())))));
+}
+
+public Optional<Todo> oldestPending() {
+    return todos.stream().filter(Todo::isPending).min(Comparator.comparing(Todo::createdAt));
+}
+```
+
+本章完成率仍定義為「已完成數／全部事項數」，取消項仍在分母；若業務改成排除取消，要連測試一起改。
+請至少建一筆取消事項，驗證上述三個方法都不把它當待辦；只有 cancelled 的標籤可保留空清單，
+但不能列出取消事項的標題。新 Service 的 findPending 也使用 isPending。
+
 ### `Command`：CLI 指令的窮盡性
 
 ```java
@@ -3168,63 +3199,70 @@ import java.util.Locale;
 
 /** 把 String[] 變成 Command。所有參數錯誤都在這裡被攔下來。 */
 public final class CommandParser {
-
-    private CommandParser() {
-    }
+    private CommandParser() {}
 
     public static Command parse(String[] args) {
-        if (args.length == 0) {
-            return new Command.Help();
-        }
-
+        java.util.Objects.requireNonNull(args, "args");
+        if (args.length == 0) return new Command.Help();
         String[] rest = Arrays.copyOfRange(args, 1, args.length);
-
         return switch (args[0]) {
             case "add" -> parseAdd(rest);
-            case "list" -> new Command.List(hasFlag(rest, "--all"));
-            case "done" -> new Command.Done(parseId(rest, "todo done <id>"));
-            case "cancel" -> parseCancel(rest);
-            case "remove", "rm" -> new Command.Remove(parseId(rest, "todo remove <id>"));
-            case "--help", "-h", "help" -> new Command.Help();
-            case "--version", "-v", "version" -> new Command.Version();
+            case "list" -> {
+                if (rest.length == 0) yield new Command.List(false);
+                if (rest.length == 1 && "--all".equals(rest[0])) yield new Command.List(true);
+                throw new IllegalArgumentException("用法：todo list [--all]");
+            }
+            case "done" -> new Command.Done(oneId(rest, "todo done <id>"));
+            case "cancel" -> {
+                requireCount(rest, 2, "todo cancel <id> <原因>");
+                if (rest[1].isBlank()) throw new IllegalArgumentException("取消原因不可空白");
+                yield new Command.Cancel(parseId(rest[0]), rest[1]);
+            }
+            case "remove", "rm" -> new Command.Remove(oneId(rest, "todo remove <id>"));
+            case "--help", "-h", "help" -> {
+                requireCount(rest, 0, "todo --help");
+                yield new Command.Help();
+            }
+            case "--version", "-v", "version" -> {
+                requireCount(rest, 0, "todo --version");
+                yield new Command.Version();
+            }
             default -> throw new IllegalArgumentException("未知的指令：" + args[0]);
         };
     }
 
     private static Command parseAdd(String[] args) {
-        if (args.length == 0) {
-            throw new IllegalArgumentException(
-                    "用法：todo add <標題> [--priority HIGH|MEDIUM|LOW]");
-        }
+        if (args.length == 0 || args[0].isBlank() || args[0].startsWith("--"))
+            throw new IllegalArgumentException("用法：todo add <標題> [--priority HIGH|MEDIUM|LOW]");
         Priority priority = Priority.MEDIUM;
-        for (int i = 1; i < args.length - 1; i++) {
-            if ("--priority".equals(args[i])) {
-                priority = parsePriority(args[i + 1]);
-            }
+        boolean prioritySeen = false;
+        for (int i = 1; i < args.length; i++) {
+            if (!"--priority".equals(args[i]))
+                throw new IllegalArgumentException("未知或多餘的參數：" + args[i]);
+            if (prioritySeen) throw new IllegalArgumentException("--priority 不可重複");
+            if (++i >= args.length) throw new IllegalArgumentException("--priority 後必須有值");
+            priority = parsePriority(args[i]);
+            prioritySeen = true; // 消耗完值才繼續看下一個選項，不能悄悄忽略未知參數。
         }
         return new Command.Add(args[0], priority);
     }
 
-    private static Command parseCancel(String[] args) {
-        long id = parseId(args, "todo cancel <id> <原因>");
-        if (args.length < 2) {
-            throw new IllegalArgumentException("用法：todo cancel <id> <原因>");
-        }
-        return new Command.Cancel(id, args[1]);
+    private static long oneId(String[] args, String usage) {
+        requireCount(args, 1, usage);
+        return parseId(args[0]);
     }
 
-    private static boolean hasFlag(String[] args, String flag) {
-        return Arrays.asList(args).contains(flag);
+    private static void requireCount(String[] args, int count, String usage) {
+        if (args.length != count) throw new IllegalArgumentException("用法：" + usage);
     }
 
-    private static long parseId(String[] args, String usage) {
-        if (args.length == 0) {
-            throw new IllegalArgumentException("用法：" + usage);
-        }
+    private static long parseId(String raw) {
         try {
-            return Long.parseLong(args[0]);
+            long id = Long.parseLong(raw);
+            if (id <= 0) throw new IllegalArgumentException("id 必須大於 0");
+            return id;
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("id 必須是數字，收到：" + args[0], e);
+            throw new IllegalArgumentException("id 必須是有效的 long 整數，收到：" + raw, e);
         }
     }
 
@@ -3232,8 +3270,7 @@ public final class CommandParser {
         try {
             return Priority.valueOf(raw.toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException(
-                    "優先度必須是 HIGH / MEDIUM / LOW，收到：" + raw, e);
+            throw new IllegalArgumentException("優先度必須是 HIGH / MEDIUM / LOW，收到：" + raw, e);
         }
     }
 }
@@ -3383,6 +3420,178 @@ public sealed interface Completion {
 > 這也是「明確列出名稱」比「用類別全名」好的原因——
 > 用全名的話，你連改套件名稱都會讓舊資料讀不回來。
 
+### 舊 JSON 的相容讀取與離線遷移
+
+第 07～11 章已寫進磁碟的資料使用 done／completedAt；新版改為 completion。
+只有改 Java 型別與註解，舊資料會在啟動讀取時失敗。這是**磁碟資料格式升級**，編譯器不會代辦。
+
+1. 將上面的 Jackson 註解加到 **12.16 的完整 Completion**，保留其全部方法，不用摘要取代完整類別。
+2. 新增下面的 TodoJsonCodec。新格式、舊格式或混合陣列都逐列驗證；讀取不寫檔。
+3. 將第 07 章 TodoFileStore.load 讀取陣列的那行替換為 `List<Todo> todos = TodoJsonCodec.read(json);`。
+   保留原有空白／null／重複 id 與 STORAGE_ERROR 處理；此類別在同一個 support package，不需另加 import。
+4. 停止所有讀寫同一檔案的 CLI／服務，使用 TodoDataMigration 升級指定檔案，再重啟。
+   不要刪掉舊資料來避開錯誤；遷移前先完整驗證，任何一筆無效就整份停止。
+
+**`todo-core/src/main/java/com/example/todo/support/TodoJsonCodec.java`**
+
+```java
+package com.example.todo.support;
+
+import com.example.todo.model.Completion;
+import com.example.todo.model.Priority;
+import com.example.todo.model.Todo;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
+
+import java.io.IOException;
+import java.time.Instant;
+import java.util.*;
+
+/** 用途：第 07～11 章的 JSON 與第 12 章新格式共存；讀取本身不改寫磁碟。 */
+public final class TodoJsonCodec {
+    private TodoJsonCodec() {}
+
+    public record Snapshot(List<Todo> todos, boolean hasLegacyRows) {
+        public Snapshot { todos = List.copyOf(todos); }
+    }
+
+    public static List<Todo> read(String json) { return decode(json).todos(); }
+
+    public static Snapshot decode(String json) {
+        try {
+            JsonNode root = Json.mapper().reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(json);
+            if (root == null || !root.isArray())
+                throw new IllegalArgumentException("資料檔必須是完整 JSON 陣列");
+            List<Todo> result = new ArrayList<>();
+            Set<Long> ids = new HashSet<>();
+            boolean legacy = false;
+            for (JsonNode row : root) {
+                if (!row.isObject()) throw new IllegalArgumentException("每一列必須是 JSON 物件");
+                JsonNode id = row.get("id");
+                if (id == null || !id.isIntegralNumber() || !id.canConvertToLong() || id.longValue() <= 0)
+                    throw new IllegalArgumentException("id 必須是正 long 整數");
+                if (!ids.add(id.longValue())) throw new IllegalArgumentException("id 不可重複：" + id);
+                // 共通欄位先做型別檢查，避免 JSON 的數值／字串強制轉型悄悄改資料。
+                text(row, "title"); text(row, "priority"); text(row, "createdAt");
+                Set<String> tags = tags(row);
+                Todo todo;
+                if (row.has("completion")) {
+                    // 包含 null／未知 state 的新格式須失敗，不可退回 legacy 猜測。
+                    todo = Json.mapper().treeToValue(row, Todo.class);
+                } else {
+                    legacy = true;
+                    JsonNode done = row.get("done");
+                    if (done == null || !done.isBoolean())
+                        throw new IllegalArgumentException("舊格式缺少 boolean done");
+                    JsonNode finishedAt = row.get("completedAt");
+                    boolean hasTime = finishedAt != null && !finishedAt.isNull();
+                    if (done.booleanValue() != hasTime)
+                        throw new IllegalArgumentException("舊格式 done 與 completedAt 不一致");
+                    Completion state = done.booleanValue()
+                            ? Completion.done(Instant.parse(text(row, "completedAt")))
+                            : Completion.pending();
+                    todo = new Todo(id.longValue(), text(row, "title"),
+                            Priority.valueOf(text(row, "priority")), Instant.parse(text(row, "createdAt")), state, tags);
+                }
+                // Todo 建構子仍驗證標題／標籤上限與結束時間，不繞過模型規則。
+                result.add(todo);
+            }
+            return new Snapshot(result, legacy);
+        } catch (IOException | RuntimeException e) {
+            // 解析、時間與模型驗證失敗統一交給 TodoFileStore 的 STORAGE_ERROR 邊界。
+            throw new IllegalArgumentException("JSON 資料格式錯誤", e);
+        }
+    }
+
+    private static String text(JsonNode object, String field) {
+        JsonNode value = object.get(field);
+        if (value == null || !value.isTextual())
+            throw new IllegalArgumentException(field + " 必須是字串");
+        return value.textValue();
+    }
+
+    private static Set<String> tags(JsonNode row) {
+        JsonNode value = row.get("tags");
+        // 舊資料的 null／未提供標籤沿用原模型契約，代表沒有標籤。
+        if (value == null || value.isNull()) return Set.of();
+        if (!value.isArray()) throw new IllegalArgumentException("tags 必須是陣列");
+        Set<String> result = new LinkedHashSet<>();
+        for (JsonNode tag : value) {
+            if (!tag.isTextual()) throw new IllegalArgumentException("每個 tag 必須是字串");
+            result.add(tag.textValue());
+        }
+        return result;
+    }
+}
+```
+
+**`todo-core/src/main/java/com/example/todo/support/TodoDataMigration.java`**
+
+```java
+package com.example.todo.support;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.util.Optional;
+
+/** 用途：停止 CLI 後，明確把有效舊資料升級；不從應用程式啟動流程偷偷寫檔。 */
+public final class TodoDataMigration {
+    private TodoDataMigration() {}
+
+    /** 回傳本次備份；已是新格式則不寫檔、不新增備份。 */
+    public static Optional<Path> migrate(Path input) throws IOException {
+        Path file = input.toAbsolutePath().normalize();
+        if (Files.isSymbolicLink(file) || !Files.isRegularFile(file))
+            throw new IOException("請提供現有、非符號連結的資料檔");
+        byte[] original = Files.readAllBytes(file); // 本課小型本機檔；大型檔須另設上限與遷移管線。
+        String text = StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(original)).toString();
+        if (text.startsWith("\uFEFF")) text = text.substring(1);
+        TodoJsonCodec.Snapshot snapshot = TodoJsonCodec.decode(text); // 全部驗證成功才開始寫檔。
+        if (!snapshot.hasLegacyRows()) return Optional.empty();
+        byte[] converted = Json.toPrettyJson(snapshot.todos()).getBytes(StandardCharsets.UTF_8);
+
+        // 唯一檔名，不覆蓋同一秒的既有備份；保存原始位元組，包含 BOM。
+        Path backup = Files.createTempFile(file.getParent(), file.getFileName() + ".before-record-", ".bak");
+        Files.write(backup, original); // 完成備份後，才允許替換來源檔。
+        Path temp = Files.createTempFile(file.getParent(), file.getFileName() + ".migrating-", ".tmp");
+        try {
+            Files.write(temp, converted);
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException | RuntimeException failed) {
+            try { Files.deleteIfExists(temp); }
+            catch (IOException cleanup) { failed.addSuppressed(cleanup); }
+            throw failed; // 不支援 ATOMIC_MOVE 就停止，不改用直接覆寫；完整備份保留。
+        }
+        return Optional.of(backup);
+    }
+
+    public static void main(String[] args) throws IOException {
+        if (args.length != 1) throw new IllegalArgumentException("用法：TodoDataMigration <資料檔路徑>");
+        Optional<Path> backup = migrate(Path.of(args[0]));
+        System.out.println(backup.map(p -> "升級完成，原始備份：" + p).orElse("已是新格式，沒有改寫"));
+    }
+}
+```
+
+在第 10 章多模組根目錄執行（先完成本章所有 API 遷移與上述相容讀取修改）：
+
+```bash
+./mvnw -pl todo-core -am install -DskipTests
+./mvnw -pl todo-core org.codehaus.mojo:exec-maven-plugin:3.5.0:java \
+  -Dexec.mainClass=com.example.todo.support.TodoDataMigration \
+  -Dexec.args="/絕對路徑/todos.json"
+```
+
+換成實際路徑；路徑含空白時，依 shell 與 exec plugin 參數規則加引號。
+工具只支援本課小型本機檔，必須在沒有其他 writer 時執行。原子替換確保讀者不見半份內容，
+不等於涵蓋所有檔案系統／斷電情況的持久性保證；正式環境仍須有備份與恢復演練。
+
+需驗證：舊版待辦／完成的時間與標籤保持、新版取消狀態保持、混合格式轉換成功；
+未知 state、缺少完成時間、重複 id、空白或截斷 JSON 都失敗且原檔不變。
+成功備份須與原檔位元組相同，完成後再次遷移不改檔；相容 loader 也不能在讀取時悄悄寫入。
+
 ### 前後對照
 
 | | 之前 | 之後 | 差 |
@@ -3418,19 +3627,21 @@ public sealed interface Completion {
 
 ### 除了測試，其他呼叫端也要跟著改
 
-`Todo` 從可變類別變成 record，**編譯器會直接把所有需要改的地方指出來**。
+`Todo` 從可變類別變成 record，編譯器會指出 API 不相容；資料格式與狀態語意仍須靠遷移與測試檢查。
 以下列出主要遷移位置；實際仍以編譯器與測試結果逐一檢查：
 **「就地修改」變成「產生新物件」，「可能是 null」變成「問 `completion`」。**
 
-| 檔案 | 編譯錯誤 | 修法 |
+| 檔案 | 遷移問題 | 修法 |
 |---|---|---|
 | `ConcurrentTodoImporter`（第 08 章） | `addTag(String)` 找不到 | 批次建模改成 `todo = todo.withTag(tag)`；`parseRow` 的驗證也改成 `validated = validated.withTag(tag)` |
 | `JsonFileTodoRepository`（第 07、08 章） | `copy` 使用舊的七參數建構子與 `completedAt()` | Todo 已不可變，`copy(Todo todo)` 直接 `return todo` 即可；不再需要防禦性複製物件 |
 | `TodoBuilder`（第 11 章） | `tags.forEach(todo::addTag)` 不是合法方法參考 | `for (String t : tags) todo = todo.withTag(t);` |
 | `TodoAssert`（第 11 章） | `completedAt()` 找不到 | `actual.completion().finishedAt()`（回傳 `Optional<Instant>`） |
 | `TodoServiceTest` / `TodoServiceWithFakeTest`（第 11 章） | 同上 | 同上 |
+| `TodoFileStore` 與既有 JSON | done／completedAt 無法直接讀成 completion（執行期） | 加上本節 TodoJsonCodec 相容讀取，備份後離線遷移 |
+| `TodoStatistics`（第 07 章） | 編譯成功，但取消事項被當成待辦 | 按本節替換三個方法，使用 isPending 並測試取消狀態 |
 
-> 🔑 **注意上述 API 不相容會先造成編譯錯誤，不是執行期錯誤。**
+> 🔑 **API 不相容會先造成編譯錯誤；JSON 格式與統計語意則不一定會。**
 > 這就是 12.12 節那句話的實際兌現：**把「可能忘記」變成「編不過」。**
 > 如果 `Todo` 還是可變的、`completedAt` 還是可能為 null，
 > 這些呼叫端會安靜地繼續編譯 —— 然後在某個沒有測到的路徑上回傳 `null`。

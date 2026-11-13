@@ -1758,6 +1758,10 @@ broker 模型裡訊息會消失，所以需要「清空」；log 模型裡訊息
     </dependency>
     <dependency>
       <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
@@ -1771,6 +1775,7 @@ broker 模型裡訊息會消失，所以需要「清空」；log 模型裡訊息
 |---|---|---|
 | `spring-boot-starter-amqp` | `RabbitTemplate`、`@RabbitListener`，底層是 **Spring AMQP + amqp-client** | Boot 3.2.5 帶的是 spring-rabbit 3.1.x |
 | `spring-kafka` | `KafkaTemplate`、`@KafkaListener`，底層是 Apache 官方的 `kafka-clients` | ⚠️ **注意它不叫 `spring-boot-starter-kafka`** —— Boot 沒有這個 starter，要直接依賴 `org.springframework.kafka:spring-kafka`（版本由 Boot 的 parent 管） |
+| `spring-boot-starter-actuator` | 02 章的 MeterRegistry 與 10 章監控 | 提供 Micrometer 與 registry 自動設定；03 章選用 Redis 實驗時另加 Redis starter |
 | `spring-boot-starter-web` | 後面幾章需要真的用 HTTP 打進來（02 章的下單 API、10 章的 traceId） | —— |
 | `spring-boot-starter-data-jpa` + `mysql-connector-j` | 02 章的 Outbox、03 章的去重表 | **一定要真 MySQL 不能用 H2**，理由見 0.6.3 |
 
@@ -1794,7 +1799,7 @@ spring:
   kafka:
     bootstrap-servers: localhost:19092    # 0.6.2 的 HOST listener
   datasource:
-    url: jdbc:mysql://localhost:13306/lab11?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Taipei
+    url: jdbc:mysql://localhost:13306/lab11?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Taipei&useAffectedRows=true
     username: lab
     password: lab
   jpa:
@@ -1806,9 +1811,15 @@ logging:
     com.example.lab11: INFO
 ```
 
-⚠️ **這裡故意「沒有」設任何可靠性選項。**
+`useAffectedRows=true` 是 03 章 MySQL upsert 替代方案所需的行數契約：
+no-op duplicate 回 0，而不是 CLIENT_FOUND_ROWS 的 1。它也會讓其他沒有改變值的
+UPDATE 回 0；業務程式不能一律把「0 列改變」當成「資料不存在」。
+03 章首選的普通 INSERT 去重不依賴這個選項，仍會另外測試兩種 URL。
 
-沒有 publisher confirm、沒有手動 ack、沒有 `acks=all`、沒有重試、沒有死信。
+⚠️ **這裡故意「沒有」設 RabbitMQ 的可靠性選項。**
+
+沒有 publisher confirm、沒有手動 ack、沒有 RabbitMQ 重試與死信。
+Kafka 客戶端本來就預設 acks=all 與 idempotence=true，見 0.8.3，不能把未明寫當成未啟用。
 **這是 Spring Boot 的預設狀態，也是絕大多數專案上線時的狀態** ——
 01 章會實測這個預設有多不可靠（訊息掉在哪裡、掉幾則），**然後才**把設定加回來。
 現在先保持原樣，這樣你才看得到差別。

@@ -955,6 +955,7 @@ BigDecimal unitPrice = p.getPrice().multiply(new BigDecimal("0.95"));
 package example.shop.common.money;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.Currency;
 import java.util.Objects;
@@ -1033,31 +1034,52 @@ public record Money(BigDecimal amount, Currency currency) implements Comparable<
      * <p>⚠️⚠️ 這是實務上最容易出錯的一個運算：
      * 100 元折扣分到 3 筆明細，每筆 33.33，加起來是 99.99 —— <b>少了 1 分</b>。
      *
-     * <p>正確做法是「先算前 n-1 筆，最後一筆用減法補齊」——
-     * 這個方法把它封起來，讓你不需要每次都想一遍。
+     * <p>以最小貨幣單位做最大餘數分配：先全部向下取整，
+     * 剩下的單位依餘數由大到小分配；同餘數時依原始索引排序。
+     * 每一份非負，且加總等於原金額。不能逐份 HALF_UP 再讓最後一份吸收，
+     * 否則 0.03 分六份會出現 -0.02。
+     * 本方法只分配非負總額；負金額須由呼叫端另定沖銷規則。
      *
      * @param weights 每一筆的權重（通常是各明細的小計）
      * @return 分攤結果，<b>保證加總等於原金額</b>
      */
     public java.util.List<Money> allocate(java.util.List<BigDecimal> weights) {
-        BigDecimal totalWeight = weights.stream()
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (totalWeight.signum() == 0) {
-            throw new IllegalArgumentException("權重總和不可為 0");
+        Objects.requireNonNull(weights, "weights");
+        if (amount.signum() < 0 || weights.isEmpty()) {
+            throw new IllegalArgumentException("總額不可為負，權重不可為空");
         }
-        var result = new java.util.ArrayList<Money>(weights.size());
-        Money allocated = zero(currency);
-        for (int i = 0; i < weights.size() - 1; i++) {
-            Money part = new Money(
-                    amount.multiply(weights.get(i))
-                          .divide(totalWeight, currency.getDefaultFractionDigits(),
-                                  RoundingMode.HALF_UP),
-                    currency);
-            result.add(part);
-            allocated = allocated.plus(part);
+        for (BigDecimal weight : weights) {
+            if (Objects.requireNonNull(weight, "weight").signum() < 0) {
+                throw new IllegalArgumentException("權重不可為負");
+            }
         }
-        result.add(this.minus(allocated));          // ★ 最後一筆吸收誤差
-        return result;
+        BigDecimal totalWeight = weights.stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (totalWeight.signum() <= 0) throw new IllegalArgumentException("權重總和必須大於 0");
+
+        int scale = currency.getDefaultFractionDigits();
+        BigInteger units = amount.movePointRight(scale).toBigIntegerExact();
+        var shares = new java.util.ArrayList<BigInteger>(weights.size());
+        var remainders = new java.util.ArrayList<BigDecimal>(weights.size());
+        BigInteger allocated = BigInteger.ZERO;
+        for (BigDecimal weight : weights) {
+            BigDecimal numerator = new BigDecimal(units).multiply(weight);
+            BigDecimal[] qr = numerator.divideAndRemainder(totalWeight);
+            BigInteger floor = qr[0].toBigIntegerExact();
+            shares.add(floor);
+            remainders.add(qr[1]);
+            allocated = allocated.add(floor);
+        }
+        var indices = java.util.stream.IntStream.range(0, weights.size()).boxed()
+                .sorted((i, j) -> {
+                    int byRemainder = remainders.get(j).compareTo(remainders.get(i));
+                    return byRemainder != 0 ? byRemainder : Integer.compare(i, j);
+                }).toList();
+        int remaining = units.subtract(allocated).intValueExact(); // 一定小於份數
+        for (int i = 0; i < remaining; i++) {
+            int index = indices.get(i);
+            shares.set(index, shares.get(index).add(BigInteger.ONE));
+        }
+        return shares.stream().map(n -> new Money(new BigDecimal(n, scale), currency)).toList();
     }
 
     // ⚠️⚠️ 前向指標（05 章 5.8.3 / 5.13 ②）：下面這三個 isXxx() 會被 Jackson
@@ -1127,7 +1149,7 @@ void 折扣分攤後加總必須等於原折扣() {
             new BigDecimal("300"), new BigDecimal("300"), new BigDecimal("300")));
 
     assertThat(parts).containsExactly(
-            Money.twd("33.33"), Money.twd("33.33"), Money.twd("33.34"));  // ← 最後一筆吸收
+            Money.twd("33.34"), Money.twd("33.33"), Money.twd("33.33"));  // 同餘數時先分給索引較小者
     assertThat(parts.stream().reduce(Money.twd("0"), Money::plus))
             .isEqualTo(discount);                                          // ★ 保證加總相等
 }
@@ -1421,7 +1443,7 @@ HTTP: POST /orders
 ┌── ② OrderApplicationService.create(cmd) ───────────────────────────┐
 │ @Transactional 從這裡開始 ← ★ 交易邊界                                │
 │                                                                     │
-│ 1. 冪等：查 order_idempotency 表（04-controller 站只做了 Redis 那一半，05 章）    │
+│ 1. 冪等：查持久冪等紀錄並比對完整 intent（承接 04-controller 的保護）    │
 │ 2. 授權：addresses.findByIdAndCustomerId(cmd.shippingAddressId(),    │
 │                                          cmd.actor().id())          │
 │    → 空 → ResourceNotFoundException（刻意回 404 而不是 403）          │
@@ -2303,6 +2325,7 @@ package example.shop.order.domain;
 
 import example.shop.common.money.Money;
 import example.shop.order.domain.exception.*;
+import example.shop.order.domain.result.*;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -2589,7 +2612,14 @@ public class Order {
      */
     public CancellationResult cancel(Actor actor, CancelReason reason,
                                      String note, Instant now) {
-        if (!status.isCancellable()) {
+        Objects.requireNonNull(actor, "actor");
+        Objects.requireNonNull(reason, "reason");
+        if (!status.isCancellable()
+                || (!actor.isCustomer() && !actor.isPrivileged())) {
+            throw new OrderNotCancellableException(id, status);
+        }
+        // PAYMENT_TIMEOUT 是專用操作，已付款或尚未到期時不可套用。
+        if (reason == CancelReason.PAYMENT_TIMEOUT && !isExpired(now)) {
             throw new OrderNotCancellableException(id, status);
         }
         if (actor.isCustomer()) {
@@ -2682,18 +2712,21 @@ public class Order {
         if (!status.isShippable()) {
             throw new OrderNotShippableException(id, status);
         }
-        // ── 不變量 I11 ──────────────────────────────
-        for (ShipmentLine sl : shipLines) {
+        // ── 不變量 I11：本次同商品的多列也必須累計 ──────
+        var requestedByProduct = new java.util.HashMap<String, Integer>();
+        for (int i = 0; i < shipLines.size(); i++) {
+            ShipmentLine sl = shipLines.get(i);
+            int requested = requestedByProduct.merge(sl.productId(), sl.quantity(), Math::addExact);
             int ordered = lines.stream()
                     .filter(l -> l.productId().equals(sl.productId()))
-                    .mapToInt(OrderLine::quantity).sum();
+                    .map(OrderLine::quantity).reduce(0, Math::addExact);
             int alreadyShipped = shipments.stream()
                     .flatMap(s -> s.lines().stream())
                     .filter(l -> l.productId().equals(sl.productId()))
-                    .mapToInt(ShipmentLine::quantity).sum();
-            if (alreadyShipped + sl.quantity() > ordered) {
+                    .map(ShipmentLine::quantity).reduce(0, Math::addExact);
+            if (requested > ordered - alreadyShipped) {
                 throw new ShipmentQuantityExceededException(
-                        id, sl.productId(), ordered, alreadyShipped, sl.quantity());
+                        id, i, sl.productId(), requested, ordered, alreadyShipped);
             }
         }
 
@@ -2767,12 +2800,13 @@ public class Order {
     }
 
     private boolean isFullyShipped() {
-        return lines.stream().allMatch(l -> {
-            int shipped = shipments.stream().flatMap(s -> s.lines().stream())
-                    .filter(sl -> sl.productId().equals(l.productId()))
-                    .mapToInt(ShipmentLine::quantity).sum();
-            return shipped >= l.quantity();
-        });
+        var ordered = new java.util.HashMap<String, Integer>();
+        lines.forEach(l -> ordered.merge(l.productId(), l.quantity(), Math::addExact));
+        var shipped = new java.util.HashMap<String, Integer>();
+        shipments.stream().flatMap(s -> s.lines().stream())
+                .forEach(l -> shipped.merge(l.productId(), l.quantity(), Math::addExact));
+        return ordered.entrySet().stream()
+                .allMatch(e -> shipped.getOrDefault(e.getKey(), 0).equals(e.getValue()));
     }
 
     /**
@@ -3119,13 +3153,15 @@ public class OrderApplicationService implements OrderService {
 
         Instant now = clock.instant();
 
-        // ── ① 冪等（04-controller 4.9 只做了 Redis 那一半，這裡是持久的那一半）──
-        var existing = idempotency.findOrderId(cmd.actor().id(), cmd.idempotencyKey());
+        // ── ① 冪等（承接 04-controller 的持久化保護，Service 的第二入口也要驗證內容）──
+        var intent = CreateOrderIntent.from(cmd);
+        var existing = idempotency.find(cmd.actor().id(), cmd.idempotencyKey());
         if (existing.isPresent()) {
+            existing.get().requireSameIntent(cmd.idempotencyKey(), intent);
             // ★ 回傳「上一次的結果」而不是拋例外 —— 這是冪等的定義
-            return orders.findById(existing.get())
+            return orders.findById(existing.get().orderId())
                     .orElseThrow(() -> new IllegalStateException(
-                            "冪等紀錄指向不存在的訂單：" + existing.get()));
+                            "冪等紀錄指向不存在的訂單：" + existing.get().orderId()));
         }
 
         // ── ② 授權：地址必須屬於這個客戶（04-controller 0.3 那個 IDOR 的正解）──
@@ -3217,7 +3253,7 @@ public class OrderApplicationService implements OrderService {
 
         // ── ⑧ 存 ────────────────────────────────────
         orders.save(order);
-        idempotency.record(cmd.actor().id(), cmd.idempotencyKey(), order.id(), now);
+        idempotency.record(cmd.actor().id(), cmd.idempotencyKey(), intent, order.id(), now);
 
         // ── ⑨ 券計數（原子，0.3.2 事故 5 的正解）────────
         if (coupon != null && !coupons.tryConsume(coupon.code())) {
@@ -3507,11 +3543,13 @@ class OrderApplicationServiceTest {
 
     @Test
     void 相同冪等鍵回傳同一張訂單而不重複建立() {
-        given(idempotency.findOrderId("cus_1", "idem-abc"))
-                .willReturn(Optional.of("ord_existing"));
+        var cmd = Commands.createOrder().idempotencyKey("idem-abc").build();
+        given(idempotency.find("cus_1", "idem-abc"))
+                .willReturn(Optional.of(new IdempotencyStore.Entry(
+                        CreateOrderIntent.from(cmd), "ord_existing")));
         given(orders.findById("ord_existing")).willReturn(Optional.of(Orders.paid().build()));
 
-        Order result = service.create(Commands.createOrder().idempotencyKey("idem-abc").build());
+        Order result = service.create(cmd);
 
         assertThat(result.id()).isEqualTo("ord_existing");
         then(stock).shouldHaveNoInteractions();       // ★ 完全沒有碰庫存
@@ -4496,6 +4534,7 @@ public record StockRelease(String productId, int quantity) {
 package example.shop.order.domain;
 
 import example.shop.common.money.Money;
+import example.shop.order.domain.exception.RefundExceedsPaymentException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -4555,6 +4594,8 @@ public class Payment {
      * 資料庫的 {@code CHECK} 守第三道。
      */
     public void refund(Refund refund) {
+        java.util.Objects.requireNonNull(refund, "refund");
+        // Refund 自身保證正金額；compareTo / plus 會拒絕不同幣別。
         Money already = refundedAmount();
         if (already.plus(refund.amount()).compareTo(amount) > 0) {
             throw new RefundExceedsPaymentException(id, amount, already, refund.amount());
@@ -4587,7 +4628,16 @@ import java.time.Instant;
 
 /** 一筆退款。 */
 public record Refund(String id, Money amount, RefundReason reason,
-                     Actor requestedBy, Instant at) {}
+                     Actor requestedBy, Instant at) {
+    public Refund {
+        java.util.Objects.requireNonNull(id, "id");
+        java.util.Objects.requireNonNull(amount, "amount");
+        java.util.Objects.requireNonNull(reason, "reason");
+        java.util.Objects.requireNonNull(requestedBy, "requestedBy");
+        java.util.Objects.requireNonNull(at, "at");
+        if (!amount.isPositive()) throw new IllegalArgumentException("退款金額必須大於 0");
+    }
+}
 ```
 
 ```java
@@ -5211,32 +5261,59 @@ public interface CustomerRepository {
 ```java
 package example.shop.order.application.port;
 
+import example.shop.common.web.IdempotencyKeyReusedException;
 import java.time.Instant;
 import java.util.Optional;
 
 /**
- * 冪等紀錄（04-controller 4.9 只做了 Redis 那一半）。
- *
- * <p>★★ 為什麼需要「持久的那一半」：
- * Redis 的紀錄有 TTL，而且 Redis 可能被清空。
- * <b>而「同一個冪等鍵不可以建出兩張訂單」是不變量 I9</b> ——
- * 不變量要守在資料所在的地方（0.8.4）。
- *
- * <p>👉 實作是一張 {@code order_idempotency} 表，
- * 主鍵是 {@code (actor_id, idempotency_key)} 的 UNIQUE 約束
- * —— 那條約束才是 I9 真正的守門人。
+ * 下單操作的持久冪等紀錄，與訂單在同一個資料庫交易提交。
+ * UNIQUE(actor_id, idempotency_key) 保護唯一性；intent 保護「同鍵同內容」。
+ * 04-controller 已有持久 owner store；這裡補齊直接呼叫 Service 的入口契約。
+ * 記憶體版不模擬 rollback，原子性需以真實資料庫驗證。
  */
 public interface IdempotencyStore {
+    record Entry(CreateOrderIntent intent, String orderId) {
+        public void requireSameIntent(String key, CreateOrderIntent candidate) {
+            if (!intent.equals(candidate)) throw new IdempotencyKeyReusedException(key);
+        }
+    }
 
-    Optional<String> findOrderId(String actorId, String idempotencyKey);
+    Optional<Entry> find(String actorId, String idempotencyKey);
 
-    /**
-     * @throws IdempotencyKeyReusedException 同一個鍵已對應到另一張訂單
-     *         （⚠️ 這個例外由 UNIQUE 約束的違反轉譯而來，04-controller 4.13.6 定義）
-     */
-    void record(String actorId, String idempotencyKey, String orderId, Instant at);
+    void record(String actorId, String idempotencyKey, CreateOrderIntent intent,
+                String orderId, Instant at);
+}
+
+```
+
+**請求意圖必須完整且可比較**；不能只存 orderId。以下保留所有業務欄位，
+用不可變 record 的 equals 比較，避免雜湊正規化不一致。此版本把項目順序也視為內容的一部分；
+actor 與 key 已是紀錄的 scope，不重複放入 intent。資料庫 adapter 需持久保存完整 intent
+（或使用版本固定、無歧義編碼的 fingerprint），不能由訂單現在的商品價格反推。
+
+```java
+package example.shop.order.application.port;
+
+import example.shop.order.service.command.CreateOrderCommand;
+import java.util.List;
+
+public record CreateOrderIntent(List<CreateOrderCommand.Line> lines, String shippingAddressId,
+        String couponCode, String customerNote, CreateOrderCommand.InvoiceSpec invoice) {
+    public CreateOrderIntent { lines = List.copyOf(lines); }
+
+    public static CreateOrderIntent from(CreateOrderCommand cmd) {
+        return new CreateOrderIntent(cmd.lines(), cmd.shippingAddressId(), cmd.couponCode(),
+                                     cmd.customerNote(), cmd.invoice());
+    }
 }
 ```
+
+兩個相同 key 的併發交易仍可能同時讀到 empty。UNIQUE 衝突時，失敗交易必須先 rollback，
+再由交易外的協調層以新交易讀取已完成紀錄，比對 intent 後回傳結果或 409；
+不能在已標記 rollback-only 的交易內吞掉衝突。若紀錄未完成，沿用 04-controller 的
+in-progress／owner 流程。驗收需涵蓋同鍵同內容、改商品／數量／地址／券／備註／發票，
+以及 Web 冪等紀錄過期後直接進 Service 的情況。
+
 
 ```java
 package example.shop.common.event;
@@ -6244,7 +6321,7 @@ CompletableFuture.runAsync(() -> erpPort.push(snapshot), integrationExecutor);
 | ⑤ | **基礎設施**（Repository 實作） | 1 | 放 Service → SQL 洩漏到編排層，換 DB 要改 Service |
 | ⑥ | **基礎設施**，而且要在 **commit 之後** | 1、3 | 在交易裡 → 交易回滾但購物車已清掉（不可逆） |
 | ⑦ | 🔴 **陷阱**：`LocalDate.now()` 是 I/O，`maxSeq + 1` 有 race。→ **`OrderNumberGenerator` 埠**，實作用原子的序號表 | 1、4、6 | 併發下產生重複編號 → UNIQUE 違反 → 下單失敗（或更糟：沒有 UNIQUE 時重複） |
-| ⑧ | **Domain**（`Money.allocate()`） | 1、2 | 放 Service → 每個呼叫點各寫一次「最後一筆補齊」→ 有的忘記 → 差 1 分錢 |
+| ⑧ | **Domain**（`Money.allocate()`） | 1、2 | 放 Service → 每個呼叫點各寫一次「最小單位與餘數分配」→ 有的忘記 → 差 1 分錢 |
 | ⑨ | **Domain**（`PricingPolicy`） | 1、2 | 放 Service → 購物車試算與下單算出不同價格 |
 | ⑩ | **交易外的事件監聽器** | 3 | 在交易裡 → 事故 1、2 |
 | ⑪ | **Domain**（`Order.ship()`，不變量 I11） | 2、6 | 放 Service → 第二個入口漏檢 → 多發貨 |

@@ -1029,6 +1029,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.Map;
+import java.util.UUID;
+import org.springframework.security.crypto.password.PasswordEncoder;
 
 /**
  * 6.7：把「Google 登入的人」對應到你自己的 app_user。
@@ -1042,7 +1044,8 @@ import java.util.Map;
 public class SocialAccountService {
 
     private final JdbcTemplate jdbc;
-    public SocialAccountService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final PasswordEncoder encoder;
+    public SocialAccountService(JdbcTemplate jdbc, PasswordEncoder encoder) { this.jdbc=jdbc; this.encoder=encoder; }
 
     public record Result(long userId, boolean created) {}
 
@@ -1055,12 +1058,13 @@ public class SocialAccountService {
                     Long.class, provider, sub);
             return new Result(userId, false);                       // 老朋友，用 sub 認出來
         } catch (EmptyResultDataAccessException notLinkedYet) {
-            // 第一次用這個 provider 登入 —— 建一個本地帳號（沒有密碼，放不可登入的標記）
+            // 第一次用這個 provider 登入 —— 建一個本地帳號（禁止本地密碼登入，另存不可知的隨機雜湊作佔位）
             jdbc.update("""
                     INSERT INTO app_user (username, password_hash, display_name, enabled,
-                                          account_non_expired, account_non_locked, token_version)
-                    VALUES (?, '{noop}!external!', ?, TRUE, TRUE, TRUE, 0)""",
-                    provider + ":" + sub, displayName == null ? email : displayName);
+                                          account_non_expired, account_non_locked, local_password_enabled, token_version)
+                    VALUES (?, ?, ?, TRUE, TRUE, TRUE, FALSE, 0)""",
+                    "social:" + UUID.randomUUID(), encoder.encode(UUID.randomUUID().toString()),
+                    displayName == null ? (email == null ? "External user" : email) : displayName);
             long userId = jdbc.queryForObject("SELECT LAST_INSERT_ID()", Long.class);
             jdbc.update("""
                     INSERT INTO social_identity (provider, subject, user_id, email_at_link, linked_at)
@@ -1187,7 +1191,13 @@ Spring 提供 `OidcUserService` 讓你在登入流程裡掛這一步——把「
 @Bean
 @Order(2)
 SecurityFilterChain webChain(HttpSecurity http, AuthenticationManager am,
-                             SessionRegistry registry) throws Exception {
+                             SessionRegistry registry,
+                             OAuth2UserService<OidcUserRequest, OidcUser> shopOidcUserService) throws Exception {
+    // 與 OIDC provider 共存；不要直接把整條 chain 的 manager 換成只有 Dao provider 的 am。
+    http.getSharedObject(org.springframework.security.config.annotation.authentication.builders.AuthenticationManagerBuilder.class)
+            .parentAuthenticationManager(null); // 避免失敗後再回退到另一個 Dao provider
+    for (var provider : ((org.springframework.security.authentication.ProviderManager)am).getProviders())
+        http.authenticationProvider(provider);
     return http
         .authorizeHttpRequests(a -> a
             .requestMatchers("/actuator/health", "/login/**", "/oauth2/**").permitAll()
@@ -1206,27 +1216,76 @@ SecurityFilterChain webChain(HttpSecurity http, AuthenticationManager am,
 **② 一個 `OidcUserService`：登入成功後，把 Google 的人換成你系統的人**（接 6.7）：
 
 ```java
-/**
- * 06 章的關鍵接點：oauth2Login 驗完 Google 的 id_token 後呼叫這裡，
- * 我們用 sub 對應 / 建立 app_user，並把 app_user 的角色 / 權限【疊加】上去（6.6.3）。
- */
-@Bean
-OAuth2UserService<OidcUserRequest, OidcUser> shopOidcUserService(SocialAccountService social,
-                                                                 JdbcTemplate jdbc) {
-    OidcUserService delegate = new OidcUserService();
-    return request -> {
-        OidcUser oidc = delegate.loadUser(request);                    // Spring 驗好的「Google 的人」
-        String provider = request.getClientRegistration().getRegistrationId();
-        var r = social.loginOrRegister(provider, oidc.getSubject(),
-                oidc.getEmail(), oidc.getFullName());                  // 6.7：用 sub 綁到 app_user
-        // 把你系統的角色 / 權限查出來，疊加到 Google 給的 scope 上（6.6.3）
-        Set<GrantedAuthority> authorities = new LinkedHashSet<>(oidc.getAuthorities());
-        authorities.addAll(loadAppAuthorities(jdbc, r.userId()));      // 你自己的 RBAC（03 章）
-        // 回一個帶著「你系統身分」的 OidcUser（userId 塞進 attributes，之後 @AuthenticationPrincipal 拿得到）
-        return new DefaultOidcUser(authorities, oidc.getIdToken(), oidc.getUserInfo(), "sub");
-    };
+package com.example.lab09.shop;
+
+import com.example.lab09.ch06.SocialAccountService;
+import org.springframework.context.annotation.*;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.client.oidc.userinfo.*;
+import org.springframework.security.oauth2.client.userinfo.OAuth2UserService;
+import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
+import org.springframework.security.oauth2.core.oidc.user.OidcUser;
+import java.util.*;
+
+@Configuration
+public class ShopOidcConfig {
+    @Bean SocialAccountService socialAccountService(JdbcTemplate jdbc, PasswordEncoder encoder) {
+        return new SocialAccountService(jdbc, encoder); // 明確建立成品 bean，不依賴實驗 social profile
+    }
+    @Bean
+    OAuth2UserService<OidcUserRequest, OidcUser> shopOidcUserService(SocialAccountService social,
+                                                                  ShopUserDetailsService users) {
+        OidcUserService delegate=new OidcUserService();
+        return request -> {
+            OidcUser external=delegate.loadUser(request);
+            var linked=social.loginOrRegister(request.getClientRegistration().getRegistrationId(),
+                    external.getSubject(),external.getEmail(),external.getFullName());
+            var local=users.loadById(linked.userId());
+            // 密碼登入旗標不限制 OIDC；本地帳號的停用／鎖定／帳號期限必須限制所有登入方式。
+            if (!local.isEnabled() || !local.isAccountNonLocked() || !local.isAccountNonExpired())
+                throw new OAuth2AuthenticationException("LOCAL_ACCOUNT_UNAVAILABLE");
+            Set<GrantedAuthority> authorities=new LinkedHashSet<>(external.getAuthorities());
+            authorities.addAll(local.getAuthorities());
+            return new ShopOidcUser(local.userId(),local.getUsername(),authorities,external);
+        };
+    }
 }
 ```
+
+```java
+package com.example.lab09.shop;
+
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.oauth2.core.oidc.user.*;
+import java.util.*;
+
+public final class ShopOidcUser extends DefaultOidcUser implements LocalIdentity {
+    private final Long userId;
+    private final String username;
+    private final Map<String,Object> localAttributes;
+    public ShopOidcUser(Long userId, String username, Collection<? extends GrantedAuthority> authorities, OidcUser source) {
+        super(authorities, source.getIdToken(), source.getUserInfo(), "sub");
+        this.userId=userId; this.username=username;
+        var attributes=new LinkedHashMap<>(super.getAttributes());
+        attributes.put("userId",userId); // 僅增加本地欄位，不改 provider 的 sub
+        this.localAttributes=Collections.unmodifiableMap(attributes);
+    }
+    @Override public Long userId() { return userId; }
+    @Override public String getName() { return username; }
+    @Override public Map<String,Object> getAttributes() { return localAttributes; }
+    @Override public Map<String,Object> getClaims() { return localAttributes; }
+    @Override public boolean equals(Object other) {
+        return other instanceof ShopOidcUser u && userId.equals(u.userId);
+    }
+    @Override public int hashCode() { return userId.hashCode(); }
+}
+```
+
+`LocalIdentity` 讓 ShopSessionAdmin.kick() 同時辨識表單與 OIDC session；外部 sub 僅留作 provider 身分，不作本地擁有者 id。這裡兩種 principal 各自以 userId 比對相等，maximumSessions 的數量分別計算；若要求跨登入方式合計上限，需另用統一的 session 索引。停用帳號會踢掉兩種登入方式，並拒絕之後的 OIDC 登入。
+
+社群帳號 `local_password_enabled=FALSE`，且以不可知的隨機 BCrypt 值佔位。既有 `{noop}!external!` 帳號必須遷移為禁止密碼登入、換掉雜湊並撤銷既有 session／token；不能只修新註冊路徑。正式註冊也應限制 display_name 長度與處理唯一鍵競態重試。
 
 **③ 本章結束時，shop-service 的登入入口**：
 

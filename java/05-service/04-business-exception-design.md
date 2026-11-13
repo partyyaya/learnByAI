@@ -5564,34 +5564,23 @@ public void onOrderPlaced(OrderPlacedEvent event) {
 }
 ```
 
-**答案分三種情況**（實務上會踩到的順序）：
+**Spring 6.1.6 的處理方式**（02 章 2.12.2 有對照測試）：
 
 | 情況 | 結果 |
 |---|---|
-| **同步的 `AFTER_COMMIT`（預設）** | 例外**往上冒到原本的呼叫端** —— 而交易**已經 commit 了** |
-| `@Async` 的 listener | 例外被執行緒池吞掉（只進 log） |
-| 有多個 listener | 🔴 **第一個拋例外之後，後面的 listener 不會執行** |
+| 同步的註解式 `AFTER_COMMIT` | 在 `afterCompletion(COMMITTED)` 執行，例外記 log，不傳回原呼叫端；訂單已 commit |
+| `@Async void` listener 的方法本體 | 例外交給 `AsyncUncaughtExceptionHandler`；不回滾原交易 |
+| 有多個註解式 after-completion listener | 某一個拋錯會被記錄，後續 listener 仍可執行 |
+| 手動 `TransactionSynchronization.afterCommit()` | 例外可能傳回原呼叫端，但資料已 commit；與上列註解不同 |
 
-⚠️ **第一種情況的完整後果**：
+業務驗證放到 `AFTER_COMMIT` 已經太晚：即使拋出 ValidationFailedException，
+這個 listener 也不能使原操作回 422 或回滾。使用者可能看到成功，但通知缺失。
 
-```
-POST /api/orders
-  → 交易 commit（訂單已經在資料庫裡）✅
-  → AFTER_COMMIT listener 拋 ValidationFailedException
-  → 冒到 Controller
-  → advice 接到它 → 回【422】
-  → 🔴 客戶端看到「驗證失敗」，而訂單已經成立了
-```
-
-**這是最糟的一種**：**成功的操作回了失敗的狀態碼。**
-
-✅ **三條規則**：
-
-| # | 規則 | 為什麼 |
+| # | 規則 | 理由 |
 |---|---|---|
-| 1 | **`AFTER_COMMIT` 的 listener 不可以拋 `BusinessException`** | 業務驗證應該在交易**裡面**做完 |
-| 2 | listener 內部一律 `try { ... } catch (Exception e) { log.error }` | ⚠️ 而那正是 4.0 事故 3 的形狀 → 所以要加第 3 條 |
-| 3 | **失敗要進 outbox 或一張待重試的表**，不是只進 log | 06 章 |
+| 1 | after-completion listener 不做需否決原交易的業務驗證 | 要阻止 commit，應在 Service／Domain 或刻意設計的 BEFORE_COMMIT 邊界驗證 |
+| 2 | 處理失敗須記錄可觀測狀態與告警 | 框架記 log 不等於有人接手處理 |
+| 3 | 重要通知在原交易 enqueue outbox | commit 後才補寫待辦，中間仍可能崩潰遺失 |
 
 **規則 1 可以自動化**：
 
@@ -5607,35 +5596,29 @@ POST /api/orders
  */
 @ArchTest
 static final ArchRule afterCommit不可拋業務例外 =
-        noMethods().that().areAnnotatedWith(TransactionalEventListener.class)
-                   .should(new ArchCondition<JavaMethod>("建立 BusinessException") {
+        methods().that().areAnnotatedWith(TransactionalEventListener.class)
+                   .should(new ArchCondition<JavaMethod>("不在 after-completion listener 建立 BusinessException") {
                        @Override
                        public void check(JavaMethod m, ConditionEvents events) {
+                           if (m.getAnnotationOfType(TransactionalEventListener.class).phase()
+                                   == TransactionPhase.BEFORE_COMMIT) return;
                            m.getConstructorCallsFromSelf().stream()
                             .filter(call -> call.getTargetOwner()
                                     .isAssignableTo(BusinessException.class))
                             .forEach(call -> events.add(SimpleConditionEvent.violated(m,
-                                    "%s 建立了 %s —— AFTER_COMMIT 的例外會讓「成功的操作回失敗的狀態碼」（4.10.3）"
+                                    "%s 建立了 %s —— commit 後的業務驗證已無法否決原操作（4.10.3）"
                                             .formatted(m.getFullName(),
                                                        call.getTargetOwner().getSimpleName()))));
                        }
                    });
 ```
 
-⚠️ **規則寫成 `noMethods().that().areAnnotatedWith(TransactionalEventListener.class)`
-而不是只針對 `AFTER_COMMIT`**，理由：
-
-| phase | 拋業務例外會怎樣 |
-|---|---|
-| `BEFORE_COMMIT` | ⚠️ 交易會 rollback —— **這個是合理的**（它還在交易裡） |
-| `AFTER_COMMIT` | 🔴 4.10.3 的問題 |
-| `AFTER_ROLLBACK` | 🔴 例外覆蓋原本的例外 → 原因消失 |
-| `AFTER_COMPLETION` | 🔴 同上 |
-
-**四個裡面三個是錯的，而 `BEFORE_COMMIT` 用得極少**
-（02 章 2.12.1 的表：shop-service 沒有任何 `BEFORE_COMMIT` 的 listener）。
-👉 **所以規則涵蓋全部四個，並在 `because(...)` 說明
-「如果你真的需要 `BEFORE_COMMIT` 拋例外，加一個 `@SuppressWarnings` 級別的例外並寫理由」。**
+這條規則使用 **`methods().should(...)`**：自訂條件遇到問題會送出 `violated`，
+不可再包 `noMethods()`，否則雙重否定會讓違規通過。
+它放行可合理否決交易的 BEFORE_COMMIT；其他三個 phase 都已不能回滾原操作。
+此規則只看方法直接建立例外的呼叫，不能證明整個呼叫圖都不拋業務例外。
+須有一個故意違規的 listener fixture，確認 `rule.check(...)` 確實失敗；
+再以合法的 BEFORE_COMMIT fixture 確認沒有誤擋。
 
 ### 4.10.4 業務例外在 `REQUIRES_NEW` 邊界上
 
@@ -6002,8 +5985,8 @@ class BusinessExceptionRegistryTest {
      *
      * <p>⚠️⚠️ 三個容易寫錯的地方：
      * <ol>
-     *   <li><b>{@code enableAllInfo()} 而不是 {@code enableClassInfo()}</b> ——
-     *       後者只給【直接】子類別。<b>實測：28 vs 43。</b></li>
+     *   <li>{@code enableClassInfo()} 已足夠取得直接與間接子類別；
+     *       只要直接子類別時才加 {@code directOnly()}。</li>
      *   <li><b>要排除測試類別</b> —— 掃描會把測試裡的 inner class 也算進來。</li>
      *   <li>要排除 {@code abstract}（家族基底）。</li>
      * </ol>
@@ -6011,7 +5994,7 @@ class BusinessExceptionRegistryTest {
     static List<Class<? extends BusinessException>> concreteBusinessExceptions() {
         var out = new ArrayList<Class<? extends BusinessException>>();
         try (ScanResult scan = new ClassGraph()
-                .enableAllInfo()                                       // ★ ①
+                .enableClassInfo()                                     // ★ ① 遞移子類別
                 .acceptPackages("example.shop")
                 .scan()) {
             scan.getSubclasses(BusinessException.class.getName())
@@ -6027,54 +6010,21 @@ class BusinessExceptionRegistryTest {
 }
 ```
 
-⚠️⚠️ **第 ① 點是本節最重要的發現，值得完整看實測**：
+`getSubclasses()` 預設包含間接子類別；在 ClassGraph 4.8.172 的
+`Base → Middle → Leaf` 對照中，`enableClassInfo()` 與 `enableAllInfo()`
+都得到 Middle、Leaf。不能把掃描數量差異歸因為前者只掃直接子類別。
+`enableAllInfo()` 還開啟欄位、方法、註解等資訊，本測試沒有使用到。
 
-```
-enableClassInfo()  →  getSubclasses(BusinessException) = 28
-enableAllInfo()    →  getSubclasses(BusinessException) = 43
-```
+若實際專案掃到的集合不同，要查 classpath、acceptPackages、可見性與測試類別過濾；
+非 public 類別需依需求設定 `ignoreClassVisibility()`。本 registry 要的是 public 具體業務例外。
+保留數量下限作粗略警報，另外確認關鍵葉節點真的被掃到，才不會只靠魔術數字。
 
-**差的 15 個是誰**：
-
-| 漏掉的 | 為什麼 |
-|---|---|
-| `OrderNotShippableException` 等 **4 個** | 它們繼承 `OrderStateException`（家族基底）→ **不是 `BusinessException` 的直接子類別** |
-| **8 個** coupon 例外 | 它們繼承 `CouponException` → 同上 |
-| `OrderStateException` / `CouponException` 本身 | abstract（本來就要排除） |
-| 1 個測試的 inner class | 要排除 |
-
-🔴 **而「漏掉 12 個具體例外」的後果是災難性的**：
-
-```
-4.6.2 的「每個 422 都有 errors[]」→ 漏檢 8 個 coupon 例外
-4.8.7 的 args() 守門人 → 12 個例外從來沒被實例化過 → 檢查沒跑到
-4.12.2 的訊息參數檢查 → 同上
+```java
+assertThat(all).hasSizeGreaterThanOrEqualTo(41);
+assertThat(all).contains(OrderNotShippableException.class, CouponExhaustedException.class);
 ```
 
-**而這個 bug 的表現形式是：所有測試都綠。**
-
-> 📌📌 **這是本章最重要的一個一般規則**：
->
-> **一個「掃描全部 X」的測試，最危險的失敗方式不是紅燈，是「掃到的比你以為的少」。**
->
-> ✅ **所以掃描測試必須斷言「掃到幾個」**：
->
-> ```java
-> assertThat(all).hasSizeGreaterThanOrEqualTo(41);
-> ```
->
-> ⚠️ 而**不要**寫成 `isEqualTo(41)` —— 那會讓「正常地新增一個例外」變成紅燈。
-> `>= 41` 抓的是「掃描機制壞掉」，而不是「例外數量變了」。
-
-⚠️ **注意 4.5.7 家族 1 與家族 5 的「`package-private` + `abstract`」設計
-在這裡付了一筆學費**：
-
-| 設計 | 買到什麼 | 付了什麼 |
-|---|---|---|
-| 家族基底 `package-private` + `abstract` | ✅ 沒有人能 catch 它（4.5.7） | 🔴 **讓「直接子類別」的掃描漏掉 12 個** |
-
-**這不是「設計錯了」，是「一個決定在另一個地方有代價」** ——
-而那個代價**只在跑了掃描測試之後才看得到**。
+新增其他例外不會讓這些斷言失敗；套件或層級掃描壞掉則會紅燈。
 
 #### 「每個 `ErrorCode` 都有例外用它」
 
@@ -7053,8 +7003,8 @@ ext("order", order)
 
 **誤區 8：`AFTER_COMMIT` 的 listener 拋業務例外**
 
-**交易已經 commit，而客戶端收到 4xx** ——
-**成功的操作回了失敗的狀態碼**（4.10.3）。
+**業務驗證無法再否決已提交的操作**；註解 listener 的例外會記 log，
+不會自動變成回給客戶端的 4xx。重要後續工作要有 outbox 與失敗狀態（4.10.3）。
 
 **誤區 9：以為「例外很慢」所以不用例外**
 
@@ -7072,8 +7022,8 @@ ext("order", order)
 
 **誤區 11：掃描測試綠燈就以為掃到全部**
 
-⚠️ **`ClassGraph` 的 `enableClassInfo()` 只給直接子類別** ——
-實測漏掉 12 個例外，而**所有測試都綠**（4.12.1）。
+⚠️ `enableClassInfo()` 已包含間接子類別；真正要防的是錯誤掃描範圍、
+classpath 或可見性過濾造成的漏掃，甚至掃到空集合仍全綠（4.12.1）。
 
 ✅ **掃描測試必須有下限斷言**：`assertThat(all).hasSizeGreaterThanOrEqualTo(41)`。
 
@@ -7210,7 +7160,7 @@ void 每個業務例外都有ErrorCode() {
 
 | # | 問題 | 讓它永遠綠嗎 |
 |---|---|---|
-| 1 | 🔴 **`enableClassInfo()` 只給直接子類別** | ⚠️ 部分 —— 它會漏掉繼承家族基底的 12 個 |
+| 1 | ⚠️ **沒有關閉 ScanResult** | 不會假綠，但可能持有掃描資源；用 try-with-resources。`enableClassInfo()` 本身可取得間接子類別 |
 | 2 | 🔴🔴 **`acceptPackages("example.shop.order")`** | ⚠️ 漏掉 `coupon`、`payment`、`stock` 三個套件共 13 個 |
 | 3 | 🔴🔴 **斷言的是「有建構子」** | ✅ **永遠綠** —— 每個類別都至少有一個建構子 |
 | 4 | 🔴🔴 **沒有下限斷言** | ✅ **永遠綠** —— 即使掃到 0 個，for 迴圈跑 0 次，測試通過 |
@@ -7223,28 +7173,27 @@ void 每個業務例外都有ErrorCode() {
 ```java
 @Test
 void 每個業務例外都有ErrorCode() {
-    var exceptions = new ClassGraph()
-            .enableAllInfo()                              // ★ ① 遞移
-            .acceptPackages("example.shop")                // ★ ② 全部套件
-            .scan()
-            .getSubclasses(BusinessException.class.getName())
-            .loadClasses(BusinessException.class)
-            .stream()
-            .filter(c -> !java.lang.reflect.Modifier.isAbstract(c.getModifiers()))
-            .filter(c -> !c.getName().contains("Test"))
-            .toList();
+    try (var scan = new ClassGraph().enableClassInfo()
+            .acceptPackages("example.shop").scan()) {
+        var exceptions = scan.getSubclasses(BusinessException.class.getName())
+                .loadClasses(BusinessException.class)
+                .stream()
+                .filter(c -> !java.lang.reflect.Modifier.isAbstract(c.getModifiers()))
+                .filter(c -> !c.getName().contains("Test"))
+                .toList();
 
-    // ★★ ④ 下限斷言 —— 掃描機制壞掉時要紅燈
-    assertThat(exceptions)
-            .as("掃到的例外數量異常偏低 —— 檢查 enableAllInfo / acceptPackages")
-            .hasSizeGreaterThanOrEqualTo(41);
+        // ★★ ④ 下限斷言 —— 掃描機制壞掉時要紅燈
+        assertThat(exceptions)
+                .as("掃到的例外數量異常偏低 —— 檢查 acceptPackages / classpath / visibility")
+                .hasSizeGreaterThanOrEqualTo(41);
 
-    // ★ ③ 斷言真正在意的事：ErrorCode 不是 null
-    for (var cls : exceptions) {
-        BusinessException instance = ExceptionFixtures.instanceOf(cls);
-        assertThat(instance.errorCode())
-                .as("%s 沒有 ErrorCode", cls.getSimpleName())
-                .isNotNull();
+        // ★ ③ 斷言真正在意的事：ErrorCode 不是 null
+        for (var cls : exceptions) {
+            BusinessException instance = ExceptionFixtures.instanceOf(cls);
+            assertThat(instance.errorCode())
+                    .as("%s 沒有 ErrorCode", cls.getSimpleName())
+                    .isNotNull();
+        }
     }
 }
 ```
@@ -7276,14 +7225,14 @@ void 每個業務例外都有ErrorCode() {
 | # | `Retry` | 客戶端會做什麼 | ⚠️ 關鍵 |
 |---|---|---|---|
 | A | **`NONE`** | 顯示「折扣碼已用完」，讓使用者移除券 | ⚠️ **不是 `BACKOFF_AND_RETRY`** —— 券用完了不會再回來 |
-| B | **`BACKOFF_AND_RETRY`**（`UPSTREAM_ERROR`，502） | 指數退避後**原封不動**重送 | ✅ 對方回 500 代表「它沒處理成」 |
+| B | **`CHECK_STATUS`**（結果未知） | 查詢既有出貨請求的狀態，必要時人工對帳 | 500 也可能出現在出貨已完成、回應失敗之後；除非有明確冪等保證，不能盲目重送 |
 | C | 🔴 **`CHECK_STATUS`**（`UPSTREAM_TIMEOUT`，504） | **打 `GET /shipments/{id}` 查狀態** | ⚠️⚠️ **timeout ≠ 失敗** —— 倉庫可能已經出貨了。盲重試 = **出兩次貨** |
 | D | **`REFETCH_THEN_RETRY`**（412） | 重新 `GET` 拿新的 ETag，再帶 `If-Match` 送 | ✅ 原封不動重送必定再次 412 |
 
-⚠️ **B 與 C 的差別是這一題的重點**，而它就是 4.9.1 那張表最重要的一列：
+**B 與 C 都不足以證明副作用未發生**，不能只靠 HTTP 狀態決定安全重試：
 
 ```
-對方回 500     → 我們【知道】它沒做成 → 可以盲重試
+對方回 500     → 副作用是否已發生未知 → 查單／對帳
 對方 timeout   → 我們【不知道】       → 🔴 只能查
 ```
 
@@ -7292,7 +7241,7 @@ void 每個業務例外都有ErrorCode() {
 | # | `retryable()` | `safeToRetryBlindly()` |
 |---|---|---|
 | A | `false` | `false` |
-| B | `true` | ✅ **`true`** |
+| B | `true` | **`false`**（先查狀態） |
 | C | `true` | 🔴 **`false`** ← 這一列就是事故 1 |
 | D | `true` | `false`（要先 refetch） |
 

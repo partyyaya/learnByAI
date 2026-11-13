@@ -611,4 +611,4 @@ if (typeof CSS !== 'undefined' && typeof CSS.registerProperty === 'function') {
 4. 建立一個不註冊的顏色變數與一個註冊 `<color>` 的變數，分別指定 `16px`，查看 Computed 結果。
 5. 先移除 meter 自己在 CSS 與 inline style 中的進度宣告，將進度只設在父層，再切換 `inherits: false/true`，解釋 meter 為何取得不同值。
 
-需要以 JS 監看容器尺寸時，可接著閱讀 [瀏覽器原生 API：ResizeObserver](./browser-native-apis.md)。
+需要以 JS 監看容器尺寸時，可接著閱讀 [瀏覽器原生 API：ResizeObserver](../javascript-course/15-browser-native-apis.md#154-resizeobserver容器變大或變小了)。

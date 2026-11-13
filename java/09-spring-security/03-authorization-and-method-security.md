@@ -4663,7 +4663,12 @@ public class RbacUserDetailsService implements UserDetailsService {
                 }, u.get("id"));
         seen.forEach(s -> auth.add(new SimpleGrantedAuthority(s)));
 
-        java.sql.Timestamp exp = (java.sql.Timestamp) u.get("credentials_expire_at");
+        Object expiryValue = u.get("credentials_expire_at");
+        java.time.LocalDateTime exp;
+        if (expiryValue == null) exp = null;
+        else if (expiryValue instanceof java.time.LocalDateTime value) exp = value;
+        else if (expiryValue instanceof java.sql.Timestamp value) exp = value.toLocalDateTime();
+        else throw new IllegalArgumentException("未知的 credentials_expire_at 型別");
         return User.withUsername((String) u.get("username"))
                 .password((String) u.get("password_hash"))
                 .authorities(auth)
@@ -6081,7 +6086,7 @@ class WriteSqlTest {
 **如果「只看得到自己的」是整個系統的通則**（多租戶 SaaS 最典型），
 在每一個查詢方法上加條件會很快失控——**漏掉一個就是一個洞**。
 
-**Hibernate 的 `@Filter` 可以把它變成【資料庫層的預設】**：
+**Hibernate `@Filter` 可替 HQL／JPQL 列表補條件，但不能當完整的資料隔離防線**。本節只示範查詢便利性，資源授權仍採做法 D。
 
 ```java
 @Entity
@@ -6163,43 +6168,21 @@ ord3 有 10000 筆，alice 只有 3 筆。兩次呼叫的【Java 程式碼一模
 JIT 暖機、作業系統快取、連線池狀態都會影響）。
 **要看的是【載入幾個 entity】那一欄**——它只跟你寫的程式碼有關，重跑一百次都一樣。
 
-**怎麼「自動」開啟 filter？** 用一個 `OncePerRequestFilter` 或 AOP，在每個請求開頭讀 `SecurityContext`：
+開啟 filter 的範圍要在明確的交易內，結束時還原；不要貼上通用 aspect 後就假設所有 service 都安全：
 
 ```java
-package com.example.lab09.ch03;
-
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
-import org.aspectj.lang.ProceedingJoinPoint;
-import org.aspectj.lang.annotation.*;
-import org.hibernate.Session;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-
-/**
- * 3.8.7：在每一個 @Transactional 的 Service 方法上自動開啟資料範圍。
- * ⚠️ 一定要放在【交易之內】—— filter 是掛在 Hibernate Session 上的，
- *    沒有交易就沒有 Session。
- */
-@Aspect
-public class DataScopeAspect {
-
-    @PersistenceContext
-    private EntityManager em;
-
-    @Around("@within(org.springframework.stereotype.Service) "
-          + "&& @annotation(org.springframework.transaction.annotation.Transactional)")
-    public Object enableScope(ProceedingJoinPoint pjp) throws Throwable {
-        Authentication me = SecurityContextHolder.getContext().getAuthentication();
-        boolean staff = me != null && me.getAuthorities().stream()
-                .anyMatch(a -> a.getAuthority().equals("order:read:all"));
-        if (me != null && !staff) {
-            em.unwrap(Session.class).enableFilter("ownerScope").setParameter("owner", me.getName());
-        }
-        return pjp.proceed();
-    }
+@Transactional(readOnly = true)
+public int countAllWithFilter(String owner) {
+    var session = em.unwrap(org.hibernate.Session.class);
+    if (session.getEnabledFilter("ownerScope") != null)
+        throw new IllegalStateException("範例不支援巢狀覆寫 ownerScope");
+    session.enableFilter("ownerScope").setParameter("owner", owner);
+    try { return repo.findAll().size(); }
+    finally { session.disableFilter("ownerScope"); }
 }
 ```
+
+即使這裡的列表正確，`em.find(Ord3.class, bobId)` 仍可取回 bob 的資料。單筆查詢改用 `findByIdAndOwnerUsername`，寫入把擁有者條件放入 WHERE。參考 [Hibernate 6.4 Filter 限制](https://docs.hibernate.org/orm/6.4/userguide/html_single/#pc-filter)。
 
 ⚠️ **這個做法很強大，也很危險。四件事要先想清楚**：
 
@@ -6210,17 +6193,17 @@ public class DataScopeAspect {
 
 🔴 ② 它只作用在【Hibernate 的查詢】上。JdbcTemplate、原生 SQL、其他服務直連資料庫 —— 全部不受保護。
 
-⚠️ ③ 批次任務 / 排程沒有 SecurityContext，上面那段 aspect 會【不開 filter】= 看得到全部。
+⚠️ ③ 批次任務 / 排程沒有 SecurityContext，沒有明確開啟 filter 時= 看得到全部。
      那正好是你要的，但也表示「忘記在某個地方設身分」就等於全開。
 
-⚠️ ④ 一級快取會穿透 filter：同一個 Session 裡先用 em.find(Ord3.class, 1002L) 載入過，
-     之後即使開了 filter 也還是拿得到那個物件。
+🔴 ④ 主鍵載入本來就不套用 filter：EntityManager.find／repo.findById 在空的一級快取也會繞過。
+     已載入的一級快取同樣不會重新授權；不能用「我開過 filter」取代資源條件。
 ```
 
 📌 **判準**：
 
 ```
-✅ 適合：多租戶 SaaS（tenant_id 是【每一張表都有】的欄位），漏一個查詢就是跨租戶外洩
+⚠️ 適合：已有完整資源／租戶隔離，再用 filter 簡化 HQL／JPQL 查詢；不可單獨保護多租戶 SaaS
 ⚠️ 不適合：只有一兩張表需要「只看自己的」—— 直接把條件寫進查詢（做法 D）更清楚
 ```
 
@@ -6236,7 +6219,7 @@ public class DataScopeAspect {
 | 單筆讀取，規則複雜 | `@PreAuthorize("@guard.canRead(#id, authentication)")` | 3.6.2 |
 | **列表 / 分頁** | **查詢條件，永遠不要用 `@PostFilter`** | 3.8.5 |
 | **任何會寫資料的操作** | **授權條件寫進 `WHERE`** | 3.8.6 |
-| 整個系統都要「只看自己的」 | 資料範圍過濾器 | 3.8.7 |
+| 整個系統都要「只看自己的」 | 可強制的租戶／資源條件；Filter 僅作查詢輔助 | 3.8.7 |
 | 「跑完才知道能不能給」且唯讀 | `@PostAuthorize` | 3.5.6 |
 
 ---
@@ -6777,6 +6760,17 @@ void 沒有新的端點掉進 anyRequest 兜底() {
    （這一章 3.2.5 的 AuthorizationDeniedEvent 是它的原料）
 ```
 
+先新增共用的本地身分介面，05／06 章的 JWT 與 OIDC 也會實作它：
+
+```java
+package com.example.lab09.shop;
+
+/** 表單、JWT、OIDC 共用的本地身分；外部 sub 不能代替 app_user.id。 */
+public interface LocalIdentity {
+    Long userId();
+}
+```
+
 **① 權限模型：五張表，規則只寫權限**
 
 ```java
@@ -6805,12 +6799,26 @@ public class ShopUserDetailsService implements UserDetailsService {
     @Override
     @Transactional(readOnly = true)
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        if (username != null) username = username.trim();
+        if (username == null || !username.matches("[A-Za-z0-9:_-]{1,64}"))
+            throw new UsernameNotFoundException("帳號格式不符");
+        username = username.toLowerCase(Locale.ROOT);
         Map<String, Object> u;
         try {
-            u = jdbc.queryForMap("""
+            u = jdbc.queryForObject("""
                     SELECT id, username, password_hash, display_name, enabled,
-                           account_non_expired, account_non_locked, credentials_expire_at
-                      FROM app_user WHERE username = ?""", username);
+                           account_non_expired, account_non_locked, local_password_enabled, credentials_expire_at
+                      FROM app_user WHERE username = ?""",
+                    (rs, rowNum) -> {
+                        Map<String, Object> row = new HashMap<>();
+                        row.put("id", rs.getLong("id"));
+                        for (String name : List.of("username", "password_hash", "display_name"))
+                            row.put(name, rs.getString(name));
+                        for (String name : List.of("enabled", "account_non_expired", "account_non_locked", "local_password_enabled"))
+                            row.put(name, rs.getBoolean(name));
+                        row.put("credentials_expire_at", rs.getObject("credentials_expire_at", LocalDateTime.class));
+                        return row;
+                    }, username);
         } catch (org.springframework.dao.EmptyResultDataAccessException e) {
             throw new UsernameNotFoundException(username);          // ★ 02 章 2.5.5 規則一
         }
@@ -6829,7 +6837,7 @@ public class ShopUserDetailsService implements UserDetailsService {
                     if (p != null) authorities.add(p);
                 }, u.get("id"));
 
-        java.sql.Timestamp exp = (java.sql.Timestamp) u.get("credentials_expire_at");
+        LocalDateTime exp = (LocalDateTime) u.get("credentials_expire_at");
         return new ShopUserDetails(
                 (Long) u.get("id"),
                 (String) u.get("username"),
@@ -6838,8 +6846,15 @@ public class ShopUserDetailsService implements UserDetailsService {
                 (Boolean) u.get("enabled"),
                 (Boolean) u.get("account_non_expired"),
                 (Boolean) u.get("account_non_locked"),
-                exp == null || exp.toLocalDateTime().isAfter(LocalDateTime.now()),
+                (Boolean) u.get("local_password_enabled"),
+                exp == null || exp.isAfter(LocalDateTime.now(java.time.ZoneOffset.UTC)),
                 authorities.stream().map(a -> (GrantedAuthority) new SimpleGrantedAuthority(a)).toList());
+    }
+
+    @Transactional(readOnly = true)
+    public ShopUserDetails loadById(Long id) {
+        String username = jdbc.queryForObject("SELECT username FROM app_user WHERE id=?", String.class, id);
+        return (ShopUserDetails) loadUserByUsername(username);
     }
 
     /**
@@ -6848,8 +6863,8 @@ public class ShopUserDetailsService implements UserDetailsService {
      */
     public record ShopUserDetails(Long userId, String username, String password, String displayName,
                                   boolean enabled, boolean accountNonExpired, boolean accountNonLocked,
-                                  boolean credentialsNonExpired,
-                                  List<GrantedAuthority> grantedAuthorities) implements UserDetails {
+                                  boolean localPasswordEnabled, boolean credentialsNonExpired,
+                                  List<GrantedAuthority> grantedAuthorities) implements UserDetails, LocalIdentity, LocalPasswordPolicy {
         @Override public Collection<? extends GrantedAuthority> getAuthorities() { return grantedAuthorities; }
         @Override public String getPassword() { return password; }
         @Override public String getUsername() { return username; }
@@ -6864,6 +6879,17 @@ public class ShopUserDetailsService implements UserDetailsService {
 📌 **`userId` 那一欄是這一章加的**，理由在 02 章 2.14 就預告過：
 `authentication.getName()` 只有帳號字串，而資源層的查詢條件通常要用 **id**
 （帳號可以改名，id 不會）。
+
+方法授權的開關獨立保存，後面替換兩條 chain 時保留這個類別：
+
+```java
+package com.example.lab09.shop;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+@Configuration
+@EnableMethodSecurity
+public class ShopMethodSecurityConfig {}
+```
 
 **② URL 層：粗篩**
 
@@ -6886,10 +6912,9 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
-@EnableMethodSecurity                     // ★ 03 章 3.5.2：這一行是方法層的開關
 public class ShopAuthzConfig {
 
-    /** REST API：無狀態 */
+    /** Basic 過渡版僅供非瀏覽器實驗；若可供瀏覽器使用，必須保留 CSRF（04 章 4.5.1）。 */
     @Bean
     @Order(1)
     SecurityFilterChain apiChain(HttpSecurity http, AuthenticationManager am) throws Exception {
@@ -6909,7 +6934,7 @@ public class ShopAuthzConfig {
                 // ── 兜底：一定是最後一條，而且不是 permitAll（3.3.4 / 3.3.8）──
                 .anyRequest().authenticated())
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-            .csrf(c -> c.disable())                                      // 00 章 0.5.6 的判準
+            .csrf(c -> c.disable())                                      // 僅限非瀏覽器 Basic 實驗
             .httpBasic(Customizer.withDefaults())                        // ⚠️ 暫時的，05 章換 JWT
             .exceptionHandling(e -> e
                 .authenticationEntryPoint(ApiErrors::write401)           // 01 章 1.8.5
@@ -6975,7 +7000,9 @@ public class ShopOrderQueryService {
     }
 
     static Long userId(Authentication me) {
-        return ((ShopUserDetailsService.ShopUserDetails) me.getPrincipal()).userId();
+        if (me == null || !(me.getPrincipal() instanceof LocalIdentity local) || local.userId() == null)
+            throw new org.springframework.security.access.AccessDeniedException("缺少本地身分");
+        return local.userId();
     }
 
     /** 單筆：不是你的，資料庫就不會回給你 → 天生就是 404（3.8.4） */
@@ -7048,6 +7075,11 @@ import java.util.Optional;
  */
 public interface ShopOrderRepo extends JpaRepository<ShopOrder, Long> {
 
+    /** 08 章退款：order:refund 是對全部訂單的員工權限，狀態轉換須原子檢查。 */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("update ShopOrder o set o.status = 'REFUNDED' where o.id = :id and o.status = 'PAID'")
+    int refundPaid(@Param("id") Long id);
+
     Optional<ShopOrder> findByIdAndOwnerId(Long id, Long ownerId);
 
     Page<ShopOrder> findByOwnerId(Long ownerId, Pageable pageable);
@@ -7061,6 +7093,18 @@ public interface ShopOrderRepo extends JpaRepository<ShopOrder, Long> {
     @Query("update ShopOrder o set o.status = 'CANCELLED' where o.id = :id and o.ownerId = :ownerId")
     int cancelOwned(@Param("id") Long id, @Param("ownerId") Long ownerId);
 }
+```
+
+成品表與實驗 ord3 分開；owner_id 儲存本地 userId，對齊 ShopOrder：
+
+```sql
+CREATE TABLE shop_order (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  owner_id BIGINT NOT NULL,
+  amount DECIMAL(12,2) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  KEY idx_shop_owner(owner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 ```
 
 **⑤ 三個啟動檢查 + 一個 CI 防線**
@@ -7089,7 +7133,7 @@ URL 層        公開端點列舉、寫入端點指定 HTTP 方法、/error 放�
 ```
 🔴 權限收回來要等下一次登入（3.7.7）                      → 04 章 / 05 章
 🔴 Basic 撐不住流量（02 章 2.3.5）                        → 05 章
-🔴 CSRF 直接 disable 了 —— 那是對的，但要說得出理由        → 04 章
+🔴 Basic 階段關 CSRF 僅限非瀏覽器實驗；供瀏覽器使用必須保留        → 04 章
 🔴 沒有稽核（3.2.5 的事件還沒接到任何地方）                 → 08 章
 🔴 多租戶還沒處理（3.8.7 只給了骨架）                       → 視需求
 ```

@@ -541,21 +541,25 @@ public class ContextPropagatingTaskDecorator implements TaskDecorator {
         // ★ 在【提交任務的】執行緒上抓快照
         Map<String, String> mdc = MDC.getCopyOfContextMap();
         LocaleContext locale = LocaleContextHolder.getLocaleContext();
-        SecurityContext security = SecurityContextHolder.getContext();
+        var authentication = SecurityContextHolder.getContext().getAuthentication();
 
         return () -> {
-            // ★ 在【執行任務的】執行緒上還原
+            // 執行緒池 worker 或 CallerRuns 的呼叫端都可能已有 context。
+            Map<String, String> previousMdc = MDC.getCopyOfContextMap();
+            LocaleContext previousLocale = LocaleContextHolder.getLocaleContext();
+            SecurityContext previousSecurity = SecurityContextHolder.getContext();
             try {
-                if (mdc != null) MDC.setContextMap(mdc);
+                if (mdc == null) MDC.clear(); else MDC.setContextMap(mdc);
                 LocaleContextHolder.setLocaleContext(locale);
-                SecurityContextHolder.setContext(security);
+                // 用新的容器避免任務以 setAuthentication 改到提交者的容器。
+                SecurityContext taskSecurity = SecurityContextHolder.createEmptyContext();
+                taskSecurity.setAuthentication(authentication);
+                SecurityContextHolder.setContext(taskSecurity);
                 runnable.run();
             } finally {
-                // ⚠️⚠️ 這個 finally 不是可選的 ——
-                //    池子裡的執行緒會被【重複使用】，不清掉就會洩漏給下一個任務
-                MDC.clear();
-                LocaleContextHolder.resetLocaleContext();
-                SecurityContextHolder.clearContext();
+                if (previousMdc == null) MDC.clear(); else MDC.setContextMap(previousMdc);
+                LocaleContextHolder.setLocaleContext(previousLocale);
+                SecurityContextHolder.setContext(previousSecurity);
             }
         };
     }
@@ -942,27 +946,25 @@ public void asyncAndTransactional(String id) {
 | 呼叫端**完全不知道**它成功了沒 | 回傳 `void` → 例外只會進 `AsyncUncaughtExceptionHandler` |
 | 它**佔用一條連線** | 🔴 非同步池的大小要納入連線池的計算（02 章 2.11） |
 
-**「`@Async` 必須在外層」不是選擇題，而 Spring 已經幫你決定了**：
+`@EnableAsync.order` 是 **AsyncAnnotationBeanPostProcessor 的處理順序**，
+不能直接解讀為 Async advisor 在代理鏈的內外順序。預設 BPP 晚執行，
+Async advisor 又以 `beforeExistingAdvisors=true` 加到已有代理前面，所以通常已是外層。
+提前設為 `HIGHEST_PRECEDENCE` 反而可能讓後續交易代理包住 Async 代理，
+交易在提交者結束，worker 的 JDBC 寫入變成 autocommit。
 
 ```java
-// AbstractAsyncConfiguration / ProxyAsyncConfiguration
-AsyncAnnotationBeanPostProcessor bpp = new AsyncAnnotationBeanPostProcessor();
-bpp.setOrder(this.enableAsync.getNumber("order"));    // ★ 預設 Ordered.LOWEST_PRECEDENCE
-```
-
-⚠️ **預設是 `LOWEST_PRECEDENCE`（最內層），而那是錯的方向。**
-
-```java
-@EnableAsync(order = Ordered.HIGHEST_PRECEDENCE)      // ★★ 明確設成最外層
-```
-
-**三個註解的完整順序**（05 章 5.2.2 定了前兩個，這裡補第三個）：
-
-```java
-@EnableAsync(order = Ordered.HIGHEST_PRECEDENCE)                    //  最外層
+@EnableAsync // 保留預設 BPP order，不把它當作 advice order 設定
 @EnableCaching(order = Ordered.HIGHEST_PRECEDENCE + 100)
-@EnableTransactionManagement(order = Ordered.HIGHEST_PRECEDENCE + 200)  // 最內層
+@EnableTransactionManagement(order = Ordered.HIGHEST_PRECEDENCE + 200)
 ```
+
+本課 Boot 3.2.5／Spring 6.1.6、CGLIB 的回歸驗證：預設 Async 的 worker 有交易，
+寫入後拋錯會回滾；把 Async BPP 提前的反例則沒有 worker 交易且資料留下。
+自訂代理、Aspect 或版本升級時，仍需檢查實際代理鏈；不要靠註解排列猜順序。
+較容易理解的設計是兩個 Bean：`@Async` 入口呼叫另一個 `@Transactional` worker，
+再以「worker 內交易存在＋失敗資料未留下」的整合測試確認。
+
+**預期的執行順序**（快取命中不開交易，沿用 05 章 5.2.2）：
 
 **為什麼是這個順序**：
 
@@ -1118,7 +1120,7 @@ public void onOrderPlaced(OrderPlacedEvent event) { … }         // commit 之�
 
 ```
 ⑫ connection.commit()                     ← 業務資料在這裡被 commit
-⑬ AFTER_COMMIT listener 開始跑
+⑭ afterCompletion(COMMITTED) 執行註解式 AFTER_COMMIT listener
    │
    ├─ jdbc.update("insert into points …")
    │    └─ DataSourceUtils.getConnection() 拿到【ThreadLocal 上綁著的那條】
@@ -1318,6 +1320,7 @@ public class OutboundClients {
                         .build())
                 // ⚠️ 預設會自動重試冪等方法（GET/HEAD/…）—— 我們要自己控制重試（6.6）
                 .disableAutomaticRetries()
+                .disableRedirectHandling() // 有副作用請求不讓底層隱含重送到其他位置
                 .build();
 
         return builder.clone()
@@ -1389,54 +1392,51 @@ public class TraceHeaderInterceptor implements ClientHttpRequestInterceptor {
 **轉接器的職責是翻譯，`application` 層不可以看到任何 HTTP 的東西。**
 
 ```java
-/**
- * ★★ 把「HTTP 的失敗」翻譯成「我們的失敗」，而翻譯的判準只有一個：
- *
- * <blockquote><b>對方到底有沒有處理我們的請求？</b></blockquote>
- *
- * <p>這個判準決定了「可不可以重試」（6.6.1），而它與 HTTP 狀態碼<b>不是一對一</b>。
- */
+/** 有副作用請求的保守預設；供應商特定契約應由專屬 adapter 實作。 */
 public class OutboundStatusHandler implements ResponseErrorHandler {
-
     private final String clientName;
+
+    public OutboundStatusHandler(String clientName) { this.clientName = clientName; }
+
+    @Override
+    public boolean hasError(ClientHttpResponse response) throws IOException {
+        return response.getStatusCode().isError();
+    }
+
+    @Override
+    public void handleError(ClientHttpResponse response) throws IOException {
+        handleError(null, null, response);
+    }
 
     @Override
     public void handleError(URI url, HttpMethod method, ClientHttpResponse response)
             throws IOException {
-        HttpStatusCode status = response.getStatusCode();
-        String bodyExcerpt = readExcerpt(response);        // ⚠️ 最多 512 字，且只進日誌
-
-        throw switch (status.value()) {
-            // ★ 429：對方明確說「太快了」→ 可以退避後重試
-            case 429 -> new UpstreamRateLimitedException(
-                    clientName, retryAfter(response), bodyExcerpt);
-
-            // ★★ 502 / 503：對方【可能】根本沒收到 → 可以重試
-            case 502, 503 -> new UpstreamUnavailableException(clientName, status.value(), bodyExcerpt);
-
-            // ★★★ 504：對方【收到了】但它的下游逾時 → 🔴 結果未知，不可盲目重試
-            case 504 -> new UpstreamOutcomeUnknownException(clientName, bodyExcerpt);
-
-            // ⚠️ 4xx（429 以外）：是【我們】送錯了 → 程式錯誤，重試永遠不會成功
-            default -> status.is4xxClientError()
-                    ? new OutboundRequestRejectedException(clientName, status.value(), bodyExcerpt)
-                    : new UpstreamUnavailableException(clientName, status.value(), bodyExcerpt);
-        };
+        int status = response.getStatusCode().value();
+        // 只保留經過遮蔽的診斷代碼；不把下游 body 的個資／卡號帶回日誌或 API。
+        String diagnostic = "HTTP " + status;
+        if (status == 429 || status >= 500) {
+            // 502=閘道收到無效上游回應；不能據此證明副作用尚未發生。
+            throw new UpstreamOutcomeUnknownException(clientName, diagnostic);
+        }
+        throw new OutboundRequestRejectedException(clientName, status, diagnostic);
     }
 }
 ```
 
-⚠️⚠️ **`502/503` 與 `504` 分開處理是這個類別最重要的一行。**
+**暫時不可用不等於「未執行」**。HTTP 500／502／503／504 可能出現在
+下游已付款、已出貨之後；429 也要看供應商是否保證在執行前拒絕。
+通用 handler 無法提供這個保證，因此對有副作用的操作保守歸入 UNKNOWN。
+唯讀查詢可以另設有上限的重試；若供應商保證冪等，則以相同商戶交易號重送並遵守該契約。
 
-| 狀態 | 語意 | 對方處理了嗎 | 可以重試嗎 |
-|---|---|---|---|
-| **502 Bad Gateway** | 閘道連不上後端 | ❌ 幾乎確定沒有 | ✅ **可以** |
-| **503 Service Unavailable** | 對方明確說「我不行」 | ❌ 沒有 | ✅ **可以** |
-| **504 Gateway Timeout** | 閘道等後端等到逾時 | ⚠️ **不知道** | 🔴 **不可以** |
-| 連線逾時（`ResourceAccessException`） | 連都連不上 | ❌ 沒有 | ✅ 可以 |
-| **讀取逾時**（`ResourceAccessException`） | 送出去了但沒等到回應 | ⚠️ **不知道** | 🔴 **不可以** |
+| 狀態／失敗 | 可以證明未執行嗎 | 有副作用請求的預設處置 |
+|---|---|---|
+| 500／502／503／504 | ❌ 單靠狀態碼不行 | UNKNOWN → 查單／對帳 |
+| 429 | ❌ 需要供應商明確契約 | 預設 UNKNOWN；只有明確執行前拒絕才可退避重試 |
+| 本地熔斷器在呼叫前拒絕 | ✅ 本次尚未呼叫下游 | 有界退避重試 |
+| 已確認的 DNS／連線建立失敗，且沒有先前送出嘗試 | ✅ 需有完整呼叫階段證據 | 有界退避重試 |
+| 讀取逾時、送出後斷線或階段無法證明 | ❌ | UNKNOWN → 查單／對帳 |
 
-> 🔴 **最後兩列都是 `ResourceAccessException`，而它們的可重試性完全相反。**
+> 🔴 **不同階段的 I/O 失敗都可能是 `ResourceAccessException`，不能只看這個型別決定重試。**
 >
 > **這是 6.0 事故 3 的根本原因**：
 > `catch (ResourceAccessException e) { throw new PaymentGatewayTimeoutException(...); }`
@@ -1755,9 +1755,9 @@ public boolean safeToRetryBlindly() { return retry == Retry.BACKOFF_AND_RETRY; }
 
 | 類別 | 對方處理了嗎 | 例子 | 可以重試嗎 |
 |---|---|---|---|
-| **A：確定沒處理** | ❌ 沒有 | 連線逾時、DNS 失敗、502、503、429、熔斷器打開 | ✅ **可以，而且應該** |
+| **A：確定沒處理** | ❌ 本次尚未執行 | 本地呼叫前熔斷／隔艙拒絕；有明確階段證據的未送出失敗 | ✅ 有上限的退避重試 |
 | **B：確定失敗了** | ✅ 處理了，結果是失敗 | 卡片被拒、餘額不足、400、422 | 🔴 **不可以** —— 重試 100 次結果一樣 |
-| **C：不知道** | ⚠️ **不知道** | **讀取逾時**、504、連線在送出後斷掉 | 🔴🔴 **不可以盲目重試** |
+| **C：不知道** | ⚠️ **不知道** | 讀取逾時、500／502／503／504、送出後斷線、無法證明階段的 I/O 失敗 | 🔴 不可以盲目重試 |
 
 > 🔴 **C 類是這一節的全部重點，而它是三類裡最常見的一類。**
 >
@@ -1775,55 +1775,25 @@ public boolean safeToRetryBlindly() { return retry == Retry.BACKOFF_AND_RETRY; }
 
 ⚠️ **而「靠字串判斷」是不可接受的**（訊息會隨 JDK 版本與 locale 變）。
 
-**shop-service 的做法：在轉接器裡分開，而且是靠【階段】而不是靠例外**：
+**通用 RestClient adapter 採保守分類**：無法證明未送出，就當結果未知。
+不以 IOException 的訊息、也不以 ThreadLocal 的 false 推論下游未執行。
 
 ```java
-/**
- * ★★ 把「連不上」與「等不到回應」分開。
- *
- * <p>判斷的依據<b>不是</b>例外訊息，而是
- * <b>「請求的 byte 有沒有送出去」</b> ——
- * Apache HttpClient 5 的 {@code ExecChainHandler} 知道這件事。
- */
-public class RequestSentMarkerInterceptor implements ExecChainHandler {
-
-    /** ★ 這個 ThreadLocal 的生命週期只在一次 HTTP 呼叫內，由 finally 清掉 */
-    static final ThreadLocal<Boolean> REQUEST_SENT = ThreadLocal.withInitial(() -> false);
-
-    @Override
-    public ClassicHttpResponse execute(ClassicHttpRequest request, Scope scope,
-                                       ExecChain chain) throws IOException, HttpException {
-        REQUEST_SENT.set(false);
-        try {
-            // ★ 走到這一層時連線已經建立好了（它在 connect exec 之後）
-            REQUEST_SENT.set(true);
-            return chain.proceed(request, scope);
-        } finally {
-            // ⚠️ 不清會洩漏給池子裡下一個用這條執行緒的呼叫
-            REQUEST_SENT.remove();
-        }
-    }
-}
-```
-
-```java
+// PaymentHttpAdapter.charge 的 I/O 例外邊界（request 為本次 ChargeRequest）
+try {
+    return restClient.post().uri("/charges")
+            .body(request).retrieve().body(ChargeResult.class);
 } catch (ResourceAccessException e) {
-    if (RequestSentMarkerInterceptor.wasRequestSent()) {
-        // ★ C 類：送出去了，不知道對方做了什麼
-        throw new UpstreamOutcomeUnknownException(request.merchantTradeNo(), e);
-    }
-    // ★ A 類：根本沒送出去 —— 安全
-    throw new UpstreamNotReachedException(request.merchantTradeNo(), e);
+    throw new UpstreamOutcomeUnknownException(request.merchantTradeNo(), e);
 }
 ```
 
-⚠️⚠️ **這個做法有一個誠實的限制**，必須寫在 javadoc 裡：
-
-> **「請求送出去了」不等於「對方收到了」。**
-> TCP 把 byte 交給網卡之後，它仍然可能在網路上被丟掉。
->
-> 👉 所以它把 C 類**縮小**了，但**沒有消滅** ——
-> 剩下的部分只能靠**冪等鍵**與**對帳**（6.6.5、6.8.4）。
+原本「ExecChainHandler 設 true、finally remove、外層 catch 再讀」的做法不可用：
+外層讀取時已清除，而且在 chain.proceed 前設旗標也不能證明 byte 已真正送達。
+本課移除 RequestSentMarkerInterceptor，避免把狀態缺失誤判成安全重試。
+專屬 adapter 若要縮小 UNKNOWN 範圍，須有**一次呼叫全生命週期**的明確階段證據，
+涵蓋連線重用、重導向、底層重試及送出後斷線；分類完成後才能清理狀態。
+在證據不足前維持 UNKNOWN，不會降低避免重複扣款的保護。
 
 ### 6.6.2 C 類的正確處置：不是重試，是**查詢**
 
@@ -1850,8 +1820,13 @@ public PaymentResult pay(String orderId, ChargeRequest request) {
         Optional<ChargeStatus> status = paymentGateway.query(request.merchantTradeNo());
 
         return switch (status.orElse(ChargeStatus.UNKNOWN)) {
-            // ③-a 對方根本沒收到 → ✅ 這時候【才】可以重送
-            case NOT_FOUND  -> retryOnce(request);
+            // ③-a 查不到也可能是讀取延遲，預設不立即再扣一次
+            case NOT_FOUND  -> {
+                // 僅在供應商契約保證「查無即未執行」且支援相同商戶號冪等時重送。
+                // 查詢有延遲或仍可能處理中的供應商，必須繼續對帳。
+                reconciliation.schedule(request.merchantTradeNo(), orderId);
+                yield PaymentResult.pending(request.merchantTradeNo());
+            }
 
             case SUCCEEDED  -> handleSucceeded(orderId, request);
             case FAILED     -> handleDeclined(orderId, request);
@@ -1879,7 +1854,7 @@ public PaymentResult pay(String orderId, ChargeRequest request) {
 ```
 
 > 📌 **一個乾淨的規則**：
-> **唯讀的呼叫可以無腦重試；有副作用的呼叫只能在「確定沒處理」時重試。**
+> **唯讀呼叫可作有界重試；有副作用呼叫須證明未執行，或有明確的下游冪等契約。**
 >
 > 而這正是 `PaymentGateway` 為什麼**必須**有 `query()` ——
 > 它把一個「不能重試的問題」變成「一個可以重試的問題」。
@@ -1901,7 +1876,6 @@ resilience4j:
         randomized-wait-factor: 0.5      # 200ms → 實際等 100～300ms
         retry-exceptions:
           - example.shop.common.http.UpstreamNotReachedException
-          - example.shop.common.http.UpstreamUnavailableException
         ignore-exceptions:
           - example.shop.common.http.UpstreamOutcomeUnknownException   # ★★ C 類
           - example.shop.common.http.OutboundRequestRejectedException  # ★ B 類（4xx）
@@ -2007,14 +1981,13 @@ public static boolean retryable(Throwable t) {
     if (t instanceof SideEffectsCommitted) return false;      // ★ 最高優先
     if (t instanceof UpstreamOutcomeUnknownException) return false;   // C 類
     if (t instanceof OutboundRequestRejectedException) return false;  // B 類（4xx）
-    return t instanceof UpstreamNotReachedException
-        || t instanceof UpstreamUnavailableException
-        || t instanceof UpstreamRateLimitedException;
+    // 此型別只能由「確認本次未送出」的邊界產生，不能直接由 5xx／429 推導。
+    return t instanceof UpstreamNotReachedException;
 }
 ```
 
 > 📌 **注意這個方法是「白名單」而不是「黑名單」**：
-> 預設是 `false`，只有明確列出的三種才回 `true`。
+> 預設是 `false`，只有確定未執行的類型才回 `true`。
 >
 > **04 章 4.2 對 `ErrorCode` 做過同樣的決定，理由也相同**：
 > 新增一種例外時，**忘記加它會讓它不被重試（安全），
@@ -2415,7 +2388,15 @@ ChargeResult charge(ChargeRequest request);      // ★ Declined 是回傳值的
 @Transactional
 public OrderResultView create(CreateOrderCommand cmd, Actor actor) {
     Order order = orderFactory.create(cmd, actor);
-    order.lines().forEach(l -> stockPort.tryReserve(l.productId(), l.quantity()));
+    for (int i = 0; i < order.lines().size(); i++) {
+        var line = order.lines().get(i);
+        if (!stockPort.tryReserve(line.productId(), line.quantity())) {
+            var snapshot = stockPort.snapshot(line.productId());
+            throw new InsufficientStockException(line.productId(), line.productName(),
+                    line.quantity(), snapshot.map(StockSnapshot::available).orElse(0),
+                    snapshot.map(StockSnapshot::restockEstimatedAt).orElse(null), i);
+        }
+    }
     orderRepository.save(order);                             // ① 業務資料
 
     outbox.enqueue(OutboxMessage.of(                         // ② 待辦事項
@@ -2424,7 +2405,8 @@ public OrderResultView create(CreateOrderCommand cmd, Actor actor) {
             OrderPlacedEvent.from(order, email, now)));
 
     return OrderResultView.from(order, actor, clock.instant());
-}   // ★★ ① 與 ② 一起 commit，或一起 rollback
+}   // ① 與 ② 一起 commit，或一起 rollback；此例 stockPort 也是同 DB 的交易資源。
+    // 遠端庫存不能靠本機 @Transactional 回滾，必須改用冪等保留／補償流程。
 ```
 
 **這一行改變了什麼**：
@@ -2443,187 +2425,303 @@ public OrderResultView create(CreateOrderCommand cmd, Actor actor) {
 > ⚠️ **後者不是免費的** —— 「可能重複」意味著**每一個消費者都必須冪等**（6.8.4）。
 > **這是採用 outbox 最大的隱藏成本，而它常常被輕描淡寫。**
 
-### 6.8.3 表與輪詢器
+### 6.8.3 表、租約與短交易
+
+投遞分成三段：**短交易 claim → 交易外 HTTP／MQ → 短交易完成或重試**。
+不能在同一物件內呼叫帶 `@Transactional` 的方法，也不把遠端呼叫包在資料庫交易中。
+以下以 MySQL 8、同 aggregate 嚴格阻擋後續訊息的設計為基準；adapter 的 SQL
+與交易管理器須指向同一個資料庫。
 
 ```sql
+CREATE TABLE outbox_stream (
+    aggregate_id VARCHAR(40) PRIMARY KEY
+) ENGINE=InnoDB;
+
 CREATE TABLE outbox (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
-    -- ★ 訊息的身分
-    message_id      CHAR(26)     NOT NULL,     -- ULID，給消費端做冪等
-    type            VARCHAR(50)  NOT NULL,     -- ORDER_PLACED / ERP_PUSH / …
-    aggregate_id    VARCHAR(40)  NOT NULL,     -- ★★ 同一張訂單的訊息要照順序
-    payload         JSON         NOT NULL,
-    -- ★ 投遞的狀態
-    status          VARCHAR(20)  NOT NULL DEFAULT 'PENDING',  -- PENDING/SENDING/SENT/DEAD
-    attempts        INT          NOT NULL DEFAULT 0,
-    next_attempt_at DATETIME(3)  NOT NULL,
+    message_id      CHAR(26) NOT NULL,
+    type            VARCHAR(50) NOT NULL,
+    aggregate_id    VARCHAR(40) NOT NULL,
+    payload         JSON NOT NULL,
+    status          VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    attempts        INT NOT NULL DEFAULT 0,    -- 每次成功 claim 加 1，失敗時不再加
+    next_attempt_at DATETIME(3) NOT NULL,
+    claim_token     CHAR(36) NULL,             -- 每次 claim 都換一個 UUID
+    lease_until     DATETIME(3) NULL,
     last_error      VARCHAR(500) NULL,
-    created_at      DATETIME(3)  NOT NULL,
-    sent_at         DATETIME(3)  NULL,
-
+    created_at      DATETIME(3) NOT NULL,
+    sent_at         DATETIME(3) NULL,
     UNIQUE KEY uk_message_id (message_id),
-    -- ★★ 輪詢器唯一的查詢用這個索引
     KEY idx_poll (status, next_attempt_at, id),
-    -- ★ 清理用
+    KEY idx_stream (aggregate_id, id, status),
+    KEY idx_lease (status, lease_until),
     KEY idx_cleanup (status, sent_at)
 ) ENGINE=InnoDB;
 ```
 
-⚠️ **`idx_poll` 的欄位順序是刻意的**：
-輪詢的查詢是 `WHERE status='PENDING' AND next_attempt_at <= NOW() ORDER BY id`，
-**等值條件在前、範圍條件在中、排序欄位在後** —— 否則會 filesort
-（07-mysql 站會完整展開，這裡先知道結論）。
+`idx_poll` 有助於篩選 status 與到期時間，但範圍條件後的 `id` **不保證免 filesort**；
+實際查詢要在下一站用 EXPLAIN 檢查。不能僅憑複合索引欄位順序承諾效能。
 
-**先把埠定義出來** —— 這六個方法就是輪詢器需要的全部：
+`enqueue` 在原業務交易內先確保 stream 存在並鎖住，再插入訊息。
+claim 也先鎖同一個 stream，因此不會在舊事件尚未 commit 時，搶先投遞後插入的事件。
+本課以全域唯一的 order id 作 aggregate_id；跨多種聚合使用時，key 須包含聚合種類。
+
+```sql
+-- enqueue：以下三句必須在原業務交易內；所有寫入者都遵守此順序。
+INSERT INTO outbox_stream(aggregate_id) VALUES (?)
+    ON DUPLICATE KEY UPDATE aggregate_id = VALUES(aggregate_id);
+SELECT aggregate_id FROM outbox_stream WHERE aggregate_id = ? FOR UPDATE;
+INSERT INTO outbox(message_id, type, aggregate_id, payload, next_attempt_at, created_at)
+    VALUES (?, ?, ?, ?, ?, ?);
+-- id 在取得 stream 鎖之後才配置，讓同 aggregate 的 id 順序等於此處的寫入順序。
+```
+
+一個業務交易若要 enqueue 多個 aggregate，須先依 aggregate_id 排序取得所有 stream 鎖，
+避免互鎖。只有 enqueue 短暫持有鎖，**不在鎖內做遠端投遞**。
 
 ```java
 package example.shop.common.outbox;
 
-/**
- * outbox 的埠。
- *
- * <p>★★ 注意它<b>沒有</b>一個 {@code save(OutboxMessage)} 之外的通用寫入方法：
- * 每一個狀態轉移都有自己的方法，而它們<b>都是原子的單一 UPDATE</b>
- * （6.8.3 寫法 B）。
- *
- * <p>⚠️ 這是刻意的：如果提供了「讀出來、改一改、存回去」的介面，
- * 一定會有人寫出「先 SELECT 再 UPDATE」——
- * 而那在兩個輪詢器之間<b>必然</b>失效（02 章 2.9）。
- */
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+
 public interface OutboxRepository {
+    void enqueue(OutboxMessage message); // 必須參與呼叫端交易
 
-    /** 寫入（★ 必須在呼叫端的交易裡 —— 6.8.2）。 */
-    void enqueue(OutboxMessage message);
+    // 只找候選，不代表已搶到；包含到期、順序過濾及 LIMIT。
+    List<Long> findDueIds(Instant now, int limit);
 
-    /** ★ 搶一批待送的訊息：條件式 UPDATE 把 PENDING 改成 SENDING，回傳搶到的那些。 */
-    List<OutboxMessage> claimBatch(int batchSize);
+    // 必須在短交易內鎖 stream、重讀資格，成功才建立 claim。
+    Optional<ClaimedOutbox> tryClaim(long id, Instant now, Duration lease);
 
-    void markSent(long id, Instant sentAt);
-
-    /** ★ 達到重試上限 → 死信。⚠️ 不刪除（6.8.5 陷阱 ①）。 */
-    void markDead(long id, String lastError);
-
-    void scheduleRetry(long id, int attempts, Instant nextAttemptAt, String lastError);
-
-    /** ★ 殭屍回收：把卡在 SENDING 超過門檻的改回 PENDING，回傳筆數。 */
-    int reclaim(Instant stuckBefore);
-
-    /** ★ 清理：分批刪，回傳這一批刪了幾筆（6.8.5 陷阱 ①）。 */
+    // false = claim 已過期／已換 owner，舊 worker 不能再更新。
+    boolean markSent(long id, String token, Instant now);
+    boolean markDead(long id, String token, Instant now, String error);
+    boolean scheduleRetry(long id, String token, Instant now, Instant nextAttemptAt, String error);
+    int reclaim(Instant now, int maxAttempts); // 依 lease_until 回收，不依 created_at
     int deleteSentBefore(Instant before, int limit);
 }
 ```
 
-**輪詢器**：
+```java
+package example.shop.common.outbox;
+
+import java.time.Instant;
+
+public record ClaimedOutbox(OutboxMessage message, String token, Instant leaseUntil) {}
+```
+
+**交易邊界放在另一個 Bean**，claim 與狀態更新每次各自提交；HTTP 不在這個 Bean 內。
+本節使用組態介面 OutboxProperties 的 batchSize、maxAttempts、stuckThreshold；
+其綁定方式沿用 1.4.5／本章 6.12。lease 時長須涵蓋最長單次投遞並留餘裕。
 
 ```java
-@Component
-public class OutboxPoller {
+package example.shop.common.outbox;
 
-    /**
-     * ★★ 三個「刻意」的決定：
-     * <ol>
-     *   <li>{@code fixedDelay} 而不是 {@code fixedRate} ——
-     *       後者在一輪跑很久時會<b>堆疊</b>，變成多個輪詢同時跑。</li>
-     *   <li>{@code initialDelay} 加抖動 —— 五個實例同時啟動時不要同時打資料庫
-     *       （6.6.3 的同一個道理）。</li>
-     *   <li>⚠️ 它<b>沒有</b> {@code @Transactional} —— 交易的邊界在
-     *       {@code deliverOne} 上，一筆一個交易（見下）。</li>
-     * </ol>
-     */
-    @Scheduled(fixedDelayString = "${shop.outbox.poll-interval:1000}",
-               initialDelayString = "#{ T(java.util.concurrent.ThreadLocalRandom).current()"
-                                  + ".nextInt(0, 1000) }")
-    public void poll() {
-        List<OutboxMessage> batch = repository.claimBatch(properties.batchSize());
-        for (OutboxMessage message : batch) {
-            deliverOne(message);
-        }
+import java.time.Instant;
+import java.util.Optional;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class OutboxStateTransactions {
+    private final OutboxRepository repository;
+    private final OutboxProperties properties;
+
+    public OutboxStateTransactions(OutboxRepository repository, OutboxProperties properties) {
+        this.repository = repository;
+        this.properties = properties;
     }
 
-    /** ★ 一筆一個交易 —— 第 7 筆失敗不會讓前 6 筆重送 */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    void deliverOne(OutboxMessage message) {
-        try {
-            dispatcher.dispatch(message);                 // ★ 真正送出去（HTTP / MQ）
-            repository.markSent(message.id(), clock.instant());
+    public Optional<ClaimedOutbox> claim(long id, Instant now) {
+        return repository.tryClaim(id, now, properties.stuckThreshold());
+    }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean sent(ClaimedOutbox claim, Instant now) {
+        return repository.markSent(claim.message().id(), claim.token(), now);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean failed(ClaimedOutbox claim, Instant now, Instant nextAttemptAt, String error) {
+        if (claim.message().attempts() >= properties.maxAttempts()) {
+            return repository.markDead(claim.message().id(), claim.token(), now, error);
+        }
+        return repository.scheduleRetry(claim.message().id(), claim.token(), now, nextAttemptAt, error);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public int reclaim(Instant now) {
+        return repository.reclaim(now, properties.maxAttempts());
+    }
+}
+```
+
+```java
+package example.shop.common.outbox;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.util.concurrent.ThreadLocalRandom;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class OutboxDelivery {
+    private final OutboxStateTransactions states;
+    private final OutboxDispatcher dispatcher;
+    private final Clock clock;
+
+    public OutboxDelivery(OutboxStateTransactions states, OutboxDispatcher dispatcher, Clock clock) {
+        this.states = states;
+        this.dispatcher = dispatcher;
+        this.clock = clock;
+    }
+
+    // 即使從其他交易或 CallerRuns 進來，也不在交易中執行遠端呼叫。
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public void deliverIfEligible(long id) {
+        var candidate = states.claim(id, clock.instant()); // 另一個 Bean，會走代理
+        if (candidate.isEmpty()) return;
+        ClaimedOutbox claim = candidate.get();
+        try {
+            dispatcher.dispatch(claim.message());         // 交易外，帶原 messageId 做冪等
         } catch (Exception e) {
-            int attempts = message.attempts() + 1;
-            if (attempts >= properties.maxAttempts()) {
-                // ★★ 死信：不再重試，但【留著】並告警
-                repository.markDead(message.id(), summarize(e));
-                deadLetters.increment(message.type());
-                log.error("outbox 訊息投遞失敗達上限，轉為死信：id={} type={}",
-                          message.messageId(), message.type(), e);
-            } else {
-                repository.scheduleRetry(message.id(), attempts,
-                        clock.instant().plus(backoffWithJitter(attempts)), summarize(e));
+            int attempt = claim.message().attempts();      // claim 時已加 1
+            long baseMs = Math.min(30_000, 200L << Math.min(attempt - 1, 7));
+            Instant now = clock.instant();
+            boolean updated = states.failed(claim, now,
+                    now.plusMillis(ThreadLocalRandom.current().nextLong(baseMs / 2, baseMs + 1)),
+                    e.getClass().getSimpleName());        // 不儲存可能含個資的 response body
+            if (!updated) staleClaim(id);
+            return;
+        }
+        // 放在 catch 外：完成狀態寫入失敗交給 lease 回收，不誤當成 HTTP 失敗。
+        if (!states.sent(claim, clock.instant())) staleClaim(id);
+    }
+
+    private void staleClaim(long id) {
+        org.slf4j.LoggerFactory.getLogger(OutboxDelivery.class)
+                .warn("outbox claim 已失效，停止舊 worker 狀態更新：id={}", id);
+    }
+}
+```
+
+```java
+package example.shop.common.outbox;
+
+import java.time.Clock;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+@Component
+public class OutboxPoller {
+    private final OutboxRepository repository;
+    private final OutboxDelivery delivery;
+    private final OutboxStateTransactions states;
+    private final OutboxProperties properties;
+    private final Clock clock;
+
+    public OutboxPoller(OutboxRepository repository, OutboxDelivery delivery,
+            OutboxStateTransactions states, OutboxProperties properties, Clock clock) {
+        this.repository = repository;
+        this.delivery = delivery;
+        this.states = states;
+        this.properties = properties;
+        this.clock = clock;
+    }
+
+    // fixedDelay：一輪完成後再休息。標準 fixedRate 同一任務也不會自行重疊，
+    // 但任務超時後可能接續執行；多實例／@Async／重複註冊則是不同併發來源。
+    @Scheduled(fixedDelayString = "${shop.outbox.poll-interval:1000}",
+               initialDelayString = "#{T(java.util.concurrent.ThreadLocalRandom).current().nextInt(1000)}")
+    public void poll() {
+        for (long id : repository.findDueIds(clock.instant(), properties.batchSize())) {
+            try {
+                delivery.deliverIfEligible(id);
+            } catch (Exception e) {
+                // claim 或 DB 更新失敗，不讓本輪其餘項目全部停住；需接入告警。
+                org.slf4j.LoggerFactory.getLogger(OutboxPoller.class)
+                        .error("outbox 投遞流程失敗：id={}", id, e);
             }
         }
     }
-}
-```
 
-**`claimBatch` 的兩種寫法**：
-
-```sql
--- 寫法 A：SELECT … FOR UPDATE SKIP LOCKED（MySQL 8.0+ / PostgreSQL 9.5+）
-SELECT * FROM outbox
- WHERE status = 'PENDING' AND next_attempt_at <= NOW(3)
- ORDER BY id LIMIT 50
-   FOR UPDATE SKIP LOCKED;
-```
-
-```sql
--- 寫法 B（★ shop-service 的選擇）：條件式 UPDATE 搶單
-UPDATE outbox
-   SET status = 'SENDING', attempts = attempts + 1
- WHERE id = ? AND status = 'PENDING';
--- ★ 回傳 1 = 搶到了；回傳 0 = 別人搶走了
-```
-
-**實測**（兩個 worker 同時搶 20 筆）：
-
-```
-[I2] 兩個 worker 一共搶到 20 筆，其中不重複的 id 有 20 個
-[I2] 有沒有同一筆被兩個 worker 搶到 = false（false = ✅ 條件式 UPDATE 保證了互斥）
-[I2] W1 搶到 1 筆，W2 搶到 19 筆
-```
-
-⚠️ **注意最後一行：分配非常不平均（1 : 19）。**
-這是對的、也是預期的 —— **outbox 的輪詢器不需要負載平衡，它需要的是「不重複」**。
-
-| | 寫法 A（`SKIP LOCKED`） | 寫法 B（條件式 UPDATE） |
-|---|---|---|
-| 資料庫支援 | MySQL 8.0+ / PG 9.5+ | ✅ **全部** |
-| 鎖持有時間 | ⚠️ **整個交易**（包含 HTTP 呼叫！） | ✅ 只有一次 UPDATE |
-| 一次抓多筆 | ✅ 一個 query | 需要先 SELECT 再逐筆 UPDATE |
-| 崩潰後 | ✅ 鎖自動釋放 | 🔴 **卡在 `SENDING`** → 需要「殭屍回收」 |
-
-> 🔴 **寫法 A 的「鎖持有時間 = 整個交易」是一個致命的細節**：
-> 如果你在 `FOR UPDATE` 的交易裡呼叫外部 API（很自然的寫法），
-> **那 50 筆訊息的行鎖會被持有整整 5 秒**（HTTP 逾時）——
-> 這就是 00 章 0.3.2 事故 1 的翻版，只是換了一張表。
-
-**寫法 B 需要的「殭屍回收」**：
-
-```java
-/**
- * ★★ 卡在 SENDING 的訊息 —— 它們的處理者在送出的過程中掛掉了。
- *
- * <p>⚠️ 這個 5 分鐘的門檻<b>必須大於「最長的一次投遞」</b>
- * （整體逾時 × 重試 = 6.5.4 的公式），
- * 否則會把「還在正常處理中」的訊息當成殭屍，造成<b>重複投遞</b>。
- */
-@Scheduled(fixedDelay = 60_000)
-public void reclaimStuck() {
-    int n = repository.reclaim(clock.instant().minus(properties.stuckThreshold()));
-    if (n > 0) {
-        stuckReclaimed.increment(n);
-        log.warn("回收了 {} 筆卡在 SENDING 的 outbox 訊息", n);
+    @Scheduled(fixedDelay = 60_000)
+    public void reclaimStuck() {
+        int n = states.reclaim(clock.instant());
+        if (n > 0) org.slf4j.LoggerFactory.getLogger(OutboxPoller.class)
+                .warn("回收 {} 筆過期 outbox claim", n);
     }
 }
 ```
+
+候選只帶 id，**準備投遞時才 claim**，不先把整批標成 SENDING 再排隊，
+避免最後幾筆還沒開始就耗盡租約。
+
+**tryClaim 的 adapter 契約**（同一個短交易，必須依序完成）：
+
+1. 由不可變的 id 查 aggregate_id，再 `SELECT ... FOR UPDATE` 鎖住 outbox_stream 的那一列。
+2. 用下列 locking read **重新讀取**該 stream 最早的未完成訊息；不能用交易早先的普通 SELECT 快照。
+3. 只有它恰好是目標 id、status=PENDING 且 next_attempt_at 到期，才執行條件式 UPDATE。
+4. 回傳 UPDATE 後 attempts 的值與新 token，commit 後才交給 dispatcher。資格不合則回 empty。
+
+```sql
+-- 步驟 2：current locking read；DEAD 也是未完成，會阻擋後續訊息。
+SELECT * FROM outbox
+ WHERE aggregate_id = ? AND status <> 'SENT'
+ ORDER BY id LIMIT 1 FOR UPDATE;
+
+-- 步驟 3：token 為本次新 UUID，lease_until 為 now + lease。
+UPDATE outbox
+   SET status = 'SENDING', attempts = attempts + 1, claim_token = ?, lease_until = ?
+ WHERE id = ? AND status = 'PENDING' AND next_attempt_at <= ?;
+```
+
+第二個 worker 即使拿到舊候選，也要重讀並重驗到期時間，不會略過前者設定的 backoff。
+stream 鎖是跨實例的互斥；條件式 UPDATE 是第二道檢查，不能省略前述順序資格鎖。
+`SELECT ... FOR UPDATE SKIP LOCKED` 也可用來減少等待，但一樣要**在 claim 完就 commit**，
+且不能跳過較早的 SENDING／DEAD，然後送後面的事件。兩種寫法都不能把 HTTP 包在鎖內。
+stream 的錨點列須保留到聚合封存；不要因為某批 SENT 已清理就刪除仍可能使用的 stream 鎖。
+
+**完成、重試、死信都要防舊 owner**，檢查更新筆數：
+
+```sql
+-- markSent
+UPDATE outbox SET status = 'SENT', sent_at = ?, claim_token = NULL, lease_until = NULL
+ WHERE id = ? AND status = 'SENDING' AND claim_token = ? AND lease_until > ?;
+
+-- scheduleRetry（now 與 nextAttemptAt 分開傳入）
+UPDATE outbox SET status = 'PENDING', next_attempt_at = ?, last_error = ?,
+                  claim_token = NULL, lease_until = NULL
+ WHERE id = ? AND status = 'SENDING' AND claim_token = ? AND lease_until > ?;
+
+-- markDead
+UPDATE outbox SET status = 'DEAD', last_error = ?, claim_token = NULL, lease_until = NULL
+ WHERE id = ? AND status = 'SENDING' AND claim_token = ? AND lease_until > ?;
+
+-- reclaim：即使一直在投遞途中崩潰，也不能無限超過 maxAttempts。
+UPDATE outbox SET status = CASE WHEN attempts >= ? THEN 'DEAD' ELSE 'PENDING' END,
+                  next_attempt_at = ?, claim_token = NULL, lease_until = NULL,
+                  last_error = 'claim lease expired'
+ WHERE status = 'SENDING' AND lease_until <= ?;
+```
+
+所有 now 應採一致的時鐘來源（正式多實例宜採 DB 時間），避免機器時差提早回收。
+租約須長於單次投遞的最大時間；若無法限制執行時間，就要設計續租與停止舊工作者的策略。
+**token 只能阻止舊 worker 改寫本地狀態，不能撤回已送出的 HTTP**；回收後仍可能重複，
+所以消費端仍須以 messageId 去重。端到端嚴格順序還需要消費端的事件版本／序號檢查，
+防止租約失效的舊請求在網路上晚到，不能只靠 JVM 分區或 outbox 資料庫鎖宣稱保證。
+
+原先兩個 worker 搶 20 筆的 `[I2]` 實驗只證明簡單 PENDING→SENDING 的競爭，
+不能當成租約、順序與 backoff 的驗收。本次 `verification/` 另外驗證 token、
+到期資格、死信阻擋及交易邊界，並在 MySQL 8 跑 DDL／狀態 SQL smoke check；
+多程序的 MySQL stream 鎖競爭仍需專用整合測試。
 
 ### 6.8.4 至少一次 → 消費端必須冪等 🔴
 
@@ -2736,33 +2834,28 @@ public void purgeSent() {
 | **★ 依 `aggregate_id` 分區** | ✅ 同一張訂單有序 | ✅ 不同訂單仍可平行 |
 | **消費端自己排序** | ✅ 最有彈性 | 訊息要帶版本號，消費端要能暫存 |
 
-```java
-/** ★ shop-service 的選擇：同一個 aggregate 的訊息永遠在同一條執行緒上 */
-int partition = Math.floorMod(message.aggregateId().hashCode(), partitions);
-executors.get(partition).execute(() -> deliverOne(message));
-```
-
-⚠️ **而這個做法有一個必要條件**：
-**同一個 aggregate 未送出的訊息，必須依 `id` 順序處理，而且前一則失敗時後面要停住。**
+同一個 aggregate 的訊息順序由 **6.8.3 的 stream 鎖與 head-of-stream 資格**決定，
+不是把 hash 相同的任務塞到單一 JVM 執行緒就能跨實例保證。
 
 ```sql
--- ★ 撈的時候排除「有更早的訊息還卡著」的 aggregate
-SELECT o.* FROM outbox o
- WHERE o.status = 'PENDING' AND o.next_attempt_at <= NOW(3)
+-- findDueIds：這是減少無效候選的篩選，真正資格仍由 tryClaim 在 stream 鎖內重驗。
+SELECT o.id FROM outbox o
+ WHERE o.status = 'PENDING' AND o.next_attempt_at <= ?
    AND NOT EXISTS (
-        SELECT 1 FROM outbox blocker
-         WHERE blocker.aggregate_id = o.aggregate_id
-           AND blocker.id < o.id
-           AND blocker.status IN ('PENDING','SENDING'))
- ORDER BY o.id LIMIT 50;
+       SELECT 1 FROM outbox blocker
+        WHERE blocker.aggregate_id = o.aggregate_id AND blocker.id < o.id
+          AND blocker.status IN ('PENDING', 'SENDING', 'DEAD'))
+ ORDER BY o.id LIMIT ?;
 ```
 
-🔴 **而這個查詢很貴。**
-**shop-service 的實際決定：只對 `type IN ('ORDER_PLACED','ORDER_CANCELLED','ORDER_PAID')`
-這三種需要順序的訊息做，其他（寄信、清快取）不管順序。**
+前一則 DEAD 表示該 stream 被阻擋，必須告警並由人工修復後重送，
+或經明確、可稽核的補償／跳過政策處理。不能直接放行 ORDER_CANCELLED，
+讓消費者還沒收到 ORDER_PLACED 就先收到取消。
+本節先對同 aggregate 全部訊息使用此規則，代價是隊頭阻塞；
+若未來把不需排序的通知拆成獨立 stream，需另定 key 與消費端契約。
 
-> 📌 **這是一個很典型的取捨**：
-> **「所有訊息都保證順序」的成本，遠高於「找出真正需要順序的那 3 種」。**
+> 📌 快取失效與訂單狀態事件可能有不同順序需求；最佳化不能略過已承諾的資格檢查。
+
 
 **陷阱 ③：輪詢延遲 ⚠️**
 
@@ -2775,33 +2868,18 @@ SELECT o.* FROM outbox o
 | 需求 | 做法 |
 |---|---|
 | 大部分訊息 | ✅ 1 秒輪詢就好 |
-| **要低延遲** | ★ **outbox + 事件雙軌**：`AFTER_COMMIT` 立刻送一次（快樂路徑），outbox 兜底 |
+| **要低延遲** | outbox + 事件提示：AFTER_COMMIT 嘗試同一個 claim 流程，未搶到／失敗仍由 poller 接手 |
 | 要極低延遲 | CDC（讀 binlog，例如 Debezium）—— ⚠️ **另一套基礎設施** |
 
 ```java
-/**
- * ★★ 雙軌：立刻送一次，同時也寫 outbox。
- *
- * <p>⚠️ 前提是<b>消費端必須冪等</b>（6.8.4）——
- * 因為快樂路徑成功時，outbox 會再送一次。
- *
- * <p>👉 而「消費端冪等」本來就是 outbox 的必要條件，
- * 所以雙軌<b>沒有增加任何新的要求</b>。這是它划算的原因。
- *
- * <p>⚠️ 事件本身<b>只帶 id</b>，不帶 payload：
- * {@snippet :
- *   public record OutboxEnqueuedEvent(long outboxId, String type) implements DomainEvent { … }
- * }
- * 理由是「資料的唯一真相在那張表上」——
- * 帶 payload 的話，快樂路徑送的內容與輪詢器送的內容<b>可能不一樣</b>。
- */
+/** 即時路徑只是提示 poller 提早嘗試，同樣走 claim、到期與順序門檻。 */
 @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
 @Async("integrationExecutor")
 public void tryImmediateDelivery(OutboxEnqueuedEvent event) {
     try {
-        deliverOne(repository.findById(event.outboxId()));
+        delivery.deliverIfEligible(event.outboxId()); // 另一個 Bean；不直接讀 payload 後送出
     } catch (Exception e) {
-        log.debug("即時投遞失敗，交給輪詢器：id={}", event.outboxId());   // ★ debug 就好
+        log.debug("即時投遞失敗，交給輪詢器：id={}", event.outboxId(), e);
     }
 }
 ```
@@ -3622,13 +3700,12 @@ src/main/java/example/shop/
 │   ├── http/
 │   │   ├── OutboundClients.java                ★★ 明確建構（6.4.3）
 │   │   ├── HttpClientProperties.java           ★★ 四個逾時（6.5.5）
-│   │   ├── OutboundStatusHandler.java          ★★ 502/503 vs 504（6.4.5）
+│   │   ├── OutboundStatusHandler.java          ★★ 5xx／429 的保守 UNKNOWN 分類（6.4.5）
 │   │   ├── TraceHeaderInterceptor.java         ★  6.4.4
-│   │   ├── RequestSentMarkerInterceptor.java   ★★ A 類 vs C 類（6.6.1）
 │   │   └── exception/
 │   │       ├── UpstreamNotReachedException.java        （A 類 —— 可重試）
-│   │       ├── UpstreamUnavailableException.java       （A 類）
-│   │       ├── UpstreamRateLimitedException.java       （A 類）
+│   │       ├── UpstreamUnavailableException.java       （可用性診斷；不自動等同 A 類）
+│   │       ├── UpstreamRateLimitedException.java       （需有未執行契約才可重試）
 │   │       ├── UpstreamOutcomeUnknownException.java    ★★（C 類 —— 🔴 不可重試）
 │   │       └── OutboundRequestRejectedException.java   （B 類 —— 我們送錯了）
 │   │
@@ -3639,8 +3716,11 @@ src/main/java/example/shop/
 │   │
 │   ├── outbox/
 │   │   ├── OutboxMessage.java                  ★★ 6.8.3
-│   │   ├── OutboxRepository.java               ★★ 條件式 UPDATE 搶單
-│   │   ├── OutboxPoller.java                   ★★ 6.8.3
+│   │   ├── OutboxRepository.java               ★★ stream 鎖＋claim token＋租約
+│   │   ├── OutboxPoller.java                   ★★ 只取候選
+│   │   ├── ClaimedOutbox.java                  ★★ 本次 token／lease
+│   │   ├── OutboxDelivery.java                 ★★ 交易外投遞
+│   │   ├── OutboxStateTransactions.java        ★★ 另一個 Bean 的短交易
 │   │   ├── OutboxDispatcher.java               ★  依 type 路由
 │   │   ├── OutboxObjectMapper.java             ★★ Money 往返（6.9.2、05 章 5.13 ②）
 │   │   ├── OutboxPurgeJob.java                 ★  6.8.5 陷阱 ①
@@ -3732,8 +3812,6 @@ resilience4j:
         randomized-wait-factor: 0.5
         retry-exceptions:
           - example.shop.common.http.exception.UpstreamNotReachedException
-          - example.shop.common.http.exception.UpstreamUnavailableException
-          - example.shop.common.http.exception.UpstreamRateLimitedException
         # ★★ C 類與 B 類永遠不重試（6.6.1）
         ignore-exceptions:
           - example.shop.common.http.exception.UpstreamOutcomeUnknownException
@@ -4140,7 +4218,7 @@ SLO = 2000ms
 
 </details>
 
-### 練習 3：這個 outbox 有 6 個問題
+### 練習 3：這個 outbox 的 5 個錯誤與 1 個排程取捨
 
 ```java
 @Transactional
@@ -4171,7 +4249,7 @@ public void poll() {
 | # | 問題 | 節 |
 |---|---|---|
 | 1 | 🔴 **`toJson(order)` 把整個聚合序列化進去** —— 00 章 0.3.2 事故 6 的重演（地址、電話進了一張沒遮蔽的表）；而且 `Money` 往返是壞的 | 6.9.2、05 章 5.13 ② |
-| 2 | 🔴 **`fixedRate` 而不是 `fixedDelay`** —— 一輪跑 3 秒時，會有 3 個輪詢**同時**跑 → 同一則訊息被送多次 | 6.8.3 |
+| 2 | ⚠️ **排程間隔與回壓未說明** —— fixedRate 同一任務不會自行重疊，但執行太久可能接續補跑；fixedDelay 才是完成後再休息。這是節奏選擇，不是重複投遞的根因 | 6.8.3 |
 | 3 | 🔴 **`findByStatus("PENDING")` 沒有 `LIMIT`** —— 累積 50 萬筆時，一次撈進記憶體 | 6.8.3 |
 | 4 | 🔴🔴 **整個 `poll()` 是一個交易，裡面有 HTTP 呼叫** —— 事故 2 的翻版：一輪 50 筆 × 5 秒 = **連線被佔 250 秒** | 6.8.3、00 章 0.3.2 事故 1 |
 | 5 | 🔴 **沒有搶單機制** —— 兩個實例會送同一則訊息 | 6.8.3、實測 `[I2]` |
@@ -4217,6 +4295,9 @@ public void poll() {
 @Component
 public class OrderExpirationJob {
 
+    private final OrderExpirationExecutor executor; // 另一個 Bean，必須經過交易代理
+    // 其他依賴與建構子同 01 章，這裡節錄排程及交易邊界。
+
     /**
      * ★ fixedDelay + 抖動的 initialDelay（6.8.3 的同一組理由）。
      *
@@ -4246,32 +4327,38 @@ public class OrderExpirationJob {
 
         for (Order candidate : expired) {
             try {
-                expireOne(candidate.id());
+                executor.expireOne(candidate.id());
             } catch (Exception e) {
-                log.warn("訂單逾時取消失敗，下一輪會重試：orderId={}", orderId, e);
+                log.warn("訂單逾時取消失敗，下一輪會重試：orderId={}", candidate.id(), e);
             }
         }
     }
 
-    /** ★ 一張訂單一個交易 —— 第 7 張失敗不影響前 6 張 */
+}
+
+@Service
+public class OrderExpirationExecutor {
+    // 依賴為 orderRepository、stockPort、events、clock 與 expirationSkipped；建構子略。
+    /** 一張訂單一個交易；由 OrderExpirationJob 的另一個 Bean 呼叫。 */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    void expireOne(String orderId) {
+    public void expireOne(String orderId) {
         // ★★ ① 與 ② 都靠這一行解決：【行鎖】讓 5 個實例序列化，
         //    而下一行的狀態檢查處理「客戶剛付款成功」的競態。
-        //    ⚠️ 為什麼不是 6.8.3 寫法 B 的「條件式 UPDATE」：
-        //    那個做法只在「整個操作就是一個 UPDATE」時成立。
-        //    這裡要【讀出聚合、讓領域決定還多少庫存、再寫回】——
+        //    同樣需要完整交易邊界；outbox 的 claim 還有自己的 token／租約規則。
+        //    outbox 也用鎖，但鎖的是 stream；這裡要鎖住訂單，
+        //    【讀出聚合、讓領域決定還多少庫存、再寫回】——
         //    正是 02 章 2.11.8 決策表裡「必須用悲觀鎖」的那一格。
         Order order = orderRepository.findByIdForUpdate(orderId).orElseThrow();
 
-        if (order.status() != OrderStatus.PENDING_PAYMENT) {
-            // ✅ 別的實例做過了，或客戶剛付款成功 —— 兩者都是【正常】的
+        Instant now = clock.instant();
+        if (!order.isExpired(now)) {
+            // 別的實例做過了、客戶剛付款成功，或期限已延後：都是正常跳過。
             expirationSkipped.increment();
             return;
         }
 
         CancellationResult result = order.cancel(
-                Actor.SYSTEM, CancelReason.PAYMENT_TIMEOUT, null, clock.instant());
+                Actor.SYSTEM, CancelReason.PAYMENT_TIMEOUT, null, now);
         orderRepository.save(order);
 
         // ★ ③ 釋放庫存與取消在同一個交易裡（00 章 0.3.1 第一類：必須原子）
@@ -4279,14 +4366,14 @@ public class OrderExpirationJob {
               .forEach(r -> stockPort.release(r.productId(), r.quantity()));
 
         // ★ 不能遺失 → outbox（RoutingDomainEventPublisher 與業務資料同一個交易）
-        events.publish(OrderCancelledEvent.from(order, result, clock.instant()));
+        events.publish(OrderCancelledEvent.from(order, result, now));
     }
 }
 ```
 
 ⚠️ **「用行鎖而不是條件式 UPDATE」是這一題的核心判斷**，而它有一個代價：
 
-| | 條件式 UPDATE（6.8.3 寫法 B） | **行鎖 + 狀態檢查**（這裡） |
+| | 單句條件式 UPDATE（如庫存扣減） | **行鎖 + 狀態檢查**（這裡） |
 |---|---|---|
 | 能不能在鎖裡做複雜判斷 | 🔴 **不能** | ✅ **能**（這一題需要） |
 | 鎖持有時間 | 一次 UPDATE | ⚠️ **整個交易** |
@@ -4328,7 +4415,7 @@ public class OrderExpirationJob {
 ```
 ✅ common/async/
    ├── AsyncConfig.java                      ★★ 三個池 + AsyncUncaughtExceptionHandler
-   │                                         ★★ @EnableAsync(order = HIGHEST_PRECEDENCE)
+   │                                         ★★ @EnableAsync 保留預設 BPP order；驗證 worker 交易
    ├── AsyncProperties.java                  ★★ 含「maxSize 是謊言」的建構子檢查（6.2.9）
    ├── ContextPropagatingTaskDecorator.java  ★★ 含 finally 清理（6.2.6）
    └── CountingCallerRunsPolicy.java         ★  6.2.10
@@ -4336,8 +4423,7 @@ public class OrderExpirationJob {
 ✅ common/http/
    ├── OutboundClients.java                  ★★ 明確建構 + disableAutomaticRetries
    ├── HttpClientProperties.java             ★★ 四個逾時（6.5.1）
-   ├── OutboundStatusHandler.java            ★★ 502/503 vs 504
-   ├── RequestSentMarkerInterceptor.java     ★★ A 類 vs C 類（6.6.1）
+   ├── OutboundStatusHandler.java            ★★ 有副作用請求的 UNKNOWN 分類
    └── exception/（5 個）                     ★★ 依「對方處理了嗎」分類
 
 ✅ common/resilience/
@@ -4412,7 +4498,7 @@ public class OrderExpirationJob {
 |---|---|---|---|
 | 1 | 🔴 **沒有真的 MQ**（Kafka / RabbitMQ） | 本課的環境沒有跑 broker | outbox 直接打 HTTP；6.9.2 的相容性規則對 MQ 一樣適用 |
 | 2 | 🔴 **`SKIP LOCKED` 只在 H2 2.2.224 上驗過【語法】** | 沒有真的 MySQL | ⚠️ **shop-service 選的是條件式 UPDATE，它不依賴這個** |
-| 3 | ⚠️ **`RequestSentMarkerInterceptor` 沒有實測** | 需要一個「收到請求後才斷線」的伺服器 | ⏳ 6.15 練習之外的延伸 |
+| 3 | ⚠️ 通用 I/O 例外無法證明是否已送出 | 預設 UNKNOWN；供應商特定分類需以收到請求後斷線等案例驗證 | 不再使用 ThreadLocal sent marker |
 | 4 | ⚠️ **Saga 的程式碼是設計，不是完整實作** | 完整的 Saga 引擎超出一章的篇幅 | 狀態機與補償順序的規則是完整的 |
 | 5 | ⚠️ **`TimeLimiter` 的「中斷不了阻塞的 socket 讀取」沒有實測** | 需要精確控制 socket 狀態 | 6.5.3 已標註它是「誠實的限制」而非結論 |
 | 6 | **限流（6.13 ①）沒有實測** | — | 組態經逐行檢閱 |
@@ -4450,7 +4536,7 @@ public class OrderExpirationJob {
 
 | 沒驗證的 | 影響哪一節 |
 |---|---|
-| **真的 MySQL 的 `SKIP LOCKED`** | 6.8.3 |
+| **真的 MySQL stream 鎖／SKIP LOCKED 競爭** | 6.8.3；verification 的 H2 測試不能替代 |
 | **真的 MQ** | 6.9 |
 | K8s 的關機流程 | 6.2.8 |
 | `TimeLimiter` + 阻塞 socket | 6.5.3 |

@@ -22,12 +22,10 @@ img_crypto.d.ts            ← TS 型別
 package.json
 ```
 
-## Optional：用 wasm-opt 進一步壓縮
+`wasm-pack build --release` 會自動跑一次 `wasm-opt`，不用另外裝 binaryen。
 
-```bash
-brew install binaryen   # 或 apt install binaryen
-wasm-opt -O3 --strip-debug -o ../pkg/img_crypto_bg.wasm ../pkg/img_crypto_bg.wasm
-```
+> `Cargo.toml` 的 `[profile.release]` 不要加 `strip = true`：它會把 `target_features` 區段一起刪掉，
+> wasm-opt 不知道 bulk memory 已啟用，build 會以 `memory.copy operations require bulk memory` 失敗。
 
 ## 匯出的函式
 
@@ -36,6 +34,10 @@ wasm-opt -O3 --strip-debug -o ../pkg/img_crypto_bg.wasm ../pkg/img_crypto_bg.was
 | `add(a, b)` | Ch05 | toolchain hello |
 | `greet(name)` | Ch05 | 字串傳遞 demo |
 | `xor_inplace(data, key)` | Ch05、06 | 就地 XOR |
-| `xor_decrypt(input, key)` | Ch05、06 | XOR + 回新 Vec |
-| `aes_ctr_decrypt(data, key, iv)` | Ch06 | 全檔 AES-CTR |
-| `aes_ctr_decrypt_header(data, key, iv, header_len)` | Ch06、07、08 | 只解前 N byte |
+| `xor_decrypt(input, key)` | Ch06 | XOR + 回新 Vec |
+| `xor_header(data, key, header_len)` | Ch06 | 只 XOR 前 N byte |
+| `aes_ctr_decrypt(data, key, iv)` | Ch06、07、08 | AES-CTR，傳入哪段就解哪段（檔頭加密時傳 `buf.subarray(0, headerLen)`） |
+| `aes_ctr_decrypt_header(data, key, iv, header_len)` | Ch06 | 傳入整個檔案、只解前 N byte（用來對比複製成本） |
+| `wasm_alloc(size)` / `wasm_free(ptr, size)` / `xor_at_ptr(ptr, len, key_ptr, key_len)` | Ch06 | 直接操作 wasm linear memory |
+
+AES-CTR 用 `Ctr128BE`（整個 16 byte IV 當計數器遞增），跟 Node 的 `aes-256-ctr` 完全一致。

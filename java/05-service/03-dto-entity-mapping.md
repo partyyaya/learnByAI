@@ -4571,7 +4571,9 @@ public PageResponse<OrderSummaryView> search(OrderQuery query, Actor actor) {
     return new PageResponse<>(
             page.getContent().stream().map(OrderSummaryView::from).toList(),
             PageResponse.PageInfo.offset(page.getNumber(), page.getSize(),
-                                         page.getTotalElements()));
+                        page.getTotalElements(), PageResponse.CountRelation.EQUAL,
+                        page.hasNext() && page.getPageable().getOffset() + page.getSize() < 10_000,
+                        10_000)); // 與 04-controller 的 offset 可存取上限一致
 }
 
 // ── Web 層：label 在這裡加上 ───────────────────────────

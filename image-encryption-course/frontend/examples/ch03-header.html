@@ -13,7 +13,7 @@
 </head>
 <body>
   <h1>Ch03 · 檔頭 AES-CTR Demo（WebCrypto 版）</h1>
-  <p>後端只加密前 1024 byte。前端用 <code>crypto.subtle.decrypt</code> 解前 N byte，後面 99% byte 不動。</p>
+  <p>後端只加密檔頭（到影像資料開始處再多 1024 byte，每張圖的長度記在 <code>headerLen</code>）。前端用 <code>crypto.subtle.decrypt</code> 只解這一段，後面的 byte 不動。</p>
 
   <section>
     <h2>1. 上傳</h2>
@@ -72,20 +72,19 @@
         ['decrypt']
       );
 
-      const fullEnc = new Uint8Array(encBuf);
-      const headerEnc = fullEnc.subarray(0, meta.headerLen);
-      const tail = fullEnc.subarray(meta.headerLen);
+      const buf = new Uint8Array(encBuf);
+      const headerEnc = buf.subarray(0, meta.headerLen);
 
       const headerPlain = new Uint8Array(await crypto.subtle.decrypt(
-        { name: 'AES-CTR', counter: hexToBytes(meta.ivHex), length: 64 },
+        // Node 的 aes-256-ctr 把整個 16 byte IV 當 128 bit 計數器遞增，length 要設 128 才完全一致
+        { name: 'AES-CTR', counter: hexToBytes(meta.ivHex), length: 128 },
         key,
         headerEnc,
       ));
 
-      const out = new Uint8Array(fullEnc.length);
-      out.set(headerPlain, 0);
-      out.set(tail, meta.headerLen);
-      return out;
+      // 解出來的檔頭直接寫回原本的 buffer，尾段不動，不用複製整個檔案
+      buf.set(headerPlain, 0);
+      return buf;
     }
 
     function hexToBytes(hex) {

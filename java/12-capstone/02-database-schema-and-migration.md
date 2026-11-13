@@ -1382,7 +1382,7 @@ CREATE TABLE order_status_history (
 
 CREATE TABLE idempotency_keys (
   buyer_id      BIGINT       NOT NULL,                   -- 冪等鍵的範圍是「每位買家」（US-ORD-1a AC-5）
-  idem_key      VARCHAR(64)  NOT NULL,
+  idem_key      VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NOT NULL,
   request_hash  VARCHAR(64)  NOT NULL,                   -- body 的 SHA-256：同鍵不同 body → 422（AC-2）
   order_id      BIGINT       NULL,
   created_at    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -1415,7 +1415,7 @@ CREATE TABLE payments (
   amount           DECIMAL(12,2)  NOT NULL,
   status           VARCHAR(20)    NOT NULL DEFAULT 'PENDING',
   provider         VARCHAR(20)    NOT NULL,
-  provider_txn_id  VARCHAR(64)    NULL,                  -- 回呼的冪等鍵（0.3.5）；建立付款時還沒有，所以可為 NULL
+  provider_txn_id  VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL,                  -- 回呼的冪等鍵（0.3.5）；建立付款時還沒有，所以可為 NULL
   failure_reason   VARCHAR(200)   NULL,
   created_at       DATETIME(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at       DATETIME(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -1457,6 +1457,8 @@ CREATE TABLE notifications (
   dedup_key   VARCHAR(100)  NOT NULL,                    -- 事件 id + 通知類型：同一事件只通知一次（US-NTF-1 AC-3）
   payload     JSON          NOT NULL,
   status      VARCHAR(20)   NOT NULL DEFAULT 'PENDING',
+  claimed_until DATETIME(3) NULL,                         -- 07 章通知認領的租約
+  claim_token   VARCHAR(36) CHARACTER SET ascii COLLATE ascii_bin NULL, -- 每次認領不同
   attempts    INT           NOT NULL DEFAULT 0,
   created_at  DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   sent_at     DATETIME(3)   NULL,
@@ -1541,6 +1543,12 @@ INSERT INTO categories (id, parent_id, name, sort_order) VALUES
 ---
 
 ## 2.4 欄位設計的規則
+
+不透明識別碼不沿用商品名稱／email 的文字比較規則。修訂版 idem_key 與
+provider_txn_id 使用 utf8mb4_0900_bin，大小寫與重音不同就是不同值，空白也不自行 trim。
+同一買家的 `Checkout-A` 與 `checkout-a` 是兩個鍵；金流交易 ID 依本專題精確字串契約比較。
+既有資料庫不能修改已執行的 V5／V6；09 章提供 V27、V28 的追加遷移與升級前檢查。
+通知租約同理：新讀者的 V7 已含欄位；舊版專案由 V26 補欄位，不改歷史檔。
 
 ### 2.4.1 五類欄位的型別
 

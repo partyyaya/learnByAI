@@ -629,7 +629,7 @@ import java.util.List;
 
 /**
  * 8.4.4：MyBatis 沒有 Hibernate 的 in_clause_parameter_padding（05 章 5.5.3），
- * 所以要自己做。★ 這是「參數個數向上補到 2 的次方、多的位置重複填最後一個值」。
+ * 所以要自己做。★ 僅用於 IN predicate；重複最後一個值補參數，禁止拿來補 INSERT／業務資料列。
  */
 public final class Pad8 {
     private Pad8() {}
@@ -6486,11 +6486,39 @@ public List<OrderRow8> list(...) { PageHelper.startPage(p, s); return mapper.pag
 ```
 ① startPage 的下一行【一定】是那個查詢，中間不准有任何可能拋例外的程式碼
    → 這是一條 review 規則，也可以寫成 ArchUnit（8.9）
-② 用 PageHelper 的函式介面版本，讓它自己保證成對：
-      PageHelper.startPage(p, s).doSelectPageInfo(() -> mapper.pageByHelper(q));
-   → 這一版在 finally 裡 clearPage()
+② 不論是否用函式介面，都在呼叫端 finally 清理：
+      SafePages.select(p, s, () -> mapper.pageByHelper(q));
+   → PageHelper 6.0.0 的 doSelectPageInfo 本身沒有 finally；callback 在查詢前拋錯仍會殘留。
+     查詢攔截器的清理不能覆蓋「還沒進入查詢」的路徑。verification/ 另測此負例。
 ③ 在 Web 層加一個 filter：請求結束時無條件 PageHelper.clearPage()
    → 這是「安全網」，不是「解法」
+```
+
+完整 helper（與查詢 mapper 同樣需要 PageHelper 攔截器組態）：
+
+```java
+package com.example.lab.guard;
+
+import com.github.pagehelper.ISelect;
+import com.github.pagehelper.Page;
+import com.github.pagehelper.PageHelper;
+import com.github.pagehelper.PageInfo;
+
+public final class SafePages {
+    private SafePages() {}
+
+    /** callback 必須執行目標查詢；沒有查詢或查詢前拋錯，finally 一樣清理。 */
+    public static <T> PageInfo<T> select(int number, int size, ISelect query) {
+        if (number <= 0 || size <= 0) throw new IllegalArgumentException("頁碼／大小必須大於 0");
+        Page<T> page = PageHelper.startPage(number, size);
+        try {
+            query.doSelect();
+            return page.toPageInfo();
+        } finally {
+            PageHelper.clearPage();
+        }
+    }
+}
 ```
 
 📌 **`ThreadLocal` + 隱式生效 = 這個坑的本質。**
@@ -8740,7 +8768,7 @@ SqlLogInterceptor 排在 PageInterceptor 【前面】
 ```
 
 **而 8.2.3 那把尺讓「把 64 種組合全部跑一遍」變成 200 毫秒的事。**
-這一節的五條斷言**全部不需要資料庫**。
+這一節的 BoundSql／AST 檢查本身不執行 SQL，可在純 Configuration 上離線跑。下面示範沿用 Base08，所以啟動 Spring 測試 context 仍需要資料庫；verification/ 的 OfflineContractTest 則不建立 Spring context、DataSource 或 JDBC Environment。
 
 ```java
 package com.example.lab.ch08;
@@ -8805,6 +8833,12 @@ class M8Assert extends Base08 {
             try {
                 sql = dyn().sql(NS + id, a);
                 CCJSqlParserUtil.parse(sql);
+                if (List.of("search", "searchCount", "page").contains(id)) {
+                    com.example.lab.guard.OptionalPredicateContract.assertPresent(sql,
+                            com.example.lab.guard.OptionalPredicateContract.expected(
+                                    c.status() != null, c.customerKeyword() != null,
+                                    c.from() != null, c.to() != null, c.minAmount() != null, c.hasRep()));
+                }
             } catch (Throwable e) {
                 broken.add(describe(c) + "  →  " + (sql == null ? name(e)
                         : Dyn.one(sql.substring(Math.max(0,
@@ -8862,48 +8896,32 @@ class M8Assert extends Base08 {
     // ══════════════ 斷言二 ══════════════
 
     @Test
-    void 斷言二_空集合不准產生不合法的SQL() {
-        head("8.9.2 斷言二：每一個吃集合的 statement，空集合都要能過");
-        record Case(String id, Map<String, Object> args) {}
-        List<Case> cases = List.of(
-                new Case("byIds", Dyn.args("ids", List.<UUID>of())),
-                new Case("byIdsSafe", Dyn.args("ids", List.<UUID>of())),
-                new Case("countIn", Dyn.args("statuses", List.<St8>of())),
-                new Case("searchAnyKeyword", Dyn.args("keywords", List.<String>of())),
-                new Case("insertItems", Dyn.args("items", List.<ItemInsert8>of())),
-                new Case("patchAmounts", Dyn.args("patches", List.<AmountPatch8>of())));
+    void 斷言二_空集合不准回全部() throws Exception {
+        String sql = dyn().sql(NS + "byIdsSafe", Dyn.args("ids", List.<UUID>of()));
+        var p = (net.sf.jsqlparser.statement.select.PlainSelect)
+                ((net.sf.jsqlparser.statement.select.Select) CCJSqlParserUtil.parse(sql)).getSelectBody();
+        assertThat(p.getWhere().toString().replaceAll("\\s+", "")).isEqualTo("1=0");
+        // 這是唯一允許的空集合讀取契約；語法合法但沒有 WHERE 也不算通過。
+    }
 
-        List<String> broken = new ArrayList<>();
-        for (Case c : cases) {
-            String sql = null;
-            try {
-                sql = dyn().sql(NS + c.id(), c.args());
-                CCJSqlParserUtil.parse(sql);
-                System.out.println("   ✅ " + c.id());
-            } catch (Throwable e) {
-                System.out.println("   🔴 " + c.id() + "  →  " + cut(String.valueOf(sql), 90));
-                broken.add(c.id());
-            }
+    @Test
+    void 斷言二b_已知反例要確實被抓到() {
+        for (var c : List.of(
+                Map.entry("byIds", Dyn.args("ids", List.<UUID>of())),
+                Map.entry("countIn", Dyn.args("statuses", List.<St8>of())),
+                Map.entry("insertItems", Dyn.args("items", List.<ItemInsert8>of())),
+                Map.entry("patchAmounts", Dyn.args("patches", List.<AmountPatch8>of())))) {
+            org.junit.jupiter.api.Assertions.assertThrows(Exception.class,
+                    () -> CCJSqlParserUtil.parse(dyn().sql(NS + c.getKey(), c.getValue())));
         }
-        System.out.println("\n  產生不合法 SQL 的：" + broken);
-
-        System.out.println("\n── 🔴🔴 而「合法」不等於「對」");
-        seed(20, 4, 2);
-        System.out.println("   searchAnyKeyword(空 List) → 合法的 SQL，而它回傳 "
-                + orders.searchAnyKeyword(List.of()) .size() + " 張（資料庫裡總共 "
-                + jdbc.queryForObject("SELECT count(*) FROM orders", Long.class) + " 張）");
-        System.out.println("   產生的 SQL：" + dyn().where(NS + "searchAnyKeyword",
-                Dyn.args("keywords", List.<String>of())));
-        System.out.println("   ★ <foreach> 空的時候連 open/close 都不輸出 → <where> 也空 →");
-        System.out.println("     一句【沒有 WHERE 的全表查詢】。語法完全合法。");
-        System.out.println("   🔴 這比語法錯誤糟糕得多 ——「搜尋條件是空的」變成「回傳全部」。");
-        System.out.println("     所以斷言二要有第二半：");
-        System.out.println("       空集合產生的 SQL 必須【還是有那個條件】"
-                + "（例如 1 = 0），而不只是「能剖析」。");
-        System.out.println("     byIdsSafe 那個 <choose> + 1 = 0 才是完整的答案（8.4.2）。");
-
-        System.out.println("\n  ★ 這條斷言的價值：它把「有沒有寫空集合防護」"
-                + "從 code review 變成一個測試。");
+        String unsafe = dyn().sql(NS + "searchAnyKeyword", Dyn.args("keywords", List.<String>of()));
+        org.junit.jupiter.api.Assertions.assertThrows(AssertionError.class, () -> {
+            try {
+                var p = (net.sf.jsqlparser.statement.select.PlainSelect)
+                        ((net.sf.jsqlparser.statement.select.Select) CCJSqlParserUtil.parse(unsafe)).getSelectBody();
+                assertThat(p.getWhere()).as("空集合不可退化為無條件查詢").isNotNull();
+            } catch (net.sf.jsqlparser.JSQLParserException e) { throw new AssertionError(e); }
+        });
     }
 
     // ══════════════ 斷言三 ══════════════
@@ -8929,47 +8947,26 @@ class M8Assert extends Base08 {
         System.out.println("  byIds + Pad8.pad 的形狀數：" + paddedShapes.size());
 
         System.out.println("\n  ★ 棘輪式斷言（06 章 6.10 那個手法）：");
-        System.out.println("    assertThat(shapes).hasSizeLessThanOrEqualTo(64);");
-        System.out.println("    → 有人多加一個 <if>，形狀數變 128，CI 就紅。");
+        System.out.println("    此模型獨立條件指紋：assertThat(shapes).hasSize(64);");
+        System.out.println("    → 固定 64 組最多只能有 64 種，這個上界不能偵測新增／遺漏條件。");
         System.out.println("    → 而它是【一個跟資料量無關的數字】（04 章 4.10 那條規則）。");
-        assertThat(shapes).hasSizeLessThanOrEqualTo(64);
+        // 此模型六個條件刻意獨立，要求完整形狀指紋；條件語意另由 scan 的 presence matrix 保護。
+        assertThat(shapes).hasSize(64);
         assertThat(paddedShapes).hasSizeLessThanOrEqualTo(7);
     }
 
     // ══════════════ 斷言四 ══════════════
 
     @Test
-    void 斷言四_有LIMIT的查詢一定要有唯一的ORDER_BY() {
-        head("8.9.4 斷言四：有 LIMIT 的查詢一定要有【唯一的】ORDER BY");
-        var cfg = sqlSessionFactory.getConfiguration();
-        List<String> noOrder = new ArrayList<>(), notUnique = new ArrayList<>();
-        int checked = 0;
-
-        for (Object o : cfg.getMappedStatements()) {
-            if (!(o instanceof MappedStatement ms)) continue;      // 短名字的別名
-            if (ms.getSqlCommandType() != SqlCommandType.SELECT) continue;
-            if (!ms.getId().startsWith("com.example.lab.ch08.")) continue;
-            String sql;
-            try { sql = Dyn.one(ms.getBoundSql(Dyn.looseArgs()).getSql()).toLowerCase(); }
-            catch (Throwable e) { continue; }                       // 需要參數才組得出來的先跳過
-            if (!sql.contains(" limit ")) continue;
-            checked++;
-            int ob = Dyn.topLevelIndexOf(sql, " order by ");
-            if (ob < 0) { noOrder.add(ms.getId()); continue; }
-            String orderBy = sql.substring(ob, Dyn.topLevelIndexOf(sql, " limit "));
-            if (!orderBy.contains(".id") && !orderBy.contains("order_no"))
-                notUnique.add(ms.getId() + "  →  " + orderBy.trim());
+    void 斷言四_訂單分頁須符合根資料與唯一排序契約() {
+        for (String id : List.of("page", "pageKeyset", "pageKeysetOr", "pageOffset")) {
+            Map<String, Object> args = id.equals("page")
+                    ? Dyn.args("q", b(OrderSearch8.empty()), "offset", 0, "size", 20)
+                    : Dyn.args("status", St8.PENDING, "offset", 0, "size", 20,
+                            "lastPlacedAt", Instant.parse("2026-09-01T00:00:00Z"), "lastId", UUID.randomUUID());
+            com.example.lab.guard.OrderPageContract.assertUniqueOrderPage(dyn().sql(NS + id, args));
         }
-        System.out.println("  掃了 " + checked + " 個有 LIMIT 的 SELECT");
-        System.out.println("  沒有 ORDER BY 的：" + noOrder);
-        System.out.println("  ORDER BY 不唯一的：" + notUnique);
-        System.out.println("\n  ★ 為什麼「唯一」很重要：");
-        System.out.println("    ORDER BY placed_at 而 placed_at 有重複值");
-        System.out.println("    → 同一筆資料可能【同時出現在第 1 頁與第 2 頁】，");
-        System.out.println("      也可能【兩頁都沒有】。而 8.6.7 那個 keyset 分頁"
-                + "更是完全依賴這件事。");
-        assertThat(noOrder).isEmpty();
-        assertThat(notUnique).isEmpty();
+        // PageHelper 的最終 LIMIT 在攔截後才出現，須另外攔截實際 JDBC SQL 驗證。
     }
 
     // ══════════════ 斷言五 ══════════════
@@ -9019,12 +9016,12 @@ class M8Assert extends Base08 {
         head("8.9.6 五條斷言的分工");
         System.out.println("  ① 每一種條件組合都合法      → 抓「<if> 拼出壞 SQL」（8.3.4、8.3.11b）");
         System.out.println("  ② 空集合能過                → 抓「<foreach> 沒防護」（8.4.2）");
-        System.out.println("  ③ 形狀數有上界（棘輪）      → 抓「有人多加一個條件 / 忘了 pad」"
+        System.out.println("  ③ 條件 presence／形狀指紋，IN 長度才用上界 → 抓漏條件／忘了 pad"
                 + "（8.3.13、8.4.3）");
         System.out.println("  ④ 有 LIMIT 就要有唯一 ORDER BY → 抓「分頁會漏會重複」（8.6.7）");
         System.out.println("  ⑤ 巢狀 resultMap 不准分頁    → 抓 8.6.5 那個殘缺資料");
         System.out.println("\n  ★★ 五條的共同性質：");
-        System.out.println("    【全部不需要資料庫】。它們只問 Configuration 與 BoundSql。");
+        System.out.println("    檢查本身只問 Configuration／BoundSql；Base08 啟動仍需 DB，離線版本見 verification。");
         System.out.println("    → 所以它們可以放在最快的那一層測試裡，每一次 commit 都跑。");
         System.out.println("    → 而這正是 8.3.12 那個計分表上「② 沒有解掉」那一格的補救："
                 + "\n      MyBatis 把編譯期的保護換成了【一組很便宜的斷言】。");
@@ -9100,125 +9097,160 @@ class M8Assert extends Base08 {
 
 📌 **8.10.5 還會抓到第三個** —— 那一個更有意思（OGNL 的字元字面值）。
 
-### 8.9.2 斷言二：空集合不准壞掉，也不准變成「回傳全部」
+### 8.9.2 斷言二：空集合不可退化成全表查詢
 
-```
-═══ 8.9.2 斷言二：每一個吃集合的 statement，空集合都要能過 ═══
-   🔴 byIds  →  SELECT o.id, … WHERE o.id IN ORDER BY …
-   ✅ byIdsSafe
-   🔴 countIn  →  SELECT count(*) FROM orders WHERE status IN
-   ✅ searchAnyKeyword
-   🔴 insertItems  →  INSERT INTO order_item (…) VALUES
-   🔴 patchAmounts  →  UPDATE orders SET total_amount = CASE id END, … WHERE id IN
+上面的正向案例要求 byIdsSafe 的 WHERE 恰為 1=0。已知錯誤版本另外 assertThrows；不是只印 broken 清單。這層只檢查 BoundSql／AST，不建立資料或呼叫 mapper。實際回傳 0 筆的行為放在整合測試，寫入空集合則在服務入口拒絕或直接 no-op，不能送空 VALUES。
 
-  產生不合法 SQL 的：[byIds, countIn, insertItems, patchAmounts]
+### 8.9.3 條件完整性與 SQL 形狀是兩份契約
 
-── 🔴🔴 而「合法」不等於「對」
-   searchAnyKeyword(空 List) → 合法的 SQL，而它回傳 20 張（資料庫裡總共 20 張）
-   產生的 SQL：（沒有 WHERE）
-```
-
-🔴🔴 **`searchAnyKeyword` 通過了「能剖析」這個檢查，而它的行為更糟**：
-
-```
-<foreach> 空的時候連 open/close 都不輸出
-   → <where> 裡什麼都沒有
-   → <where> 連 WHERE 都不加
-   → 一句【沒有 WHERE 的全表查詢】。語法完全合法。
-                              ↓
-「搜尋條件是空的」變成「回傳全部」。
-在一個搜尋 API 上，這是一個資料外洩；在一個 DELETE 上，這是一場事故。
-```
-
-✅ **所以斷言二有兩半**：
-
-```
-① 空集合產生的 SQL 必須【能剖析】
-② 空集合產生的 SQL 必須【還帶著那個條件】——
-   例如包含 "1 = 0"，或者那個 statement 在白名單上（明確地說「這裡空集合就是全部」）
-                              ↓
-byIdsSafe 那個 <choose> + 1 = 0 才是完整的答案（8.4.2）。
-```
-
-### 8.9.3 斷言三：SQL 形狀的數量有上界（棘輪式）
-
-```
-═══ 8.9.3 斷言三：SQL 形狀的數量（棘輪式） ═══
-  search 的形狀數：64
-  byIds（1～40 個 id）的形狀數：40
-  byIds + Pad8.pad 的形狀數：7
-```
+固定產生 64 組參數，每組一個 SQL，<=64 是必然成立的上界；新增第七個條件但沒有擴充案例，也不會自己長成 128 組。漏條件更會讓形狀變少。此處六個條件刻意獨立，可要求已審核的 64 種指紋，但仍需逐組核對應有的 predicate：
 
 ```java
-assertThat(shapes).hasSizeLessThanOrEqualTo(64);
-assertThat(paddedShapes).hasSizeLessThanOrEqualTo(7);
-```
+package com.example.lab.guard;
 
-📌 **這是 06 章 6.10 那個「棘輪式斷言」手法的第三次使用**：
+import net.sf.jsqlparser.expression.Expression;
+import net.sf.jsqlparser.expression.ExpressionVisitorAdapter;
+import net.sf.jsqlparser.expression.operators.relational.*;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.schema.Column;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.Select;
+import java.util.Set;
+import java.util.TreeSet;
 
-```
-04 章 4.10：N+1 的分數（entityFetch + collectionFetch == 0）—— 跟資料量無關
-06 章 6.10：批次的 execute 次數是 O(N / batch_size) —— 一個上界
-08 章 8.9.3：SQL 形狀的數量 ≤ 64 —— 一個上界
-                              ↓
-共同性質：它們都是【跟資料量無關的數字】，所以不會因為測試資料變了就紅。
-```
+/** 本站搜尋條件的 presence matrix；型別與結果邊界另外測，不以形狀上界代替語意。 */
+public final class OptionalPredicateContract {
+    private OptionalPredicateContract() {}
 
-⚠️ **而它抓的是兩種變更**：
+    public static Set<String> expected(boolean status, boolean keyword, boolean from,
+                                         boolean to, boolean amount, Boolean hasRep) {
+        Set<String> out = new TreeSet<>();
+        if (status) out.add("status");
+        if (keyword) out.add("keyword");
+        if (from) out.add("from");
+        if (to) out.add("to");
+        if (amount) out.add("amount");
+        if (hasRep != null) out.add(hasRep ? "rep-present" : "rep-absent");
+        return out;
+    }
 
-```
-① 有人多加一個 <if> → 形狀數從 64 變 128 → CI 紅
-   （而那個 PR 的作者會被迫在描述裡說明「為什麼要多一個可選條件」）
-② 有人在某個 in 子句忘了呼叫 Pad8.pad → 那個 statement 的形狀數爆掉
-   （8.4.3 那個「一行組態 vs 一條慣例」的差別，就是靠這條斷言補回來的）
-```
+    public static void assertPresent(String sql, Set<String> expected) {
+        try {
+            var statement = CCJSqlParserUtil.parse(sql);
+            if (!(statement instanceof Select) || !(((Select) statement).getSelectBody() instanceof PlainSelect))
+                throw new AssertionError("搜尋契約只接受單一 SELECT");
+            var select = (PlainSelect) ((Select) statement).getSelectBody();
+            Set<String> actual = new TreeSet<>();
+            if (select.getWhere() != null) select.getWhere().accept(new ExpressionVisitorAdapter() {
+                @Override public void visit(EqualsTo e) {
+                    if (column(e.getLeftExpression(), "o.status")) actual.add("status");
+                    super.visit(e);
+                }
+                @Override public void visit(LikeExpression e) {
+                    if (e.getEscape() != null && !(e.getEscape() instanceof net.sf.jsqlparser.expression.StringValue))
+                        throw new AssertionError("ESCAPE 必須是單一字串字面值；請將 LIKE 條件加括號避免解析歧義");
+                    if (column(e.getLeftExpression(), "c.display_name")) actual.add("keyword");
+                    super.visit(e);
+                }
+                @Override public void visit(GreaterThanEquals e) {
+                    if (column(e.getLeftExpression(), "o.placed_at")) actual.add("from");
+                    if (column(e.getLeftExpression(), "o.total_amount")) actual.add("amount");
+                    super.visit(e);
+                }
+                @Override public void visit(MinorThan e) { end(e.getLeftExpression()); super.visit(e); }
+                @Override public void visit(MinorThanEquals e) { end(e.getLeftExpression()); super.visit(e); }
+                private void end(Expression left) { if (column(left, "o.placed_at")) actual.add("to"); }
+                @Override public void visit(IsNullExpression e) {
+                    if (column(e.getLeftExpression(), "o.rep_id"))
+                        actual.add(e.isNot() ? "rep-present" : "rep-absent");
+                    super.visit(e);
+                }
+            });
+            if (!actual.equals(expected)) throw new AssertionError(
+                    "搜尋條件缺漏／多出：expected=" + expected + ", actual=" + actual + " → " + sql);
+        } catch (net.sf.jsqlparser.JSQLParserException e) {
+            throw new AssertionError("SQL 無法解析", e);
+        }
+    }
 
-### 8.9.4 斷言四：有 `LIMIT` 的查詢一定要有唯一的 `ORDER BY`
-
-```
-═══ 8.9.4 斷言四：有 LIMIT 的查詢一定要有【唯一的】ORDER BY ═══
-  掃了 6 個有 LIMIT 的 SELECT
-  沒有 ORDER BY 的：[]
-  ORDER BY 不唯一的：[]
-```
-
-**這條斷言是【結構式】的：它掃 `Configuration` 裡所有的 `MappedStatement`**，
-而不是列一份清單：
-
-```java
-for (Object o : cfg.getMappedStatements()) {
-    if (!(o instanceof MappedStatement ms)) continue;      // ★ 短名字的別名
-    if (ms.getSqlCommandType() != SqlCommandType.SELECT) continue;
-    …
-    if (!sql.contains(" limit ")) continue;
-    int ob = Dyn.topLevelIndexOf(sql, " order by ");
-    if (ob < 0) { noOrder.add(ms.getId()); continue; }
-    String orderBy = sql.substring(ob, Dyn.topLevelIndexOf(sql, " limit "));
-    if (!orderBy.contains(".id") && !orderBy.contains("order_no"))
-        notUnique.add(ms.getId() + "  →  " + orderBy.trim());
+    private static boolean column(Expression expression, String name) {
+        return expression instanceof Column c && c.getFullyQualifiedName().equalsIgnoreCase(name);
+    }
 }
 ```
 
-⚠️ **兩個實作細節**：
+JSqlParser 4.5 可能把未加括號的 `LIKE ? ESCAPE '!' AND …` 錯讀為複合 escape；本站 MyBatis SQL 將 LIKE 子句加括號，helper 也拒絕這種 AST，不能把消失的條件當成通過。
 
-```
-① cfg.getMappedStatements() 裡有【短名字的別名】，那些元素不是 MappedStatement
-   （MyBatis 為了讓 selectOne("listRows") 這種簡寫能用，會放一個 Ambiguity 物件）
-   → 所以要先 instanceof 過濾，否則會 ClassCastException
-② " limit " 與 " order by " 要用【括號深度 0】的版本去找（Dyn.topLevelIndexOf），
-   否則子查詢裡的 LIMIT 會被誤判
+這個 helper 只支援本站已列出的欄位／運算子；新增欄位、改 alias／合法條件耦合時要同步審核案例與契約。它不會證明參數值、>= 邊界或查詢結果正確，這些仍需資料庫契約測試。IN 長度 1～40 補到 2 次方後 <=7 種，才是有意義的形狀上界：同樣 40 組若漏 padding 就會變 40 種。
+
+### 8.9.4 訂單分頁：不能以字串含 .id 判定唯一
+
+以下保守 helper 用 JSqlParser 4.5 解析 AST，限定根資料 orders o、已知 to-one JOIN 與最後一個排序鍵 o.id／o.order_no。customer.id 與 sales_rep.id 的唯一性由本站 schema 保證；未知 JOIN、to-many、聚合、UNION 或無法解析都拒絕，需另定契約，不能跳過或只補一個子字串。
+
+```java
+package com.example.lab.guard;
+
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.schema.Column;
+import net.sf.jsqlparser.schema.Table;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.Select;
+import java.util.Set;
+
+/** 本站「每列是一張訂單」的平面查詢契約；不是任意 SQL 的唯一性證明器。 */
+public final class OrderPageContract {
+    private OrderPageContract() {}
+
+    public static void assertUniqueOrderPage(String sql) {
+        try {
+            var statement = CCJSqlParserUtil.parse(sql);
+            if (!(statement instanceof Select) || !(((Select) statement).getSelectBody() instanceof PlainSelect))
+                fail("只接受單一 SELECT");
+            PlainSelect p = (PlainSelect) ((Select) statement).getSelectBody();
+            if (!(p.getFromItem() instanceof Table root)
+                    || !root.getFullyQualifiedName().equalsIgnoreCase("orders")
+                    || root.getAlias() == null || !root.getAlias().getName().equalsIgnoreCase("o")) {
+                fail("根資料必須是 orders o");
+            }
+            if (p.getLimit() == null || p.getGroupBy() != null || p.getHaving() != null
+                    || p.getDistinct() != null) fail("只接受未聚合的 LIMIT 訂單查詢");
+            Set<String> seen = new java.util.HashSet<>();
+            if (p.getJoins() != null) for (var join : p.getJoins()) {
+                if (!(join.getRightItem() instanceof Table t) || t.getAlias() == null)
+                    fail("JOIN 須使用已知表與別名");
+                Table t = (Table) join.getRightItem();
+                String table = t.getFullyQualifiedName().toLowerCase(java.util.Locale.ROOT);
+                String alias = t.getAlias().getName().toLowerCase(java.util.Locale.ROOT);
+                if (!seen.add(alias) || join.isSimple() || join.isCross() || join.isNatural()
+                        || join.isRight() || join.isFull() || join.getUsingColumns() != null
+                        && !join.getUsingColumns().isEmpty()) fail("不接受此 JOIN 形狀");
+                // schema 保證 customer.id／sales_rep.id 唯一；只接受精確的 to-one FK 邊。
+                String edge = table.equals("customer") && alias.equals("c") ? "c.id=o.customer_id"
+                        : table.equals("sales_rep") && alias.equals("r") ? "r.id=o.rep_id" : null;
+                if (edge == null || join.getOnExpressions().size() != 1) fail("未知 JOIN，需另列契約");
+                String on = join.getOnExpressions().iterator().next().toString()
+                        .toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", "");
+                String[] parts = edge.split("=");
+                if (!on.equals(edge) && !on.equals(parts[1] + "=" + parts[0])) fail("JOIN 不是已知 to-one 邊");
+            }
+            var order = p.getOrderByElements();
+            if (order == null || order.isEmpty()) fail("缺少 ORDER BY");
+            var last = order.get(order.size() - 1).getExpression();
+            if (!(last instanceof Column c) || c.getTable() == null
+                    || !c.getTable().getName().equalsIgnoreCase("o")
+                    || !Set.of("id", "order_no").contains(c.getColumnName().toLowerCase(java.util.Locale.ROOT))) {
+                fail("最後一項須是訂單唯一鍵 o.id 或 o.order_no");
+            }
+        } catch (net.sf.jsqlparser.JSQLParserException e) {
+            throw new AssertionError("SQL 無法解析，不能跳過契約：" + sql, e);
+        }
+    }
+
+    private static void fail(String reason) { throw new AssertionError(reason); }
+}
 ```
 
-📌 **「唯一」為什麼重要**：
-
-```
-ORDER BY placed_at 而 placed_at 有重複值
-   → 資料庫【沒有義務】在兩次查詢之間給出同樣的順序
-   → 同一筆資料可能【同時出現在第 1 頁與第 2 頁】，也可能【兩頁都沒有】
-                              ↓
-而 8.6.7 那個 keyset 分頁【完全依賴】排序唯一 ——
-少了 id 這個 tiebreaker，游標會在重複值那裡卡住或跳過一批。
-```
+上方測試明列四個 SQL 分頁入口及有效參數，不再以空 HashMap 展開後 catch-and-continue。新增分頁入口須加入清單與結果完整性測試；PageHelper 改寫後的 SQL 另在整合層檢查。`ORDER BY c.id`、`o.identity`、對 id 做運算與 to-many JOIN 都不得因字面含 id 而通過。這不是任意 SQL 的唯一性證明器，也不保證不同快照間資料沒有增刪。
 
 ### 8.9.5 斷言五：巢狀 `resultMap` 的 statement 不准出現在分頁路徑上
 
@@ -9275,7 +9307,7 @@ assertThat(nested).isSubsetOf(NESTED_ALLOWED);
 ═══ 8.9.6 五條斷言的分工 ═══
   ① 每一種條件組合都合法         → 抓「<if> 拼出壞 SQL」（8.3.4、8.3.9、8.3.11b）
   ② 空集合能過、而且還帶著條件    → 抓「<foreach> 沒防護」（8.4.2）
-  ③ 形狀數有上界（棘輪）          → 抓「多加一個條件 / 忘了 pad」（8.3.13、8.4.3）
+  ③ 條件 presence／主查詢指紋     → 抓漏條件；IN 形狀上界另抓忘了 pad（8.3.13、8.4.3）
   ④ 有 LIMIT 就要有唯一 ORDER BY  → 抓「分頁會漏會重複」（8.6.7）
   ⑤ 巢狀 resultMap 不准分頁       → 抓 8.6.5 那個殘缺資料
 ```
@@ -9283,7 +9315,7 @@ assertThat(nested).isSubsetOf(NESTED_ALLOWED);
 ★★ **五條的共同性質**：
 
 ```
-【全部不需要資料庫】。它們只問 Configuration 與 BoundSql。
+BoundSql／AST 檢查可離線執行；Base08 範例啟動仍需 DB，真正離線版見 verification/。
    → 可以放在最快的那一層測試裡，每一次 commit 都跑（本章實測 214 ms）
    → 錯誤訊息直接指到「哪一個 statement、哪一種條件組合」
 ```
@@ -9397,7 +9429,7 @@ public interface OrderSearchMapper {
     <where>
       <if test="q.status != null">          AND o.status = #{q.status}                        </if>
       <if test="q.customerKeyword != null">
-        AND c.display_name LIKE #{q.likePattern} ESCAPE '!'
+        AND (c.display_name LIKE #{q.likePattern} ESCAPE '!')
       </if>
       <if test="q.from != null">            AND o.placed_at &gt;= #{q.from}                   </if>
       <if test="q.to != null">              AND o.placed_at &lt;= #{q.to}                     </if>
@@ -9593,7 +9625,14 @@ public class OrderService {
 
     @Transactional
     public void cancel(UUID orderId) {
-        order(orderId).cancel();
+        Order o = order(orderId);
+        if (!o.cancel()) return;
+        java.util.Map<UUID, Integer> releases = new java.util.TreeMap<>();
+        for (OrderItem item : o.getItems()) {
+            releases.merge(item.getProduct().getId(), item.getQty(), Math::addExact);
+        }
+        // 先收集所有 id，因為 releaseAtomically 會 flush 並 clear。
+        releases.forEach(stocks::release);
     }
 
     @Transactional
@@ -9601,6 +9640,18 @@ public class OrderService {
         Product p = products.findById(productId)
                 .orElseThrow(() -> new IllegalArgumentException("商品不存在：" + productId));
         order(orderId).addItem(itemId, p, qty);
+        stocks.reserve(productId, qty);
+    }
+
+    @Transactional
+    public void removeItem(UUID orderId, UUID itemId) {
+        Order o = order(orderId);
+        OrderItem item = o.getItems().stream().filter(i -> i.getId().equals(itemId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("明細不存在：" + itemId));
+        UUID productId = item.getProduct().getId();
+        int qty = item.getQty();
+        o.removeItem(item); // 先檢查狀態／折扣；失敗時不釋放。
+        stocks.release(productId, qty);
     }
 
     /**
@@ -9984,11 +10035,16 @@ class N1Shop {
                 try {
                     String sql = dyn().sql(NS + id, a);
                     CCJSqlParserUtil.parse(sql);
+                    com.example.lab.guard.OptionalPredicateContract.assertPresent(sql,
+                            com.example.lab.guard.OptionalPredicateContract.expected(c.status() != null,
+                                    c.customerKeyword() != null, c.from() != null, c.to() != null,
+                                    c.minAmount() != null, null));
                     if (id.equals("search")) shapes.add(sql);
                 } catch (Throwable e) { bad++; System.out.println("   🔴 " + id + " " + e); }
             }
         }
         System.out.println("   " + combos.size() * 2 + " 次檢查，壞掉 " + bad + " 次");
+        if (bad != 0) throw new AssertionError("搜尋語法／條件完整性失敗：" + bad);
 
         System.out.println("\n── 斷言二：空集合");
         for (String id : List.of("searchByStatuses")) {
@@ -9999,11 +10055,14 @@ class N1Shop {
                 System.out.println("   ✅ " + id + " → " + Dyn.one(sql.substring(
                         Dyn.topLevelIndexOf(sql, " where "),
                         Dyn.topLevelIndexOf(sql, " order by "))));
-            } catch (Throwable e) { System.out.println("   🔴 " + id + " " + name(e)); }
+                if (!sql.toLowerCase().replaceAll("\\s+", " ").contains("1 = 0"))
+                    throw new AssertionError("空集合缺少拒絕條件：" + id);
+            } catch (Throwable e) { throw new AssertionError("空集合契約失敗：" + id, e); }
         }
 
         System.out.println("\n── 斷言三：形狀數（棘輪）");
-        System.out.println("   search 的形狀數 = " + shapes.size() + "（上界 32）");
+        System.out.println("   search 的形狀數 = " + shapes.size() + "（獨立條件指紋 32）");
+        if (shapes.size() != 32) throw new AssertionError("搜尋形狀指紋改變：" + shapes.size());
 
         System.out.println("\n── 斷言四：有 LIMIT 的查詢都有唯一的 ORDER BY");
         for (String id : List.of("search", "searchByStatuses", "pageAfter")) {
@@ -10016,11 +10075,11 @@ class N1Shop {
                         "lastId", null, "size", 20);
             };
             String sql = Dyn.one(dyn().sql(NS + id, a)).toLowerCase();
+            com.example.lab.guard.OrderPageContract.assertUniqueOrderPage(sql);
             int ob = Dyn.topLevelIndexOf(sql, " order by ");
             int lm = Dyn.topLevelIndexOf(sql, " limit ");
             String orderBy = ob < 0 ? "（沒有）" : sql.substring(ob, lm).trim();
-            System.out.println("   " + (orderBy.contains("o.id") ? "✅" : "🔴")
-                    + " " + id + " → " + orderBy);
+            System.out.println("   契約通過：" + id + " → " + orderBy);
         }
     }
 
@@ -10198,7 +10257,7 @@ keyset 分頁的頁面【沒有頁碼】   → 不需要 count，只需要「還
    ✅ searchByStatuses → WHERE 1 = 0
 
 ── 斷言三：形狀數（棘輪）
-   search 的形狀數 = 32（上界 32）
+   search 的形狀數 = 32（獨立條件指紋 32，另查 presence matrix）
 
 ── 斷言四：有 LIMIT 的查詢都有唯一的 ORDER BY
    ✅ search → order by o.placed_at desc, o.id desc
@@ -10626,7 +10685,7 @@ record 的屬性名就是**方法名**，所以額外加的 `getLikePattern()` �
 - [ ] 改寫 SQL 的四個地雷？哪一個最陰險？（8.8.4）
 
 **斷言**
-- [ ] 五條斷言各自抓什麼？為什麼它們全部不需要資料庫？（8.9.6）
+- [ ] 五條斷言各自抓什麼？BoundSql 檢查本身與 Spring 測試 context 的資料庫需求有何不同？（8.9.6）
 - [ ] 這一章的 13 個 🔴，五條斷言蓋掉幾個？剩下的靠什麼？（8.9.6）
 
 ### 8.12.5 本章練習

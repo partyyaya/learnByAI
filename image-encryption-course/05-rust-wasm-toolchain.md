@@ -2,7 +2,7 @@
 
 > **學習目標**：從零安裝 Rust，理解 wasm-pack 的角色，並親手編出一個能在瀏覽器跑的 `.wasm` 模組。
 > **預計時數**：120 分鐘
-> **先備知識**：[[00-course-map-and-threat-model]]、瀏覽器 ES Module 概念
+> **先備知識**：[第 00 章](./00-course-map-and-threat-model.md)、瀏覽器 ES Module 概念
 > **不需要**：你不用會 Rust，本章從零教你看得懂範例就好
 
 > **本章對應專案**
@@ -30,7 +30,7 @@
 | 語言 | 編譯產物大小 | 學習曲線 | 生態 | 適合 |
 |------|------------|---------|------|------|
 | C/C++ (emscripten) | 中（含 glue） | 高 | 老牌 | 移植既有 C 程式 |
-| Rust (wasm-pack) | 小（< 20KB 起跳） | 中 | 強 | **新寫的小模組（推薦）** |
+| Rust (wasm-pack) | 小（hello world 約 15KB） | 中 | 強 | **新寫的小模組（推薦）** |
 | AssemblyScript | 中 | 低（像 TS） | 弱 | 純 JS 工程師快速嘗試 |
 | Go (tinygo) | 中 | 中 | 中 | 已有 Go 程式 |
 | Zig | 小 | 中 | 新 | 嘗鮮 |
@@ -39,7 +39,7 @@
 
 1. 對 byte 操作極快、無 GC、適合加解密這類運算。
 2. `wasm-bindgen` 工具鏈最成熟，JS ↔ Rust 互通最自然。
-3. 寫加密類程式時，Rust 編譯器會幫你避開大量 UB（整數溢位、越界）。
+3. 記憶體安全：陣列越界會在執行期被擋下（panic），不會像 C 一樣悄悄讀寫到別的記憶體；整數溢位在 debug build 會 panic、release build 是定義好的環繞（wrap），都不會變成未定義行為。
 
 ---
 
@@ -60,14 +60,15 @@
                        前端 import 直接用
 ```
 
-四個關鍵組件：
+五個關鍵組件：
 
 | 工具 | 角色 |
 |------|------|
 | `rustc` | Rust 編譯器 |
 | `cargo` | 套件管理（像 npm） |
 | `wasm-bindgen` | 產生 JS glue code，讓 Rust function 看起來像 JS function |
-| `wasm-pack` | 把上面三個串起來的「總指揮」 |
+| `wasm-opt`（binaryen） | 對 `.wasm` 做最佳化；`wasm-pack build --release` 會自動下載並執行 |
+| `wasm-pack` | 把上面串起來的「總指揮」 |
 
 ---
 
@@ -97,7 +98,7 @@ rustup target add wasm32-unknown-unknown
 ```bash
 cargo install wasm-pack
 wasm-pack --version
-# wasm-pack 0.12.x
+# wasm-pack 0.13.x
 ```
 
 > Mac 上如果 `cargo install` 太慢，可改用 `brew install wasm-pack` 或從 GitHub release 下載 binary。
@@ -108,8 +109,10 @@ wasm-pack --version
 $ cargo new --lib hello-wasm
 $ cd hello-wasm
 $ ls
-Cargo.toml  src/lib.rs
+Cargo.toml  src
 ```
+
+`src/` 底下已經有一個範例 `lib.rs`。
 
 工具鏈就緒。
 
@@ -139,7 +142,7 @@ wasm-bindgen = "0.2"
 
 > `crate-type = ["cdylib"]` 很容易漏，沒寫的話編出來不是 wasm。
 
-### 4.2 寫 Rust 代碼
+### 4.2 寫 Rust 程式碼
 
 ```rust
 // src/lib.rs
@@ -181,7 +184,8 @@ pkg/
 ├── hello_wasm_bg.wasm     ← 真正的 wasm
 ├── hello_wasm.d.ts        ← TypeScript 型別
 ├── hello_wasm_bg.wasm.d.ts
-└── package.json
+├── package.json
+└── .gitignore             ← 內容只有 `*`，整個 pkg/ 預設不進版控
 ```
 
 `--target web` 是給原生 ES Module 用；還有 `bundler`（webpack/vite）、`nodejs` 等選項。
@@ -250,7 +254,7 @@ xor_decrypt(data, key);
 console.log(data);   // 已就地修改
 ```
 
-簡單，但每次 call 還是會 copy 一次到 wasm linear memory。
+簡單，但每次呼叫，wasm-bindgen 都會把整個陣列複製進 wasm 的 linear memory；參數是 `&mut [u8]` 時，結束後還會再複製回原本的 `Uint8Array`。
 
 #### 方式 B：直接操作 wasm memory（極致效能）
 
@@ -274,11 +278,11 @@ instance.exports.xor_decrypt(ptr, data.length, ...);
 const result = new Uint8Array(memory.buffer, ptr, data.length).slice();
 ```
 
-更快但更複雜。第 06 章會兩種都示範。
+省掉複製，但要自己管記憶體。第 06 章會兩種都示範。
 
 ---
 
-## 6 wasm-pack 三種 target 差別
+## 6 wasm-pack 的 target 差別
 
 執行 `wasm-pack build` 時 `--target` 影響很大：
 
@@ -291,7 +295,7 @@ const result = new Uint8Array(memory.buffer, ptr, data.length).slice();
 
 ---
 
-## 7 加快編譯的小技巧
+## 7 讓產物更小、更快的設定
 
 加密類 wasm 應該 **小** 且 **快**。改 `Cargo.toml`：
 
@@ -300,20 +304,29 @@ const result = new Uint8Array(memory.buffer, ptr, data.length).slice();
 opt-level = "z"      # 優化體積（s 是平衡、3 是純速度）
 lto = true           # link-time optimization
 codegen-units = 1    # 更激進的優化（編譯變慢）
-strip = true         # 移除 debug symbol
 panic = "abort"      # panic 不展開 stack，省 size
 ```
 
 > 對加解密這種 hot loop，建議用 `opt-level = 3` 而不是 `z`。
+> 實測本課程的 img-crypto（含 AES）：`opt-level = 3` 約 32KB，`opt-level = "z"` 約 28KB。
 
-並裝 `wasm-opt`（binaryen）做後處理：
+**不要加 `strip = true`。** 它會把 `.wasm` 裡記錄「啟用了哪些 wasm 功能」的 `target_features` 區段一起刪掉。新版 Rust 預設會用到 bulk memory 指令，wasm-opt 看不到這個區段，就會以下面的錯誤中止 build：
+
+```text
+[wasm-validator error in function 1] unexpected false: memory.copy operations require bulk memory operations [--enable-bulk-memory-opt]
+Error: failed to execute `wasm-opt`: exited with exit status: 1
+```
+
+release build 經過 wasm-bindgen 和 wasm-opt 之後，本來就不含 Rust 函式名稱，不需要 `strip`。
+
+`wasm-pack build --release` 已經會自動跑一次 `wasm-opt`，通常不用另外裝 binaryen。想手動調參數時再裝：
 
 ```bash
 brew install binaryen   # 或 apt install binaryen
 wasm-opt -O3 -o out.wasm pkg/your_wasm_bg.wasm
 ```
 
-實測：原本 30KB 的 wasm 可降到 18KB 左右。
+因為 wasm-pack 已經最佳化過一次，手動再跑通常只會再小一點點。
 
 ---
 
@@ -327,28 +340,36 @@ brew install wabt
 wasm2wat pkg/hello_wasm_bg.wasm > out.wat
 ```
 
-打開 `out.wat`：
+打開 `out.wat`（release build 沒有函式名稱，只有編號；編號每次 build 可能不同）：
 
 ```wat
 (module
   (type (;0;) (func (param i32 i32) (result i32)))
-  (func $add (type 0) (param i32 i32) (result i32)
+  ...
+  (func (;3;) (type 0) (param i32 i32) (result i32)
     local.get 0
     local.get 1
     i32.add)
-  (export "add" (func $add))
   ...
+  (export "add" (func 3))
 )
 ```
 
-非常底層、像彙編。逆向 wasm 的人就是看這個。
-**它比 JS 難 100 倍逆向**——這是 WASM 的核心防禦價值。
+非常底層、像組合語言。逆向 wasm 的人就是看這個。
+要從這種指令看懂演算法，比讀 JS 費工得多——這是 WASM 的防禦價值。
+
+但它只藏得住「怎麼算」：
+- **export 的名稱**（上面的 `add`，之後的 `aes_ctr_decrypt`）一定看得到，JS 要靠名字呼叫它
+- wasm-pack 產生的 **JS 膠水程式**（`hello_wasm.js`）是普通的 JS，誰都讀得懂
+- **傳進去的參數和傳回來的結果**，在 JS 這一側都能攔到
+
+[第 06 章](./06-wasm-decryption-in-browser.md) 會實際看這幾點對解密流程的影響。
 
 ---
 
 ## 9 寫一個圖片相關的「Hello」：XOR
 
-預告 [[06-wasm-decryption-in-browser]]，但這裡先讓你動手做出第一個有用的 wasm。
+預告 [第 06 章](./06-wasm-decryption-in-browser.md)，但這裡先讓你動手做出第一個有用的 wasm。
 
 ### 9.1 Rust
 
@@ -421,7 +442,7 @@ document.getElementById('up').onchange = async (e) => {
 
 ```js
 import init, { add } from './pkg/hello_wasm.js';
-console.log(add(3, 4));   // ❌ TypeError: add is not a function
+console.log(add(3, 4));   // ❌ TypeError: Cannot read properties of undefined (reading 'add')
 ```
 
 要先：
@@ -449,6 +470,14 @@ wasm-pack build --target web --release
 
 重整瀏覽器（強制重整 `Cmd+Shift+R`，因為瀏覽器會快取 wasm）。
 
+### 坑 5：build 到最後一步，wasm-opt 報 `bulk memory`
+
+```text
+memory.copy operations require bulk memory operations [--enable-bulk-memory-opt]
+```
+
+`Cargo.toml` 的 `[profile.release]` 裡有 `strip = true`，拿掉就好（第 7 節）。
+
 ---
 
 ## 11 動手作業
@@ -463,9 +492,9 @@ wasm-pack build --target web --release
 
 - Rust + wasm-pack 是寫加密 wasm 的黃金組合。
 - 關鍵步驟：`crate-type = ["cdylib"]` → `#[wasm_bindgen]` → `wasm-pack build --target web`。
-- 傳大量 byte 用 `&mut [u8]` 或 `&[u8]`，**不要用字串**。
-- 用 `opt-level=3 + lto + wasm-opt -O3` 把產物壓到最小。
-- WASM 的核心防禦價值：**比 JS 難 100 倍逆向**，看 WAT 自然懂。
+- 傳大量 byte 用 `&mut [u8]` 或 `&[u8]`，**不要用字串**；它們每次呼叫都會複製。
+- hot loop 用 `opt-level = 3`、在意體積用 `"z"`；release build 會自動跑 wasm-opt；不要加 `strip = true`。
+- WASM 藏得住演算法，藏不住 export 名稱、JS 膠水程式，以及傳進去的參數。
 
 ---
 

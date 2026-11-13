@@ -563,4 +563,4 @@ SSE 的完整圖像：
 > - [第一章：HTTP 與 HTTPS 必備知識](./http-https.md) — SSE 完全建立在 HTTP 之上
 > - [第二章：SSL 憑證](./ssl-certificates.md) — SSE 也應走 HTTPS，憑證設定同 HTTPS
 > - [前後端 JWT 登入實戰](./jwt-auth-frontend-backend.md) — SSE 身分驗證最常用 JWT
-> - [Promise、async/await](./promise-async-await-then.md) — `fetch` 串流解析是非同步流程
+> - [Promise、async/await](../javascript-course/11-promise-and-async-await.md) — `fetch` 串流解析是非同步流程

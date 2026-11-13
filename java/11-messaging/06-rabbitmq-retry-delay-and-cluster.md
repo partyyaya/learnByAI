@@ -1264,7 +1264,7 @@ class H5QuorumTest {
 @Bean Queue orderMailQueue() {
     return QueueBuilder.durable("order.confirm-mail.q")
             .quorum()                                       // ← 本站的預設
-            .deliveryLimit(5)                               // ← 6.6.2，取代一半的重試程式碼
+            .deliveryLimit(5)                               // ← 6.6.2，只限制同一 queue 的重新投遞
             .deadLetterExchange("order.dlx")                // ← 6.2
             .maxLength(1_000_000L)
             .overflow(QueueBuilder.Overflow.rejectPublish)  // ← 05 章 5.2.3
@@ -1427,72 +1427,62 @@ RabbitMQ 的連線很貴（每條一組 Erlang 行程 + TCP buffer）。
 
 **把 04、05、06 三章的結論合成一份可以直接用的設定。**
 
+這份設定**取代** 04 章的拓撲類別，不能與同名 queue 的舊宣告同時使用。
+queue type、DLX 等參數不能任意重宣告；本機請在全新 vhost 驗證，既有資料則依 04.6
+規劃新 queue 名稱、搬移與切換，不能刪掉仍有訊息的 queue。
+此處假設 RabbitMQ 3.13 的 quorum queue 與 at-least-once dead lettering 功能可用。
+
 ```java
+package com.example.lab11.messaging;
+
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.json.JsonMapper;
+import org.springframework.amqp.core.*;
+import org.springframework.amqp.support.converter.*;
+import org.springframework.context.annotation.*;
+
 @Configuration
 public class OrderTopology {
-
-    public static final String X       = "order.x";
-    public static final String DLX     = "order.dlx";
-    public static final String RETRY_X = "order.retry.x";
-
-    // ── exchange（04 章 4.3：事件用 topic）──
-    @Bean TopicExchange orderExchange()  { return ExchangeBuilder.topicExchange(X).durable(true).build(); }
-    @Bean FanoutExchange orderDlx()      { return new FanoutExchange(DLX, true, false); }   // 6.2.5 坑一
-    @Bean DirectExchange orderRetryX()   { return ExchangeBuilder.directExchange(RETRY_X).durable(true).build(); }
-
-    // ── 業務佇列 ──
+    public static final String X="order.x", DLX="order.dlx", RETRY_X="order.retry.x";
+    public static final String MAIL="order.confirm-mail.q", PARKING="order.confirm-mail.dlq";
+    @Bean TopicExchange orderExchange() { return new TopicExchange(X, true, false); }
+    @Bean FanoutExchange orderDlx() { return new FanoutExchange(DLX, true, false); }
+    @Bean DirectExchange orderRetryX() { return new DirectExchange(RETRY_X, true, false); }
     @Bean Queue mailQueue() {
-        return QueueBuilder.durable("order.confirm-mail.q")
-                .quorum()                                        // 6.6.4
-                .deliveryLimit(5)                                // 6.6.2：取代重試計數的程式碼
-                .deadLetterExchange(RETRY_X)                     // 失敗 → 進退避階梯
-                .deadLetterRoutingKey("retry.5s")
-                .maxLength(1_000_000L)
-                .overflow(QueueBuilder.Overflow.rejectPublish)   // 05 章 5.2.3
-                .build();
+        return QueueBuilder.durable(MAIL).quorum().deliveryLimit(5)
+                .deadLetterExchange(DLX) // 未處理例外／轉送失敗 → 停放，不再繞進 retry
+                .withArgument("x-dead-letter-strategy", "at-least-once")
+                .maxLength(1_000_000L).overflow(QueueBuilder.Overflow.rejectPublish).build();
     }
-
-    @Bean Binding mailBinding() {
-        return BindingBuilder.bind(mailQueue()).to(orderExchange()).with("order.created.#");
-    }
-
-    // ── 退避階梯（6.3.3、6.4.2：每一級一個佇列）──
-    @Bean Queue retry5s()  { return retryQueue("order.retry.5s.q",  5_000); }
-    @Bean Queue retry1m()  { return retryQueue("order.retry.1m.q",  60_000); }
+    @Bean Binding mailBinding() { return BindingBuilder.bind(mailQueue()).to(orderExchange()).with("order.created.#"); }
+    @Bean Queue retry5s() { return retryQueue("order.retry.5s.q", 5_000); }
+    @Bean Queue retry1m() { return retryQueue("order.retry.1m.q", 60_000); }
     @Bean Queue retry10m() { return retryQueue("order.retry.10m.q", 600_000); }
-
     private Queue retryQueue(String name, int ttlMs) {
-        return QueueBuilder.durable(name)
-                .quorum()
-                .ttl(ttlMs)                     // 躺這麼久
-                .deadLetterExchange(X)          // 時間到就回主 exchange
-                .deadLetterRoutingKey("order.created.retry")
-                .build();
+        return QueueBuilder.durable(name).quorum().ttl(ttlMs)
+                .deadLetterExchange("").deadLetterRoutingKey(MAIL) // default exchange，精確回到 mail
+                .overflow(QueueBuilder.Overflow.rejectPublish)
+                .withArgument("x-dead-letter-strategy", "at-least-once").build();
     }
-
-    @Bean Binding retry5sBinding()  { return BindingBuilder.bind(retry5s()).to(orderRetryX()).with("retry.5s"); }
-    @Bean Binding retry1mBinding()  { return BindingBuilder.bind(retry1m()).to(orderRetryX()).with("retry.1m"); }
+    @Bean Binding retry5sBinding() { return BindingBuilder.bind(retry5s()).to(orderRetryX()).with("retry.5s"); }
+    @Bean Binding retry1mBinding() { return BindingBuilder.bind(retry1m()).to(orderRetryX()).with("retry.1m"); }
     @Bean Binding retry10mBinding() { return BindingBuilder.bind(retry10m()).to(orderRetryX()).with("retry.10m"); }
-
-    // ── 停放區：重試用完的訊息最後停在這裡（6.2.4）──
     @Bean Queue parkingQueue() {
-        return QueueBuilder.durable("order.confirm-mail.dlq")
-                .quorum()
-                .maxLength(100_000L)
-                .overflow(QueueBuilder.Overflow.rejectPublish)   // ⚠️ 它沒有 DLX，滿了就真的掉了
-                .build();
+        return QueueBuilder.durable(PARKING).quorum().maxLength(100_000L)
+                .overflow(QueueBuilder.Overflow.rejectPublish).build();
     }
     @Bean Binding parkingBinding() { return BindingBuilder.bind(parkingQueue()).to(orderDlx()); }
-
-    // ── 04 章 4.5：JSON，而且多一個欄位不會炸 ──
     @Bean MessageConverter jsonMessageConverter() {
-        ObjectMapper om = JsonMapper.builder()
-                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES)
-                .build();
-        return new Jackson2JsonMessageConverter(om);
+        return new Jackson2JsonMessageConverter(JsonMapper.builder()
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES).build());
     }
 }
 ```
+
+主佇列的 `deliveryLimit(5)` 只限制**同一佇列的重新投遞**，例如 worker 不斷崩潰。
+它不會替應用程式重新發佈的新副本計算重試上限。主佇列與 retry 佇列都使用
+`x-dead-letter-strategy=at-least-once` 加 `reject-publish`：目標不可用／滿載時保留待轉送訊息，
+並告警處理；parking 不可用仍可能讓來源持續積壓。
 
 ```yaml
 spring:
@@ -1514,257 +1504,152 @@ spring:
           enabled: false                  # 06 章 6.3.3：退避交給 retry 佇列，不要卡住消費者
 ```
 
-**消費者的樣子**：
+**寄信工作與冪等契約**：不要先寫「已處理」再寄信。寄信失敗後那筆紀錄會讓下一次重試直接跳過。
+建立下面這張工作表，並用同一個 DataSource／交易管理器：
+
+```sql
+CREATE TABLE notification_job (
+  event_id VARCHAR(64) NOT NULL,
+  consumer VARCHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  PRIMARY KEY(event_id, consumer)
+) ENGINE=InnoDB;
+```
 
 ```java
+package com.example.lab11.messaging;
+
+import com.example.lab11.events.OrderCreatedEvent;
+
+public interface MailGateway {
+    // 實作必須以 idempotencyKey 去重，並設定連線／讀取逾時；失敗丟 RuntimeException。
+    void sendConfirm(OrderCreatedEvent event, String idempotencyKey);
+}
+```
+
+```java
+package com.example.lab11.messaging;
+
+import com.example.lab11.events.OrderCreatedEvent;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class MailDeliveryService {
+    private final JdbcTemplate jdbc;
+    private final MailGateway gateway;
+    public MailDeliveryService(JdbcTemplate jdbc, MailGateway gateway) {
+        this.jdbc=jdbc; this.gateway=gateway;
+    }
+    @Transactional
+    public void sendOnce(OrderCreatedEvent event) {
+        jdbc.update("INSERT INTO notification_job(event_id,consumer,status) VALUES(?,'confirm-mail','PENDING') "
+                +"ON DUPLICATE KEY UPDATE event_id=event_id", event.eventId()); // 不用 row count 判斷
+        String status=jdbc.queryForObject("SELECT status FROM notification_job "
+                +"WHERE event_id=? AND consumer='confirm-mail' FOR UPDATE", String.class, event.eventId());
+        if ("DONE".equals(status)) return;
+        gateway.sendConfirm(event, "confirm-mail:"+event.eventId());
+        jdbc.update("UPDATE notification_job SET status='DONE' WHERE event_id=? AND consumer='confirm-mail'", event.eventId());
+    }
+}
+```
+
+**外部副作用的界線**：此範例要求郵件供應商支援持久的 idempotency key。
+如果供應商已寄出，但回應遺失或本地交易回滾，下次仍帶相同 key，供應商才不會重寄。
+一般 SMTP 沒有此契約，不能宣稱 DB 去重就保證只寄一封；需接受可能重複並對帳，或換支援去重的供應商。
+`MailGateway` 是你要接上的外部介面，課程不會憑空提供真實寄信帳號。
+這個教學版會持有單一工作列的鎖直到有界寄信呼叫結束；長耗時工作應改成獨立 worker 與租約。
+
+**有上限的重試轉送**：首次失敗依序等 5 秒、1 分鐘、10 分鐘，再失敗就停放。
+總共最多 4 次業務呼叫。輸入無效直接停放，其他 RuntimeException 也受相同上限約束。
+
+```java
+package com.example.lab11.messaging;
+
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageBuilder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class RabbitRetryRouter {
+    public static final String RETRY_COUNT="X-Retry-Count";
+    private final ConfirmedRabbitSender sender;
+    public RabbitRetryRouter(ConfirmedRabbitSender sender) { this.sender=sender; }
+    public void forward(Message raw, RuntimeException failure) {
+        Object value=raw.getMessageProperties().getHeaders().get(RETRY_COUNT);
+        boolean valid=value==null || value instanceof Integer && (Integer)value>=0 && (Integer)value<=3;
+        int count=value instanceof Integer ? (Integer)value : 0;
+        String[] tiers={"retry.5s", "retry.1m", "retry.10m"};
+        boolean retry=valid && !(failure instanceof IllegalArgumentException) && count<tiers.length;
+        Message copy=MessageBuilder.fromClonedMessage(raw).build();
+        copy.getMessageProperties().setExpiration(null); // 不沿用原訊息的 per-message TTL
+        if (retry) copy.getMessageProperties().setHeader(RETRY_COUNT, count+1);
+        // raw Message 原樣保留 JSON、messageId、traceId；ACK 且沒有 return 才正常回傳
+        sender.sendMessage(retry ? OrderTopology.RETRY_X : OrderTopology.DLX,
+                retry ? tiers[count] : "", copy);
+    }
+}
+```
+
+```java
+package com.example.lab11.messaging;
+
+import com.example.lab11.events.OrderCreatedEvent;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.stereotype.Component;
+
 @Component
 public class ConfirmMailConsumer {
-
-    @RabbitListener(queues = "order.confirm-mail.q")
-    public void onOrderCreated(OrderCreated event, Message raw) {
-        // ① 03 章：冪等。重複投遞是必然的（05 章 5.4.4 實測一次故障 249 則）
-        if (!dedup.firstTime(event.eventId(), "confirm-mail")) return;
-
+    private final MailDeliveryService mail;
+    private final RabbitRetryRouter retry;
+    public ConfirmMailConsumer(MailDeliveryService mail, RabbitRetryRouter retry) { this.mail=mail; this.retry=retry; }
+    @RabbitListener(queues = OrderTopology.MAIL)
+    public void onOrderCreated(OrderCreatedEvent event, Message raw) {
         try {
-            mailService.sendConfirm(event);
-        } catch (TransientException e) {
-            // ② 6.3：往退避階梯的下一級送
-            escalate(raw, e);
+            if (event.eventId()==null || event.eventId().isBlank() || event.eventId().length()>64
+                    || !event.eventId().equals(raw.getMessageProperties().getMessageId())
+                    || event.orderId()==null || event.orderId().isBlank())
+                throw new IllegalArgumentException("invalid event identity");
+            mail.sendOnce(event); // 走另一顆 bean 的交易代理；DONE 表示工作已完成
+        } catch (RuntimeException failure) {
+            retry.forward(raw, failure); // 轉送失敗直接向外拋；原訊息不能被 AUTO ACK
         }
-        // ③ 其他例外 → 丟出去 → default-requeue-rejected=false → 進 RETRY_X
-    }
-
-    /** 從 x-death 讀出死過幾次，決定下一級退避。⚠️ 讀法見 6.9.2 */
-    private void escalate(Message raw, Exception e) {
-        int deaths = totalDeaths(raw);              // ⚠️ 不是 x-death[0].count，理由在 6.9.2
-        String next = switch (deaths) {
-            case 0, 1 -> "retry.5s";
-            case 2, 3 -> "retry.1m";
-            case 4, 5 -> "retry.10m";
-            default   -> null;                       // 用完了 → 停放區
-        };
-        if (next == null) rabbit.convertAndSend(OrderTopology.DLX, "", raw);
-        else              rabbit.convertAndSend(OrderTopology.RETRY_X, next, raw);
     }
 }
 ```
 
-📌 **這份拓撲一共有 5 個佇列、3 個 exchange，處理一個「寄確認信」的需求。**
+AUTO 模式只有在方法正常回傳後才 ACK 原訊息。轉送須等 confirm 且無 return；
+若轉送失敗，例外交給容器，`default-requeue-rejected=false` 使原訊息走主佇列 DLX 到 parking。
+反序列化等進入方法前的失敗也走此路。人工修復後才重放，避免無限循環。
+來源 ACK 遺失可能留下兩份副本，故郵件工作與供應商都需要沿用同一 eventId。
 
-⚠️ **它看起來很多，但每一個都是前面章節某一個實測數字的直接結果**：
+### 6.9.1 驗證：宣告、轉送確認與失敗去向
 
-| 元件 | 沒有它會怎樣 | 出處 |
-|---|---|---|
-| topic exchange | 加第二個消費者要改生產者 | [04 章 4.2.3](./04-rabbitmq-basics-and-topology.md) |
-| JSON converter | 上游改套件名 → 消費者全炸 | [04 章 4.5.2](./04-rabbitmq-basics-and-topology.md) |
-| confirm + return | routing key 打錯 → **500 則無聲消失** | [01 章 1.3.1](./01-reliable-delivery-three-hops.md) |
-| `prefetch: 10` | 一次故障 **249 則**要重做 | [05 章 5.4.4](./05-rabbitmq-reliability.md) |
-| `overflow: reject-publish` | 佇列滿了 → **15 則無聲丟掉** | [05 章 5.2.3](./05-rabbitmq-reliability.md) |
-| DLX + `requeue: false` | 一則毒藥訊息 → **三秒 45 MB 日誌** | [00 章 0.5.2](./00-course-map-why-message-queue.md) / 6.2.1 |
-| retry 佇列階梯 | 本地重試 → **20 則好訊息等 7 秒** | 6.3.1 |
-| `deliveryLimit(5)` | 要自己寫 `x-death.count` 的計數邏輯 | 6.6.2 |
-| 停放區 `maxLength` | 死信佇列滿了 → 真的消失 | 6.2.4 |
-| 冪等 | 一次故障 249 則重複 → 249 封重複的信 | [03 章](./03-idempotent-consumer.md) |
+以全新 vhost 宣告 5 個 quorum queue 與 3 個 exchange，檢查：
 
-📌 **如果你覺得「這對我的專案太複雜了」，那是一個合理的判斷** ——
-但請**逐列**看上面那張表，決定你願意接受哪幾個風險，
-而不是「先簡單做，出事再說」。
-⚠️ **這十列裡面有四列的症狀是「無聲遺失」，而那些出事之後你連查都查不到。**
+1. 正常 `order.created` 只送一次；payload 是 JSON object，messageId 等於 eventId。
+2. 供應商第一次失敗：`notification_job` 不可留下 DONE；第二次仍會呼叫供應商。
+3. 連續失敗依次進 3 個 retry queue，TTL 到期只回 `order.confirm-mail.q`。
+   即使其他 queue 綁了 `order.created.#`，它也不可收到重試副本。
+4. 第 4 次失敗或輸入無效，訊息停在 parking；主佇列 nack 不可再回 retry。
+5. 刻意移除 retry binding：轉送即使拿到 ACK，也必須因 return 失敗；
+   原訊息經安全 DLX 到 parking，不能只正常回傳讓它消失。
+6. 模擬供應商已接受但回應遺失：下一次使用相同 key，供應商實際副作用只有一次，DB 最後為 DONE。
 
-### 6.9.1 驗證：它真的宣告得起來，而且訊息走對路
+本機回歸程式在 [verification](./verification/README.md)。測試可縮短 TTL，
+但正式設定仍是 5 秒／1 分鐘／10 分鐘；舊拓撲的吞吐與輸出不能當成本版驗證結果。
 
-⚠️ **一份拓撲設定寫得出來，不代表它建得起來、也不代表訊息會照你畫的路徑走。**
-所以把上面那份原封不動丟進一個 `@TestConfiguration` 跑一次：
+### 6.9.2 `x-death` 用來診斷，應用重試用自己的計數
 
-```java
-package com.example.lab11.ch06;
+`x-death` 按 queue 與 reason 累計；TTL 的 expired 和消費者 rejected 是兩件事。
+應用程式重新 publish 並不等於 broker reject，所以找主佇列的 rejected count 會漏算；
+所有 count 相加又混入 TTL、重放等歷史，也不等於業務嘗試次數。
+本版統一使用 `X-Retry-Count`：原訊息缺省 0，每次成功轉入下一級時在新副本加一，
+3 表示最後一次退避已排入。`deliveryLimit(5)` 則是同一 quorum queue 的崩潰重投防護，兩者用途不同。
+重放時是否重設計數必須是維運明確決策，不能讓程式自動清除上限。
 
-@SpringBootTest
-class H6FinalTopologyTest {
-
-    @TestConfiguration
-    static class OrderTopology { /* 6.9 那份設定，一字不改 */ }
-
-    @Test
-    void theWholeTopologyDeclaresAndRoutes() {
-        // ① 送一則進主 exchange
-        rabbit.convertAndSend(X, "order.created.vip", "E-1");
-        // ② 消費者 nack(requeue=false)
-        reject("order.confirm-mail.q");
-        // ③ 等 5 秒 TTL，看它有沒有自己回到主佇列
-    }
-}
-```
-
-**輸出**：
-
-```
-═══ 6.9.1 完整拓撲：宣告得起來嗎、訊息走對路嗎 ═══
-
-  ── 五個佇列都建起來了嗎 ──
-     order.confirm-mail.q       ✅ 存在
-     order.retry.5s.q           ✅ 存在
-     order.retry.1m.q           ✅ 存在
-     order.retry.10m.q          ✅ 存在
-     order.confirm-mail.dlq     ✅ 存在
-
-  ── broker 怎麼看它們 ──
-  name	type	messages	arguments
-  order.confirm-mail.q	quorum	0	[{"x-dead-letter-exchange","order.retry.x"},{"x-overflow","reject-publish"},
-                                     {"x-delivery-limit",5},{"x-max-length",1000000},
-                                     {"x-dead-letter-routing-key","retry.5s"},{"x-queue-type","quorum"}]
-  order.retry.5s.q	quorum	0	[{"x-message-ttl",5000},{"x-dead-letter-exchange","order.x"},
-                                     {"x-dead-letter-routing-key","order.created.retry"},{"x-queue-type","quorum"}]
-  order.confirm-mail.dlq	quorum	0	[{"x-overflow","reject-publish"},{"x-queue-type","quorum"},{"x-max-length",100000}]
-
-  ① 送 order.created.vip → 主佇列積壓 = 1
-  ② 消費者 nack(requeue=false) → order.retry.5s.q 積壓 = 1
-  ③ 等 5 秒 TTL …
-     → 主佇列積壓 = 1、retry.5s.q 積壓 = 0
-```
-
-✅ **訊息走完了一整圈**：主佇列 → 失敗 → retry.5s.q → 躺 5 秒 → 自己回到主佇列。
-
-**而回來那則訊息身上的 `x-death`，正好是 6.2.3 那一節的活教材**：
-
-```
-[{reason=expired,  count=1, exchange=order.retry.x, routing-keys=[retry.5s],
-                            queue=order.retry.5s.q, time=Tue Sep 22 10:24:36 CST 2026},
- {reason=rejected, count=1, exchange=order.x,       routing-keys=[order.created.vip],
-                            queue=order.confirm-mail.q, time=Tue Sep 22 10:24:31 CST 2026}]
-```
-
-📌 **兩個元素，對應它死過的兩個佇列**：
-
-| 順序 | `queue` | `reason` | 意思 |
-|---|---|---|---|
-| **第一個**（最新） | `order.retry.5s.q` | `expired` | TTL 到期，**這是退避機制在正常運作** |
-| 第二個 | `order.confirm-mail.q` | `rejected` | 消費者拒絕，**這才是真正的失敗** |
-
-⚠️ **這就是 6.2.3 說的「`count` 是同一個佇列的累計」。**
-而它帶出一個很容易寫錯的問題：**「這則訊息重試幾次了」到底該讀哪個數字？**
-
-### 6.9.2 ⚠️ 「重試幾次了」該讀哪個數字：兩種退避寫法，答案不一樣
-
-把退避階梯的 TTL 縮短（2 秒 / 3 秒）方便觀察，跑兩種寫法：
-
-```java
-package com.example.lab11.ch06;
-
-@SpringBootTest
-class H7DeathCountTest {
-
-    /** 讀法一：x-death 的第一個元素 */
-    static int firstCount(Message m) { ... }
-
-    /** 讀法二：找出「主佇列 + rejected」那個元素 */
-    static int rejectedCount(Message m, String mainQueue) {
-        for (Object o : (List<?>) m.getMessageProperties().getHeader("x-death")) {
-            if (o instanceof Map<?, ?> d
-                    && mainQueue.equals(d.get("queue"))
-                    && "rejected".equals(d.get("reason")))
-                return ((Number) d.get("count")).intValue();
-        }
-        return 0;
-    }
-
-    /** 讀法三：所有 count 的總和 */
-    static int totalDeaths(Message m) { ... }
-}
-```
-
-**輸出**：
-
-```
-═══ 6.9.2 走完兩級退避之後，x-death 長什麼樣 ═══
-  退避階梯用短一點的 TTL 方便觀察：第一級 2 秒、第二級 3 秒
-
-  ── A：每一次都用 nack（主佇列固定死信到第一級）──
-     第 1 次 nack 之後：x-death =
-        {queue=ch06.dc.retry.1.q, reason=expired, count=1}
-        {queue=ch06.dc.main.q, reason=rejected, count=1}
-        x-death[0].count = 1   rejectedCount(MAIN) = 1   totalDeaths = 2
-     第 2 次 nack 之後：x-death =
-        {queue=ch06.dc.retry.1.q, reason=expired, count=2}
-        {queue=ch06.dc.main.q, reason=rejected, count=2}
-        x-death[0].count = 2   rejectedCount(MAIN) = 2   totalDeaths = 4
-     第 3 次 nack 之後：x-death =
-        {queue=ch06.dc.retry.1.q, reason=expired, count=3}
-        {queue=ch06.dc.main.q, reason=rejected, count=3}
-        x-death[0].count = 3   rejectedCount(MAIN) = 3   totalDeaths = 6
-
-  ── B：escalate（6.9 那個寫法：重送到不同的 retry 佇列）──
-     第 1 次（nack）：x-death =
-        {queue=ch06.dc.retry.1.q, reason=expired, count=1}
-        {queue=ch06.dc.main.q, reason=rejected, count=1}
-        x-death[0].count = 1   rejectedCount(MAIN) = 1   totalDeaths = 2
-
-     第 2 次（escalate）：x-death =
-        {queue=ch06.dc.retry.2.q, reason=expired, count=1}
-        {queue=ch06.dc.retry.1.q, reason=expired, count=1}
-        {queue=ch06.dc.main.q, reason=rejected, count=1}
-        ❌ x-death[0].count    = 1
-        ❌ rejectedCount(MAIN) = 1   ← 沒有增加
-        ✅ totalDeaths()       = 3   ← 這個才跟得上
-```
-
-📌 **兩種寫法，正確的讀法不一樣**：
-
-| 退避寫法 | 每一級的樣子 | 該讀哪個 |
-|---|---|---|
-| **A：單一 retry 佇列**（主佇列固定死信到它） | `x-death` 永遠只有 **2 個元素**，`count` 一起往上加 | 三種讀法**都對** |
-| **B：escalate 到不同的 retry 佇列**（6.9 那份拓撲） | `x-death` **每多一級就多一個元素**，每個 `count` 都停在 1 | ⚠️ **只有 `totalDeaths()` 是對的** |
-
-⚠️ **B 那一組的 `rejectedCount(MAIN) = 1` 是本節的陷阱。**
-
-**原因**：主佇列的 `rejected` 只有在**真的被 nack** 時才增加。
-`escalate()` 是用 `convertAndSend` **重送**到另一個 retry 佇列的 ——
-那不是一次「拒絕」，所以主佇列的計數不動。
-
-📌 **結果就是**：如果你在 6.9 那份拓撲裡用 `rejectedCount` 當重試上限，
-**那個數字永遠是 1，上限永遠不會觸發** —— 訊息會在階梯裡繞到天荒地老。
-
-**所以 6.9 那個 `escalate()` 要這樣寫**：
-
-```java
-private void escalate(Message raw) {
-    int deaths = totalDeaths(raw);                 // ⚠️ 用總和，不是 x-death[0].count
-    String next = switch (deaths) {
-        case 0, 1 -> "retry.5s";
-        case 2, 3 -> "retry.1m";
-        case 4, 5 -> "retry.10m";
-        default   -> null;                          // 用完了 → 停放區
-    };
-    if (next == null) rabbit.convertAndSend(OrderTopology.DLX, "", raw);
-    else              rabbit.convertAndSend(OrderTopology.RETRY_X, next, raw);
-}
-```
-
-⚠️ **注意那個 `case 0, 1` 是刻意的** ——
-每繞一圈 `totalDeaths` 會加 1 或 2（看它有沒有真的被 nack），
-**所以階梯的判斷條件要用區間，不能用等號。**
-
-📌 **然後看一眼 6.6.2，你會發現這一整節都可以不用存在**：
-
-```java
-@Bean Queue mailQueue() {
-    return QueueBuilder.durable("order.confirm-mail.q")
-            .quorum()
-            .deliveryLimit(5)        // ← broker 幫你算，不用碰 x-death
-            .deadLetterExchange(DLX)
-            .build();
-}
-```
-
-**quorum queue 的 `x-delivery-limit` 把「數到 5」這件事變成一個數字，
-而這一整節在講的是「如果你不用它，你要自己數，而且很容易數錯」。**
-
-⚠️ **唯一還需要自己數的情況：你需要「退避階梯」而不只是「次數上限」**
-（6.6.2 的第 1 點：`x-delivery-limit` 沒有退避）。
-📌 **那時候就用 `totalDeaths()`，並且寫一個測試驗證它真的會在第 N 次進停放區** ——
-這一節就是那個測試。
-
----
 
 ## 6.10 常見誤區
 
@@ -1794,7 +1679,8 @@ DLX 如果是 topic 型而 binding 對不上，**死信會第二次消失**。
 **④ 「`redelivered` 可以拿來數重試次數」**
 
 6.3.2：`redelivered` 是**布林值**。重送 1 次跟 500 次都是 `true`。
-要次數只有三條路：`x-death.count`、quorum 的 `x-delivery-limit`、或自己在 header 上算。
+需要先分清楚範圍：x-death 是死信歷史，quorum delivery count 是同一 queue 的重投；
+應用重新 publish 的退避使用自己的 X-Retry-Count（6.9.2），不可互相替代。
 
 **⑤ 「`spring.rabbitmq.listener.simple.retry` 就是重試，設一設就好」**
 
@@ -1901,14 +1787,13 @@ RabbitMQ 那一欄現在每一格都有具體的設定與實測數字：
 - [ ] 說出 `x-death` 的 `time` 是第一次還是最後一次，以及它適合回答哪個問題。
 - [ ] 從 `x-death` 讀出三件事：為什麼死、死了幾次、原本在哪個佇列。
 - [ ] 說出 `x-death` 的 `count` 是「哪個範圍」的累計。
-- [ ] 說出兩種退避寫法（單一 retry 佇列 vs escalate）下，「重試幾次了」該讀哪個數字，
-      以及讀錯會發生什麼（6.9.2）。
+- [ ] 說明 x-death、同 queue redelivery 與 X-Retry-Count 的計數範圍，並驗證成品最多 4 次業務嘗試（6.9.2）。
 - [ ] 說出死信佇列上線前要做的四件事。
 - [ ] 說出重放死信的三個規矩，以及為什麼要清掉 `x-death`。
 - [ ] 說出 DLX 的三個坑各自的症狀與防法。
 - [ ] 說出本地重試與死信回送在**六個面向**上的差別，並說出你的專案該用哪一種。
 - [ ] 算出 `initial=1s, multiplier=2, max-attempts=6` 的退避總長。
-- [ ] 說出 `redelivered` 為什麼不能當重試計數器，以及三個可以的替代方案。
+- [ ] 說明 redelivered 為何不能當計數器，並區分 broker 重投與應用重試的計數。
 - [ ] 解釋 6.4.1 那個「延遲 1 秒的訊息在 8,044 ms 才到」的機制。
 - [ ] 說出「每一級延遲一個佇列」解決了什麼、放棄了什麼。
 - [ ] 說出 delayed-message 外掛的四個代價。
@@ -1943,7 +1828,7 @@ RabbitMQ 那一欄現在每一格都有具體的設定與實測數字：
 **記錄「幾則毒藥訊息可以讓整個服務停擺」。**
 
 **練習四（30 分鐘）**：把 6.3.2 的死信回送做成**三級退避階梯**（5s / 15s / 45s），
-並在消費端用 `x-death` 的 `count` 決定下一級。
+並在消費端沿用 6.9 的 `X-Retry-Count` 決定下一級，轉送須等 confirm 且沒有 return。
 送 1 則永遠失敗的訊息，**記錄它在每一級停留的時間，以及最後幾秒鐘進停放區。**
 然後在它跑到第二級的時候 `docker restart rabbit-lab` ——
 **驗證重啟之後它還在，而且進度沒有歸零。**

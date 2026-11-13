@@ -1,0 +1,1 @@
+package example.shop.order.domain;public class InvoiceSpec{}

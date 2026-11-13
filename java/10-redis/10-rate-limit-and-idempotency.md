@@ -293,6 +293,18 @@ redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[2]) * 2)     -- ⚠️ 兩倍窗長
 return {1, math.floor(tonumber(ARGV[1]) - estimated - 1), 0}
 ```
 
+**滑動計數器的兩個 key 在 Cluster 上必須同槽。** 例如同一使用者共用
+`rl:{user:alice}:10` 與 `rl:{user:alice}:9`；窗序號放在 hash tag 外。
+實際使用前先把維度編碼，避免原始 id 內的 `{}` 改變 tag：
+
+```java
+String tag = java.util.Base64.getUrlEncoder().withoutPadding()
+        .encodeToString((dimension + ":" + id).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+String current = "rl:{" + tag + "}:" + window;
+String previous = "rl:{" + tag + "}:" + (window - 1);
+// redis.execute(slidingCounter, List.of(current, previous), ...)
+```
+
 > ⚠️ **`PEXPIRE` 是兩倍窗長**，因為下一個窗還要把這個窗當作「上一個窗」來讀。
 > 設成一倍的話，每個窗的第一毫秒都會讀到 0——**邊界問題又回來了**。
 
@@ -348,18 +360,26 @@ return {1, math.floor(tonumber(ARGV[1]) - estimated - 1), 0}
 ```lua
 -- scripts/rate-token-bucket.lua
 -- KEYS[1] = rl:tb:<id>（Hash：tokens、ts）
--- ARGV[1] = 桶容量，ARGV[2] = 每秒補幾個，ARGV[3] = 現在（毫秒），ARGV[4] = 這次要幾個
-local capacity, rate = tonumber(ARGV[1]), tonumber(ARGV[2])
-local now, requested = tonumber(ARGV[3]), tonumber(ARGV[4])
+-- ARGV[1] = 桶容量，ARGV[2] = 每秒補幾個，ARGV[3] = 這次要幾個
+local capacity, rate, requested = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3])
+if not capacity or not rate or not requested or capacity <= 0 or rate <= 0
+        or requested <= 0 or requested > capacity
+        or capacity > 1000000000 or rate > 1000000000
+        or capacity ~= math.floor(capacity) or requested ~= math.floor(requested) then
+    return redis.error_reply('invalid token bucket arguments')
+end
+local ttl = math.ceil(capacity / rate * 1000) * 2
+if ttl < 1 or ttl > 2147483647 then return redis.error_reply('invalid bucket ttl') end
 
-local data   = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
-local tokens = tonumber(data[1])
-local ts     = tonumber(data[2])
-if tokens == nil then tokens = capacity; ts = now end       -- 第一次來：桶是滿的
-
--- 補令牌：不用背景任務，用「上次到現在經過多久」算出來
-tokens = math.min(capacity, tokens + (math.max(0, now - ts) / 1000.0) * rate)
-
+-- 使用同一 Redis 的時間，呼叫者不再傳應用節點的 now。
+local clock = redis.call('TIME')
+local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
+local data = redis.call('HMGET', KEYS[1], 'tokens', 'ts')
+local tokens, ts = tonumber(data[1]), tonumber(data[2])
+if tokens == nil then tokens = capacity; ts = now end
+-- 即使 Redis 時鐘回退，也不把已消耗過的時間重新計算。
+now = math.max(now, ts)
+tokens = math.min(capacity, tokens + ((now - ts) / 1000.0) * rate)
 local allowed, retryAfter = 0, 0
 if tokens >= requested then
     tokens = tokens - requested
@@ -367,12 +387,14 @@ if tokens >= requested then
 else
     retryAfter = math.ceil((requested - tokens) / rate * 1000)
 end
-
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', now)
-redis.call('PEXPIRE', KEYS[1], math.ceil(capacity / rate * 1000) * 2)
--- ⚠️ Lua 回傳小數會被截成整數（05 章 5.6.4），所以剩餘量自己先 floor
+redis.call('PEXPIRE', KEYS[1], ttl)
 return {allowed, math.floor(tokens), retryAfter}
 ```
+
+Java wrapper 也改為 `tokenBucket(id, capacity, rate, requested)`，不再接收節點時間；
+測試若需模擬時鐘回退，可先把 Hash 的 ts 設到未來，確認腳本不倒退 ts、也不補入額度。
+Redis TIME 仍是牆上時鐘，向前跳動可能造成一次補充；保持非遞減可避免倒退造成反覆補充。
 
 > 📌 **三個設計重點**：
 >
@@ -961,86 +983,228 @@ redis.opsForHash().put(k, "response", result);
 ⚠️ 還要一個第四種檢查：**同一個 key、不同的請求內容**。
 那代表客戶端有 bug（或是有人在攻擊），**必須拒絕**，不能回一個不相干的回應。
 
-### 10.9.4 Lua 實作
+### 10.9.4 Redis 協調與資料庫冪等分工
 
-```lua
--- scripts/idempotency-begin.lua
--- KEYS[1] = idem:<key>，ARGV[1] = 請求指紋，ARGV[2] = 處理中的存活毫秒
--- 回傳 {狀態, 內容}
---   {0, ''}      → 我搶到了，可以開始做
---   {1, 回應}     → 已經做完了，直接回這個
---   {2, ''}      → 別人正在做（處理中）
---   {3, 舊指紋}   → 同一個 key 但請求內容不一樣（⚠️ 客戶端有 bug）
-local existing = redis.call('HMGET', KEYS[1], 'state', 'fingerprint', 'response')
-local state = existing[1]
+**Redis 的 Lua 只能原子地改 Redis，不能把訂單的資料庫提交也包進來。**
+如果訂單已提交，程序卻在寫 Redis DONE 前斷線，單靠 Redis TTL 或刪鍵重試，仍會重複下單。
+因此成品分兩層：Redis 合併短時間內的重試，資料庫唯一鍵負責業務只提交一次。
 
-if state == false then
-    redis.call('HSET', KEYS[1], 'state', 'IN_PROGRESS', 'fingerprint', ARGV[1])
-    redis.call('PEXPIRE', KEYS[1], ARGV[2])
-    return {0, ''}
-end
-if existing[2] ~= ARGV[1] then return {3, existing[2]} end
-if state == 'DONE'       then return {1, existing[3]} end
-return {2, ''}
+先為業務請求建立持久化紀錄（加入基準專案的 schema 初始化）：
+
+```sql
+CREATE TABLE IF NOT EXISTS business_request (
+    scope VARCHAR(64) NOT NULL,
+    request_key VARCHAR(128) NOT NULL,
+    fingerprint CHAR(64) NOT NULL,
+    http_status INTEGER,
+    response CLOB,
+    PRIMARY KEY (scope, request_key)
+);
 ```
 
-```java
-public String execute(String key, String fingerprint, Supplier<String> body) {
-    String k = "idem:" + key;
-    List<?> r = redis.execute(begin, List.of(k), fingerprint,
-            String.valueOf(IN_PROGRESS_TTL.toMillis()));
+scope 由伺服器依「租戶、已認證使用者、操作」產生，不能只用客戶端 key。
+下面類別放在 `com.example.lab10.shop.idempotency`；它以同一交易寫入唯一請求紀錄、
+執行業務、保存 HTTP 結果。未完成的佔位 INSERT 不會單獨提交。
 
-    switch (((Number) r.get(0)).intValue()) {
-        case 1 -> { replayed.increment(); return String.valueOf(r.get(1)); }      // 已完成 → 重放
-        case 2 -> { inFlight.increment(); throw new InProgressException(key); }   // 處理中 → 409
-        case 3 -> { mismatch.increment(); throw new FingerprintMismatchException(key); }  // → 422
+```java
+package com.example.lab10.shop.idempotency;
+
+import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+@Service
+public class DurableIdempotency {
+    public record Reply(int status, String body) {
+        public Reply {
+            if (status < 200 || status > 599) throw new IllegalArgumentException("invalid status");
+            Objects.requireNonNull(body);
+        }
+    }
+    private record Stored(String fingerprint, Reply reply) {}
+    private static class ClaimCollision extends RuntimeException {}
+    public static class FingerprintMismatchException extends RuntimeException {
+        public FingerprintMismatchException(String key) { super(key); }
+    }
+    private final JdbcTemplate jdbc;
+    private final TransactionTemplate tx;
+
+    public DurableIdempotency(JdbcTemplate jdbc, PlatformTransactionManager tm) {
+        this.jdbc = jdbc;
+        this.tx = new TransactionTemplate(tm);
+        tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        tx.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
-    // state == 0：我搶到了
-    executed.increment();
-    try {
-        String result = body.get();
-        redis.opsForHash().putAll(k, Map.of("state", "DONE",
-                "fingerprint", fingerprint, "response", result));
-        redis.expire(k, DONE_TTL);
-        return result;
-    } catch (RuntimeException e) {
-        redis.delete(k);      // ⚠️ 失敗就把 key 刪掉，讓客戶端可以用同一個 key 重試
-        throw e;
+    public static void validate(String scope, String key, String fingerprint) {
+        if (scope == null || !scope.matches("[0-9a-f]{64}") || key == null ||
+                !key.matches("[A-Za-z0-9._:-]{1,128}") || fingerprint == null ||
+                !fingerprint.matches("[0-9a-f]{64}")) throw new IllegalArgumentException("invalid request identity");
+    }
+
+    public Reply execute(String scope, String key, String fingerprint, Supplier<Reply> body) {
+        validate(scope, key, fingerprint);
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("invoke idempotency outside an existing transaction");
+        }
+        try {
+            return tx.execute(status -> {
+                try {
+                    jdbc.update("INSERT INTO business_request(scope,request_key,fingerprint) VALUES(?,?,?)",
+                            scope, key, fingerprint);
+                } catch (DuplicateKeyException collision) {
+                    throw new ClaimCollision();        // 先退出並回滾此交易，再用新交易查既有結果
+                }
+                Reply reply = Objects.requireNonNull(body.get());
+                jdbc.update("UPDATE business_request SET http_status=?,response=? WHERE scope=? AND request_key=?",
+                        reply.status(), reply.body(), scope, key);
+                return reply;                         // tx.execute 回傳前已完成提交
+            });
+        } catch (ClaimCollision collision) {
+            return tx.execute(status -> {
+                List<Stored> rows = jdbc.query(
+                        "SELECT fingerprint,http_status,response FROM business_request WHERE scope=? AND request_key=?",
+                        (rs, n) -> new Stored(rs.getString("fingerprint"),
+                                new Reply(rs.getInt("http_status"), rs.getString("response"))), scope, key);
+                if (rows.isEmpty()) throw new IllegalStateException("request outcome not available; retry later");
+                Stored stored = rows.get(0);
+                if (!stored.fingerprint().equals(fingerprint)) throw new FingerprintMismatchException(key);
+                return stored.reply();
+            });
+        }
     }
 }
 ```
 
-```
-═══ 10.9.4 Lua 版：搶到的人才做，其他人拿狀態 ═══
-  Lua 冪等鍵   送出 200 個請求（100 個不同的訂單 × 2 次）→ 建立 100 張訂單，重複 +0 張，例外 0，耗時 273 ms
-  指標：executed=100 replayed=44 inFlight(409)=56 mismatch=0
+⚠️ `body` 的資料庫變更必須使用**同一 DataSource 與交易**。DAO 用 REQUIRED 加入這筆交易，
+不能自行 REQUIRES_NEW、autocommit，或把外部扣款／寄信當作可回滾的動作。
+外部系統需另有冪等鍵／outbox。不同資料庫遇唯一鍵競爭時可能等待或逾時，逾時先回失敗，
+重試仍由唯一鍵仲裁；不要在已失敗的交易裡繼續查詢。
+
+Redis 協調使用唯一 owner。成功結束時只能更新仍屬於自己的那一筆，
+不能讓租約已過期的舊執行者覆寫新執行者的狀態。
+
+```lua
+-- scripts/idempotency-begin.lua
+-- KEYS[1] = idem:<scope>:<key digest>
+-- ARGV[1] = fingerprint，ARGV[2] = IN_PROGRESS TTL 毫秒，ARGV[3] = owner
+-- 回傳 {狀態, HTTP status, response}；0=取得，1=重放，2=處理中，3=指紋不同
+local existing = redis.call('HMGET', KEYS[1], 'state', 'fingerprint', 'status', 'response')
+if existing[1] == false then
+    redis.call('HSET', KEYS[1], 'state', 'IN_PROGRESS', 'fingerprint', ARGV[1], 'owner', ARGV[3])
+    redis.call('PEXPIRE', KEYS[1], ARGV[2])
+    return {0, '', ''}
+end
+if existing[2] ~= ARGV[1] then return {3, '', ''} end
+if existing[1] == 'DONE' then return {1, existing[3], existing[4]} end
+return {2, '', ''}
 ```
 
-**單獨跑 5 次**（對照 10.9.2 那個會飄的版本）：
-
-```
-        訂單   executed   replayed   inFlight(409)
-  第1次  100      100         44           56
-  第2次  100      100         68           32
-  第3次  100      100         41           59
-  第4次  100      100         71           29
-  第5次  100      100         65           35
-        ────    ────────   ─────────   ─────────────
-        永遠     永遠 100    41 ～ 71     29 ～ 59
-        100 張
+```lua
+-- scripts/idempotency-finish.lua
+-- ARGV[1] = owner，ARGV[2] = HTTP status，ARGV[3] = response，ARGV[4] = DONE TTL 毫秒
+if redis.call('HGET', KEYS[1], 'owner') ~= ARGV[1]
+        or redis.call('HGET', KEYS[1], 'state') ~= 'IN_PROGRESS' then return 0 end
+redis.call('HSET', KEYS[1], 'state', 'DONE', 'status', ARGV[2], 'response', ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[4])
+return 1
 ```
 
-> 📌 **左邊兩欄完全不動，右邊兩欄每次都不一樣——而這正是它對的證明。**
->
-> 「訂單數」與「執行次數」是**正確性**，它們必須是常數。
-> `replayed` 跟 `inFlight` 的分布是**時序**，它本來就會隨著兩份重試到達的間隔而變。
->
-> ⚠️ **寫併發測試的時候要斷言的是左邊那兩欄。**
-> 斷言 `replayed == 82` 的測試會在 CI 上隨機失敗，然後被某個人加上 `@Disabled`。
+```java
+package com.example.lab10.shop.idempotency;
 
-那 29 ～ 59 個 409 就是「**兩份重試真的同時到達**」的比例——
-它們沒有拿到重複的訂單（✅），但也沒拿到成功的回應。**10.9.8 會處理它們。**
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
+import java.util.Base64;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.UUID;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
+import org.springframework.stereotype.Service;
+import com.example.lab10.shop.idempotency.DurableIdempotency.Reply;
+
+@Service
+public class IdempotencyService {
+    private static final Logger log = LoggerFactory.getLogger(IdempotencyService.class);
+    public static final Duration IN_PROGRESS_TTL = Duration.ofSeconds(30);
+    public static final Duration DONE_TTL = Duration.ofHours(24);
+    public static class InProgressException extends RuntimeException {
+        public InProgressException(String key) { super(key); }
+    }
+    private final StringRedisTemplate redis;
+    private final DurableIdempotency durable;
+    private final RedisScript<List> begin = RedisScript.of(
+            new ClassPathResource("scripts/idempotency-begin.lua"), List.class);
+    private final RedisScript<Long> finish = RedisScript.of(
+            new ClassPathResource("scripts/idempotency-finish.lua"), Long.class);
+
+    public IdempotencyService(StringRedisTemplate redis, DurableIdempotency durable) {
+        this.redis = redis;
+        this.durable = durable;
+    }
+
+    public Reply execute(String scope, String key, String fingerprint, Supplier<Reply> body) {
+        DurableIdempotency.validate(scope, key, fingerprint);
+        String k = "idem:" + scope + ":" + fingerprint(key);
+        String owner = UUID.randomUUID().toString();
+        List<?> r = redis.execute(begin, List.of(k), fingerprint,
+                String.valueOf(IN_PROGRESS_TTL.toMillis()), owner);
+        switch (((Number) r.get(0)).intValue()) {
+            case 1 -> { return new Reply(Integer.parseInt(String.valueOf(r.get(1))), String.valueOf(r.get(2))); }
+            case 2 -> throw new InProgressException(key);
+            case 3 -> throw new DurableIdempotency.FingerprintMismatchException(key);
+        }
+
+        // 若此處失敗／結果未知，不刪 Redis 鍵。之後即使 TTL 過期，DB 唯一鍵仍保護業務。
+        Reply result = durable.execute(scope, key, fingerprint, body);
+        try {
+            Long published = redis.execute(finish, List.of(k), owner,
+                    String.valueOf(result.status()), result.body(), String.valueOf(DONE_TTL.toMillis()));
+            if (!Long.valueOf(1).equals(published)) log.warn("idempotency lease changed key={}", k);
+        } catch (RuntimeException publishFailure) {
+            // 已知 DB 提交成功：回傳持久化結果，不能刪鍵、回頭重做業務。
+            log.warn("idempotency DONE publish failed; DB result retained key={}", k, publishFailure);
+        }
+        return result;
+    }
+
+    public static String scope(String tenant, String principal, String operation) {
+        Base64.Encoder enc = Base64.getUrlEncoder().withoutPadding();
+        String identity = enc.encodeToString(tenant.getBytes(StandardCharsets.UTF_8)) + "." +
+                enc.encodeToString(principal.getBytes(StandardCharsets.UTF_8)) + "." +
+                enc.encodeToString(operation.getBytes(StandardCharsets.UTF_8));
+        return fingerprint(identity);
+    }
+
+    public static String fingerprint(String canonicalRequest) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(canonicalRequest.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+}
+```
+
+這個版本的驗證重點是：DONE 發布失敗後重試，訂單仍只有一張；舊 owner 的 finish
+不能改掉新 owner；不同 principal／operation 使用同一個 client key 互不影響。
+原先只測「同一個 TTL 內、Redis 與 DB 都正常」的併發結果，不能證明崩潰後仍只提交一次。
+可重跑的修正版測試見本目錄 `verification/`。
 
 ### 10.9.5 重放：第二次拿到的必須是同一個回應
 
@@ -1048,7 +1212,7 @@ public String execute(String key, String fingerprint, Supplier<String> body) {
 ═══ 10.9.5 先後送兩次（不是同時）：第二次拿到什麼 ═══
   第一次回應 = {"orderId":777}
   第二次回應 = {"orderId":777}   ← 完全一樣，而且業務沒有再跑一次
-  Redis 裡的內容 → state / DONE / fingerprint / fp-A / response / {"orderId":777}
+  Redis 裡的內容 → state / DONE / owner / 本次owner / fingerprint / 指紋 / status / 201 / response / {"orderId":777}
   TTL = 86400 秒
 
   ⚠️ 同一個 key、不同的請求內容：
@@ -1065,54 +1229,38 @@ public String execute(String key, String fingerprint, Supplier<String> body) {
 >   只存「識別碼 + 狀態」，讓客戶端再查一次細節，通常比較好。
 > - ⚠️ 回應裡不要有時間戳之類**每次都會變**的東西，不然它跟「重新算一次」就不一致了。
 
-### 10.9.6 失敗要能重試
+### 10.9.6 失敗分類與恢復
 
-```
-═══ 10.9.6 業務失敗時，同一個 key 要能重試 ═══
-  第一次：資料庫爆了
-  失敗後 Redis 裡還有 key 嗎 → 0（0 ＝ 可以重試）
-  用同一個 key 重試 → {"orderId":1234}
-```
-
-⚠️ **這一段是最容易寫錯的**：業務丟例外時，如果冪等鍵留著 `IN_PROGRESS`，
-客戶端用同一個 key 重試會拿到 409，**而且要等 30 秒（`IN_PROGRESS_TTL`）才能重來。**
-
-但也不是所有失敗都該刪掉：
-
-| 失敗類型 | 冪等鍵怎麼處理 |
+| 結果 | 處理方式 |
 |---|---|
-| 系統錯誤（資料庫掛了、逾時） | ✅ **刪掉**，讓同一個 key 可以重試 |
-| 業務錯誤（庫存不足、餘額不夠） | ⚠️ **記成 `DONE` + 那個錯誤回應**——不然客戶端會一直重試一個注定失敗的請求 |
-| ⚠️ **不確定**（下游逾時，不知道成功沒） | ⚠️ **留著 `IN_PROGRESS` 讓它自然過期**，並且**告警** |
+| 確定 DB 回滾 | business_request 與訂單一起回滾；保留 Redis IN_PROGRESS 到短 TTL，之後可重試 |
+| DB 已提交，寫 Redis DONE 失敗 | 回傳已持久化結果；不刪鍵，之後由 DB 重放，不能再建立訂單 |
+| 提交回應遺失／結果未知 | 不直接清理或重做；以相同 scope/key 重試查證，由 DB 唯一鍵與既有結果仲裁 |
+| 確定的業務拒絕，例如售罄 | body 回傳 `new Reply(409, "...錯誤 JSON...")`，與請求紀錄一起提交，重試回相同狀態與內容 |
 
-第三種是最麻煩的，而它正是 09 章 9.11.2 那個場景。
-**這種時候沒有自動化的正確答案，只有「不要讓它悄悄過去」。**
+⚠️ 「資料庫逾時」不等於「確定回滾」。交易仍在進行時，重試可能先得到 409 或資料庫等待逾時；
+讓客戶端退避，並對長時間未知結果告警。不能靠 Redis 自然過期就宣告先前業務沒有發生。
 
-### 10.9.7 TTL 該設多久
+### 10.9.7 TTL 與持久化保留期
 
 ```java
-public static final Duration IN_PROGRESS_TTL = Duration.ofSeconds(30);   // ≒ 你的請求逾時
-public static final Duration DONE_TTL        = Duration.ofHours(24);     // ≒ 客戶端最長的重試窗
+public static final Duration IN_PROGRESS_TTL = Duration.ofSeconds(30);
+public static final Duration DONE_TTL = Duration.ofHours(24);
 ```
 
-| | 設太短 | 設太長 |
-|---|---|---|
-| `IN_PROGRESS` | ⚠️ 第一個還在跑，第二個就搶到了 → **重複執行** | 客戶端要等很久才能重試 |
-| `DONE` | ⚠️ **重複執行**（客戶端隔天重試時 key 已經沒了） | 記憶體 |
+這兩個 TTL 只控制 **Redis 協調與重放快取的生命週期**。
+IN_PROGRESS 太短會增加多個執行者競爭 DB 唯一鍵的機會；DONE 過期會多一次 DB 查證，
+不應讓相同業務再次提交。owner 比對防止舊執行者破壞新狀態，DB 唯一鍵則保護訂單。
 
-> 📌 **`IN_PROGRESS_TTL` 必須大於「業務最壞情況耗時」**——這句話跟 09 章 9.5.5 一模一樣，
-> 因為它就是同一件事（一把有 TTL 的鎖）。
->
-> ⚠️ **`DONE_TTL` 要問的是「客戶端最晚會在什麼時候重試」。**
-> 訊息佇列的死信重投可能是**幾小時後**，
-> 人工客服的「幫我重送一次」可能是**隔天**。**24 小時是一個安全的起點。**
+**business_request 不隨 Redis TTL 刪除。** 其保留期必須涵蓋客戶端、訊息重投與人工重試窗口，
+並明定超過保留期的請求政策。永久禁止重複的業務另需保留不可重複的業務識別鍵；
+刪掉唯一紀錄後，就不能再宣稱任意晚到的同一請求仍受保護。
 
-**記憶體估算**：每個 key 一個小 Hash（狀態 + 指紋 + 回應）。
-回應 200 bytes 的話，一天 100 萬筆訂單 ≒ **300 MB 左右**。⚠️ 記得算進 `maxmemory`（04 章）。
+Redis 回應快取仍要估算記憶體；資料庫紀錄也要限制回應大小、歸檔並評估保留成本。
 
 ### 10.9.8 ⚠️ 那 18 個 409 怎麼辦
 
-回 409 是**安全**的（不會重複），但對使用者不友善：他的訂單其實正在建立，卻收到一個錯誤。
+對 IN_PROGRESS 回 409 可避免此請求直接重做業務，但對使用者不友善：他的訂單其實正在建立，卻收到一個錯誤。
 
 三個選項：
 
@@ -1137,22 +1285,19 @@ if (還是 IN_PROGRESS) return 409 + Retry-After: 1;
 > ⚠️ **不要無限等**。08 章 8.4.1 的 Little's Law：
 > 每個請求多佔 300 毫秒，50 條執行緒的吞吐量上限就是 166 QPS。
 
-### 10.9.9 ⚠️ 冪等鍵與交易的順序
-
-**跟 09 章 9.8 完全一樣的問題，完全一樣的答案：**
+### 10.9.9 冪等紀錄與交易的順序
 
 ```
-✅ 對的：  搶冪等鍵 ──▶ [ 開交易 ── 做事 ── 提交 ] ──▶ 寫入 DONE
-⚠️ 錯的：  [ 開交易 ── 搶冪等鍵 ── 做事 ── 寫入 DONE ── 提交 ]
-                                              ↑
-                            Redis 上已經 DONE，但資料庫還沒提交。
-                            這時候第二個請求進來 → 拿到「做過了」的回應
-                            → 但資料庫裡什麼都沒有（而且交易還可能回滾）
+Redis begin（owner）
+  └─ DB 交易：INSERT 唯一請求鍵 → 業務變更 → 保存狀態與回應 → 一起提交
+       └─ Redis finish（比對 owner；失敗不撤銷已提交的 DB 結果）
 ```
 
-> ⚠️ **這個 bug 比 09 章那個更難發現**：
-> 它不會造成重複，它造成的是**「客戶端收到成功回應，但訂單不存在」**——
-> 而這在日誌裡看起來完全正常。
+不能先把 Redis 寫成 DONE 再提交訂單，否則客戶端可能拿到不存在的訂單。
+也不能只把 Redis DONE 延到提交後，就宣稱沒有崩潰缺口；資料庫中的請求紀錄與業務
+必須一起提交。`IdempotencyService.execute` 應由**沒有外層交易**的應用服務呼叫。
+若業務還需要 Redis 鎖，應在進入這個新 DB 交易前取得；不可在 callback 內
+呼叫另一個 REQUIRES_NEW 業務交易，否則會拆散本例的原子提交。
 
 ---
 
@@ -1175,46 +1320,42 @@ Content-Type: application/json
 @PostMapping("/orders")
 public ResponseEntity<String> create(
         @RequestHeader(value = "Idempotency-Key", required = false) String key,
-        @RequestBody String body) {
-
-    if (key == null || key.isBlank()) {
-        return ResponseEntity.badRequest().body("{\"error\":\"missing Idempotency-Key\"}");
+        @RequestBody String body,
+        java.security.Principal principal) {
+    if (principal == null) return ResponseEntity.status(401).body("{\"error\":\"unauthenticated\"}");
+    if (key == null || !key.matches("[A-Za-z0-9._:-]{1,128}")) {
+        return ResponseEntity.badRequest().body("{\"error\":\"invalid Idempotency-Key\"}");
     }
+    // 租戶從伺服器已驗證的上下文取得；單租戶課程用固定值，不能信任任意客戶端 tenant header。
+    String scope = IdempotencyService.scope("shop", principal.getName(), "POST:/api/orders:v1");
     try {
-        String result = idem.execute(key, fingerprint(body), () -> {
-            dao.createOrder(1L, "web");
-            return "{\"orderId\":" + newOrderId() + "}";
+        var result = idem.execute(scope, key, IdempotencyService.fingerprint(body), () -> {
+            // 此 DAO 加入 DurableIdempotency 的交易，必須回傳真正插入的訂單 ID。
+            long orderId = dao.createOrderReturningId(1L, principal.getName());
+            return new DurableIdempotency.Reply(201, "{\"orderId\":" + orderId + "}");
         });
-        return ResponseEntity.ok(result);
+        return ResponseEntity.status(result.status()).contentType(MediaType.APPLICATION_JSON).body(result.body());
     } catch (IdempotencyService.InProgressException e) {
-        return ResponseEntity.status(HttpStatus.CONFLICT)
-                .header("Retry-After", "1")
-                .body("{\"error\":\"in_progress\"}");
-    } catch (IdempotencyService.FingerprintMismatchException e) {
-        return ResponseEntity.unprocessableEntity()
-                .body("{\"error\":\"idempotency_key_reused_with_different_body\"}");
+        return ResponseEntity.status(409).header("Retry-After", "1").body("{\"error\":\"in_progress\"}");
+    } catch (DurableIdempotency.FingerprintMismatchException e) {
+        return ResponseEntity.unprocessableEntity().body("{\"error\":\"idempotency_key_reused_with_different_body\"}");
     }
-}
-
-static String fingerprint(String body) {
-    MessageDigest md = MessageDigest.getInstance("SHA-256");
-    return HexFormat.of().formatHex(md.digest(body.getBytes(UTF_8))).substring(0, 16);
 }
 ```
 
 > 📌 **`required = false` 然後回 400**，不要用 `required = true`。
 > 前者可以回一個看得懂的錯誤訊息，後者只會是一個 Spring 的預設 400。
 >
-> ⚠️ **指紋只取 SHA-256 的前 16 個十六進位字元**（64 bits）是刻意的：
-> 它不是安全用途（不怕碰撞攻擊），只是要分辨「同一個 key 的內容變了沒」，
-> 而存 64 個字元 × 每天 100 萬筆是沒必要的記憶體。
+> 指紋保留完整 SHA-256。若接受原始 JSON 字串，欄位順序或空白不同也會視為不同內容；
+> 若要依業務語意判斷，先把已驗證 DTO 以固定欄位／格式正規化，再計算指紋。
+> scope 與授權必須先由伺服器決定，指紋不能取代授權檢查。
 
-### 10.10.2 實測
+### 10.10.2 同一請求的預期回應
 
 ```
-═══ 10.10.2 HTTP 這一側：同一個 Idempotency-Key 送兩次 ═══
-  第一次 → 200 OK  {"orderId":80083}
-  第二次 → 200 OK  {"orderId":80083}   ← 一模一樣
+═══ 10.10.2 預期行為：同一個 Idempotency-Key 送兩次 ═══
+  第一次 → 201 CREATED  {"orderId":80083}
+  第二次 → 201 CREATED  {"orderId":80083}   ← 一模一樣
   同 key 不同 body → 422 UNPROCESSABLE_ENTITY  {"error":"idempotency_key_reused_with_different_body"}
 ```
 
@@ -1223,14 +1364,16 @@ static String fingerprint(String body) {
 ```
 ═══ 10.10.3 十個一模一樣的 POST 同時到達 ═══
   10 個同時送出的相同請求：
-     200 OK                   1 個
+     201 CREATED              1 個
      409 CONFLICT             9 個
   回應內容（去重）：
-     200 OK {"orderId":47166}
+     201 CREATED {"orderId":47166}
      409 CONFLICT {"error":"in_progress"}
 ```
 
-**1 個 200 ＋ 9 個 409，訂單只建立了一張。**（跑三次都是 1 / 9。）
+以上是把首筆刻意維持在 IN_PROGRESS 時的範例時序：1 個 201、9 個 409，訂單只有一張。
+若後到的請求在 DONE 之後才進入，會得到重放的 201；**不可固定斷言 201／409 的比例**。
+更新後的 HTTP 狀態是預期契約，此處沒有宣稱重測原本三次壓測的數字。
 
 > ⚠️ **請注意 409 佔了九成。**
 >
@@ -1300,8 +1443,9 @@ try {
 > | 冪等鍵 | 10 | ❌ 直接失敗 | 「查不到就當作沒做過」＝ 重複扣款 |
 > ```
 >
-> 冪等鍵 fail-open 的意思是「**Redis 掛掉的那 60 秒，所有重試都會重複執行**」。
-> **這跟 09 章 9.11 的鎖是同一件事：它是正確性機制，不是效能機制。**
+> 不能在 Redis 失敗後直接執行未受保護的業務。本例保留「begin 失敗就拒絕」的政策，
+> 但最終唯一性已由 DB 保護；若要設計 Redis 故障時退回 DB 的模式，也必須完整保留
+> DurableIdempotency 的唯一鍵與同交易提交，不能把降級解讀成繞過冪等。
 
 ### 10.11.2 一個實務上的折衷：本地兜底
 
@@ -1380,19 +1524,13 @@ public StringRedisTemplate rateLimitRedisTemplate(RedisConnectionFactory base) {
     ├─ ③ @RateLimit 註解           每個 API 各自的配額，使用者維度，令牌桶
     │
     └─ Controller
-         └─ IdempotencyService（10.9）  ⚠️ fail-closed
-              └─ LockTemplate（09 章 9.12）   ⚠️ fail-closed
-                   └─ @Transactional
+         └─ IdempotencyService（10.9）  Redis 協調失敗時回 503
+              └─ DurableIdempotency：DB 唯一鍵 + 業務 + 回應，同一交易
 ```
 
-⚠️ **注意最裡面那三層的順序**——它是 09 章 9.8 那條規則的延伸：
-
-```
-冪等鍵  ──▶  鎖  ──▶  交易
-  └─ 最外面：連「要不要做」都還沒決定
-                └─ 中間：決定了要做，確保只有一個人在做
-                        └─ 最裡面：真正動資料
-```
+⚠️ 成品的資料庫唯一請求鍵與訂單在同一交易。若業務另需鎖，先在外層取得，
+再呼叫此 facade；不要把已提交的訂單與另一筆獨立交易的請求紀錄拼湊成冪等保證。
+12 章會說明預扣庫存這個 Redis 副作用如何補償，以及為何仍需要對帳。
 
 ### 10.12.2 設定
 
@@ -1414,8 +1552,8 @@ lab10:
         algorithm: token-bucket
         burst: 40                    # 10.4.1：capacity ≠ rate
   idempotency:
-    in-progress-ttl: 30s             # 10.9.7 ≒ 請求逾時
-    done-ttl: 24h                    # 10.9.7 ≒ 客戶端最長重試窗
+    in-progress-ttl: 30s             # 10.9.7：Redis 協調租約，非業務唯一保證
+    done-ttl: 24h                    # 10.9.7：重放快取；DB 紀錄另有保留政策
     wait-on-conflict: 300ms          # 10.9.8：只有結帳這類介面才開
     fail-open: false                 # ⚠️ 絕對不要改成 true
 ```
@@ -1426,21 +1564,24 @@ lab10:
 ① 上限 5/秒，連送 7 個 → 5 個 200 + 2 個 429，且 429 帶 Retry-After     ✅ 10.7.2
 ② 跨窗邊界送 300 個（上限 100/秒）→ 任意一秒 ≤ 105 個                  ✅ 10.3.5
 ③ 同一個 Idempotency-Key 送兩次 → 兩次拿到同一個 orderId              ✅ 10.10.2
-④ 10 個相同的 POST 同時送 → 訂單只有 1 張（1 個 200 ＋ 9 個 409）        ✅ 10.10.3
+④ 10 個相同的 POST 同時送 → 訂單只有 1 張（首個 201，其餘重放或 409）        ✅ 10.10.3
 ⑤ 同 key 不同 body → 422                                            ✅ 10.10.2
-⑥ 業務丟例外 → 冪等鍵被刪掉，同一個 key 可以重試                       ✅ 10.9.6
-⑦ docker pause redis-lab → 限流 fail-open（有本地兜底），冪等回 503     ✅ 10.11
+⑥ DB 確定回滾 → 無持久化完成紀錄；短 TTL 後可重試                    ✅ 10.9.6
+⑦ DB 已提交而 Redis DONE 寫入失敗 → 重試仍只有一張訂單                ✅ 10.9.4
+⑧ 舊 owner 完成／不同使用者使用相同 client key → 不覆寫、不跨範圍重放   ✅ 10.9.4
+⑨ docker pause redis-lab → 限流 fail-open（有本地兜底），begin 回 503   ✅ 10.11
 ```
 
 ### 10.12.4 四條規約（接續 09 章 9.12.4 的第 25 條）
 
-26. **限流與冪等的每一段判斷邏輯都必須在 Lua 裡。**
+26. **Redis 內的限流與冪等狀態轉換用 Lua；業務冪等由資料庫唯一鍵與同一交易保證。**
     ⚠️ 專案裡不可以出現「先 `GET` 再 `SET`」形狀的限流／冪等程式碼（10.2.2、10.9.2）。
 27. **`429` 一定要帶 `Retry-After`，`200` 一定要帶 `RateLimit-Remaining`**（10.7.4）。
 28. **所有 `POST` 端點都要接受 `Idempotency-Key`**，缺少時回 400；
     ⚠️ 內部服務之間的呼叫也一樣（訊息佇列是 at-least-once）。
-29. ⚠️ **`fail-open` 只能出現在限流的設定裡。**
-    冪等與鎖的程式碼中，`catch` 區塊不可以有「當作沒問題」的分支（10.11.1）。
+29. ⚠️ **不能因為 Redis 失敗就繞過業務唯一性或鎖的取得。**
+    本例 begin 失敗會拒絕；DB 已知提交後的 DONE 發布失敗則回傳持久化結果，
+    這不是繞過冪等。任何 DB fallback 都必須保留唯一鍵與同交易提交（10.11.1）。
 
 ### 10.12.5 五個該接告警的指標（接續 09 章 9.12.5）
 
@@ -1507,20 +1648,21 @@ lab10:
 
 10.9.5：客戶端拿不到訂單編號，**會用新的 key 再送一次**。冪等白做了。
 
-**⑫ 「業務失敗了就讓冪等鍵留著」**
+**⑫ 「只要拋例外就刪掉冪等鍵」**
 
-10.9.6：客戶端用同一個 key 重試會拿到 409，而且要等 30 秒。
-⚠️ 系統錯誤要刪掉，業務錯誤要記成 `DONE`——**這兩種不一樣**。
+10.9.6：提交回應遺失不代表回滾，盲目刪鍵重做會重複執行。
+本例保留短期 IN_PROGRESS，由 DB 唯一紀錄查證；確定的業務拒絕則保存 status/body 重放。
 
-**⑬ 「冪等鍵寫在交易裡面比較安全」**
+**⑬ 「只要把 Redis DONE 放在提交後就保證冪等」**
 
-10.9.9：Redis 上已經 `DONE`、資料庫還沒提交 →
-**客戶端收到成功回應，但訂單不存在**。跟 09 章 9.8 同一個錯。
+10.9.9：DONE 太早會回出不存在的訂單；只延到提交後，又有「DB 已提交但 DONE 未寫入」的缺口。
+唯一請求紀錄與業務同交易提交，才補上本例的持久化邊界。
 
 **⑭ 「Redis 掛了就先放行，限流又不是什麼重要的東西」**
 
 10.11.1：限流可以 fail-open（**但要有本地兜底**），
-⚠️ **冪等鍵絕對不行**——那等於「Redis 掛掉的 60 秒內，所有重試都重複執行」。
+⚠️ **不能繞過業務冪等保證**。本例 Redis begin 失敗回 503；
+若另設 DB fallback，也必須保留唯一請求紀錄與同一交易。
 
 **⑮ 「限流器用跟其他操作一樣的逾時就好」**
 
@@ -1542,10 +1684,10 @@ lab10:
 **冪等：三個狀態，四件事情要做對**
 
 ```
-① 客戶端產生 key，重試時不變
+① 客戶端產生 key，重試時不變；伺服器依租戶／身分／操作限定 scope
 ② 搶 key 的動作在 Lua 裡（不是「先查再做」）
 ③ 存回應，重放時回同一份
-④ 冪等鍵在交易外面
+④ Redis 協調在交易外；DB 唯一請求紀錄與業務同交易提交
 ```
 
 **而這一章跟 09 章其實是同一章：**
@@ -1553,8 +1695,8 @@ lab10:
 | | 09 章 鎖 | 10 章 限流 | 10 章 冪等 |
 |---|---|---|---|
 | 那道縫 | 讀庫存→寫庫存 | `INCR`→`EXPIRE` | 查 key→做事 |
-| 解法 | Lua | Lua | Lua |
-| 跟交易的順序 | 鎖在外 | —— | 冪等鍵在外 |
+| 解法 | Lua + 最終資源約束 | Lua | Redis Lua 協調 + DB 唯一鍵與同交易紀錄 |
+| 跟交易的順序 | 鎖在外 | —— | Redis begin 在外；DB 請求紀錄與業務在同一交易 |
 | Redis 掛掉 | ❌ 失敗 | ⚠️ 看服務 | ❌ 失敗 |
 | 壞掉時你會看到 | 超賣 | 下游被打爆 | 重複扣款 |
 | **壞掉時監控會看到** | **什麼都沒有** | 下游的告警 | **什麼都沒有** |
@@ -1577,7 +1719,8 @@ lab10:
 - [ ] 說得出「鎖」跟「冪等」的差別（提示：鎖不記得任何事）。
 - [ ] 說得出為什麼「先查有沒有做過，再做」完全無效。
 - [ ] 說得出冪等鍵的三個狀態，以及少了 `IN_PROGRESS` 會怎樣。
-- [ ] 說得出業務失敗時，系統錯誤與業務錯誤對冪等鍵的處理**為什麼不一樣**。
+- [ ] 分得清確定回滾、已提交、提交未知與業務拒絕，並能說明 DB 唯一紀錄的保留政策。
+- [ ] 能重現 DONE 發布失敗與舊 owner 恢復，確認訂單只提交一次且新 owner 不被覆寫。
 - [ ] ⚠️ 說得出限流可以 fail-open 但冪等不行的理由。
 
 ### 10.14.2 本章練習
@@ -1597,10 +1740,12 @@ lab10:
 設計一個實驗證明「被拒絕的請求吃掉了其他維度的配額」——
 提示：讓 API key 維度先爆掉，然後看 IP 維度的剩餘量。
 
-**練習五（30 分鐘，核心）**：實作 10.9.4 的冪等鍵，然後：
-① 把 `IN_PROGRESS` 狀態拿掉（只有「有 / 沒有」兩個狀態）；
-② 用 10.10.3 的方式送 10 個同時的請求；
-③ **量一次建立了幾張訂單**，並解釋那個數字。
+**練習五（30 分鐘，核心）**：實作 10.9.4，然後分別注入以下故障：
+① DB 已提交，但 Redis finish 失敗；
+② A 的租約過期，B 已接手後，A 才恢復完成；
+③ 清除 Redis 快取，再送相同 scope/key 與不同 body。
+確認訂單仍只有一張、舊 owner 不能改 B 的紀錄、不同 body 被 DB 指紋檢查拒絕。
+只拿掉 Redis IN_PROGRESS 而保留 DB 唯一鍵時，訂單仍不應重複，但 DB 競爭會增加。
 
 **練習六（進階，40 分鐘）**：實作 10.9.8 的「短暫等待」版本（最多等 300 毫秒）。
 然後用 08 章 8.4.1 的 Little's Law 算一次：

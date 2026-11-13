@@ -1152,7 +1152,24 @@ public class PeekIsUnreliable {
 在某些 JDK 版本上，這段程式**完全不會印出任何 `peek:`**——因為 `count()` 可以直接從 size 得知答案。
 
 > **`peek` 只能用來除錯，永遠不要用它做有副作用的事。**
-> 需要「處理每個元素並繼續」的話，用 `map` 並回傳元素本身。
+> `map` 也是中間操作，換成 `map(s -> { 寫資料; return s; })` 仍可能被省略。
+> 必要副作用用明確迴圈或 `forEach`／`forEachOrdered` 等終端操作。
+> 若還要保留轉換結果，先用純轉換收集，再明確執行副作用：
+
+```java
+import java.util.List;
+
+public class MandatoryEffects {
+    public static void main(String[] args) {
+        // 用途：先取得轉換結果，再逐筆執行必要操作；不把必要動作藏在 map 裡。
+        List<String> names = List.of(" java ", " spring ").stream().map(String::strip).toList();
+        names.forEach(System.out::println); // 真實業務可在這裡呼叫持久化／傳送方法。
+    }
+}
+```
+
+JDK 允許省略不影響結果的中間操作，見 [Stream 官方規範](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Stream.html)。
+多筆外部寫入的交易／重試語意仍須另外設計，forEach 不提供原子性。
 
 ---
 

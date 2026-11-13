@@ -58,8 +58,7 @@
   等價的檢查要 281 ms + 一個資料庫 + 資料（MyBatis 側是 57 ms、什麼都不要）
 - ★★ **09 章新加的那條契約測試，抓到一個從 05 章活到現在的 bug**：
   「只填結束時間」的搜尋，**JPA 那一側靜默忽略那個條件**，MyBatis 那一側會過濾
-- 🔴 **而那個 bug 的指紋，一直印在 08 章 8.9.3 那條斷言上**：
-  32 種條件組合在 JPA 側只產出 **28 種** SQL 形狀（修好之後是 56 種）
+- 條件完整性不能靠形狀上界：32 組輸入，舊版主查詢只有 16 種、修正版 32 種；兩者都能通過 <=32（9.8.3）。
 - **匯出 12500 列**：JPA 實體 133 ms / 47.9 MB、JPA 投影 62 ms / 15.7 MB、
   MyBatis 54 ms / 30.7 MB、**JdbcTemplate 40 ms / 7.6 MB** ——
   「兩個都不選」的空間在這裡
@@ -4101,7 +4100,7 @@ public interface OrderWriteMapper {
         status,total_amount,version,id) valu…
       insert into order_item (line_amount,order_id,product_id,product_name,qty,unit_price,id)
         values (?,?,?,?,?,?,?)
-      update stock set qty=(qty-?),reserved_qty=(reserved_qty+?),version=(version+1)
+      update stock set reserved_qty=(reserved_qty+?),version=(version+1)
        where product_id=? and qty>=?
    MyBatis：
       SELECT name, unit_price FROM product WHERE id = ?
@@ -4109,7 +4108,7 @@ public interface OrderWriteMapper {
         VALUES (?, ?, ?, ?, ?, ?, 0)
       INSERT INTO order_item (id, order_id, product_id, product_name, unit_price, qty,
         line_amount) VALUES (?, ?, ?, ?, ?, ?, …
-      update stock set qty=(qty-?),reserved_qty=(reserved_qty+?),version=(version+1)
+      update stock set reserved_qty=(reserved_qty+?),version=(version+1)
        where product_id=? and qty>=?
 
 ── 兩邊寫進去的東西一樣嗎
@@ -4372,7 +4371,7 @@ MyBatis 時代的程式碼常常長這樣：
 | 20 | **每個查詢的每一欄都不是 null** | 07 章 7.14.4 | SQL 忘了別名、欄位改名 | 測試 | ✅ | **兩側** |
 | 21 | 每一種條件組合都產生合法 SQL | 08 章 8.9.1 | `<if>` 拼出壞 SQL | `Dyn` | ❌ | MyBatis |
 | 22 | 空集合不准壞掉也不准變成「全部」 | 08 章 8.9.2 | `<foreach>` 沒防護 | `Dyn` | ❌ | **兩側** |
-| 23 | SQL 形狀數有上界 | 08 章 8.9.3 | 多加一個條件 / 忘了 pad | 棘輪 | ❌ | **兩側** |
+| 23 | 條件 presence／形狀契約 | 08 章 8.9.3 | 漏條件；IN 漏 pad | 獨立契約 | ❌ | **兩側** |
 | 24 | **有 `LIMIT` 就要有唯一的 `ORDER BY`** | 08 章 8.9.4 | 分頁會漏會重複 | `Dyn` | ❌ | **兩側** |
 | 25 | 巢狀 `resultMap` 不准分頁 | 08 章 8.9.5 | 8.6.5 那個殘缺資料 | `Dyn` | ❌ | MyBatis |
 
@@ -4390,7 +4389,7 @@ MyBatis 時代的程式碼常常長這樣：
 
 ### 9.8.2 ★★ 實測：8.9.1 那條斷言搬到 JPA 側要付什麼
 
-**08 章 8.9 那五條斷言最漂亮的性質是「全部不需要資料庫」（214 ms）。**
+**08 章的 BoundSql／AST 檢查可在純 Configuration 離線執行；沿用 Base08 啟動 Spring 的範例仍需要 DB。214 ms 是歷史量測。**
 **這一節問：JPA 那一側有沒有等價的東西？**
 
 ```java
@@ -4487,58 +4486,19 @@ JPA 那條斷言：如果某一組條件【沒有命中任何資料】，
               而它剛好【很便宜】（59 ms、不用 DB）
 ```
 
-### 9.8.3 ★★ 實測：形狀爆炸兩邊都有，而 JPA 那一側的數字說出了一個 bug
+### 9.8.3 條件完整性、主查詢形狀與總 SQL 次數必須分開
 
-**08 章 8.3.13 量到「64 種 SQL 形狀 vs 1 種形狀 × 64」在伺服器端的差別：
-`Com_stmt_prepare` 63 vs 1、35.6 ms vs 15.6 ms。**
+舊版 of() 把 from／to 寫在同一個 `if (from != null && to != null)` 裡。五個開關共有 32 組，但時間的四種開關狀態只產生「無時間條件」或「BETWEEN」兩種，因此主查詢是 2×2×2×2=16 種；修成兩個獨立條件後才是 32 種。verification/ 直接執行兩版主查詢並確認 16／32，不混入 count、lazy load 或其他 SQL。
 
-**JPA 那一側呢？** 9.8.2 ④ 那一行：
+前節的 56 句 SELECT 是歷史 Page 量測：32 個主查詢加 24 個 count，不是「32 組輸入應有幾種主查詢形狀」的通用答案。Spring Data 也可能因頁面內容略過 count，不能混成一個 28 vs 56 的完整性證據。耗時與總句數未在本次重測。
 
-```
-JPA 跑完 32 種組合 → 伺服器端：select=56  commit=32  列.read=3040
-```
-
-```
-32 種條件組合 → 56 句 SELECT（32 句主查詢 + 24 句 count）
-             → 而 SQL 形狀也是 56 種
-                              ↓
-📌 也就是說：Criteria 的形狀爆炸【跟 MyBatis 的 <if> 一模一樣】。
-   兩邊都是「N 個可選條件 → 2^N 種 SQL」，
-   而 08 章 8.3.13 量到的伺服器端代價（Com_stmt_prepare、計畫快取沒中）
-   在 JPA 這一側【完全一樣】。
-                              ↓
-✅ 所以 08 章 8.9.3 那條「形狀數有上界」的棘輪式斷言，
-   是這一站【最應該搬到 JPA 側】的一條。
+```java
+// 只在此模型五個條件刻意獨立的前提下，校準主查詢指紋：
+assertThat(mainQueryShapes).hasSize(32);
+// 缺條件會讓形狀變少，所以 <=32 抓不到。
 ```
 
-★★ **而這一節有一個意外的收穫，它值得單獨講：那個形狀數，第一次量到的是 28。**
-
-```
-第一次跑（修 9.9.2 那個 bug 之前）：32 種組合 → 28 種 SQL 形狀
-修好之後：                        32 種組合 → 56 種 SQL 形狀
-                              ↓
-🔴 28 < 32 是【不可能的】，除非有幾組條件產生了【一樣的 SQL】。
-   而它們產生一樣的 SQL，只有一個原因：某個條件【沒有被翻譯進去】。
-                              ↓
-那個原因就是 9.9.2 要講的 bug：
-   OrderSpecifications.of() 寫的是 if (from != null && to != null)，
-   所以「只填 from」與「只填 to」這兩組，
-   產生的 SQL 跟「兩個都沒填」【一模一樣】。
-   32 種組合裡有 4 組退化成同一種形狀 → 28。
-```
-
-📌 **這件事的意義比那個 bug 本身大**：
-
-> **一條「數 SQL 形狀」的斷言，同時也是一條「條件有沒有被翻譯進去」的斷言。**
->
-> ```
-> 期望的形狀數 = 2^N（N 個獨立的可選條件）
-> 實際的形狀數 < 2^N  →  有條件被吃掉了，或者有條件是綁在一起的
-> 實際的形狀數 > 2^N  →  有條件不只一種形狀（例如 in 子句沒有 pad，08 章 8.4.3）
->                              ↓
-> ✅ 而它【不需要資料庫、不需要斷言結果正確、不需要邊界值】——
->    它只要數形狀。
-> ```
+形狀相同也可能是合法條件耦合；形狀不同更不保證 >=／> 或跳脫規則正確。MyBatis 以 8.9 的 OptionalPredicateContract 檢查逐組 predicate，JPA 以獨立的 Criteria 條件與資料邊界測試驗證。新增輸入欄位時須同步擴充案例，固定 32 組不會自行變 64 組。IN 長度等開放範圍才適合用經校準的形狀上界限制快取成本。
 
 ### 9.8.4 實測：哪幾條斷言「不管你選哪個框架都要有」
 
@@ -4667,7 +4627,7 @@ JPA 跑完 32 種組合 → 伺服器端：select=56  commit=32  列.read=3040
 |---|---|---|---|
 | **10** 分頁要有 `limit` | 看 `SqlSpy` 的第一句 | 看 `Dyn` 的 SQL | ✅ **同一條，兩邊都能寫** |
 | **24** 有 `limit` 要有唯一 `ORDER BY` | 🔴 **這一站沒寫**（9.8.4 抓到 bug） | 08 章 8.9.4 | ✅ **同一條，兩邊都能寫** |
-| **23** SQL 形狀數有上界 | 執行 32 種組合、數 `SqlSpy` 的形狀 | `Dyn`，不用 DB | ✅ **同一條**（而 JPA 側貴 5 倍） |
+| **23** 條件完整性與形狀成本 | 主查詢／count 分開；加結果邊界測試 | BoundSql presence matrix；IN 形狀上界 | ✅ 兩側都要，檢查方式不同 |
 | **22** 空集合不准變成「全部」 | ✅ **實測**：`root.get("status").in(List.of())` 與 `in :空集合` **兩種都產出 `where 1=0`** | 08 章 8.9.2（MyBatis 要**自己寫** `1 = 0`） | 🟡 **JPA 側恆真** |
 | **14** 批次是 `O(N/batch)` | 06 章 6.10.1 | 08 章 8.4.5 的 `<foreach>` 分塊 | ✅ **同一條** |
 | **16 / 19** 旁路寫入維護 `version` | 掃 native query 與 `@Modifying` | 掃 XML 的 `<update>` | ✅ **同一條，兩邊都要**（9.6.1 證明） |
@@ -4686,7 +4646,7 @@ JPA 跑完 32 種組合 → 伺服器端：select=56  commit=32  列.read=3040
 ① 分頁查詢的 SQL 必須有 limit               ← 抓記憶體分頁（04 章 4.5.5、07 章 7.9.4）
 ② 有 limit 的查詢必須有【唯一的】order by    ← 抓分頁漏 / 重複（08 章 8.6.7、9.8.4）
 ③ 一個用例的 SQL 句數有上界（跟資料量無關）   ← 抓 N+1（04 章 4.10、9.4.4）
-④ 動態查詢的 SQL 形狀數有上界（棘輪）        ← 抓形狀爆炸 + 條件被吃掉（08 章 8.3.13、9.8.3）
+④ 動態查詢逐組檢查 predicate 與結果邊界      ← 抓漏條件；另以 IN 形狀上界限制成本（8.9、9.8.3）
 ⑤ 旁路寫入必須維護 version（棘輪）           ← 抓樂觀鎖失效（06 章 6.10.3、9.6.1）
 ⑥ 查詢側只准 SELECT（ArchUnit）             ← 抓讀寫邊界被打破（07 章 7.14.2、9.6）
 ⑦ 批次操作的 execute 次數是 O(N / batch)     ← 抓批次靜默失效（06 章 6.10.1）
@@ -4763,16 +4723,18 @@ MyBatis 的 searchRows()（08 章 8.10）
         head("9.9.2 契約測試：同一組條件，兩個實作【必須】回一樣的東西");
 
         // ★ 比【整組結果】而不是第一頁 —— 理由見這一節最後那一段
-        BiFunction<OrderSearchCriteria, Integer, List<OrderListRow>> jpa =
-                (c, size) -> tx.execute(s -> searchQuery.search(c, 0, size).content());
-        BiFunction<OrderSearchCriteria, Integer, List<OrderListRow>> mb =
-                (c, size) -> tx.execute(s -> searchMapper.search(c, 0, size));
+        // 在測試類別注入 OrderService service 與 OrderSearchMapper searchMapper。
+        BiFunction<OrderSearchCriteria, Integer, List<String>> jpa =
+                (c, size) -> service.search(c, 0, size).stream().map(OrderView::orderNo).toList();
+        BiFunction<OrderSearchCriteria, Integer, List<String>> mb =
+                (c, size) -> tx.execute(s -> searchMapper.search(c, 0, size).stream()
+                        .map(OrderListRow::orderNo).toList());
 
         int bad = 0;
         for (OrderSearchCriteria c : cases()) {
             var a = jpa.apply(c, 500);
             var b = mb.apply(c, 500);
-            boolean same = ids(a).equals(ids(b));      // ★ 比 order_no 的【順序】
+            boolean same = a.equals(b);               // ★ 比完整 order_no 順序
             if (!same) bad++;
         }
         assertEquals(0, bad, "兩個實作對不上");
@@ -4812,13 +4774,13 @@ MyBatis 的 searchRows()（08 章 8.10）
   7   status=PAID kw=客戶 from to min=150.0000             50 筆     50 筆      ✅
   8   status=PENDING kw=客戶1 from to min=100.0000          5 筆      5 筆      ✅
   9   min=400.0000                                      100 筆    100 筆      ✅
-  10  to                                                 20 筆     21 筆     🔴
+  10  to                                                200 筆     21 筆     🔴
   → 不一致 1 組
 
 org.opentest4j.AssertionFailedError: 兩個實作對不上 ==> expected: <0> but was: <1>
 ```
 
-★★ **第 10 組：「只填結束時間」—— JPA 20 筆、MyBatis 21 筆。**
+★★ **第 10 組：「只填結束時間」—— JPA 200 筆（條件被忽略）、MyBatis 21 筆。**
 
 **原因在 05 章 5.14 寫的那個 `of()` 裡**：
 
@@ -4946,13 +4908,11 @@ public final class OrderSpecifications {
 ```
 ① 08 章 8.10.2 的五組對照     → 🔴 沒踩到那 4 種組合（覆蓋率問題）
 ② 08 章 8.9.1 的 32 種組合斷言 → 🔴 它只檢查「SQL 合不合法」，不檢查語意
-③ 08 章 8.9.3 的形狀數斷言     → ✅ 【本來會抓到】！
-   32 種組合在 JPA 側只產出 28 種形狀（9.8.3）——
-   而那條斷言掃的是 MyBatis 的 Configuration，所以它看不到 JPA 那一側。
+③ 08 章的「形狀上界」          → 🔴 抓不到漏條件，16 <= 32 仍通過。
+   上界用來限制形狀爆炸，不是條件完整性的證明；固定 32 組也不會自己增加測試維度。
                               ↓
-📌 所以這個 bug 的正確教訓不是「要寫契約測試」，是：
-   ✅ 【那三條斷言要在兩側都跑】。
-   而 9.8.3 那個「28 vs 32」的指紋，比契約測試更早就印在那裡了。
+✅ 兩側都要測單獨 from、單獨 to、全空及剛好等於門檻的結果，
+   再以 presence matrix／已審核指紋作輔助；不能只比 SQL 是否合法或形狀是否太多。
 ```
 
 ### 9.9.2b ⚠️ 而契約測試本身有兩個陷阱
@@ -5714,8 +5674,8 @@ Criteria 的 cb.construct 投影 + orderBy(o.get("placedAt")) →
 | 用例 | 走哪一邊 | SQL | 實體 | 最後改它的章節 |
 |---|---|---|---|---|
 | `place()` 新增訂單 | JPA | **4** | — | 06 章 6.11.2 |
-| `addItem()` | JPA | 4 | — | 03 章 3.11.4 |
-| `pay()` / `cancel()` | JPA | 2 | — | 03 章 3.11.4 |
+| `addItem()` / `removeItem()` | JPA + 原子庫存更新 | 依明細／載入路徑量測 | — | 06 章 6.11（庫存生命週期） |
+| `pay()` / `cancel()` | JPA；取消另釋放各商品預扣 | 取消隨商品數量變動 | — | 06 章 6.11 |
 | `view()` 明細頁 | JPA（`@EntityGraph`） | **1** | 8 | 04 章 4.11 |
 | `list()` 分頁列表 | JPA（投影） | 2 | **0** | **09 章 9.8.4**（加 tiebreaker） |
 | **`searchPage()` 動態搜尋** | **JPA（Criteria 投影）** | **2** | **0** | **09 章 9.9.4** |
@@ -5726,7 +5686,7 @@ Criteria 的 cb.construct 投影 + orderBy(o.get("placedAt")) →
 | `listRows()` 列表 | MyBatis | 2 | 0 | 07 章 7.15.2 |
 | `salesRanking()` 報表 | MyBatis（窗口函式） | 1 | 0 | 07 章 7.15.4 ⚠️ **而 HQL 也做得到**（9.3.3） |
 | `statusPivot()` 樞紐表 | MyBatis | 1 | 0 | 07 章 7.15.4 ⚠️ 同上 |
-| `OrderImportService` 匯入 | JPA 批次 | O(N/batch) | — | 06 章 6.11.4 |
+| `OrderImportService` 匯入 | JPA 批次 + 商品預扣 | O(N/batch + 商品數) | — | 06 章 6.11.4 |
 
 📌 **而這張表最後的形狀，回答了 00 章 0.8.4 那個決定**（帳一）：
 
@@ -5810,8 +5770,7 @@ MyBatis 在 Service 上（**另一個 mapper 就繞過了**）。
 
 **⑨ 「那條 CI 斷言是 MyBatis 專用的。」**
 
-🔴 9.8.3：32 種條件組合在 JPA 那一側產出的形狀數是 **28**（不是 32）——
-而那個 28 就是 ⑧ 那個 bug 的指紋。
+9.8.3：隔離主查詢後，舊版 16 種、修正版 32 種；不能混入 count 再推導完整性。形狀上界抓不到漏條件。
 ✅ 25 條斷言裡有 **12 條兩側都要**，而其中 7 條是**核心**（9.8.5）。
 
 **⑩ 「不執行也看得到 SQL 是 MyBatis 的特權。」**
@@ -5894,7 +5853,7 @@ Hibernate 的 native query 送出去的值比 JdbcTemplate / MyBatis **少 8 小
 ② SqlSpy 與 Dyn 對 PageHelper 的看法完全不一樣（08 章 8.6.3）
 ③ 延遲載入的 SQL 句數取決於同一個交易裡之前查過什麼（08 章 8.5.9）
 ④ ★ 在同一個交易裡重複量同一句查詢 → 量到的是【一級快取】（9.4.1c）
-⑤ ★ 「32 種組合只有 28 種形狀」→ 那不是量錯，那是【程式碼有 bug】（9.8.3）
+⑤ 主查詢形狀須與 count 分開；16／32 可作此模型指紋，但結果邊界仍需契約測試（9.8.3）
                               ↓
 📌 ④ 與 ⑤ 是同一件事的兩面：
    一個「看起來太好」的數字，要嘛是量錯，要嘛是【你量到了另一件事】。
@@ -5943,7 +5902,7 @@ Hibernate 的 native query 送出去的值比 JdbcTemplate / MyBatis **少 8 小
 
 **斷言與收斂**
 - [ ] 8.9.1 那條斷言搬到 JPA 側要付什麼？`getQueryString()` 回傳什麼？（9.8.2）
-- [ ] 「32 種組合只有 28 種形狀」代表什麼？（9.8.3）
+- [ ] 為什麼舊版主查詢是 16 種、修正版 32 種，而 <=32 抓不到問題？（9.8.3）
 - [ ] 那七條「不管選什麼都要有」的斷言？（9.8.5）
 - [ ] 契約測試的兩個陷阱？（9.9.2b）
 - [ ] 三個動態搜尋實作的對照？09 章選哪一個？三個「答案會反過來」的場景？（9.9.4）
@@ -5963,7 +5922,7 @@ Hibernate 的 native query 送出去的值比 JdbcTemplate / MyBatis **少 8 小
 `order by 6 desc, 1 desc` 這種序號排序（9.11.2）。
 
 **練習二（形狀數的指紋）**
-9.8.3 那個「28 vs 32」是一個 bug 的指紋。寫一個通用的工具：
+9.8.3 的 16／32 是經校準的主查詢指紋。寫一個工具，明確分開主查詢／count，並提供條件 presence 與結果邊界檢查：
 ① 輸入 N 個可選條件的 setter 清單，輸出「實際形狀數 vs 2^N」；
 ② 對**每一個**形狀數少於預期的情況，印出「哪兩組條件產生了同一種 SQL」；
 ③ 用它掃你專案裡所有的動態查詢，看有幾個 bug。

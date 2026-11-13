@@ -1,10 +1,14 @@
-// 對應章節：Chapter 04（簽名 URL + JWT 概念）、Chapter 08（完整登入流程）
+// 對應章節：Chapter 07（JWT + 簽名 URL）、Chapter 08（完整登入流程）
 'use strict';
 
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 
-const JWT_SECRET = process.env.JWT_SECRET || 'demo-jwt-secret';
+// 沒設 JWT_SECRET 就不要啟動：預設值寫在程式碼裡，等於任何人都能簽出合法 token
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is required（啟動方式見 backend/README.md）');
+}
 
 function hashPassword(pwd, salt = crypto.randomBytes(16).toString('hex')) {
   const h = crypto.scryptSync(pwd, salt, 64).toString('hex');
@@ -38,7 +42,6 @@ function authMiddleware(req, res, next) {
 }
 
 module.exports = {
-  JWT_SECRET,
   hashPassword,
   verifyPassword,
   signJwt,

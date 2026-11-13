@@ -98,6 +98,9 @@
 
 ## 6.2 這一章的模型與量尺
 
+實驗庫 ch06 為了沿用歷史併發對照，qty 表示「尚可預扣量」，reserve 會 qty 減、reserved_qty 加；它不是 07 站的總量模型，下面歷史數字也不能直接套到成品。6.11 的 shop 成品統一為 qty 總量／reserved_qty 預扣量，並使用 00 章 CHECK；兩種模型的可用量不可混算。
+
+
 ### 6.2.1 表結構
 
 `ch06` 這個資料庫在前面五章那五張表之外，多了**六張專門用來做實驗的表**。
@@ -6176,6 +6179,7 @@ auto-flush 的觸發條件不是「有沒有未寫出的修改」，
         }));
         System.out.printf("   ① 500 筆 → JDBC execute %d 次（斷言：<= 500/50 + 2 = 12）→ %s%n",
                 r.executes, r.executes <= 12 ? "✅" : "🔴");
+        if (r.executes > 12) throw new AssertionError("批次 execute 超標：" + r.executes);
 ```
 
 **實測**：
@@ -6206,6 +6210,7 @@ auto-flush 的觸發條件不是「有沒有未寫出的修改」，
         // ①b 更嚴格的版本：伺服器端剖析的 SQL 句數
         System.out.printf("   ①b 伺服器剖析 %d 句（斷言：<= 12）→ %s%n",
                 r.serverDml(), r.serverDml() <= 12 ? "✅" : "🔴 rewriteBatchedStatements 沒開");
+        if (r.serverDml() > 12) throw new AssertionError("伺服器 DML 超標：" + r.serverDml());
 ```
 
 📌 **這一條要不要放進 CI，取決於你的 CI 有沒有真的 MySQL。**
@@ -6366,6 +6371,9 @@ auto-flush 的觸發條件不是「有沒有未寫出的修改」，
 
 ## 6.11 shop-service 的落地
 
+本節成品以總量／預扣模型更新。下方既有耗時與 SQL 句數輸出是歷史量測，並非本次改碼後重測的效能結果；當前交易與庫存契約以 verification/ 的回歸為準。addItem／removeItem／cancel 增加庫存操作後，其舊 SQL 句數也須另量。
+
+
 ### 6.11.1 三個改動
 
 **改動一：`Stock` 長出領域方法，以及一個業務例外。**
@@ -6409,8 +6417,7 @@ public class Stock {
      */
     public void reserve(int n) {
         if (n <= 0) throw new IllegalArgumentException("數量必須大於 0，收到 " + n);
-        if (qty - n < 0) throw new InsufficientStockException(productId, qty, n);
-        qty -= n;
+        if (available() < n) throw new InsufficientStockException(productId, available(), n);
         reservedQty += n;
     }
 
@@ -6418,13 +6425,14 @@ public class Stock {
         if (n <= 0) throw new IllegalArgumentException("數量必須大於 0，收到 " + n);
         if (reservedQty - n < 0) throw new IllegalStateException("預留量不足");
         reservedQty -= n;
-        qty += n;
     }
 
     public void restock(int n) {
         if (n <= 0) throw new IllegalArgumentException("數量必須大於 0，收到 " + n);
-        qty += n;
+        qty = Math.addExact(qty, n);
     }
+
+    public int available() { return qty - reservedQty; }
 
     public UUID getProductId() { return productId; }
     public Product getProduct() { return product; }
@@ -6469,7 +6477,7 @@ ObjectOptimisticLockingFailureException → 「系統忙碌」 → 重試，重�
 **兩者都是「這次下單失敗」，而處理方式完全不同。**
 用 `IllegalStateException` 或 `RuntimeException` 的話，這兩件事在 `catch` 裡分不開。
 
-**改動二：`StockRepository` 加兩個方法 —— 兩條不同的鎖路徑。**
+**改動二：`StockRepository` 明列鎖路徑、預扣與釋放。**
 
 ```java
 package com.example.lab.shop;
@@ -6510,13 +6518,19 @@ public interface StockRepository extends JpaRepository<Stock, UUID> {
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query("""
            update Stock s
-              set s.qty = s.qty - :n,
-                  s.reservedQty = s.reservedQty + :n,
+              set s.reservedQty = s.reservedQty + :n,
                   s.version = s.version + 1
             where s.productId = :id
-              and s.qty >= :n
+              and s.qty - s.reservedQty >= :n
            """)
     int reserveAtomically(@Param("id") UUID id, @Param("n") int n);
+
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query("""
+           update Stock s set s.reservedQty = s.reservedQty - :n, s.version = s.version + 1
+            where s.productId = :id and s.reservedQty >= :n
+           """)
+    int releaseAtomically(@Param("id") UUID id, @Param("n") int n);
 }
 ```
 
@@ -6549,7 +6563,7 @@ public class StockService {
 
     /**
      * 扣庫存。
-     * ★ 這是整個 shop-service 裡【唯一】不走「撈出實體、呼叫方法」的寫入路徑，
+     * ★ 庫存預扣／釋放不走「撈出實體、呼叫方法」的寫入路徑，
      *   所以它的註解要寫清楚為什麼——否則下一個人會照抄到不該抄的地方（6.8.6 最後那段）。
      */
     @Transactional
@@ -6560,7 +6574,16 @@ public class StockService {
             // ★ 0 列有兩種可能：商品不存在，或庫存不足。要分開回報（6.8.5 第四點）。
             Stock s = stocks.findById(productId)
                     .orElseThrow(() -> new IllegalArgumentException("商品不存在：" + productId));
-            throw new InsufficientStockException(productId, s.getQty(), qty);
+            throw new InsufficientStockException(productId, s.available(), qty);
+        }
+    }
+
+    /** 取消／移除明細時釋放預扣；失敗必須讓整個訂單交易回滾。 */
+    @Transactional
+    public void release(UUID productId, int qty) {
+        if (qty <= 0) throw new IllegalArgumentException("數量必須大於 0");
+        if (stocks.releaseAtomically(productId, qty) != 1) {
+            throw new IllegalStateException("預扣量不足或庫存不存在：" + productId);
         }
     }
 
@@ -6577,12 +6600,15 @@ public class StockService {
     public int available(UUID productId) {
         return stocks.findById(productId)
                 .orElseThrow(() -> new IllegalArgumentException("商品不存在：" + productId))
-                .getQty();
+                .available();
     }
 }
 ```
 
-**而 `OrderService.place()` 現在多一行**（其餘完全不變，這是 05 章 5.14 那一版）：
+**訂單所有寫入路徑都要維持預扣契約**：place／addItem 預扣，removeItem／cancel 釋放。01–05 章只示範 ORM 寫入；從本節開始才是含庫存的完整版本。取消只允許 PENDING，已付款的退款／出貨不是這個簡化服務的範圍。
+
+stock.qty 保留總量。原子 UPDATE 會先 flush 訂單的版本檢查再 clear PC；因此先收集需要的明細／商品 id，不能在 clear 後繼續走 lazy 關聯。任何失敗都要離開交易讓 Spring 回滾。多商品釋放依 UUID 固定順序；版本衝突由呼叫端在整個交易外重試。
+
 
 ```java
 package com.example.lab.shop;
@@ -6638,13 +6664,34 @@ public class OrderService {
     public void pay(UUID orderId) { order(orderId).pay(); }
 
     @Transactional
-    public void cancel(UUID orderId) { order(orderId).cancel(); }
+    public void cancel(UUID orderId) {
+        Order o = order(orderId);
+        if (!o.cancel()) return;
+        java.util.Map<UUID, Integer> releases = new java.util.TreeMap<>();
+        for (OrderItem item : o.getItems()) {
+            releases.merge(item.getProduct().getId(), item.getQty(), Math::addExact);
+        }
+        // 先收集所有 id，因為 releaseAtomically 會 flush 並 clear。
+        releases.forEach(stocks::release);
+    }
 
     @Transactional
     public void addItem(UUID orderId, UUID productId, int qty, UUID itemId) {
         Product p = products.findById(productId)
                 .orElseThrow(() -> new IllegalArgumentException("商品不存在：" + productId));
         order(orderId).addItem(itemId, p, qty);
+        stocks.reserve(productId, qty);
+    }
+
+    @Transactional
+    public void removeItem(UUID orderId, UUID itemId) {
+        Order o = order(orderId);
+        OrderItem item = o.getItems().stream().filter(i -> i.getId().equals(itemId)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("明細不存在：" + itemId));
+        UUID productId = item.getProduct().getId();
+        int qty = item.getQty();
+        o.removeItem(item); // 先檢查狀態／折扣；失敗時不釋放。
+        stocks.release(productId, qty);
     }
 
     /**
@@ -6692,6 +6739,8 @@ public class OrderService {
 
 **改動四：批次匯入的路徑。**
 
+匯入新增 PENDING 訂單，因此最後依商品合併數量並預扣，與訂單 INSERT 在同一交易；每商品一個 UPDATE。以下舊匯入效能數字尚未包含此步，不當作更新後基線。
+
 ```java
 package com.example.lab.shop;
 
@@ -6723,10 +6772,11 @@ public class OrderImportService {
     private final EntityManager em;
     private final CustomerRepository customers;
     private final ProductRepository products;
+    private final StockService stocks;
 
     public OrderImportService(EntityManager em, CustomerRepository customers,
-                              ProductRepository products) {
-        this.em = em; this.customers = customers; this.products = products;
+                              ProductRepository products, StockService stocks) {
+        this.em = em; this.customers = customers; this.products = products; this.stocks = stocks;
     }
 
     public record Row(UUID orderId, String orderNo, UUID customerId,
@@ -6735,6 +6785,7 @@ public class OrderImportService {
     @Transactional
     public int importOrders(List<Row> rows) {
         int n = 0;
+        java.util.Map<UUID, Integer> reservations = new java.util.TreeMap<>();
         for (Row r : rows) {
             // ★ getReferenceById：不需要真的把客戶撈出來（03 章 3.11）
             Customer c = customers.getReferenceById(r.customerId());
@@ -6742,10 +6793,13 @@ public class OrderImportService {
             Order o = new Order(r.orderId(), r.orderNo(), c);
             o.addItem(r.itemId(), p, r.qty());
             em.persist(o);
+            reservations.merge(r.productId(), r.qty(), Math::addExact);
             if (++n % BATCH == 0) { em.flush(); em.clear(); }
         }
         em.flush();
         em.clear();
+        // 新增的是 PENDING 訂單，庫存也須同一交易預扣；任何商品不足，全部匯入回滾。
+        reservations.forEach(stocks::reserve);
         return n;
     }
 }
@@ -6797,7 +6851,7 @@ spring:
    select p1_0.id,p1_0.is_active,p1_0.name,p1_0.sku,p1_0.unit_price,p1_0.version from product p1_0 where p1_0.id=?
    insert into orders (currency,customer_id,discount_amount,order_no,paid_at,placed_at,status,total_amount,version,id) values (…)
    insert into order_item (line_amount,order_id,product_id,product_name,qty,unit_price,id) values (?,?,?,?,?,?,?)
-   update stock set qty=(qty-?),reserved_qty=(reserved_qty+?),version=(version+1) where product_id=? and qty>=?
+   update stock set reserved_qty=(reserved_qty+?),version=(version+1) where product_id=? and (qty-reserved_qty)>=?
    庫存剩 98
 ```
 
@@ -6869,7 +6923,7 @@ spring:
 
 ```
    成功 10、庫存不足 90、其他 0，共 263 ms
-   庫存：{qty=0, reserved_qty=10, version=10}
+   庫存：{qty=10, reserved_qty=10, version=10}
    訂單表裡有 10 張訂單
    ✅ 成功筆數 = 實際扣掉 = 訂單數
 ```
@@ -6878,7 +6932,7 @@ spring:
 
 ```
 回報成功的請求數  = 10
-實際扣掉的件數    = 10   （qty 從 10 變 0）
+實際預扣的件數    = 10   （qty 保持 10，reserved_qty 從 0 變 10）
 資料庫裡的訂單數  = 10
 ```
 
@@ -6886,7 +6940,7 @@ spring:
 
 ```
    成功 10、庫存不足 90、其他 0
-   庫存：{qty=0, reserved_qty=10, version=10}
+   庫存：{qty=10, reserved_qty=10, version=10}
    訂單表裡有 0 張訂單               ← 🔴🔴
    🔴 對不上
 ```
@@ -7017,14 +7071,16 @@ Map<UUID, Product> cache = products.findAllById(distinctProductIds).stream()
         List<String> sqls = spy(() -> importer.importOrders(rows));
         // 每 50 張 flush 一次 → 10 次 flush，每次 2 個 batch（訂單 + 明細）= 20
         // 再加上每次 flush 之後 em.clear() 把商品代理也清掉 → 每一批要重新撈 3 個商品 = 30
-        int expected = (500 / 50) * 2 + (500 / 50) * 3 + 2;
+        int expected = (500 / 50) * 2 + (500 / 50) * 3 + 3 + 2; // 最後按 3 個商品預扣
         System.out.printf("   ① 匯入 500 張（= 1000 個實體）→ execute %d 次，上限 %d → %s%n",
                 sqls.size(), expected, sqls.size() <= expected ? "✅" : "🔴");
+        if (sqls.size() > expected) throw new AssertionError("匯入 execute 超標：" + sqls);
 
         // 斷言二：扣庫存永遠只有一句 SQL，而且跟商品數無關
         List<String> one = spy(() -> stocks.reserve(productIds.get(0), 1));
         System.out.printf("   ② 扣庫存 → %d 句 SQL → %s%n", one.size(), one.size() == 1 ? "✅" : "🔴");
         one.forEach(s -> System.out.println("      " + cut(s)));
+        if (one.size() != 1) throw new AssertionError("單商品預扣應為一句 UPDATE：" + one);
 
         // 斷言三：所有【會被改】的實體都要有 @Version
         List<String> missing = emf.getMetamodel().getEntities().stream()
@@ -7032,6 +7088,9 @@ Map<UUID, Product> cache = products.findAllById(distinctProductIds).stream()
                 .filter(e -> !hasVersion(e.getJavaType()))
                 .map(e -> e.getJavaType().getSimpleName()).sorted().toList();
         System.out.println("   ③ shop 裡沒有 @Version 的實體：" + missing);
+        if (!missing.equals(List.of("OrderItem"))) {
+            throw new AssertionError("只有由 Order 聚合保護的 OrderItem 可免版本：" + missing);
+        }
     }
 ```
 
@@ -7040,7 +7099,7 @@ Map<UUID, Product> cache = products.findAllById(distinctProductIds).stream()
 ```
    ① 匯入 500 張（= 1000 個實體）→ execute 50 次，上限 52 → ✅
    ② 扣庫存 → 1 句 SQL → ✅
-      update stock set qty=(qty-?),reserved_qty=(reserved_qty+?),version=(version+1) where product_id=? and qty>=?
+      update stock set reserved_qty=(reserved_qty+?),version=(version+1) where product_id=? and (qty-reserved_qty)>=?
    ③ shop 裡沒有 @Version 的實體：[OrderItem]
       （OrderItem 沒有是刻意的：它的生命週期完全由 Order 這個聚合根管，並發保護靠 Order 的 version）
 ```

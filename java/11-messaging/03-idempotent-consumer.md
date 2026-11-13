@@ -176,71 +176,92 @@ class E1DuplicateRateTest {
 
 ## 3.3 去重表：正確的寫法與兩個錯誤的寫法
 
-### 3.3.0 去重表長什麼樣子
+### 3.3.0 去重表與真正的 INSERT
+
+同一事件可由寄信、倉儲、分析各處理一次，鍵必須是 `(message_id, consumer)`：
 
 ```sql
 CREATE TABLE processed_message (
-  message_id    VARCHAR(64) PRIMARY KEY,   -- ← 全部的關鍵就是這個主鍵
-  consumer      VARCHAR(64) NOT NULL,      -- 哪一個消費者處理的
-  processed_at  DATETIME(6) NOT NULL
-) ENGINE=InnoDB;
-```
-
-```java
-@Entity
-@Table(name = "processed_message")
-public class ProcessedMessage {
-    @Id @Column(length = 64) private String messageId;
-    private String consumer;
-    private Instant processedAt = Instant.now();
-
-    protected ProcessedMessage() {}
-    public ProcessedMessage(String messageId, String consumer) {
-        this.messageId = messageId; this.consumer = consumer;
-    }
-}
-```
-
-⚠️ **`consumer` 欄位不是可選的。** 一則訊息常常有多個消費者
-（00 章 0.3.2 的「扇出」：寄信、倉儲、分析各一個）。
-如果主鍵只有 `message_id`，那**第一個處理完的消費者會把其他消費者全部擋掉**。
-
-📌 **正確的主鍵應該是 `(message_id, consumer)` 複合鍵**：
-
-```sql
-CREATE TABLE processed_message (
-  message_id    VARCHAR(64) NOT NULL,
-  consumer      VARCHAR(64) NOT NULL,
-  processed_at  DATETIME(6) NOT NULL,
+  message_id VARCHAR(64) NOT NULL,
+  consumer VARCHAR(64) NOT NULL,
+  processed_at DATETIME(6) NOT NULL,
   PRIMARY KEY (message_id, consumer)
 ) ENGINE=InnoDB;
 ```
 
-（本章的實驗為了程式碼簡短用單一主鍵 + `consumer` 欄位，
-**但你的正式環境請用複合主鍵**。）
-
-**`message_id` 從哪裡來？**
-📌 **02 章 2.4.2 那張 outbox 表的 `id` 欄位。** 它會跟著訊息一起送出去：
+若需要 JPA 查詢模型，映射也要使用相同的複合鍵；Repository 的 ID 型別為 ProcessedMessage.Key：
 
 ```java
-// 生產端（Outbox 輪詢器）
-MessagePostProcessor withId = m -> {
-    m.getMessageProperties().setMessageId(outboxRow.getId());   // ← 這裡
-    return m;
-};
-rabbit.convertAndSend(exchange, routingKey, payload, withId, correlationData);
+@Entity
+@IdClass(ProcessedMessage.Key.class)
+@Table(name = "processed_message")
+public class ProcessedMessage {
+    @Id @Column(name="message_id", length=64) private String messageId;
+    @Id @Column(length=64) private String consumer;
+    private Instant processedAt = Instant.now();
+    protected ProcessedMessage() {}
+    public ProcessedMessage(String messageId, String consumer) {
+        this.messageId = messageId; this.consumer = consumer;
+    }
+    public static class Key implements java.io.Serializable {
+        public String messageId;
+        public String consumer;
+        public Key() {}
+        public Key(String messageId, String consumer) { this.messageId=messageId; this.consumer=consumer; }
+        @Override public boolean equals(Object o) {
+            return o instanceof Key k && java.util.Objects.equals(messageId,k.messageId)
+                    && java.util.Objects.equals(consumer,k.consumer);
+        }
+        @Override public int hashCode() { return java.util.Objects.hash(messageId,consumer); }
+    }
+}
 ```
+
+⚠️ **指定 ID 的新物件呼叫 saveAndFlush，不代表一定 INSERT。** 沒有 Version／Persistable
+新物件判斷時，Spring Data 可能走 merge；重複訊息便合併既有去重列，再執行一次業務。
+flush 只控制 SQL 何時送出，不會把 merge 改成 insert。
+
+成品以普通 INSERT 取得資格，只在這一條 SQL 的重複鍵錯誤轉成專用例外：
 
 ```java
-// 消費端
-@RabbitListener(queues = "order.confirm-mail.q")
-public void onMessage(String payload, @Header(AmqpHeaders.MESSAGE_ID) String messageId) { ... }
+package com.example.lab11.messaging;
+
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.dao.DuplicateKeyException;
+import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+@Component
+public class DedupClaims {
+    public static class AlreadyProcessedException extends RuntimeException {
+        public AlreadyProcessedException(Throwable cause) { super(cause); }
+    }
+    private final JdbcTemplate jdbc;
+    public DedupClaims(JdbcTemplate jdbc) { this.jdbc=jdbc; }
+
+    @Transactional(propagation=Propagation.MANDATORY)
+    public void insert(String messageId, String consumer) {
+        if (messageId == null || messageId.isBlank() || messageId.length()>64 ||
+                consumer == null || consumer.isBlank() || consumer.length()>64)
+            throw new IllegalArgumentException("invalid dedup identity");
+        try {
+            jdbc.update("INSERT INTO processed_message(message_id,consumer,processed_at) VALUES(?,?,CURRENT_TIMESTAMP(6))",
+                    messageId, consumer);
+        } catch (DuplicateKeyException duplicate) {
+            throw new AlreadyProcessedException(duplicate);
+        }
+    }
+}
 ```
 
-⚠️ **不要用「broker 給的 delivery tag」當去重鍵** ——
-每次重投遞的 tag 都不一樣。去重鍵必須是**生產端決定的、跨重投遞不變的**。
-Kafka 那一側可以用 `topic-partition-offset` 當鍵（因為 offset 固定），
-但**用生產端的訊息 ID 更好** —— 因為它在「生產端重送」（3.2.2 的情境 ③）時也管得到。
+表中只有這個去重主鍵是唯一約束。其他完整性錯誤照常拋出，不能一概回 SKIPPED。
+MANDATORY 防止 helper 被交易外呼叫而自行提交 claim。JPA 與 JDBC 必須共用同一
+DataSource／交易管理器；後面的業務失敗，這一列也一起回滾。
+
+**穩定的 message ID 從 02 章 Outbox.id 來。** 02.5.3 的 ConfirmedRabbitSender
+會將已序列化 JSON 原樣發送，並設 AMQP messageId；05.8 沿用，不能拿 CorrelationData
+或每次變動的 delivery tag 代替。Kafka 也應保留同一 eventId，不能只靠新的 offset 去重。
 
 ### 3.3.1 ❌ 寫法一：先查、再處理、最後寫去重表
 
@@ -307,76 +328,60 @@ Kafka 那一側可以用 `topic-partition-offset` 當鍵（因為 offset 固定�
 **把「查」換成「插入」，靠資料庫的主鍵去擋。**
 
 ```java
-    /** 交易邊界都在這一顆 bean 上 */
-    @Service
-    static class Worker {
-        @Autowired ProcessedMessageRepository dedup;
-        @Autowired AccountRepository accounts;
+@Service
+public class CreditWorker {
+    private final DedupClaims claims;
+    private final AccountRepository accounts;
+    public CreditWorker(DedupClaims claims, AccountRepository accounts) {
+        this.claims=claims; this.accounts=accounts;
+    }
+    @Transactional(propagation=Propagation.REQUIRES_NEW)
+    public void insertThenAct(String msgId, long amount) {
+        claims.insert(msgId, "credit");             // 真正 INSERT，非 save／merge
+        accounts.increment("alice", amount);       // 同一 DataSource、加入這筆交易
+    }
+}
 
-        /** 去重列 + 業務變更在同一個交易 */
-        @Transactional(propagation = Propagation.REQUIRES_NEW)
-        public boolean insertThenAct(String msgId, long n) {
-            dedup.saveAndFlush(new ProcessedMessage(msgId, "credit"));   // ① 先插入，flush 讓衝突立刻發生
-            accounts.increment("alice", n);                              // ② 同一個交易裡處理業務
-            return true;
+@Service
+public class CreditConsumer {
+    private final CreditWorker worker;
+    public CreditConsumer(CreditWorker worker) { this.worker=worker; }
+    public String handle(String msgId) {
+        try {
+            worker.insertThenAct(msgId, 100);
+            return "DONE";
+        } catch (DedupClaims.AlreadyProcessedException duplicate) {
+            return "SKIPPED";                      // 只有 claim 的重複鍵才能到這裡
         }
     }
-
-    @Service
-    static class Caller {
-        @Autowired Worker w;
-
-        /** ✅ 衝突在交易「外面」catch */
-        public String insertThenAct(String msgId) {
-            try {
-                w.insertThenAct(msgId, 100);
-                return "DONE";
-            } catch (DataIntegrityViolationException e) {
-                return "SKIPPED";                 // 主鍵衝突 = 別人處理過了
-            }
-        }
-    }
+}
 ```
 
-**實測**：
+上面的片段需加入 `com.example.lab11.messaging.DedupClaims`、Spring service／transaction
+相關 import；AccountRepository 仍是業務 DAO。外鍵、null、金額限制等業務錯誤不能被
+這個 catch 吞掉，須讓 listener 走重試／死信。
 
-```
-  【② 插入去重列 + 業務同一交易，外面 catch】4 個消費者同時拿到同一則訊息
-    各自的結果 : {DONE=1, SKIPPED=3}
-    去重表列數 : 1
-    帳戶餘額   : 100 元（正確答案是 100）
-    結論       : ✅ 只生效一次
-```
+**修正版的驗收契約**：同一事件先後送兩次、四個執行緒併發送，餘額都只增加 100；
+業務失敗則 claim 與入帳一起回滾，之後可重試。換 consumer 名稱則可各處理一次。
+原先只看一次併發輸出，不足以證明指定 ID 的 saveAndFlush 有去重能力。
 
-✅ **`{DONE=1, SKIPPED=3}`、餘額 100 元。**
-
-**三個關鍵設計，每一個都不能少**：
-
-| 設計 | 為什麼 |
-|---|---|
-| **先插入，不是先查** | 插入是**原子的**（資料庫的主鍵約束由資料庫保證），查詢不是 |
-| **`saveAndFlush`** 而不是 `save` | ⚠️ `save()` 只把 entity 放進 persistence context，**SQL 要等到 flush 才送出去** —— 那通常是交易提交的時候。那時候業務已經做完了 |
-| **去重列與業務在同一個交易** | 業務失敗回滾 → 去重列也回滾 → 訊息重送時會**重新處理**（這是對的） |
-
-📌 **另一種等價寫法：`INSERT ... ON DUPLICATE KEY UPDATE`（MySQL）或
-`INSERT ... ON CONFLICT DO NOTHING`（PostgreSQL）**，看影響列數：
+另一個選項是 MySQL upsert，**必須搭配 00.8.2 的 useAffectedRows=true**：
 
 ```java
-    @Modifying
-    @Query(value = """
-           INSERT INTO processed_message(message_id, consumer, processed_at)
-           VALUES (:id, :consumer, NOW(6))
-           ON DUPLICATE KEY UPDATE message_id = message_id
-           """, nativeQuery = true)
-    int claim(@Param("id") String id, @Param("consumer") String consumer);
-
-    // 回傳 1 = 新插入的（要處理）；0 = 已經有了（跳過）
+@Modifying
+@Query(value="""
+       INSERT INTO processed_message(message_id, consumer, processed_at)
+       VALUES (:id, :consumer, NOW(6))
+       ON DUPLICATE KEY UPDATE message_id = message_id
+       """, nativeQuery=true)
+int claim(@Param("id") String id, @Param("consumer") String consumer);
+// 在業務交易裡呼叫；useAffectedRows=true 時，1=新插入，0=no-op duplicate。
 ```
 
-⚠️ **這個寫法比 try-catch 好，因為它不需要靠例外控制流程** ——
-例外在 JVM 裡不便宜，而且它會汙染你的錯誤日誌與 APM 的錯誤率。
-📌 **但要小心 MySQL 的 `ON DUPLICATE KEY UPDATE` 在「值沒變」時回傳 0，
-在「有更新」時回傳 2**（不是 1）—— 所以判斷條件要寫 `== 1` 而不是 `> 0`。
+⚠️ Connector/J 預設 useAffectedRows=false，重複且值未變也可能回 1；
+只寫 `==1` 仍會重做業務。若選這個方案，要在真實 JDBC URL 測試新插入／重複的回傳值，
+並評估其他 UPDATE 判斷受影響的地方。PostgreSQL 用 ON CONFLICT DO NOTHING，
+也要各自驗證 SQL 與行數；它們不是不用設定就能互換的同一段程式。
 
 ### 3.3.3 ⚠️ 寫法三：對的想法，錯的位置
 
@@ -388,8 +393,9 @@ Kafka 那一側可以用 `topic-partition-offset` 當鍵（因為 offset 固定�
         @Transactional(propagation = Propagation.REQUIRES_NEW)
         public boolean catchInsideTransaction(String msgId, long n) {
             try {
-                dedup.saveAndFlush(new ProcessedMessage(msgId, "credit"));
-            } catch (DataIntegrityViolationException e) {
+                em.persist(new ProcessedMessage(msgId, "credit"));
+                em.flush();                       // 此反例刻意 INSERT；em 是注入的 EntityManager
+            } catch (jakarta.persistence.PersistenceException e) {
                 return false;                     // 看起來很合理…
             }
             accounts.increment("alice", n);
@@ -412,15 +418,15 @@ Kafka 那一側可以用 `topic-partition-offset` 當鍵（因為 offset 固定�
 **為什麼？**
 
 ```
-  1. saveAndFlush() 撞到主鍵衝突 → Hibernate 丟例外
-  2. Spring 的交易管理器看到這個例外 → 把交易標記為 rollback-only
+  1. EntityManager.persist + flush 撞到主鍵衝突 → Hibernate 丟例外
+  2. JPA provider 將交易標記為 rollback-only；即使外層方法自己 catch 也無法恢復
   3. 你 catch 掉了例外、return false —— 但交易已經是「只能回滾」了
   4. 方法結束、Spring 要提交交易 → 發現它是 rollback-only
   5. → 丟 UnexpectedRollbackException
      "Transaction silently rolled back because it has been marked as rollback-only"
 ```
 
-📌 **關鍵觀念：`@Transactional` 方法裡的資料庫例外，會「毒化」整個交易。**
+📌 **關鍵觀念：這個 JPA 失敗已將交易標成 rollback-only。** 不能推論所有 JDBC SQL 錯誤在所有資料庫都一樣。
 你 catch 得掉那個例外，但 catch 不掉「交易已經死了」這個狀態。
 
 **這個 bug 為什麼特別難查**：
@@ -436,7 +442,7 @@ Kafka 那一側可以用 `topic-partition-offset` 當鍵（因為 offset 固定�
 你去查資料，一切正常；你去查日誌，一秒幾千個 `UnexpectedRollbackException`。
 
 📌 **正確做法（3.3.2）：讓交易死掉，在交易外面 catch。**
-或者用 `ON DUPLICATE KEY` 那個不靠例外的寫法 —— **那個寫法根本不會產生例外，最乾淨。**
+或採驗證過 JDBC 行數契約的 upsert 版本（3.3.2）。業務資料錯誤仍可能拋例外，不能宣稱所有錯誤都被 upsert 消除。
 
 ### 3.3.4 三種寫法的總表
 
@@ -445,10 +451,10 @@ Kafka 那一側可以用 `topic-partition-offset` 當鍵（因為 offset 固定�
 | ① 查 → 處理 → 寫去重表 | ❌ **4 次** | 1 列（看起來正常） | `DONE` × 2、`DONE(conflict)` × 2 | —— | ❌ |
 | ② 插入 + 業務同一交易，**外面** catch | ✅ 1 次 | 1 列 | `DONE` × 1、`SKIPPED` × 3 | ✅ 都安全 | ✅ |
 | ③ 同一交易，**裡面** catch | ✅ 1 次 | 1 列 | `DONE` × 1、**`UnexpectedRollbackException` × 3** | ❌ 看 DB / ORM（3.4.3） | ❌ 資料對但會無限重投 |
-| ④ `INSERT ... ON DUPLICATE KEY`（不靠例外） | ✅ 1 次 | 1 列 | `DONE` × 1、`SKIPPED` × 3 | ✅ 都安全 | ✅ **最推薦** |
+| ④ MySQL upsert + useAffectedRows=true | ✅ 1 次 | 1 列 | `DONE` × 1、`SKIPPED` × 3 | ⚠️ 驗證方言與 driver 行數 | ✅ 有條件使用 |
 
 📌 **②④ 之所以推薦，不只是因為「這次能動」，而是因為它們的正確性不依賴
-「你用哪個資料庫、哪個 ORM、哪個版本」** —— 3.4.3 會把那張相依矩陣攤開給你看。
+「捕捉到任何完整性錯誤就當成功」這種假設**。普通 INSERT 的重複例外與 upsert 行數仍需按方言／driver 驗證，見 3.4.3。
 
 ---
 
@@ -564,7 +570,7 @@ public void reserveStock(String orderId, String sku, int qty) {
   第 3 次：SKIPPED（這張訂單扣過了）              qty = 99
 ```
 
-✅ **可以。** 那 3.3.3 為什麼不行？因為那裡用的是 **JPA 的 `saveAndFlush()`**。
+✅ **可以。** 那 3.3.3 為什麼不行？因為那裡用的是 **JPA 強制 `persist()` + `flush()`**。
 
 📌 **變因一：JPA vs JdbcTemplate**
 
@@ -618,20 +624,21 @@ ROLLBACK                          ← COMMIT 變成了 ROLLBACK
 | 存取方式 | MySQL | PostgreSQL |
 |---|---|---|
 | `JdbcTemplate` + 交易裡 catch | ✅ 可以 | ❌ 交易已中止 |
-| JPA `saveAndFlush` + 交易裡 catch | ❌ `UnexpectedRollbackException` | ❌ 兩個原因都成立 |
+| JPA 強制 INSERT + 交易裡 catch | ❌ `UnexpectedRollbackException` | ❌ 兩個原因都成立 |
 | **交易「外面」catch**（3.3.2 的寫法） | ✅ | ✅ |
-| **`INSERT ... ON DUPLICATE KEY` / `ON CONFLICT DO NOTHING`**（不產生例外） | ✅ | ✅ |
+| **`INSERT ... ON DUPLICATE KEY` / `ON CONFLICT DO NOTHING`**（重複鍵不產生例外） | ✅ | ✅ |
 
 👉 **所以本站的建議是後兩種**：
-**要嘛在交易外面 catch，要嘛用「根本不會產生例外」的 SQL。**
-這兩種寫法**跟資料庫與 ORM 都無關**，換什麼都不會壞。
+**要嘛在交易外面 catch，要嘛用「重複鍵不產生例外」的 SQL。**
+它們保持交易邊界，但 SQL、例外分類與 JDBC 行數仍要依資料庫／driver 驗證。
 
 上面那段 `reserveStock` 改成不靠例外的版本：
 
 ```java
 @Transactional
 public void reserveStock(String orderId, String sku, int qty) {
-    // MySQL 用 ON DUPLICATE KEY UPDATE；PostgreSQL 用 ON CONFLICT DO NOTHING
+    // MySQL：JDBC URL 必須有 useAffectedRows=true；PostgreSQL 改用 ON CONFLICT DO NOTHING
+    if (qty <= 0) throw new IllegalArgumentException("qty must be positive");
     int claimed = jdbc.update(
             "INSERT INTO stock_reservation(order_id, sku, qty) VALUES (?,?,?) "
           + "ON DUPLICATE KEY UPDATE order_id = order_id",
@@ -831,29 +838,60 @@ WHERE id = ? AND event_seq < ?        -- 只接受比目前更新的事件
 
 **可以用，但要換一個用法：把它當「快取」，不當「真相」。**
 
+3.5 是選用實驗；先加入依賴並啟動專用 Redis，不使用快取時不需要這一組：
+
+```xml
+<dependency>
+  <groupId>org.springframework.boot</groupId>
+  <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+```
+
+```bash
+docker run --rm -d --name redis-msg-lab -p 127.0.0.1:16379:6379 redis:7.2
+```
+
+```yaml
+spring:
+  data:
+    redis:
+      host: localhost
+      port: 16379
+```
+
+快取 facade 在業務交易外；只有 CreditWorker 負責同一交易的 claim + 入帳。
+scope 包含 consumer，避免不同消費者互相跳過：
+
 ```java
-@Transactional
-public void handle(String msgId, Payload p) {
-    // ① 先問 Redis：只有「確定處理過」的答案可以信
-    if (Boolean.TRUE.equals(redis.hasKey("dedup:" + msgId))) return;    // 快速路徑
-
-    // ② Redis 說沒有 → 還是要問資料庫（真相在這裡）
+public String handle(String msgId) {
+    String key = "dedup:credit:" + msgId;
     try {
-        dedupRepo.saveAndFlush(new ProcessedMessage(msgId, "credit"));
-    } catch (DataIntegrityViolationException e) {
-        throw new AlreadyProcessedException();       // 交易外面 catch（3.3.2）
+        if (Boolean.TRUE.equals(redis.hasKey(key))) return "SKIPPED";
+    } catch (org.springframework.data.redis.RedisConnectionFailureException |
+             org.springframework.dao.QueryTimeoutException unavailable) {
+        log.warn("dedup cache read failed; use DB", unavailable);
     }
-    accounts.increment("alice", 100);
-
-    // ③ 交易提交成功之後才寫 Redis —— 這樣就不會有 3.5.2 的問題
-    TransactionSynchronizationManager.registerSynchronization(
-        new TransactionSynchronization() {
-            @Override public void afterCommit() {
-                redis.opsForValue().set("dedup:" + msgId, "1", Duration.ofHours(24));
-            }
-        });
+    String result;
+    try {
+        worker.insertThenAct(msgId, 100);             // 跨 bean；回傳前已提交
+        result = "DONE";
+    } catch (DedupClaims.AlreadyProcessedException duplicate) {
+        result = "SKIPPED";
+    }
+    try {
+        redis.opsForValue().set(key, "1", Duration.ofHours(24));
+    } catch (org.springframework.data.redis.RedisConnectionFailureException |
+             org.springframework.dao.QueryTimeoutException unavailable) {
+        log.warn("dedup cache write failed; DB result retained", unavailable);
+    }
+    return result;
 }
 ```
+
+`worker`、`redis`、`log` 是注入的 CreditWorker、StringRedisTemplate 與 logger。
+不要在這個 facade 外再開同一個業務交易；這裡寫快取時，Worker 的 DB 結果已經確定。
+僅快取讀寫故障可降級，業務例外必須繼續拋出。若 Redis 出現其他存取例外，也需依
+產品政策明確處理；不能把整個業務 try/catch 後假裝完成。
 
 **這個寫法的性質**：
 
@@ -1010,7 +1048,7 @@ class E5PartialFailureTest {
 ```java
 @Transactional
 public void handle(Event e) {
-    dedup.saveAndFlush(...);            // 去重
+    claims.insert(e.eventId(), "order-work"); // 普通 INSERT，去重衝突在交易外 catch
     orders.updateStatus(...);           // 業務 1
     stock.deduct(...);                  // 業務 2
     ledger.insert(...);                 // 業務 3
@@ -1053,7 +1091,8 @@ public void sendMailAndMark(String orderId) {
 | 先改狀態、再寄信 | 狀態說寄了、信可能沒寄（**漏信**） |
 | 先寄信、再改狀態 | 信寄了、狀態沒記（**重送時會再寄一次**） |
 
-📌 **選哪個取決於「漏」跟「重」哪一個比較能接受**。
+📌 **這裡比較的是跨交易先後順序；同一 DB 交易內先 UPDATE 並不會讓外部副作用與 DB 原子化。
+選擇取決於「漏」跟「重」哪一個比較能接受**。
 寄確認信 → 選「先寄信」（重複寄一封信，使用者覺得煩，但不會出錯）。
 扣款 → 選「先改狀態」，然後**用對帳補漏**。
 **這是同一個取捨在更小的尺度上再出現一次**（01 章 1.6）。
@@ -1145,15 +1184,15 @@ WHERE id = ? AND event_seq < ?        -- 舊事件自己被擋掉
 3.3.1 實測：四個消費者同時來，**去重表 1 列、業務生效 4 次、餘額 400 元**。
 而且**去重表看起來完全正常** —— 你去查它會得出「去重運作正常」的結論。
 
-**③ 「去重表用 `save()` 就好」**
+**③ 「改用 saveAndFlush 就保證 INSERT」**
 
-⚠️ `save()` 只把 entity 放進 persistence context，**SQL 要等 flush 才送出去**。
-等到 flush（通常是提交時）的時候，業務已經做完了。
-📌 **一定要 `saveAndFlush()`**，或者用 `INSERT ... ON DUPLICATE KEY` 的原生 SQL。
+指定 ID 的新物件可能走 merge，已存在的去重列就被合併。flush 不能改變這件事。
+成品使用 3.3.0 的普通 INSERT，僅將 claim 的 DuplicateKeyException 轉成專用重複例外；
+業務完整性錯誤不能當成 SKIPPED。
 
 **④ 「在交易裡面 catch `DataIntegrityViolationException` 然後 return」**
 
-3.3.3 實測（JPA `saveAndFlush` + MySQL）：**資料是對的（餘額 100 元），
+3.3.3 實測（JPA 強制 persist／flush + MySQL）：**資料是對的（餘額 100 元），
 但拿到三個 `UnexpectedRollbackException`。**
 交易被標記成 rollback-only 了，你 catch 掉例外也救不回來。
 → 消費者丟例外 → nack requeue → **00 章 0.5.2 的風暴，而且資料完全正常**。
@@ -1161,7 +1200,7 @@ WHERE id = ? AND event_seq < ?        -- 舊事件自己被擋掉
 ⚠️ **這件事的「會不會壞」取決於兩個變因**（3.4.3 有完整矩陣與實測）：
 `JdbcTemplate` + MySQL **不會壞**、JPA **一定壞**、**PostgreSQL 一定壞**（交易被中止）。
 📌 **所以不要記「哪一種可以」，記「交易外面 catch」或「用不產生例外的 SQL」——
-那兩種寫法跟資料庫、ORM 都無關。**
+依具體方言／driver 驗證例外與行數，不要假設換 DB 後完全相同。**
 
 **⑤ 「去重表放 Redis，快 10 倍又自動過期」**
 
@@ -1232,7 +1271,7 @@ WHERE id = ? AND event_seq < ?        -- 舊事件自己被擋掉
 - [ ] 列出五種造成重複的情境，並說出它們的**共同形狀**（提示：跟 02 章的雙寫是鏡像）。
 - [ ] 說出 3.2.1 的三個數字（144 次、6 次、44%），並解釋「一則被處理 6 次」為什麼危險。
 - [ ] 說出 `check-then-act` 為什麼會讓業務生效 4 次，**而去重表只有 1 列**。
-- [ ] 說出 `save()` 與 `saveAndFlush()` 在去重場景的差別。
+- [ ] 解釋 save／saveAndFlush 的 merge 判斷與 flush 時機，並說明為何兩者都不保證 INSERT。
 - [ ] 解釋「在交易裡面 catch `DataIntegrityViolationException`」會怎樣，
       以及這個 bug 的症狀為什麼是「資料完全正確，但服務在燒」。
 - [ ] 寫出 `INSERT ... ON DUPLICATE KEY UPDATE` 版本的去重，並說出它比 try-catch 好在哪。
@@ -1253,15 +1292,17 @@ WHERE id = ? AND event_seq < ?        -- 舊事件自己被擋掉
 畫成一張表，然後回答：失敗率跟超額比例是線性關係嗎？
 （提示：想一想「被處理 6 次」那一則是怎麼來的。）
 
-**練習二（20 分鐘）**：把 3.3.2 的 `saveAndFlush` 改成 `save`，重跑 3.3.1 的實驗。
-**記錄餘額。** 然後打開 `spring.jpa.show-sql=true`，
-**找出那個 `INSERT` 是在哪一行送出去的。**
+**練習二（20 分鐘）**：另建故意錯誤的 worker，把 3.3.2 的普通 INSERT 換成
+`save`／`saveAndFlush(new ProcessedMessage(id,"credit"))`，同一 ID 先後送兩次。
+開啟 SQL log 比較 merge 的 SELECT／UPDATE 與真正 INSERT，記錄餘額；
+保留原本的正確 worker，不要將這個反例接到成品 listener。
 
 **練習三（20 分鐘）**：實作 3.3.2 的 `INSERT ... ON DUPLICATE KEY UPDATE` 版本，
 用 4 個執行緒跑 3.3.1 的實驗。
 **驗證：0 個例外、餘額 100 元。**
-然後把 `== 1` 改成 `> 0`，再跑一次 —— **解釋為什麼結果變了**
-（提示：MySQL 的 `ON DUPLICATE KEY UPDATE` 在「有更新」時回傳 2）。
+分別使用 useAffectedRows=true／false 的 JDBC URL，記錄首次與 no-op 重複的回傳值。
+true 應為 1／0，false 為 1／1；在 no-op 版本將 ==1 改成 >0 並不能修正 false 的問題。
+另把 duplicate 分支改成真正更新值，再測試回傳 2 的情境，說明 SQL 語意改變後判斷也要重驗。
 
 **練習四（25 分鐘）**：實作 3.4.3 的 `event_seq` 版本：
 給 `orders` 加一個 `event_seq BIGINT`，然後送四則事件
@@ -1270,7 +1311,7 @@ WHERE id = ? AND event_seq < ?        -- 舊事件自己被擋掉
 **驗證最終狀態是 `SHIPPED`，而且中間沒有回退。**
 
 **練習五（進階，30 分鐘）**：把 3.5.3 那個「Redis 當快取」的寫法實作出來，
-然後在跑到一半的時候 `docker restart redis-lab`。
+然後在跑到一半的時候 `docker restart redis-msg-lab`。
 **記錄：Redis 掛掉期間的吞吐、以及有沒有任何一則訊息被錯誤跳過。**
 （正確的答案是「吞吐掉到資料庫的水準、0 則被錯誤跳過」。）
 

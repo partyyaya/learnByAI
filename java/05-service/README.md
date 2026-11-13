@@ -82,7 +82,7 @@
 | 「逾時了就重試」 | 讀取逾時的意思是「不知道」，不是「失敗」→ 重複扣款 | 06 章 6.6.1 |
 | 「415 個測試全綠、覆蓋率 92% 就夠了」 | 100% 覆蓋率仍然漏掉 `>=` 與 `>` 的差別 | 07 章 7.16.2 |
 
-**每一條都有一個跑得起來的實驗把它拆掉**，而不是一段「應該要注意」的說明。
+多數主題附有實驗或待實作的驗收案例；實際已執行範圍見下方驗證狀態與 verification 說明。
 每一章最後都有一份「常見誤區」的完整清單。
 
 ---
@@ -112,7 +112,7 @@
 把 04-controller 留下的介面全部實作完成：訂單成立、庫存扣減、金額計算、狀態流轉，
 含交易邊界標註、業務例外體系與完整 Mockito 測試。
 
-**此時系統已可端到端跑通** —— 從 `POST /orders` 進去，穿過驗證、Service、交易邊界，
+**完成各章省略的 adapter／fixture 後，預期可端到端跑通** —— 從 `POST /orders` 進去，穿過驗證、Service、交易邊界，
 到 Repository（**先用記憶體假實作**），再原路回來變成 201。
 真的 SQL 是下一站（[06-repository/](../06-repository/)）的事。
 
@@ -131,8 +131,7 @@ MapStruct 1.5.5.Final / MySQL 8.0 / Caffeine 3.1.8 / ArchUnit 1.3 / ClassGraph 4
 | 章節 | 狀態 |
 |---|---|
 | **00～03** | ⚠️ **沒有整章編譯執行過** —— 抄進專案之前請自己編一次 |
-| **04、05** | ✅ 在上述版本上編譯並執行過 |
-| **06、07** | ✅ 同上，而且是「**先做實驗、再寫章節**」 |
+| **04～07** | 部分片段／探針曾執行；本次修正的可重現範圍以 [verification/README.md](./verification/README.md) 為準，並非整章編譯通過 |
 
 > 這四章**大量使用「只列出要討論的那幾個方法」的節錄寫法** ——
 > 那些片段本來就不是完整的類別，直接貼進 IDE 一定紅一片。
@@ -144,6 +143,11 @@ MapStruct 1.5.5.Final / MySQL 8.0 / Caffeine 3.1.8 / ArchUnit 1.3 / ClassGraph 4
 
 🔴 **這一站沒有驗證到的**：真的 Redis、真的 MySQL 的併發與鎖、真的 MQ、
 K8s 的關機流程、壓測。**每一章的驗收清單都有自己的「已知缺口」小節。**
+
+
+本次修正另提供 [verification](./verification/README.md)：Docker Java 21 的 **34 個回歸測試通過**，
+並以 MySQL 8 做 outbox DDL／狀態 SQL smoke check。它驗證列出的關鍵片段與契約，
+沒有把省略的完整應用、MySQL 多實例鎖競爭、Redis／MQ 或支付商整合納入通過範圍。
 
 ---
 
@@ -167,7 +171,7 @@ K8s 的關機流程、壓測。**每一章的驗收清單都有自己的「已�
 | `Cancellation.note` 拆成 `customerNote` + `staffNote` | 🔴 一個欄位的語意取決於「誰填的」→ 客戶查訂單會看到客服的評語 | 03 章 3.7.3 |
 | `Order.assertInvariants()` 改拋 `InvariantViolationException` | `IllegalStateException` 無法告警、無法查詢，且與 JDK 拋的混在一起 | 04 章 4.4.4 |
 | `Problem` 新增 `safeToRetryBlindly` | 🔴 `retryable()` 把 `CHECK_STATUS` 也算成 `true` → 前端盲重試 → **重複扣款** | 04 章 4.9.1 |
-| `@EnableAsync` 明確設 `order = HIGHEST_PRECEDENCE` | 🔴 預設是最內層 → **換執行緒發生在開交易之後，方向反了** | 06 章 6.3.2 |
+| `@EnableAsync` 保留預設 BPP order，驗證實際 worker 交易 | BPP order 不等於 advice order；提前 BPP 可能讓交易包在提交者，worker 寫入不回滾 | 06 章 6.3.2 |
 | `ErpAdapter` 加四個逾時、拿掉 `@Retryable`、改走 outbox | 🔴 沒有逾時 + 重試 3 次 → 一個請求佔住連線 18 秒 → **整站 503** | 06 章 6.5.5 |
 | `OrderNotificationListener` 改走 outbox | 00 章把通知歸類為「可以遺失」—— 而一次例行部署丟掉了 3,000 封信 | 06 章 6.8.6 |
 | 所有 `@InjectMocks` 改成建構子注入 | 少一個依賴時它**塞 `null` 而不報錯** | 07 章 7.3.3 |

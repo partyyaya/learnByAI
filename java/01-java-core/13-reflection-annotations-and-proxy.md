@@ -1678,6 +1678,10 @@ public final class RetryProxy {
 
     @SuppressWarnings("unchecked")
     public static <T> T wrap(T target, Class<T> iface) {
+        java.util.Objects.requireNonNull(target, "target");
+        java.util.Objects.requireNonNull(iface, "iface");
+        if (!iface.isInterface() || !iface.isInstance(target))
+            throw new IllegalArgumentException("target 必須實作指定介面");
         return (T) Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[]{iface},
                 (proxy, method, args) -> {
                     if (method.getDeclaringClass() == Object.class) {
@@ -1688,12 +1692,13 @@ public final class RetryProxy {
                             default -> throw new IllegalStateException("未處理的 Object 方法: " + method);
                         };
                     }
-                    Method impl = target.getClass()
-                            .getDeclaredMethod(method.getName(), method.getParameterTypes());
+                    // getMethod 會找繼承的 public 方法與介面 default method。
+                    Method impl = target.getClass().getMethod(method.getName(), method.getParameterTypes());
                     Retry retry = impl.getAnnotation(Retry.class);
-
-                    int attempts = retry == null ? 1 : retry.times();
-                    Throwable last = null;
+                    if (retry == null) retry = method.getAnnotation(Retry.class); // 實作註解優先，介面註解備援。
+                    int attempts = retry == null ? 1 : retry.times(); // 包含第一次呼叫。
+                    if (attempts < 1 || (retry != null && retry.delayMs() < 0))
+                        throw new IllegalArgumentException("times 必須 >= 1，delayMs 必須 >= 0");
 
                     for (int i = 1; i <= attempts; i++) {
                         try {
@@ -1702,7 +1707,7 @@ public final class RetryProxy {
                             Throwable cause = e.getCause();
                             // 不是指定的例外就不重試，直接往上丟
                             if (retry == null || !retry.on().isInstance(cause)) throw cause;
-                            last = cause;
+                            if (i == attempts) throw cause;
                             if (i < attempts) {
                                 // ★ 第 08 章 8.3：sleep 被中斷時一定要還原中斷旗標
                                 try {
@@ -1714,11 +1719,15 @@ public final class RetryProxy {
                             }
                         }
                     }
-                    throw last;
+                    throw new AssertionError("不可到達：迴圈應回傳或拋出最後的原例外");
                 });
     }
 }
 ```
+
+`getMethod()` 可找到父類別提供的 public 實作；`getDeclaredMethod()` 只看當前類別，
+會把合法繼承的方法誤判成不存在。實作方法的 @Retry 優先，沒有時才讀介面註解；
+參數驗證在目標執行前完成，重試耗盡仍拋原始 cause。
 
 **兩個容易漏的細節**：
 
@@ -1798,9 +1807,10 @@ public final class RetryProxy {
 
 ---
 
-## 13.19 第 01 站結業
+## 13.19 語言核心與專案階段回顧
 
-你完成了整個「Java 語言核心與 JVM」站。回頭看看走過的路。
+你完成了「Java 語言核心與 JVM」的語言與專案主線。
+最後還有第 14 章工具庫手冊，先回頭看看這條主線走過的路。
 
 ### 專案的旅程
 
@@ -1906,12 +1916,14 @@ Full GC 谷底升高、log 打包後消失、100% 覆蓋率下的差一錯誤、
 第 4、5、6 步特別值得——**它們是「讀過」和「做過」差距最大的三章**。
 尤其第 6 步：**你會在下一站的第一天就用上它。**
 
-### 下一站
+### 接著：常用工具，再進 Spring Boot
 
 ```
 你現在在這裡
     ↓
-01-java-core ✅  ── 語言核心與 JVM
+01-java-core     ── 語言核心與 JVM
+    ↓
+14 工具庫手冊    ── 可點擊索引、用途與可執行範例
     ↓
 02-spring-boot   ── IoC 容器、自動配置、設定管理
                     ⚠️ 你會發現 Spring 的每一個「魔法」，
@@ -1938,4 +1950,5 @@ Full GC 谷底升高、log 打包後消失、100% 覆蓋率下的差一錯誤、
 > 而且分不清哪件是哪件。你不會有這個問題——
 > **因為你已經自己寫過一遍了。**
 
-準備好了就前往 [02-spring-boot](../02-spring-boot/)。
+接著前往 [14 — 常用標準 API 與工具庫](./14-common-apis-and-libraries.md#tool-index)，
+從章首表格直接找到日期、金額、國家資訊等工具的使用方法；完成後再進入 Spring Boot。

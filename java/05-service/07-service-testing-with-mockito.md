@@ -841,19 +841,19 @@ given(repository.findById(anyString())).willAnswer(inv -> {
     return id.startsWith("O-") ? Optional.of(anOrder(id)) : Optional.empty();
 });
 
-// ④ 連續呼叫回不同的值 —— ★ 測「重試」時的關鍵
-given(paymentGateway.charge(any()))
-        .willThrow(new UpstreamUnavailableException("payment", 503, null))
-        .willThrow(new UpstreamUnavailableException("payment", 503, null))
-        .willReturn(new ChargeResult.Succeeded("D-1", Money.twd("1180"), now));
+// ④ 連續呼叫：用唯讀查單示範重試，不能據 503 就重複扣款。
+given(paymentGateway.query("merchant-1"))
+        .willThrow(new UpstreamUnavailableException("payment-query", 503, null))
+        .willThrow(new UpstreamUnavailableException("payment-query", 503, null))
+        .willReturn(Optional.of(ChargeStatus.SUCCEEDED));
 ```
 
 ⚠️ **④ 是 06 章 6.6 的測試方式，而它很容易寫錯**：
 
 ```java
 // 🔴 錯：這樣寫是「覆蓋」，不是「連續」
-given(gateway.charge(any())).willThrow(ex);
-given(gateway.charge(any())).willReturn(ok);      // 前一行被蓋掉了
+given(gateway.query("merchant-1")).willThrow(ex);
+given(gateway.query("merchant-1")).willReturn(ok);      // 前一行被蓋掉了
 ```
 
 ### 7.4.2 `Answer` 的三個正當用途與一個誤用
@@ -1416,9 +1416,14 @@ OrderResultView view = queryService.detail("O-1");
 public class InMemoryOrderRepository implements OrderRepository {
 
     private final Map<String, Order> store = new ConcurrentHashMap<>();
+    private final OrderSnapshotCodec codec; // 重用 01 章 1.9 的完整快照／還原契約
 
-    @Override public void save(Order order)            { store.put(order.id(), order); }
-    @Override public Optional<Order> findById(String id) { return Optional.ofNullable(store.get(id)); }
+    public InMemoryOrderRepository(OrderSnapshotCodec codec) { this.codec = codec; }
+
+    @Override public void save(Order order) { store.put(order.id(), codec.copy(order)); }
+    @Override public Optional<Order> findById(String id) {
+        return Optional.ofNullable(store.get(id)).map(codec::copy);
+    }
 
     /**
      * ★★ 一個「刻意不完整」的實作，而<b>不完整的地方要拋例外而不是回空</b>。
@@ -1438,6 +1443,9 @@ public class InMemoryOrderRepository implements OrderRepository {
 ⚠️⚠️ **fake 的最大風險是「它與真的實作行為不同」**，
 而上面那個 `UnsupportedOperationException` 是第一道防線。**第二道是契約測試**：
 
+下面只節錄 fake 的相關方法，其餘依 01 章介面實作。`OrderSnapshotCodec` 的完整 snapshot／restore
+仍須依 01 章補齊；不可用 identity copy 代替。下方契約測試應同時跑在 fake 與 JDBC adapter。
+
 ```java
 /**
  * ★★ 契約測試：同一組測試，跑在【fake】與【真的實作】上。
@@ -1456,11 +1464,28 @@ abstract class OrderRepositoryContractTest {
 
     /** ★ 這一條是 03 章 3.5.3 那個「淺拷貝」問題的守門人 */
     @Test
-    void 查出來的訂單修改之後不影響已存的() { … }
+    void 查出來的訂單修改之後不影響已存的() {
+        var repo = repository();
+        repo.save(anOrder().id("O-isolation").pendingPayment().build());
+        var loaded = repo.findById("O-isolation").orElseThrow();
+        loaded.cancel(Actor.SYSTEM, CancelReason.CHANGED_MIND, null, FIXED_NOW);
+        assertThat(repo.findById("O-isolation").orElseThrow().status())
+                .isEqualTo(OrderStatus.PENDING_PAYMENT); // 沒 save，不應持久化
+    }
+
+    @Test
+    void save之後再修改原物件不影響已存的() {
+        var repo = repository();
+        var original = anOrder().id("O-original").pendingPayment().build();
+        repo.save(original);
+        original.cancel(Actor.SYSTEM, CancelReason.CHANGED_MIND, null, FIXED_NOW);
+        assertThat(repo.findById("O-original").orElseThrow().status())
+                .isEqualTo(OrderStatus.PENDING_PAYMENT);
+    }
 }
 
 class InMemoryOrderRepositoryTest extends OrderRepositoryContractTest {
-    @Override OrderRepository repository() { return new InMemoryOrderRepository(); }
+    @Override OrderRepository repository() { return new InMemoryOrderRepository(new OrderSnapshotCodec()); }
 }
 
 @DataJpaTest
@@ -1472,8 +1497,12 @@ class JdbcOrderRepositoryTest extends OrderRepositoryContractTest {
 > 📌 **這一組是這一章最划算的投資之一**：
 > 寫一次契約，**兩個實作一起被守著**。
 > ⚠️ 而它抓到的第一個 bug 通常是「**fake 回傳的是同一個物件參照**」
-> —— 真的 Repository 每次查都給新物件，fake 給的是 Map 裡那一個。
+> —— 此處採「明確 save、回傳獨立聚合」的 JDBC adapter 契約；fake 也要給獨立物件。
 > **那個差異會讓一整類 bug 在單元測試裡消失。**
+>
+> 若實作採 JPA managed entity／dirty checking，同一 persistence context 可能回傳同一物件，
+> 未呼叫 save 的修改也可能持久化；必須另訂契約或使用 detached domain adapter，
+> 不能直接把此處的隔離斷言套在 managed entity 上。
 
 ### 7.8.5 一個完整的前後對照：把 mock 換成 fake
 
@@ -2245,38 +2274,75 @@ Order order = new Order("O-1", new OrderNumber("SO-20260828-0001"), "C-1",
 ### 7.14.2 Test Data Builder（★ shop-service 的選擇）
 
 ```java
-/**
- * ★★ 訂單的測試資料建構器。
- *
- * <p>三個設計決定：
- * <ol>
- *   <li><b>每個欄位都有合理的預設值</b> —— 測試只需要說出它在乎的那一個。</li>
- *   <li><b>{@code build()} 走真的建構路徑</b> —— 於是不變量會被檢查，
- *       建不出一個「不合法的訂單」（00 章 0.9.2）。</li>
- *   <li>🔴 <b>不提供「跳過驗證」的後門</b> —— 需要一個不合法的訂單來測某個東西時，
- *       那本身是一個訊號：<b>那個狀態不該存在</b>。</li>
- * </ol>
- */
+package example.shop.order.testfixture;
+
+import example.shop.common.money.Money;
+import example.shop.order.domain.*;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+
+/** 只透過真實業務操作建立 fixture，不開放 transitionTo 或 setter。 */
 public class OrderTestBuilder {
-
+    public static final Instant FIXED_NOW = Instant.parse("2026-11-09T00:00:00Z");
     private String id = "O-1";
+    private String customerId = "C-1";
     private OrderStatus status = OrderStatus.PENDING_PAYMENT;
-    private List<OrderLine> lines = List.of(aLine("P-1", 2, "590"));
+    private List<PricedLine> lines = List.of(aLine("P-1", 2, "590"));
     private Instant createdAt = FIXED_NOW;
-    // … 其餘 10 個欄位都有預設值
+    private Instant deliveredAt;
 
-    public static OrderTestBuilder anOrder()  { return new OrderTestBuilder(); }
-
-    // ★ 語意化的捷徑 —— 讀起來像業務語言
-    public OrderTestBuilder paid()      { return status(OrderStatus.PAID); }
-    public OrderTestBuilder shipped()   { return status(OrderStatus.SHIPPED).withShipment(); }
-    public OrderTestBuilder expired()   { return createdAt(FIXED_NOW.minus(Duration.ofHours(1))); }
+    public static OrderTestBuilder anOrder() { return new OrderTestBuilder(); }
+    public static PricedLine aLine(String id, int quantity, String price) {
+        return new PricedLine(id, "商品 " + id, "SKU-" + id, Money.twd(price), quantity);
+    }
+    public OrderTestBuilder id(String value) { id = value; return this; }
+    public OrderTestBuilder customerId(String value) { customerId = value; return this; }
+    public OrderTestBuilder lines(List<PricedLine> value) { lines = List.copyOf(value); return this; }
+    public OrderTestBuilder withLines(PricedLine... value) { return lines(List.of(value)); }
+    public OrderTestBuilder createdAt(Instant value) { createdAt = value; return this; }
+    public OrderTestBuilder status(OrderStatus value) { status = value; return this; }
+    public OrderTestBuilder pendingPayment() { return status(OrderStatus.PENDING_PAYMENT); }
+    public OrderTestBuilder paid() { return status(OrderStatus.PAID); }
+    public OrderTestBuilder shipped() { return status(OrderStatus.SHIPPED); }
+    public OrderTestBuilder delivered() { return status(OrderStatus.DELIVERED); }
+    public OrderTestBuilder expired() {
+        return pendingPayment().createdAt(FIXED_NOW.minus(Duration.ofHours(1)));
+    }
+    public OrderTestBuilder deliveredAt(Instant value) {
+        deliveredAt = value;
+        if (createdAt.isAfter(value.minusSeconds(3))) createdAt = value.minusSeconds(3);
+        return this;
+    }
 
     public Order build() {
-        // ★★ 走真的路徑：透過狀態機轉移，而不是直接塞 status
-        Order order = Order.create(id, orderNumber, customerId, lines, …, createdAt);
-        for (OrderStatus next : pathTo(status)) {
-            order.transitionTo(next, Actor.SYSTEM, createdAt);
+        if (status == OrderStatus.UNKNOWN || status == OrderStatus.REFUNDED) {
+            throw new IllegalArgumentException("此 builder 不支援 " + status + "；退款需走退款用例");
+        }
+        var address = new ShippingAddress("A-1", customerId, "收件人", "0900000000",
+                "100", "臺北市", "中正區", "測試路 1 號");
+        Order order = Order.place(id, OrderNumber.of(createdAt, 1), customerId, "test-" + id,
+                lines, address, null, (a, amount) -> Money.zero(amount.currency()),
+                null, null, createdAt);
+        if (status == OrderStatus.PENDING_PAYMENT) return order;
+        if (status == OrderStatus.CANCELLED) {
+            order.cancel(Actor.SYSTEM, CancelReason.CHANGED_MIND, null, createdAt.plusSeconds(1));
+            return order;
+        }
+        Instant paymentAt = createdAt.plusSeconds(1); // 期限內建立付款事實
+        order.markPaid("payment-" + id, order.total(), PaymentMethod.CREDIT_CARD,
+                       paymentAt, paymentAt);
+        if (status == OrderStatus.PAID) return order;
+        var shipLines = lines.stream().map(l -> new ShipmentLine(l.productId(), l.quantity())).toList();
+        if (status == OrderStatus.PARTIALLY_SHIPPED) {
+            if (order.totalItemQuantity() < 2) throw new IllegalArgumentException("部分出貨至少需兩件");
+            shipLines = List.of(new ShipmentLine(lines.getFirst().productId(), 1));
+        }
+        order.ship(shipLines, "tracking-" + id, Carrier.BLACK_CAT, createdAt.plusSeconds(2));
+        if (status == OrderStatus.DELIVERED) {
+            Instant at = deliveredAt == null ? createdAt.plusSeconds(3) : deliveredAt;
+            if (at.isBefore(createdAt.plusSeconds(2))) throw new IllegalArgumentException("送達早於出貨");
+            order.markDelivered(at);
         }
         return order;
     }
@@ -2297,7 +2363,10 @@ void 已出貨的訂單不可取消() {
 
 ⚠️ **決定 ② 值得展開**：
 
-**`build()` 走真的建構路徑，代價是「建一個 `SHIPPED` 的訂單要跑四次狀態轉移」。**
+`SHIPPED` fixture 實際走 `place → markPaid → ship`，因此付款與出貨紀錄都存在。
+`DELIVERED` 再走 `markDelivered`；`deliveredAt` 捷徑會把建立時間往前移，維持時間順序。
+此 builder 刻意不支援 UNKNOWN／REFUNDED；退款 fixture 必須經真正退款用例建立，
+不能為了塞狀態而放寬 transitionTo。
 **而收益是**：
 
 > 🔴 **00 章 0.9.2 的狀態機裡就藏著一個這樣的 bug**：
@@ -2452,21 +2521,23 @@ void 取消規則的表涵蓋了所有狀態() {
 
 ### 7.15.2 `@EnumSource`：最省事的窮舉
 
+狀態表可直接窮舉，不必為尚無建構路徑的 REFUNDED 偽造不完整聚合。
+這只驗證狀態表；`cancel` 的角色、時間窗與副作用另以真實聚合操作測試。
+
 ```java
 @ParameterizedTest
 @EnumSource(value = OrderStatus.class, names = {"SHIPPED", "DELIVERED", "CANCELLED", "REFUNDED"})
-void 這些狀態不可取消(OrderStatus status) {
-    assertThatThrownBy(() -> anOrder().status(status).build()
-                                      .cancel(customer, reason, null, now))
-            .isInstanceOfSatisfying(OrderNotCancellableException.class,
-                    e -> assertThat(e.errorCode()).isEqualTo(ErrorCode.ORDER_NOT_CANCELLABLE));
+void 這些狀態在狀態表不可取消(OrderStatus status) {
+    assertThat(status.isCancellable()).isFalse();
 }
 
 // ★★ 更好：用 mode = EXCLUDE，於是新增狀態時【自動】被納入
 @ParameterizedTest
 @EnumSource(value = OrderStatus.class, mode = EXCLUDE,
             names = {"PENDING_PAYMENT", "PAID", "PARTIALLY_SHIPPED", "UNKNOWN"})
-void 除了這四個以外的狀態都不可取消(OrderStatus status) { … }
+void 除了這四個以外的狀態都不可取消(OrderStatus status) {
+    assertThat(status.isCancellable()).isFalse();
+}
 ```
 
 > 📌 **`EXCLUDE` 比 `INCLUDE` 好的理由，與 04 章的「白名單」是同一個**：
@@ -2860,20 +2931,12 @@ mvn verify -Pnightly            # + 突變測試 + Testcontainers 的 MySQL
 **04 章寫了 `ExceptionFixtures.all()` 與五條性質測試，但沒說它為什麼有效。**
 **7.7.1 補上了**：它的維護成本是**常數**，而 41 個個案測試是**線性**的。
 
-### ④ ⚠️ 00 章 0.9.2 的 `Order` 需要一個「測試友善」的建構路徑
+### ④ 00 章的 private `transitionTo` 保持封裝
 
-**7.14.2 的 `OrderTestBuilder` 靠 `Order.transitionTo()` 一步步走到目標狀態。**
-**而那要求 `transitionTo` 是 public（或至少 package-private + 測試同套件）。**
-
-⚠️ **這是一個真實的取捨**：
-
-| | |
-|---|---|
-| 收益 | ✅ 測試資料一定是**合法的**訂單；00 章 0.9.2 那個「第二次部分出貨」的 bug 會被碰到 |
-| 代價 | ⚠️ `transitionTo` 的可見性放寬了一點點 |
-
-**shop-service 的決定：接受。** 而加一條 ArchUnit 規則
-「只有 `Order` 自己與測試可以呼叫 `transitionTo`」。
+7.14.2 的 builder 使用 `Order.place`、`markPaid`、`ship`、`markDelivered` 與 `cancel`。
+只走底層狀態轉移會缺少付款／出貨／取消事實；即使 status 看起來正確，下一次不變量檢查仍會失敗。
+因此不新增測試後門，也不放寬 `transitionTo` 的可見性。
+builder 能否產生有付款紀錄且仍可合法出貨的 PAID 訂單，是需要執行的回歸契約。
 
 ### ⑤ ⚠️ 02 章 2.13.1「證明這個方法真的在交易裡」需要補一句話
 
@@ -3311,7 +3374,7 @@ void 規則3對故意違反的類別會紅燈() {
 | 3 | ⚠️ **`OrderRepositoryContractTest` 是設計，沒有完整實作** | 需要完整的 `Order` 聚合（驗證專案裡沒有） | 契約測試的三條與分工是完整的 |
 | 4 | ⚠️ **突變測試只在一個 5 行的類別上跑過** | 完整的 domain 層不在驗證專案裡 | ✅ **那個例子本身是實測的**（80% → 100%） |
 | 5 | ⚠️ **7.21 練習 4 ③ 的 `GuardRuleMustFailTest` 沒有跑過** | — | ⚠️ 06 章 6.11.5 用**手動**做了同一件事（四條規則全紅） |
-| 6 | ⚠️ **`OrderTestBuilder` 的 `pathTo(status)` 沒有實作** | 需要完整的狀態機 | 設計與取捨（7.19 ④）是完整的 |
+| 6 | Builder 現在走公開業務操作，verification 已覆蓋 PAID／SHIPPED／DELIVERED 等路徑 | REFUNDED 需搭配完整退款用例，仍未由此 builder 支援 | 不放寬 transitionTo |
 | 7 | ⚠️ **7.18.1 的數字是估計，不是實際專案的統計** | 完整的 shop-service 不存在於驗證專案 | 比例與分層是有依據的 |
 | 8 | ⚠️ **沒有測「測試本身的執行時間」** | — | 7.18.3 的 CI 分層是替代 |
 

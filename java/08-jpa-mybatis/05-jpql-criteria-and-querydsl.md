@@ -5839,7 +5839,7 @@ public interface OrderRepository extends JpaRepository<Order, UUID>,
                     (select count(i) from OrderItem i where i.order = o))
              from Order o join o.customer c
             where o.status = :status
-            order by o.placedAt desc
+            order by o.placedAt desc, o.id desc
            """)
     Page<OrderListRow> listRows(
             @org.springframework.data.repository.query.Param("status") OrderStatus status,

@@ -1,0 +1,1 @@
+package example.shop.common.http; public class OutboundRequestRejectedException extends RuntimeException { public OutboundRequestRejectedException(String client,int status,String detail) {super(client+status+detail);} }

@@ -90,8 +90,8 @@ RabbitMQ（broker 模型）            Kafka（log 模型）
 | [10](./10-error-handling-and-observability.md) | 錯誤處理與可觀測性 | Kafka 的死信要自己做、`traceId` 怎麼跨過 broker、lag 的五種假象、死信重放 SOP |
 | [11](./11-choosing-and-mixing.md) | 選型與混用 | 完整決策表、共存架構與遷移成本，以及**什麼時候兩個都不要用** |
 
-> 📌 **每一章的數字都是實際跑出來的**，不是憑印象寫的。
-> 課文裡每一段輸出的標頭就是節號（`═══ 5.4.1 ... ═══`），可以直接對回內文。
+> 課文保留原實驗環境的輸出，數字不能視為目前機器或修正版的效能保證。
+> 本次可靠性修正的可重現程式與驗證範圍，請見 [verification](./verification/README.md)。
 
 ---
 
@@ -120,6 +120,7 @@ RabbitMQ（broker 模型）            Kafka（log 模型）
 | `kafka-lab` | `apache/kafka:3.8.0`（KRaft 單節點） | 19092 | **00 章起，全站** |
 | `mysql-lab` | `mysql:8.0` | 13306 | 02、03、09、10、11 章 |
 | `kafka1` / `kafka2` / `kafka3` | `apache/kafka:3.8.0`（三節點） | 19101 / 19102 / 19103 | 只有副本相關的實驗要（[01 章 1.3.6](./01-reliable-delivery-three-hops.md)、[07 章 7.5](./07-kafka-basics-and-producer.md)） |
+| `redis-msg-lab` | `redis:7.2` | 16379 | 只有 [03 章 3.5](./03-idempotent-consumer.md) 的選用快取實驗；另加 Redis starter |
 | `pg-lab` | `postgres:16` | 15432 | 只有 [03 章 3.4.3](./03-idempotent-consumer.md) 的可攜性對照要 |
 
 **起法**：前三台見 [00 章 0.6](./00-course-map-why-message-queue.md)，三節點叢集見 [01 章 1.3.6](./01-reliable-delivery-three-hops.md)。
@@ -166,3 +167,18 @@ Kafka 3.0 就改過一次 producer 的預設值，而網路上多數文章還在
 > 第 2 項的兩個版本分別在 [06 章練習九](./06-rabbitmq-retry-delay-and-cluster.md)
 > 與 [09 章練習九](./09-kafka-exactly-once-and-retention.md)，
 > 第 4 項的格式在 [11 章 11.2.6](./11-choosing-and-mixing.md)。
+
+
+## 成品範例的銜接與驗證
+
+00 的 Maven 基準含 Actuator；03 的 Redis 實驗另加 starter。02 定義共用
+`OrderCreatedEvent(eventId,orderId)`、`ConfirmedRabbitSender` 與 Outbox 狀態更新流程，
+05 沿用；06 的拓撲取代 04 版，需全新 vhost 或遷移既有 queue。
+06 的外部郵件介面要求供應商支援 idempotency key，普通 SMTP 不能據此宣稱只寄一次。
+07／10 的成品共用 `KafkaTemplate<Object,Object>`；10 是非交易 DLT 設定，
+09 的 Kafka EOS 請另用 profile，transaction-id-prefix 必須包含唯一實例 ID。
+11 的橋接器等目標確認後才讓來源 ACK，失敗保留至 parking，再修復重放。
+
+執行 [verification/run.py](./verification/run.py) 會建立獨立 Docker 容器與隨機本機埠、
+從目前 Markdown 擷取範例，執行回歸並清理此次容器。詳細覆蓋與限制見
+[驗證說明](./verification/README.md)。

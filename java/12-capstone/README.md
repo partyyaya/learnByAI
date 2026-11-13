@@ -38,7 +38,7 @@
 | 06 | `06-caching-and-hot-inventory.md` | 快取與熱點庫存 | 商品詳情快取與失效、熱門排行、Redis 預扣庫存 + DB 落帳、分散式鎖包住交易、API 限流、**Redis 拔掉 60 秒的降級演練** |
 | 07 | `07-event-driven-order-flow.md` | 事件驅動訂單流（重頭戲二） | Outbox 與 relay、熱點商品的落帳移出下單交易、落帳 / 通知 / 退款等五個消費者、冪等消費、重試階梯、死信與重放、RabbitMQ 停機演練、INV-2 / INV-3 對帳（`traceId` 跨 MQ 留到第 09 章） |
 | 08 | `08-testing-and-quality.md` | 測試與品質 | 測試金字塔、Testcontainers（MySQL + Redis + MQ，一個 JVM 一組）、找出「綠得不對」的測試、覆蓋率門檻與讀沒跑到的那幾行、手工突變、獨立行程的壓測工具（0.6.2 每一列、降級演練重量）、CI 與一台什麼都沒有的機器 |
-| 09 | `09-deployment-and-observability.md` | 部署與可觀測性 | 留下日誌重跑找到的 relay 卡死、多階段分層的映像檔、`docker stop` 的寬限與 graceful、一個命令起完整的 compose（migration 是部署的一個步驟）、正式環境的規格與暖機、JSON 日誌、`traceId` 跨過 broker（驗收 Q7，`Skipped: 0`）、指標與 19 條告警（`promtool`、演練、Alertmanager）、INV-5 與稽核保留、增量對帳、上線檢查清單 |
+| 09 | `09-deployment-and-observability.md` | 部署與可觀測性 | 留下日誌重跑找到的 relay 卡死、多階段分層的映像檔、`docker stop` 的寬限與 graceful、一個命令起完整的 compose（migration 是部署的一個步驟）、正式環境的規格與暖機、JSON 日誌、`traceId` 跨過 broker（驗收 Q7，`Skipped: 0`）、指標與 20 條告警（含低流量停滯）（`promtool`、演練、Alertmanager）、INV-5 與稽核保留、增量對帳、上線檢查清單 |
 
 ---
 
@@ -79,3 +79,8 @@
 跨服務 JOIN 消失了報表怎麼辦、訂單建立成功但扣庫存失敗那筆怎麼收、第 07 章的 Outbox 為什麼會從「有點囉唆」變成唯一解。
 
 > ⚠️ 那一站有一半篇幅在說服你**不要拆**。先把這個單體做完、做到會痛，再去讀。
+
+
+修訂驗證：本次已補交易點鎖／有限重試、retry queue 安全 dead-lettering、商品快取最長 1 秒壽命與世代修復、
+通知租約 token、不透明識別碼精確比較，以及低流量停滯告警。舊庫須保留已套用的 migration，依 09 章追加 V26～V28。
+可執行的範例回歸測試與驗證範圍見 [verification/README.md](./verification/README.md)；文中原始壓測與整套測試數字屬歷史紀錄，並非此次重新驗證結果。

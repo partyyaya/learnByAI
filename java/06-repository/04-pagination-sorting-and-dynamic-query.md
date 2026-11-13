@@ -69,7 +69,7 @@
 完成本章後，你應該可以：
 
 - 說出 `List<T>` / `Slice<T>` / `Page<T>` 三種回傳型別**各送出幾句 SQL、各知道什麼**，
-  並說明 `Page` 在**哪兩種情況下不會發那句 `COUNT`**。
+  並說明 `Page` 在**哪些分頁情況下可以省略 `COUNT`**。
 - 用一個**沒有併發**的實測，說明「排序鍵不唯一」為什麼會讓翻頁**重複與遺漏**，
   並寫出兩種修法（tie-breaker 與 keyset）。
 - 說出 `?sort=` 這個 HTTP 參數會走過哪幾道檢查 ——
@@ -135,7 +135,7 @@ public interface OrderPageRepository extends JpaRepository<OrderEntity, String> 
 它抓 4 筆、只給你 3 筆，**用第 4 筆的存在來回答「有沒有下一頁」**。
 所以它知道 `hasNext`，卻**永遠不知道總數** —— 這是一筆很划算的交易。
 
-### 4.2.2 ★ `Page` 在最後一頁不發 `COUNT`
+### 4.2.2 ★ `Page` 何時可以省略 `COUNT`
 
 `Page` 一定多一句 `COUNT` 嗎？**不是。**
 
@@ -154,16 +154,17 @@ public interface OrderPageRepository extends JpaRepository<OrderEntity, String> 
 負責這件事的是 `PageableExecutionUtils`：
 
 ```java
-// 概念上做的事（Spring Data Commons）
-if (content.size() < pageable.getPageSize()) {
-    // 這一頁沒滿 → 它就是最後一頁 → total = offset + content.size()
-    total = pageable.getOffset() + content.size();       // 9 + 1 = 10
+// 概念上做的事（Spring Data Commons 3.2.5，省略 unpaged 分支）
+if (content.size() < pageable.getPageSize() && pageable.getOffset() == 0) {
+    total = content.size();              // 首頁不足一頁，包括空首頁
+} else if (content.size() < pageable.getPageSize() && !content.isEmpty()) {
+    total = pageable.getOffset() + content.size(); // 非首頁，非空且不足一頁
 } else {
-    total = countSupplier.get();                          // 才真的發 COUNT
+    total = countSupplier.getAsLong();   // 滿頁，或 offset > 0 的全空頁
 }
 ```
 
-同一個機制也會在**空結果**上省掉 `COUNT`：
+同一個機制也會在**首頁空結果**上省掉 `COUNT`：
 
 ```
 === P1-E 空結果的 Page 與 Slice ===
@@ -175,8 +176,14 @@ if (content.size() < pageable.getPageSize()) {
 
 📌 **所以「`Page` 一定會多一句 `COUNT`」是錯的，正確的說法是**：
 
-> **只有「這一頁滿了」的時候才發 `COUNT`。**
-> 而那正是**大部分**的請求 —— 第 1 頁通常都是滿的。
+> **滿頁及非首頁的全空頁會發 `COUNT`**，不能從空的後續頁推算總數。
+
+| content | offset | COUNT | total |
+|---|---|---|---|
+| 空或不足一頁 | 0 | 省略 | content.size |
+| 非空且不足一頁 | > 0 | 省略 | offset + content.size |
+| 空 | > 0 | 執行 | supplier 結果，例如 offset=30、total=12 |
+| 滿頁 | 任意 | 執行 | supplier 結果 |
 
 ### 4.2.3 那句 `COUNT` 值多少錢
 
@@ -201,7 +208,7 @@ if (content.size() < pageable.getPageSize()) {
 
 📌 **所以 `Page<T>` 的真正代價不是「多一句 SQL」，是**：
 
-> **每一次搜尋，都要把符合條件的每一列數過一遍 ——
+> **需要執行 `COUNT` 的搜尋，還要把符合條件的列數過一遍 ——
 > 只為了在畫面右上角印一個「共 132,847 筆」。**
 
 ### 4.2.4 決策表
@@ -215,7 +222,7 @@ if (content.size() < pageable.getPageSize()) {
 | 內部呼叫、資料量確定很小 | **`List`** | 最省 |
 
 ⚠️ **最常見的錯誤是「反正 `Page` 資訊最多，就一律用 `Page`」** ——
-等於為了那個沒人看的總筆數，讓每一次搜尋都掃全表一遍。
+等於為了總筆數，讓原本只需一頁內容的請求，可能多掃一遍符合條件的資料。
 
 ---
 
@@ -831,7 +838,7 @@ public enum SortKey {
 
 1. **injection**：只有四個字串能通過，都是常數。
 2. **資訊洩漏**：錯誤訊息說的是「可用的排序欄位」，**不是 entity 的類名與屬性**。
-3. **`IllegalArgumentException`**：這是一個**參數錯誤**，Controller 可以回 **400**（04-controller 06 章的做法），而不是 500。
+3. **`IllegalArgumentException`**：由 4.7.7 的 Web 邊界轉成 `MALFORMED_REQUEST` 業務例外，再交既有 handler 回 400；plain Java 例外不會自動映射。
 4. **API 穩定性**：`CREATED_AT` 是**你的 API 名字**。
    哪天欄位改名叫 `placed_at`、屬性改名叫 `placedAt`，
    **只改 enum 裡那一行**，API 不變。
@@ -1873,20 +1880,31 @@ keyset 分頁需要把「上一頁最後一筆是誰」傳給前端。**不要�
  * 如果前端把它拆開來用，你就再也改不動了。
  */
 public record Cursor(Instant createdAt, String id) {
+    public Cursor {
+        java.util.Objects.requireNonNull(createdAt, "createdAt");
+        if (id == null || id.isBlank() || id.length() > 26 || id.contains("|"))
+            throw new IllegalArgumentException("游標 id 不正確");
+    }
 
     public String encode() {
+        String raw = "v1|" + createdAt.getEpochSecond() + "|" + createdAt.getNano() + "|" + id;
         return Base64.getUrlEncoder().withoutPadding()
-                .encodeToString((createdAt.toEpochMilli() + "|" + id).getBytes());
+                .encodeToString(raw.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     public static Cursor decode(String token) {
         try {
-            String raw = new String(Base64.getUrlDecoder().decode(token));
-            int bar = raw.indexOf('|');
-            return new Cursor(Instant.ofEpochMilli(Long.parseLong(raw.substring(0, bar))),
-                    raw.substring(bar + 1));
+            if (token == null || token.length() > 256) throw new IllegalArgumentException();
+            String raw = new String(Base64.getUrlDecoder().decode(token),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            String[] parts = raw.split("\\|", -1);
+            if (parts.length != 4 || !parts[0].equals("v1")) throw new IllegalArgumentException();
+            long second = Long.parseLong(parts[1]);
+            int nano = Integer.parseInt(parts[2]);
+            if (nano < 0 || nano > 999_999_999) throw new IllegalArgumentException();
+            return new Cursor(Instant.ofEpochSecond(second, nano), parts[3]);
         } catch (RuntimeException e) {
-            throw new IllegalArgumentException("游標格式不正確", e);
+            throw new IllegalArgumentException("游標格式或版本不正確", e);
         }
     }
 }
@@ -1908,7 +1926,7 @@ void 游標是不透明字串而且可以往返() {
             port().searchAfter(OrderSearchQuery.empty(), null, 5));
     assertThat(first.hasNext()).isTrue();
     String token = first.nextCursor();
-    assertThat(token).doesNotContain("O-").doesNotContain("2026");   // ★ 不可以看得出內容
+    assertThat(Cursor.decode(token).id()).isEqualTo(first.content().getLast().id()); // 往返保存排序邊界
 
     KeysetPage<OrderSummaryView> second = inTx(() ->
             port().searchAfter(OrderSearchQuery.empty(), Cursor.decode(token), 5));
@@ -1916,6 +1934,8 @@ void 游標是不透明字串而且可以往返() {
             .containsExactly("O-0006", "O-0007", "O-0008", "O-0009", "O-0010");
 }
 ```
+
+儲存邊界採 `TIMESTAMP(6)`／`DATETIME(6)`，游標必須由「實際查回的排序鍵」建立，不能拿尚未按資料庫精度存取的 `Instant.now()`。編碼使用秒與奈秒，避免微秒被截成毫秒；版本 `v1` 不接受舊毫秒 token，舊書籤須重新搜尋。測試應含同毫秒不同微秒及相同時間不同 id，逐頁走完並驗證不重複、不遺漏。
 
 ⚠️ **Base64 不是加密**，只是「不方便直接讀」。
 如果游標裡的值本身是敏感的（例如某種內部序號），要簽章或加密 ——
@@ -1932,7 +1952,41 @@ void 壞掉的游標要給清楚的錯誤() {
 }
 ```
 
-`IllegalArgumentException` → Controller 回 **400**，不是 500。
+`IllegalArgumentException` 本身不會自動成為 HTTP 400。Controller 解析 query 時，精準轉成前站的 `InvalidCursorException`（`INVALID_CURSOR` → 400）；排序則轉成 `MALFORMED_REQUEST` 的業務例外。Domain／application 型別仍不依賴 MVC。
+
+```java
+// Web 邊界；InvalidCursorException 沿用 04-controller 的完成版。
+public final class SearchParameters {
+    private SearchParameters() {}
+
+    public static Cursor cursor(String raw) {
+        if (raw == null) return null;
+        try { return Cursor.decode(raw); }
+        catch (IllegalArgumentException e) {
+            throw new InvalidCursorException("格式或版本不正確");
+        }
+    }
+
+    public static SortKey sort(String raw) {
+        try { return SortKey.parse(raw); }
+        catch (IllegalArgumentException e) {
+            throw new InvalidSearchParameterException();
+        }
+    }
+}
+```
+
+```java
+// Web 層新增的具體業務例外；BusinessException、ErrorCode 沿用前站。
+public final class InvalidSearchParameterException extends BusinessException {
+    public InvalidSearchParameterException() {
+        super(ErrorCode.MALFORMED_REQUEST, "Unsupported sort parameter.", null,
+                java.util.Map.of("field", "sort"), new Object[0], java.util.List.of());
+    }
+}
+```
+
+兩者交給既有 `BusinessException` handler 產生 Problem Details；錯誤訊息不要回顯 token 或任意排序原文。不要把所有 `IllegalArgumentException` 映射成 400，內部金額／不變量錯誤仍走 500。`verification/` 用 MockMvc 同時測這兩個 400 和內部錯誤的 500。
 
 ### 4.7.8 keyset 給不了什麼
 
@@ -2226,7 +2280,7 @@ private List<OrderLineEntity> lines = new ArrayList<>();
 ```sql
 -- 不要問「總共幾筆」，問「有沒有超過 1000 筆」
 SELECT count(*) FROM (
-    SELECT 1 FROM orders WHERE status = ? FETCH FIRST 1001 ROWS ONLY
+    SELECT 1 FROM orders WHERE status = ? LIMIT 1001
 ) t;
 ```
 
@@ -2488,7 +2542,7 @@ public interface OrderSearchPort {
 
 | # | 問題 | 證據 |
 |---|---|---|
-| 4 | `Page` 的 `getTotalElements()` **一定**給你一個數字 → 每次都得算 | **4.2.3 實測（3,985 µs / 10 萬筆）** |
+| 4 | `Page` 的 `getTotalElements()` **一定**給你一個數字；能從內容推算時省略 COUNT，否則另查 | **4.2.2 矩陣、4.2.3 實測（3,985 µs / 10 萬筆）** |
 | 5 | `Page` 序列化成 JSON 有 **11 個頂層欄位**，全是 Spring Data 的內部結構 | **4.11.5 實測** |
 
 📌 **這五條加起來就是那個判準**：
@@ -2856,17 +2910,24 @@ was violated (1 times)
 
 ```java
 @Test
-void 規則14_列表查詢的sql句數不可以隨資料量增加() {
+void 規則14_列表查詢的sql句數不可以隨實際結果數增加() {
+    // 固定至少 40 筆資料；兩次都使用獨立交易並清除一／二級快取。
+    Seed.forContract(dataSource, 40);
     int[] counts = new int[2];
     int i = 0;
-    for (int n : new int[]{10, 40}) {
-        try (AnnotationConfigApplicationContext ctx = SearchLab.context()) {
-            Seed.forContract(ctx.getBean(DataSource.class), n);
-            OrderSearchPort port = (OrderSearchPort) ctx.getBean("specSearch");
-            TransactionTemplate tx = SearchLab.tx(ctx);
-            SqlSpy.start();
-            CountingDataSource.start();
-            tx.executeWithoutResult(s -> port.search(OrderSearchQuery.empty(), PageSpec.of(0, 5)));
+    for (int size : new int[]{5, 20}) {
+        entityManagerFactory.getCache().evictAll();
+        SqlSpy.start();
+        CountingDataSource.start();
+        try {
+            tx.executeWithoutResult(s -> {
+                em.clear();
+                var page = port.search(OrderSearchQuery.empty(), PageSpec.of(0, size));
+                assertThat(page.content()).hasSize(size);
+                // 實際走訪 view 的全部輸出欄位；聚合查詢則包括要輸出的 LAZY 明細。
+                page.content().forEach(this::consumeOutputFields);
+            });
+        } finally {
             counts[i++] = Math.max(SqlSpy.stop().size(), CountingDataSource.stop().size());
         }
     }
@@ -2874,15 +2935,9 @@ void 規則14_列表查詢的sql句數不可以隨資料量增加() {
 }
 ```
 
-```
-=== P11-C 守門測試：同一支查詢，10 筆與 40 筆各送出幾句 SQL ===
-  10 筆資料 → 1 句 SQL
-  40 筆資料 → 1 句 SQL
-  ★ 兩個數字一樣 → 沒有 N+1。這一條要放進 CI
-```
+這是測試骨架，`consumeOutputFields` 依該 view 的實際欄位實作，不能只取得 Page 而不處理結果。原先增加種子 10 → 40、卻都取 5 筆的方式，即使有 5 次 LAZY 查詢，兩次句數也相同，會誤判通過。
 
-📌 **這是 03 章練習 4 那條測試的正式版**，而它的判準是本章反覆出現的那一個：
-**不是「句數小不小」，是「句數會不會隨資料量長」。**
+`verification/` 固定 40 筆、比較回傳 5／20 筆，分別檢查 projection 的固定句數與故意 N+1 的負例；負例必須被這個判準抓到。不要把種子總量當作實際處理筆數。
 
 **規則 15：`JOIN FETCH` 的查詢不可以帶 `Pageable`**
 
@@ -2936,8 +2991,8 @@ WARN  org.hibernate.orm.query -- HHH90003004: firstResult/maxResults specified w
 
 | 誤區 | 實際 | 哪一節 |
 |---|---|---|
-| 「反正 `Page` 資訊最多，一律用 `Page`」 | 每次搜尋都多掃一遍全部符合的列（10 萬筆 = 3,985 µs） | 4.2.3 |
-| 「`Page` 一定會多一句 `COUNT`」 | **最後一頁與空結果不會發** —— 但那不是大部分的請求 | 4.2.2 |
+| 「反正 `Page` 資訊最多，一律用 `Page`」 | 需要 COUNT 時多掃符合條件的列（10 萬筆 = 3,985 µs）；省略條件見 4.2.2 | 4.2.3 |
+| 「`Page` 一定會多一句 `COUNT`」 | 首頁不足一頁、非首頁非空且不足一頁可省略；滿頁或非首頁全空仍執行 | 4.2.2 |
 | 「`nullsLast()` 可以控制 `NULL` 排在哪」 | 🔴 **Spring Data JPA 靜默忽略它**，SQL 完全一樣 | **4.3.4** |
 | 「`ORDER BY created_at` 就有排序了」 | 🔴 **12 筆翻三頁只看到 11 筆**（沒有併發） | **4.4.1** |
 | 「排序鍵重複的機率很低」 | 促銷開賣那一秒與批次匯入是**必然**重複 | 4.4.3 |
@@ -3030,7 +3085,7 @@ public class OrderSearchController {
 - Hibernate 會試著轉，但**轉不出來就丟一個很難讀的例外**；
   而 `?status=paid`（小寫）會**查不到任何東西而不報錯**。
 - **修**：在 Controller 就把它轉成 `OrderStatus`（04-controller 06 章的 enum 綁定），
-  轉不出來回 400 並列出合法值。
+  在 Web 邊界轉成 MALFORMED_REQUEST 業務例外後回 400（4.7.7），不直接回顯任意原文。
 
 **⑤ `root.join("lines")` + 分頁 —— 4.6.6 那個 bug**
 
@@ -3429,7 +3484,7 @@ try (Stream<OrderEntity> stream = repo.findAllByStatus(PAID)) {
 | **P8** | ★ 動態查詢 | ✅ **三個實作在 0/1/2/3/5 格下產生【幾乎相同】的 `WHERE`、筆數完全相同**，且**都沒有 `WHERE 1=1`**<br>🔴 **join 到明細 + 每頁 4 筆走完所有頁：5 張訂單只看到 2 張，`hasNext` 說 `false`**<br>✅ `distinct(true)` 與 `EXISTS` 都修好（5/5，`total=5`）；`distinct` 版的 `COUNT` 是 `count(distinct id)` |
 | **P9** | Web 綁定與 JSON | ✅ 預設 `default-page-size=20`、**`max-page-size=2000`**、`one-indexed=false`<br>🔴 **`page=-1`／`size=0`／`page=abc` 全部靜默變成預設值，不報錯**<br>🔴 **`?sort=password`、`?sort=(SELECT 1)` 在 Web 層完全沒有檢查**<br>🔴 **`Page<T>` 的 JSON 有 11 個頂層欄位，而且兩次執行的欄位順序不同** |
 | **P10** | `Containing` 與 `%` | ✅ **意外的好消息：`Containing` 產生 `like ? escape '\'`，輸入 `%` 只回 1 筆**<br>🔴 **自己寫的 `LIKE` 同樣輸入回全部 6 筆，而 `A%B` 也搜到 `AXB`** |
-| **P11** | 六條守門規則 | ✅ 規則 10～15 全綠；**放進違規檔案後規則 10 報 7 個違規、規則 11 報 1 個**，移除後回綠<br>✅ 白名單擋掉 `password`／`id; DROP TABLE orders`／`(SELECT 1)`；`PageSpec` 擋掉 `size>200`<br>✅ 10 筆與 40 筆都是 **1 句 SQL**（沒有 N+1） |
+| **P11** | 六條守門規則 | ✅ 規則 10～15 全綠；**放進違規檔案後規則 10 報 7 個違規、規則 11 報 1 個**，移除後回綠<br>✅ 白名單擋掉 `password`／`id; DROP TABLE orders`／`(SELECT 1)`；`PageSpec` 擋掉 `size>200`<br>原 10／40 種子固定取 5 筆的比較不足以排除 N+1；改為固定種子、取 5／20 筆並消耗輸出欄位，另加違規負例 |
 | **P12** | H2 的查詢結果快取 | 🔴 **`QUERY_CACHE_SIZE` 預設是 8**：同一句有條件的 `count` 量到 **16 µs**；關掉之後是 **4,462 µs（279 倍）** |
 | **契約** | **16 條 × 3 個實作** | 🔴 **第一次執行：`Spec` 6 紅、QueryDSL 4 紅、JDBC 4 紅**<br>其中 4 條三個實作都紅 = **測試自己的資料假設錯了**；<br>另 2 條只有 `Spec` 紅 = **真的 bug（`ScrollPosition.offset(n)` 的 off-by-one）**<br>→ 修好後 **48 個全綠** |
 
@@ -3464,7 +3519,7 @@ try (Stream<OrderEntity> stream = repo.findAllByStatus(PAID)) {
 | ~~MySQL 8 不支援 `FETCH FIRST`~~ | 4.6.5、4.7 | ✅ **06 章 6.4 已補：MySQL 8.0.46 直接語法錯誤**，本章的原生 SQL **必須改成 `LIMIT`** |
 | ~~MySQL 的 `NULL` 排序位置~~ | 4.3.4 | ✅ **06 章 6.4 已補：MySQL 8 和 H2 一樣是 NULLS FIRST**，但 **`NULLS LAST` 語法 MySQL 不支援** |
 | `count(distinct id)` 在大表上與 `count(*)` 的成本差 | 4.6.7 | 07-mysql 站 |
-| **上限估計（`FETCH FIRST 1001` 的子查詢）的實際掃描量** | 4.9.2 | 07-mysql 站 |
+| **上限估計（`LIMIT 1001` 的子查詢）的實際掃描量** | 4.9.2 | 07-mysql 站 |
 | 索引設計本身（複合索引的欄位順序、covering index） | 4.7.2、練習 3 | **07-mysql 站 03 章** |
 | SQL injection 的靜態分析工具（CodeQL / SpotBugs） | 4.11.6 | —— |
 | `ScrollPosition.Direction.BACKWARD`（往前翻） | 4.7.8 | —— |

@@ -960,12 +960,14 @@ import org.springframework.data.redis.serializer.StringRedisSerializer;
 public class RedisConfig {
 
     /**
-     * 整站共用的 ObjectMapper（Redis 專用，不要跟 Web 層那顆混用）。
+     * Redis 專用 mapper：以包裝型別暴露，避免取代 Boot 的 Web ObjectMapper。
      * Web 層那顆是給「外部看的 JSON」用的，這一顆是給「自己存自己讀」用的，
      * 兩邊的需求相反：Web 不該吐 @class，這裡需要。
      */
+    public record RedisJson(ObjectMapper mapper) {}
+
     @Bean
-    public ObjectMapper redisObjectMapper() {
+    public RedisJson redisJson() {
         PolymorphicTypeValidator ptv = BasicPolymorphicTypeValidator.builder()
                 .allowIfSubType("com.example.lab10.")
                 .allowIfSubType("java.util.")
@@ -982,12 +984,12 @@ public class RedisConfig {
         m.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
         // @class：白名單版，不要用預設的 LaissezFaire
         m.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL, JsonTypeInfo.As.PROPERTY);
-        return m;
+        return new RedisJson(m);
     }
 
     @Bean
-    public RedisSerializer<Object> redisValueSerializer(ObjectMapper redisObjectMapper) {
-        return new GenericJackson2JsonRedisSerializer(redisObjectMapper);
+    public RedisSerializer<Object> redisValueSerializer(RedisJson redisJson) {
+        return new GenericJackson2JsonRedisSerializer(redisJson.mapper());
     }
 
     /**
@@ -1007,6 +1009,12 @@ public class RedisConfig {
     }
 }
 ```
+
+⚠️ **不要直接宣告 `@Bean ObjectMapper redisObjectMapper()`。** Boot 會依型別判斷，
+一旦找到任何 ObjectMapper bean，就不建立原本給 MVC 用的那顆；bean 名稱不會隔離用途。
+這裡改用 `RedisConfig.RedisJson` 包裝，Web 繼續使用 Boot 建立的 mapper，
+因此不會把 Redis 的欄位可見性與 `@class` 規則帶進 HTTP JSON。
+07 章需要這顆 mapper 時，注入 `RedisJson` 並呼叫 `mapper()`。
 
 **四個位置一個都不能漏。** 少設 `hashKeySerializer` 是最常見的遺漏——
 `opsForValue()` 看起來都正常，直到某天有人用了 `opsForHash()`，
@@ -1564,12 +1572,14 @@ package com.example.lab10.shop.config;
 @Configuration
 public class RedisConfig {
 
-    @Bean
-    public ObjectMapper redisObjectMapper() { /* 6.6.2 那一段，原封不動 */ }
+    public record RedisJson(ObjectMapper mapper) {}
 
     @Bean
-    public RedisSerializer<Object> redisValueSerializer(ObjectMapper redisObjectMapper) {
-        return new GenericJackson2JsonRedisSerializer(redisObjectMapper);
+    public RedisJson redisJson() { /* 6.6.2 那一段，原封不動 */ }
+
+    @Bean
+    public RedisSerializer<Object> redisValueSerializer(RedisJson redisJson) {
+        return new GenericJackson2JsonRedisSerializer(redisJson.mapper());
     }
 
     @Bean

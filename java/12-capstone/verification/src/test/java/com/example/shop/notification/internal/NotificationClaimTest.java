@@ -1,0 +1,24 @@
+package com.example.shop.notification.internal;
+import com.example.shop.shared.events.*;import com.fasterxml.jackson.databind.ObjectMapper;import org.junit.jupiter.api.*;import org.springframework.jdbc.core.JdbcTemplate;import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import java.time.*;import java.util.*;import java.util.concurrent.*;import java.util.concurrent.atomic.*;import static org.assertj.core.api.Assertions.*;import static org.mockito.Mockito.*;
+class NotificationClaimTest {
+ final ObjectMapper json=new ObjectMapper();
+ JdbcTemplate jdbc(){return new JdbcTemplate(new DriverManagerDataSource("jdbc:mysql://127.0.0.1:"+Integer.getInteger("review.mysql.port")+"/review?useSSL=false&allowPublicKeyRetrieval=true","lab","lab"));}
+ Event event(){return new Event(UUID.randomUUID().toString(),EventTypes.ORDER_PLACED,"ORDER",1,Instant.now(),json.valueToTree(Map.of("buyerId",1,"orderNo","test")),1);}
+ NotificationHandler handler(SimulatedMailer m){return new NotificationHandler(jdbc(),m,json);}
+ String dedup(Event e){return e.eventId()+":ORDER_PLACED";}
+ @Test void concurrentDeliveryCannotAcquireActiveClaim()throws Exception{
+  var event=event();var entered=new CountDownLatch(1);var resume=new CountDownLatch(1);var mailer=spy(new SimulatedMailer());doAnswer(i->{entered.countDown();assertThat(resume.await(5,TimeUnit.SECONDS)).isTrue();return i.callRealMethod();}).when(mailer).send(anyLong(),anyString(),anyString(),anyString());var h=handler(mailer);var pool=Executors.newSingleThreadExecutor();
+  try{var first=pool.submit(()->h.handle(event));assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue();assertThatThrownBy(()->h.handle(event)).isInstanceOf(NotificationHandler.InFlight.class);verify(mailer,times(1)).send(anyLong(),anyString(),anyString(),anyString());resume.countDown();first.get(3,TimeUnit.SECONDS);h.handle(event);assertThat(mailer.sent()).hasSize(1);assertThat(jdbc().queryForObject("SELECT status FROM notifications WHERE dedup_key=?",String.class,dedup(event))).isEqualTo("SENT");}finally{resume.countDown();pool.shutdownNow();}
+ }
+ @Test void failedSendReleasesClaimForRetry(){var e=event();var mailer=new SimulatedMailer();mailer.failNext(1);var h=handler(mailer);assertThatThrownBy(()->h.handle(e)).isInstanceOf(SimulatedMailer.MailException.class);assertThat(jdbc().queryForObject("SELECT claim_token FROM notifications WHERE dedup_key=?",String.class,dedup(e))).isNull();h.handle(e);assertThat(mailer.sent()).hasSize(1);}
+ @Test void expiredClaimCanBeTakenOver(){var e=event();jdbc().update("INSERT INTO notifications(user_id,type,dedup_key,payload,claim_token,claimed_until) VALUES(1,'ORDER_PLACED',?,'{}','dead-process',NOW()-INTERVAL 1 SECOND)",dedup(e));var mailer=new SimulatedMailer();handler(mailer).handle(e);assertThat(mailer.sent()).hasSize(1);assertThat(jdbc().queryForObject("SELECT claim_token FROM notifications WHERE dedup_key=?",String.class,dedup(e))).isNull();}
+ @Test void staleWorkerFailureCannotClearNewClaim()throws Exception{
+  var e=event();var entered=new CountDownLatch(1);var resume=new CountDownLatch(1);var mailer=mock(SimulatedMailer.class);doAnswer(i->{entered.countDown();assertThat(resume.await(5,TimeUnit.SECONDS)).isTrue();throw new IllegalStateException("old send failed");}).when(mailer).send(anyLong(),anyString(),anyString(),anyString());var pool=Executors.newSingleThreadExecutor();
+  try{var old=pool.submit(()->handler(mailer).handle(e));assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue();jdbc().update("UPDATE notifications SET claim_token='new-owner', claimed_until=NOW()+INTERVAL 10 SECOND WHERE dedup_key=?",dedup(e));resume.countDown();assertThatThrownBy(()->old.get(3,TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);assertThat(jdbc().queryForObject("SELECT claim_token FROM notifications WHERE dedup_key=?",String.class,dedup(e))).isEqualTo("new-owner");}finally{resume.countDown();pool.shutdownNow();}
+ }
+ @Test void staleWorkerSuccessCannotCompleteNewClaim()throws Exception{
+  var e=event();var entered=new CountDownLatch(1);var resume=new CountDownLatch(1);var mailer=mock(SimulatedMailer.class);doAnswer(i->{entered.countDown();assertThat(resume.await(5,TimeUnit.SECONDS)).isTrue();return null;}).when(mailer).send(anyLong(),anyString(),anyString(),anyString());var pool=Executors.newSingleThreadExecutor();
+  try{var old=pool.submit(()->handler(mailer).handle(e));assertThat(entered.await(3,TimeUnit.SECONDS)).isTrue();jdbc().update("UPDATE notifications SET claim_token='new-owner', claimed_until=NOW()+INTERVAL 10 SECOND WHERE dedup_key=?",dedup(e));resume.countDown();assertThatThrownBy(()->old.get(3,TimeUnit.SECONDS)).hasCauseInstanceOf(NotificationHandler.InFlight.class);assertThat(jdbc().queryForObject("SELECT status FROM notifications WHERE dedup_key=?",String.class,dedup(e))).isEqualTo("PENDING");}finally{resume.countDown();pool.shutdownNow();}
+ }
+}

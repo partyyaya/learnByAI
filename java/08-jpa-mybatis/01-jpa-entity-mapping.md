@@ -1352,7 +1352,7 @@ private BigDecimal unitPrice;
   0.00005     → 0.0001       → 0.0001        🔴 數值變了
 ```
 
-🔴 **`100.12345` 被靜默四捨五入成 `100.1235`。沒有例外、沒有警告。**
+🔴 **`100.12345` 被靜默四捨五入成 `100.1235`。不會因此丟例外；不要依賴一般日誌偵測捨入。**
 
 ⚠️⚠️ **而且這是在 `STRICT_TRANS_TABLES` 底下發生的**
 （07 站 00 章 0.8 那個「嚴格模式」）。
@@ -1387,14 +1387,16 @@ if (value.scale() > 4) throw new IllegalArgumentException("金額最多四位小
 ```sql
 create table no_prec (
   id             integer not null auto_increment,
-  no_annotation  decimal(38,2),      -- 🔴 完全不寫 → 38 位整數、2 位小數
+  no_annotation  decimal(38,2),      -- DDL 預設：總精度 38，其中 2 位是小數
   with_prec      decimal(19,4),      -- ✅ 有寫 → 跟 schema 一致
   primary key (id)
 ) engine=InnoDB;
 ```
 
 🔴 **`DECIMAL(38,2)` 只有兩位小數**——而 07 站要的是四位。
-**在一個沒寫 `scale` 的欄位上，`100.1234` 會被存成 `100.12`。**
+**若真的依這份 DDL 建成 DECIMAL(38,2)，`100.1234` 才會在寫入該欄位時存成 `100.12`。**
+
+本站是 database first、`ddl-auto: none`：既有欄位仍為 DECIMAL(19,4) 時，不寫 scale 或把註解寫成 scale=2，都不會替 BigDecimal 呼叫 setScale；100.1234 仍保存四位。precision／scale 應明寫以表達預期結構，但應用端金額規則與資料庫實際欄位精度需要各自檢查。`verification/` 以兩種映射對同樣的 DECIMAL(19,4) 欄位驗證此差別。
 
 ⚠️⚠️ **而 1.12.3 的實測會告訴你：`validate` 抓不到這個不一致。**
 
@@ -1439,14 +1441,13 @@ create table orders (
 🔴 ① 單元測試：assertThat(order.getTotal()).isEqualTo(new BigDecimal("100"))  → 失敗
       ✅ 改用 assertThat(...).isEqualByComparingTo("100")
 
-🔴 ② 髒檢查：Hibernate 用 equals 判斷欄位有沒有變
-      → 把 100.0000 設成 100，它認為【變了】，於是發一句沒有意義的 UPDATE
+✅ ② Hibernate 6.4.4 的 BigDecimalJavaType.areEqual 用 compareTo 比數值
+      → 把 100.0000 設成 100，數值相同，不會單因 scale 改變而 UPDATE
 
 🔴 ③ 你自己寫的 equals / 快取 key
 ```
 
-📌 **對 ② 的處理**：讓實體裡的 `BigDecimal` **永遠是同一個 scale**——
-這正是 1.10.1 那個 `Money` 值物件在做的事。
+📌 統一 scale 有助於 Java equals、自訂快取 key 與金額規則，不能把它說成 Hibernate 內建 BigDecimal 髒檢查的必要修法。自訂 JavaType／UserType 的比較規則另行測試。
 
 ### 1.10.3 `@Embedded`：把值物件攤平
 
@@ -1547,7 +1548,7 @@ public class EmbAddress {
 public class VUser {
     @Id private UUID id;
 
-    @Column(nullable = false, length = 255)      // ① 只影響【產生 DDL】
+    @Column(nullable = false, length = 255)      // ① DDL 中繼資料，也可能供 Hibernate nullability 檢查使用
     @NotBlank                                    // ② Bean Validation：flush 前檢查
     private String email;                        // ③ 資料庫還有 NOT NULL
 
@@ -1561,23 +1562,15 @@ public class VUser {
 
 | | 誰執行 | 什麼時候 | `ddl-auto: none` 時還有用嗎 |
 |---|---|---|---|
-| ① `@Column(nullable, length)` | Hibernate | **產生 DDL 時**，以及 `validate` 時 | 🔴 **產 DDL 那部分完全沒作用**；只剩 `validate` 會看它 |
+| ① `@Column(nullable, length)` | Hibernate | 產生 DDL；nullable 另受執行期 nullability 設定影響 | 不產生 DDL，但 nullability 檢查仍可能生效；validate 不保證檢查長度／nullable（1.12） |
 | ② `@NotNull` / `@Size`（Bean Validation） | Hibernate Validator | **flush 之前**（`pre-persist` / `pre-update`） | ✅ 有 |
 | ③ `NOT NULL` / `VARCHAR(20)` / `CHECK` | **MySQL** | SQL 真的送到資料庫時 | ✅ 有 |
 
-⚠️⚠️ **第一列是最多人誤會的地方**：
+`ddl-auto: none` 只表示不讓 Hibernate 建改表，不會一併關閉執行期檢查。Hibernate 的 `hibernate.check_nullability` 開啟時，nullable=false 的欄位為 null，可在 INSERT 前丟出 PropertyValueException。預設會受 Bean Validation 整合影響：沒有 Validator 時通常開啟；啟用 Validator 時通常交給 Bean Validation。需要固定行為時明確設定並測試，不依賴 classpath 巧合。
 
-> **`@Column(nullable = false)` 在 `ddl-auto: none` 的專案裡，【擋不住任何東西】。**
->
-> 它不是一個驗證，它是一個**「請幫我把 DDL 產成 NOT NULL」的指示**。
-> 而本課根本不讓 Hibernate 產 DDL。
+Column 的 length／precision／scale 中繼資料不會自動替 Java 值裁切或捨入；nullable 的行為不能推廣到所有 Column 屬性。1.12 的 validate 也不會完整檢查 nullable、長度或精度。Bean Validation 負責輸入規則，資料庫約束守住所有寫入路徑，三者各有範圍。
 
-📌 **那為什麼還要寫它**？兩個理由：
-
-```
-① validate 會看它（1.12）—— 它是「實體與 schema 一致」宣告的一部分
-② 它是給【讀程式碼的人】看的文件 —— 讓你不用去翻 schema 就知道這一欄不可為空
-```
+00 章最小 POM 沒有 Validator；要執行下面的 Bean Validation 實驗，另加 `spring-boot-starter-validation`。`verification/` 測試最小 POM、沒有 Validator 時的預設 nullability 行為。
 
 ### 1.11.2 實測：三層各自擋住什麼
 
@@ -1614,7 +1607,7 @@ public class VUser {
 > |---|---|
 > | Bean Validation | **使用者輸入的合法性**——而且錯誤訊息可以回給前端（04 站） |
 > | 資料庫約束 | **任何路徑寫進來的資料**——包含 MyBatis、批次腳本、DBA 手動下的 SQL |
-> | `@Column` + `validate` | **這兩層的定義有沒有漂移** |
+> | `@Column` + `validate` | 映射宣告與有限的表／欄位存在性、JDBC 型別檢查；不含完整的 nullable／長度比對 |
 >
 > ⚠️ **少了資料庫那一層，00 章 0.3.5 那個混用事故就沒有最後防線。**
 
@@ -1728,7 +1721,7 @@ Schema-validation: wrong column type encountered in column [status] in table [or
 ```
 
 ⚠️⚠️ **③ 那一條特別危險**：實體宣告 `DECIMAL(10,2)`、資料庫是 `DECIMAL(19,4)`，
-**`validate` 通過，然後 1.10.1 那個靜默四捨五入每天都在發生。**
+**`validate` 會通過，但不代表結構相符；是否捨入取決於實際 DB 欄位與輸入值的小數位數，並非由註解自動裁成兩位。**
 
 > 📌 **這跟 07 站 06 章的結論一致**（那裡測的是「9 種漂移只抓到 2 種」）。
 > **兩章測的漂移不完全一樣，但結論相同：**
@@ -2230,7 +2223,7 @@ public class Product extends BaseEntity {
     @Column(nullable = false, length = 200)
     private String name;
 
-    /** ★ precision / scale 要跟 DECIMAL(19,4) 一致，否則靜默四捨五入（1.10.1）。 */
+    /** 映射宣告對齊 DECIMAL(19,4)；實際儲存精度仍由既有 DB 欄位決定（1.10.1）。 */
     @Column(name = "unit_price", nullable = false, precision = 19, scale = 4)
     private BigDecimal unitPrice;
 
@@ -2347,9 +2340,15 @@ public class Order extends BaseEntity {
      */
     public void removeItem(OrderItem item) {
         requireStatus(OrderStatus.PENDING, "只有 PENDING 的訂單可以移除明細");
-        if (items.remove(item)) {
-            totalAmount = totalAmount.subtract(item.getLineAmount());
+        // 先取真正屬於此聚合的明細；不能用外部同 id 物件的金額計算。
+        OrderItem stored = items.stream().filter(i -> i.equals(item)).findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("明細不屬於此訂單"));
+        BigDecimal remaining = totalAmount.subtract(stored.getLineAmount());
+        if (discountAmount.compareTo(remaining) > 0) {
+            throw new IllegalStateException("移除後折扣會超過總額，請先調整折扣");
         }
+        items.remove(stored);
+        totalAmount = remaining;
     }
 
     public void pay() {
@@ -2358,14 +2357,17 @@ public class Order extends BaseEntity {
         this.paidAt = Instant.now();
     }
 
-    public void cancel() {
-        if (status == OrderStatus.SHIPPED || status == OrderStatus.DELIVERED) {
-            throw new IllegalStateException("已出貨的訂單不能取消，目前是 " + status);
-        }
+    /** 未付款訂單可取消；重複取消不再產生狀態轉移或釋放庫存。付款後走獨立退款流程。 */
+    public boolean cancel() {
+        if (status == OrderStatus.CANCELLED) return false;
+        requireStatus(OrderStatus.PENDING, "只有未付款的 PENDING 訂單可以取消");
         this.status = OrderStatus.CANCELLED;
+        return true;
     }
 
     public void applyDiscount(BigDecimal amount) {
+        requireStatus(OrderStatus.PENDING, "只有 PENDING 的訂單可以調整折扣");
+        java.util.Objects.requireNonNull(amount, "折扣不可為 null");
         if (amount.signum() < 0) throw new IllegalArgumentException("折扣不可為負");
         if (amount.compareTo(totalAmount) > 0) {
             throw new IllegalArgumentException("折扣 " + amount + " 超過總額 " + totalAmount);
@@ -2712,7 +2714,7 @@ class ShopEntityTest {
 | 主鍵策略 | 指定 UUIDv7 + `Persistable` | 批次失效（`IDENTITY`）或每次多一句 `SELECT`（1.6） |
 | 列舉 | `STRING` + `@JdbcTypeCode(VARCHAR)` | **舊資料整批錯位**（1.7.2） |
 | 時間 | `Instant` | **換機器差 8 小時**（1.9.2） |
-| 金額 | `BigDecimal` + 明確的 `precision`/`scale` | **靜默四捨五入**（1.10.1） |
+| 金額 | `BigDecimal` + 明確映射 + 應用端 scale 規則 | 實際 DB 精度不足會捨入，註解不會自動 setScale（1.10.1） |
 | 值物件 | `@Embeddable record` | 不變量散落在各處 |
 | 生成欄位 | `insertable=false`，不加 `@Generated` | 寫入被 MySQL 拒絕；或每次多一句 `SELECT`（1.8） |
 | 三層檢查 | 三層都要 | 少了資料庫那層，混用時沒有最後防線（1.11） |
@@ -2751,7 +2753,7 @@ class ShopEntityTest {
 □ 說得出 Persistable 解決什麼、以及它的兩個坑怎麼觸發
 □ 說得出 @Enumerated 的預設值是什麼，以及它為什麼危險
 □ 說得出 Instant / LocalDateTime / OffsetDateTime 各自適合什麼
-□ 說得出 @Column(nullable=false) 在 ddl-auto: none 下做了什麼（答案：幾乎什麼都沒做）
+□ 說得出 @Column(nullable=false) 在 ddl-auto: none 下仍可能做哪些執行期檢查，以及 Validator 的影響
 □ 說得出 validate 檢查什麼、不檢查什麼
 □ 說得出 JPA 實體的 equals 為什麼不能用 IDE 產生的版本
 □ 說得出 07 站那 11 條不變量，現在分別守在哪一層

@@ -137,7 +137,7 @@ public boolean buyPessimistic(Long id, String user, long gap) {
 public boolean buyOptimisticOnce(Long id, String user, long gap) {
     ProductV p = em.find(ProductV.class, id);     // @Version 欄位
     ...
-    em.flush();                                    // ⚠️ 要在這裡 flush，衝突才會在方法內丟出來
+    // 可選：em.flush(); 讓衝突提早出現；外層呼叫端也能捕捉代理提交時的例外
     return true;
 }
 
@@ -159,8 +159,11 @@ for (int attempt = 0; attempt < 50; attempt++) {
 > 200 個人搶同一列 = 每個人平均要重試 4.4 次。
 > **把人數加到 2000，重試次數會非線性地爆炸。**
 >
-> ⚠️ 另外注意 `em.flush()` 那一行：不寫的話，衝突會在**交易提交時**才丟出來，
-> 那時候已經在你的 `try` 區塊外面了——**`catch` 抓不到，重試邏輯整段失效。**
+> ⚠️ **分清楚交易方法內的 catch 與交易代理外的 catch。**
+> 沒有顯式 flush，衝突可能等提交才發生；方法內的 catch 此時已經結束。
+> 上面的呼叫端 try 卻包住整個交易代理呼叫，**包含提交，所以仍可捕捉並重試**。
+> `dao` 必須是另一個 bean，每次嘗試都開始新交易；外層不能已有同一筆交易，
+> 也不能用 self-invocation 繞過代理。在 rollback-only 的交易裡重試並不會恢復它。
 
 ### 12.2.6 ✅ ④ 條件更新：一條 SQL
 
@@ -314,12 +317,18 @@ locks.execute("lock:product:1", Duration.ofSeconds(60),
 --   結果  1 = 扣成功
 --        0 = 庫存不足
 --       -1 = 這個 key 還沒初始化（⚠️ 一定要跟「庫存 0」分開）
+local want = tonumber(ARGV[1])
+if not want or want < 1 or want > 2147483647 or want ~= math.floor(want) then
+    return redis.error_reply('quantity must be a positive int')
+end
 local current = redis.call('GET', KEYS[1])
 if current == false then
     return {-1, 0}
 end
 local stock = tonumber(current)
-local want  = tonumber(ARGV[1])
+if not stock or stock < 0 or stock > 2147483647 or stock ~= math.floor(stock) then
+    return redis.error_reply('invalid inventory value')
+end
 if stock < want then
     return {0, stock}
 end
@@ -327,13 +336,46 @@ local left = redis.call('DECRBY', KEYS[1], want)
 return {1, left}
 ```
 
+**這裡替換 05 章 RedisScriptConfig 的 deductStockScript bean**，不是再新增一個同名 bean。
+腳本路徑不變，但回傳型別從 Long 改成 List；釋放鎖的 Long bean 保持原樣：
+
 ```java
-public Deduction deduct(Long productId, int count) {
-    List<?> r = redis.execute(deduct, List.of(key(productId)), String.valueOf(count));
-    long code = ((Number) r.get(0)).longValue();
-    ...
+@Configuration
+public class RedisScriptConfig {
+    @Bean
+    public RedisScript<List> deductStockScript() {
+        return RedisScript.of(new ClassPathResource("scripts/deduct-stock.lua"), List.class);
+    }
+
+    @Bean
+    public RedisScript<Long> releaseLockScript() {
+        return RedisScript.of(new ClassPathResource("scripts/release-lock.lua"), Long.class);
+    }
 }
 ```
+
+RedisStock 注入 `@Qualifier("deductStockScript") RedisScript<List> deduct`，解析也一併更新：
+
+```java
+public Deduction deduct(Long productId, int count) {
+    if (count <= 0) throw new IllegalArgumentException("count must be positive");
+    List<?> r = redis.execute(deduct, List.of(key(productId)), String.valueOf(count));
+    if (r == null || r.size() != 2) throw new IllegalStateException("invalid deduction reply");
+    int code = ((Number) r.get(0)).intValue();
+    Result result = switch (code) {
+        case 1 -> Result.OK;
+        case 0 -> Result.SOLD_OUT;
+        case -1 -> Result.NOT_LOADED;
+        default -> throw new IllegalStateException("unknown deduction code: " + code);
+    };
+    return new Deduction(result, ((Number) r.get(1)).longValue());
+}
+// public enum Result { OK, SOLD_OUT, NOT_LOADED }
+// public record Deduction(Result result, long left) {}
+```
+
+Java 與 Lua 都驗證正整數；負數會讓 DECRBY 變成加庫存，零也不能當作成功購買。
+14.6.3 的測試必須載入這個實際腳本，不能另寫一份 inline 舊版本。
 
 ### 12.4.2 ⚠️ 三種回傳值，不是兩種
 
@@ -428,7 +470,7 @@ redis.opsForValue().setIfAbsent(key(productId), String.valueOf(dbStock));   // S
 
 ### 12.5.2 實測：有回補
 
-30% 的落帳會丟例外（模擬逾時／死鎖／連線斷），資料庫與 Redis 各 100 件，200 個人來搶：
+30% 的落帳會在提交前確定回滾並丟例外（此實驗不模擬提交結果未知），資料庫與 Redis 各 100 件，200 個人來搶：
 
 ```java
 RedisStock.Deduction d = redisStock.deduct(PID, 1);
@@ -436,19 +478,22 @@ if (d.result() != RedisStock.Result.OK) return false;
 try {
     return dao.settleFlaky(PID, "u" + n, 0.3);
 } catch (RuntimeException e) {
-    redisStock.giveBack(PID, 1);          // ⚠️ 補償
+    redisStock.giveBack(PID, 1);          // 此實驗保證提交前回滾；未知提交結果不能照抄
     return false;
 }
 ```
 
 ```
-═══ 12.5.2 落帳會失敗：30% 的 settle 丟例外（逾時／死鎖／連線斷） ═══
+═══ 12.5.2 落帳會失敗：30% 的 settle 在提交前確定回滾 ═══
   資料庫 100 件、Redis 100 件，200 個人來搶
   ✅ 有回補     訂單  74 張｜落帳失敗 31 次｜回補 31 次
                資料庫剩  26｜Redis 剩  26｜差距 0
 ```
 
-**兩邊剛好對上（26 = 26）。**
+以上保留原教材的實驗數據；只有在 settleFlaky 保證提交前回滾時，
+才能把兩邊對上（26 = 26）解讀為回補成功。這不是未知提交結果的驗證。
+提交逾時、連線中斷可能是結果未知，不能一律回補。成品 12.9.1 改以交易完成狀態決定；
+若只知道未知結果，先告警查證，避免 DB 已扣成功卻把 Redis 補回。
 
 ### 12.5.3 ⚠️ 實測：沒有回補
 
@@ -482,53 +527,45 @@ catch (RuntimeException e) {
 
 ```
   ① 立即回補（99% 的情況）── 便宜、即時，但不可靠
-  ② 對帳任務（兜底）      ── 慢，但一定會跑到
+  ② 差異觀測與停止寫入後修復 ── 偵測異常，再查證及重建
 ```
 
-### 12.5.5 對帳任務
+### 12.5.5 對帳先觀測，不在線上直接補差額
+
+DB=100、Redis=99，可能只是有一筆正常預扣尚未落帳。此時補 1，稍後交易成功，
+就變成 DB=99、Redis=100；若兩個實例都補同一個差額，更會重複補。
+因此本課程的排程只偵測與告警，**不以瞬間差額直接 INCRBY／SET**：
 
 ```java
 @Scheduled(fixedDelay = 60_000)
 public void reconcile() {
     for (Long productId : activeProductIds()) {
-        int dbStock    = inventoryDao.stock(productId);         // 真相
+        int dbStock = inventoryDao.stock(productId);
         long redisStock = redis.current(productId);
-
-        if (redisStock < 0) {                                    // ⚠️ NOT_LOADED
+        if (redisStock < 0) {
             log.error("Redis 庫存不存在 productId={}", productId);
-            alert(); continue;
-        }
-        if (dbStock == redisStock) continue;
-
-        if (dbStock > redisStock) {
-            // Redis 少了 → 有預扣沒落帳（12.5.3）→ 補回去
-            log.warn("庫存不一致 productId={} db={} redis={} 差={}",
-                     productId, dbStock, redisStock, dbStock - redisStock);
-            redis.giveBack(productId, (int) (dbStock - redisStock));
-        } else {
-            // ⚠️ Redis 比資料庫多 → 這是危險的方向，會超賣
-            log.error("⚠️ Redis 庫存大於資料庫 productId={} db={} redis={}",
-                      productId, dbStock, redisStock);
-            alert();                       // 不要自動修，先叫人
+            alert();
+        } else if (dbStock != redisStock) {
+            log.warn("庫存快照不同 productId={} db={} redis={}；可能仍有在途預扣，需查證",
+                    productId, dbStock, redisStock);
+            alert();
         }
     }
 }
 ```
 
-> ⚠️ **兩個方向的處理必須不一樣**：
->
-> | | 意思 | 風險 | 怎麼處理 |
-> |---|---|---|---|
-> | **DB > Redis** | 有預扣沒落帳 | **賣不出去**（少賺） | ✅ 可以自動補回 |
-> | **Redis > DB** | ⚠️ 有落帳沒扣 Redis，或有人 `SET` 過 | **會超賣**（賠錢） | ⚠️ **不要自動修，先告警** |
->
-> 📌 **為什麼 `Redis > DB` 不能自動修**：
-> 你不知道差額是「哪裡漏了」還是「有人剛補貨但排程還沒跑」。
-> 自動把 Redis 調低，可能會把剛補的貨吃掉。
->
-> ✅ **但它其實不會造成超賣**——因為 12.2.6 那條 `UPDATE … WHERE stock > 0` 還在。
-> **最壞的情況是「Redis 放行了，資料庫拒絕了」，使用者收到「已售完」。**
-> **這就是為什麼那條 SQL 不能拿掉。**
+**需要修復時，採停止寫入後重建的保守流程：**
+
+1. 關閉所有節點的該活動入口，包含重試、排程、補貨與補償 worker；僅鎖住對帳排程並不夠。
+2. 等所有預扣與 DB 交易結束；未知提交結果要依持久化請求紀錄查證。停用／隔離仍可能恢復的舊 worker，不能只看到本機 in-flight=0 就認定已排空。
+3. 由單一維運操作在沒有任何庫存寫入的條件下，重新讀取 DB 庫存並重建 Redis，再驗證兩邊一致。
+4. 恢復入口與 worker；如果無法證明已停止所有寫入，就維持觀測與人工處理，不自動修正數值。
+
+若產品要求不停機自動修復，需進一步建立含唯一 reservationId 的預扣／結算／取消帳本，
+以狀態轉換保證每筆補償只執行一次，並設計多實例協調。本章沒有實作這個線上協定，
+因此不宣稱排程一定能自動補回所有遺失的預扣。
+
+DB 條件更新仍是最後防線：Redis 偏高會讓更多請求進 DB 被拒絕，不代表可拿掉 DB 防超賣檢查。
 
 ### 12.5.6 ⚠️ 冪等是必要條件，不是加分項
 
@@ -540,28 +577,13 @@ public void reconcile() {
 
 **10 章的冪等鍵在這裡不是選配**：
 
-```java
-public Order seckill(Long productId, String userId, String idempotencyKey) {
-    return idem.execute(idempotencyKey, fingerprint, () -> {     // ① 冪等（10 章）
-        RedisStock.Deduction d = redisStock.deduct(productId, 1); // ② 預扣
-        if (d.result() == NOT_LOADED) throw new ServiceUnavailable();
-        if (d.result() == SOLD_OUT)   throw new SoldOutException();
-        try {
-            return dao.settle(productId, userId);                 // ③ 落帳（＝ 12.2.6 那條 SQL）
-        } catch (RuntimeException e) {
-            redisStock.giveBack(productId, 1);                    // ④ 回補
-            throw e;
-        }
-    });
-}
-```
+成品呼叫方式見 12.9.1：`idem.execute(scope,key,fingerprint,body)` 會先由 DB
+唯一請求鍵仲裁，再讓新的請求進入預扣與落帳；已完成的請求直接重放，不再預扣。
+本例為了讓請求紀錄與訂單一起提交，DB 交易會涵蓋短暫的 Redis 預扣。
+這是持有交易連線時間的取捨，不是 Redis 與 DB 變成同一個原子交易。
 
-> 📌 **順序跟 11 章 11.12 那張圖一致**：
-> **冪等鍵 ──▶ 預扣 ──▶ 交易**。
-> ⚠️ 冪等鍵在最外面，因為「要不要做」這件事必須先決定。
-
-⚠️ **還有一個細節**：10.9.6 說過「業務錯誤要記成 `DONE`」。
-「已售完」是業務錯誤——**要記下來**，不然使用者的每一次重試都會再預扣一次。
+⚠️ 確定售罄用 `Reply` 保存業務拒絕；系統失敗則回滾 DB 請求紀錄。
+預扣是 Redis 的外部副作用，仍需 12.9.1 的回滾補償及 12.5.5 的保守修復。
 
 ---
 
@@ -858,39 +880,64 @@ meter.counter("redis.ops", "key", template(key)).increment();
 
 ### 12.9.1 完整的一條路
 
-```java
-public Order seckill(Long productId, String userId, String idempotencyKey) {
-    // ① 冪等（10 章）——最外層：「要不要做」先決定
-    return idem.execute(idempotencyKey, fingerprint(productId, userId), () -> {
+此 facade **不加 @Transactional**，由 10.9.4 的 DurableIdempotency 開啟交易。
+`orderDao.settle` 必須以 REQUIRED 加入同一交易，不可獨立提交。
+`Reply` 為 `DurableIdempotency.Reply`，HTTP 端照其 status/body 回應。
 
-        // ② 限流（10 章）——每個使用者每秒 1 次，擋住連點
-        if (!limiter.tokenBucket("seckill:" + userId, 1, 1, now(), 1).allowed())
+```java
+public Reply seckill(Long productId, String userId, String idempotencyKey) {
+    // userId 來自已認證身分；租戶由伺服器決定。
+    String scope = IdempotencyService.scope("shop", userId, "seckill:v1");
+    String fp = IdempotencyService.fingerprint("product=" + productId + ";qty=1");
+    return idem.execute(scope, idempotencyKey, fp, () -> {
+        if (!limiter.tokenBucket("seckill:" + userId, 1, 1, 1).allowed())
             throw new TooManyRequestsException();
 
-        // ③ Redis 預扣（12.4）——把 95% 注定失敗的請求擋在資料庫外面
         var d = redisStock.deduct(productId, 1);
         if (d.result() == NOT_LOADED) { alert(); throw new ServiceUnavailableException(); }
-        if (d.result() == SOLD_OUT)   throw new SoldOutException();
+        if (d.result() == SOLD_OUT) return new Reply(409, "{\"error\":\"sold_out\"}");
 
-        // ④ 資料庫落帳（12.2.6）——⚠️ 真正保證不超賣的是這一行
-        try {
-            Order order = orderDao.settle(productId, userId);
-            if (order == null) {                      // 資料庫說沒貨了 → Redis 多算了
-                log.error("Redis 放行但資料庫拒絕 productId={}", productId);
-                throw new SoldOutException();         // ⚠️ 不回補：資料庫本來就沒有
+        compensateOnRollback(productId, 1);        // 成功預扣後，先登記交易完成通知
+        Order order = orderDao.settle(productId, userId);
+        if (order == null) {
+            // DB 確認售罄：保存業務拒絕並提交，不拋到「失敗就回補」的 catch。
+            log.error("Redis 放行但資料庫拒絕 productId={}", productId);
+            alert();
+            return new Reply(409, "{\"error\":\"sold_out\"}");
+        }
+        return new Reply(201, orderJson(order));   // 序列化真實訂單，不另產生假 ID
+    });
+}
+
+private void compensateOnRollback(Long productId, int count) {
+    if (!TransactionSynchronizationManager.isSynchronizationActive())
+        throw new IllegalStateException("stock compensation requires transaction synchronization");
+    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        @Override public void afterCompletion(int status) {
+            if (status == STATUS_ROLLED_BACK) {
+                try {
+                    redisStock.giveBack(productId, count);
+                } catch (RuntimeException compensationFailure) {
+                    log.error("庫存回補失敗，停止直接重試並查證 productId={}", productId, compensationFailure);
+                    alert();                      // 不覆蓋原始業務／提交例外
+                }
+            } else if (status == STATUS_UNKNOWN) {
+                log.error("提交結果未知，不能直接回補 productId={}", productId);
+                alert();
             }
-            return order;
-        } catch (RuntimeException e) {
-            redisStock.giveBack(productId, 1);        // ⑤ 回補（12.5.2）
-            throw e;
         }
     });
 }
 ```
 
-⚠️ **請注意 ④ 裡面那個 `order == null` 的分支不回補**：
-資料庫回 0 代表「資料庫真的沒貨了」，Redis 的那一件本來就是多出來的。
-**回補它等於把一個不存在的庫存放回去，下一個人還是會失敗。**
+`TransactionSynchronizationManager` 與 `TransactionSynchronization` 都在
+`org.springframework.transaction.support`。上述程式需加入 Reply、IdempotencyService 及這兩個 import。
+`orderJson` 是既有 Web JSON 序列化 helper；序列化失敗也會回滾這筆 DB 交易。
+
+只有交易管理器確認 ROLLED_BACK 才立即回補；COMMITTED（包含確定售罄的拒絕回應）不回補。
+Redis 預扣本身逾時時尚未取得確定結果，也不能盲目回補。程序被 kill、回補結果未知、
+Redis 資料遺失等仍走 12.5.5 的查證流程，不能把 afterCompletion 當作可靠訊息佇列。
+`giveBack` 不可對未知結果直接反覆重試；若要可重試的線上補償，必須使用 reservationId 帳本。
 
 ### 12.9.2 設定
 
@@ -899,7 +946,7 @@ lab10:
   seckill:
     prededuct: true               # ⚠️ 12.3.1：預設關閉，流量真的大再打開
     buckets: 1                    # ⚠️ 12.8.4：預設不分桶
-    reconcile-cron: "0 * * * * *" # 12.5.5：每分鐘對帳
+    reconcile-cron: "0 * * * * *" # 12.5.5：每分鐘觀測差異，不直接修庫存
     counters:
       flush-interval: 60s         # 12.6.2
   rank:
@@ -922,7 +969,7 @@ lab10:
 |---|---|---|
 | **`stock.not_loaded`** | **> 0 就告警** | **Redis 庫存不見了**，商品正在「假裝完售」（12.4.2） |
 | **`stock.giveback`** | 佔預扣的比例 > 1% | 資料庫落帳一直失敗（12.5.2） |
-| **`stock.mismatch`（對帳差額）** | **DB > Redis：> 0 就看**；**Redis > DB：立刻告警** | 12.5.5 那兩個方向 |
+| **`stock.mismatch`（快照差額）** | 持續不一致需查證；Redis > DB 優先告警 | 可能是正常在途預扣、遺失／重複補償或錯誤初始化，不能直接修差額（12.5.5） |
 | `stock.sold_out_rate` | —— | 看得出活動什麼時候結束、Redis 擋掉多少 |
 | **`redis.ops` per key template** | 單一模板 > 總量的 30% | **hot key**（12.8.6） |
 
@@ -946,7 +993,8 @@ lab10:
 
 **④ 「樂觀鎖的 catch 抓得到衝突」**
 
-12.2.5：不寫 `em.flush()` 的話，衝突在**交易提交時**才丟出來——**在 `try` 外面**。
+12.2.5：未顯式 flush 時衝突可能在提交才發生；交易方法內 catch 抓不到，
+但代理外的呼叫端 catch 包含提交，仍能處理。每次重試必須使用新交易。
 
 **⑤ 「秒殺一定要上 Redis 預扣」**
 
@@ -977,7 +1025,8 @@ lab10:
 
 **⑪ 「對帳發現不一致就自動修」**
 
-12.5.5：`DB > Redis` 可以自動補；⚠️ **`Redis > DB` 不可以自動修**，要先告警。
+12.5.5：兩個方向都先查證。`DB > Redis` 也可能是正常在途預扣，不能直接補；
+多實例會重複修同一個差額。停止所有寫入並排空／查證後才重建。
 
 **⑫ 「把 key 拆成 10 個桶可以提高 Redis 吞吐量」**
 
@@ -1005,7 +1054,9 @@ LFU 計數器是對數的、會衰減、上限 255。**要埋點在應用端。*
 **這一章只有一句話：**
 
 > 📌 **能用資料庫一條 SQL 解決的，就不要用 Redis。**
-> **Redis 進來的理由只有一個：讓不該碰資料庫的請求碰不到資料庫。**
+> **Redis 預扣用來減少業務庫存列的競爭，不能取代資料庫條件更新。**
+成品另外使用 DB 唯一請求紀錄保證冪等，因此每個新請求仍會進入短交易；
+前述單獨預扣實驗的「DB QPS 減少倍數」不能直接套用到包含此紀錄的完整流程。
 
 ```
        2000 個請求
@@ -1015,7 +1066,7 @@ LFU 計數器是對數的、會衰減、上限 255。**要埋點在應用端。*
     ├────────────────┤
     │ ② 限流（10章）  │  ← 連點不會變成 10 個請求
     ├────────────────┤
-    │ ③ Redis 預扣    │  ← ⚠️ 過濾器：擋掉 95%，但它不是帳本
+    │ ③ Redis 預扣    │  ← 過濾庫存競爭；成品已在 DB 冪等交易內
     ├────────────────┤
     │ ④ UPDATE…      │  ← ✅ 帳本：真正保證不超賣的那一行
     │   WHERE stock>0│
@@ -1030,7 +1081,7 @@ LFU 計數器是對數的、會衰減、上限 255。**要埋點在應用端。*
 |---|---|---|
 | ① 冪等 | 重複訂單 | ⚠️ 對帳時才會 |
 | ② 限流 | 資料庫被連點打爆 | ✅ 會（延遲上升） |
-| ③ 預扣 | 資料庫 QPS × 20 | ✅ 會 |
+| ③ 預扣 | 更多請求競爭業務庫存列；完整流程仍有 DB 請求紀錄成本 | ✅ 會 |
 | **④ 條件更新** | **超賣** | ⚠️ **出貨時才會** |
 | **⑤ 回補／對帳** | **賣不出去的庫存** | ❌ **只有營運會發現** |
 
@@ -1038,13 +1089,13 @@ LFU 計數器是對數的、會衰減、上限 255。**要埋點在應用端。*
 
 - [ ] 從零寫出四種資料庫防超賣方案，並說出各自的耗時與資料庫查詢次數。
 - [ ] 說得出為什麼「包在 `@Transactional` 裡」不能防超賣。
-- [ ] 說得出樂觀鎖在秒殺場景下的重試次數，以及 `em.flush()` 為什麼不能省。
+- [ ] 說得出樂觀鎖的重試代價，並分清交易方法內 catch、代理外 catch 與顯式 flush 的作用。
 - [ ] ⚠️ 說得出為什麼分散式鎖是六種方案裡最慢的，以及什麼時候它才對。
 - [ ] 說得出 Redis 預扣買到的**不是**正確性，而是什麼。
 - [ ] 手寫 `deduct-stock.lua`，並解釋為什麼要有**三種**回傳值。
 - [ ] 說得出補貨為什麼不能用 `SET`。
 - [ ] 說得出「沒有回補」的症狀，以及為什麼它不會出現在任何錯誤率圖表上。
-- [ ] 說得出對帳時 `DB > Redis` 與 `Redis > DB` 為什麼要不同處理。
+- [ ] 說得出瞬間庫存差額為何不能直接回補，以及停止寫入、排空與查證的修復條件。
 - [ ] 算得出 10 萬個成員的 ZSet 要多少記憶體，以及 `ZREVRANGE 0 9999` 的成本。
 - [ ] ⚠️ 說得出「把 key 分桶」在單機 Redis 上為什麼買不到吞吐量。
 - [ ] 說得出分桶會造成什麼新問題，以及那段 Lua 怎麼修它。
@@ -1071,7 +1122,9 @@ LFU 計數器是對數的、會衰減、上限 255。**要埋點在應用端。*
 **練習六（進階，40 分鐘）**：實作 12.5.5 的對帳任務，然後：
 ① 手動用 `redis-cli DECRBY stock:1 10` 製造 `DB > Redis`；
 ② 手動用 `INCRBY` 製造 `Redis > DB`；
-③ 確認兩個方向的處理不一樣，而且第二種有告警。
+③ 確認兩個方向都只觀測與告警，Redis 數值沒有被排程修改；
+④ 再模擬一筆尚未落帳的正常預扣，確認排程不把它補回；
+⑤ 寫出停止所有節點寫入、排空與查證後的重建步驟。
 
 **練習七（進階，40 分鐘）**：重現 12.8.4 的分桶飢餓，然後：
 ① 把桶數從 1 一路調到 50，畫出「賣不掉的庫存比例」曲線；

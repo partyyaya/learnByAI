@@ -1,0 +1,1 @@
+package example.shop.order.infrastructure; import java.util.Optional; import example.shop.order.domain.Order; import org.springframework.data.domain.*; public interface OrderRepository { void save(Order order);Optional<Order> findById(String id);Page<OrderSummary> search(OrderSearchCriteria criteria,Pageable pageable); }

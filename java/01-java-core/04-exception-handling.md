@@ -2163,7 +2163,7 @@ public enum Priority {
         if (input == null || input.isBlank()) {
             return MEDIUM;
         }
-        String normalized = input.strip().toUpperCase();
+        String normalized = input.strip().toUpperCase(java.util.Locale.ROOT);
         for (Priority p : values()) {
             if (p.name().equals(normalized)) return p;
         }
@@ -2433,7 +2433,7 @@ public class TodoCli {
 
     private String dispatch(String command) {
         String[] parts = command.strip().split("\\s+", 3);
-        String verb = parts[0].toLowerCase();
+        String verb = parts[0].toLowerCase(java.util.Locale.ROOT);
 
         return switch (verb) {
             case "add" -> {

@@ -11,25 +11,25 @@ const rateLimit = require('express-rate-limit');
 const { v4: uuid } = require('uuid');
 
 const db = require('./db');
+const { detectImageType } = require('./lib/image-format');
 const {
-  HEADER_LEN, encryptHeader, wrapKey, unwrapKey, hmacSign, hmacVerify,
+  computeHeaderLen, encryptHeader, deriveKey, wrapKey, unwrapKey, hmacSign, hmacVerify,
 } = require('./lib/crypto-util');
 const {
-  hashPassword, verifyPassword, signJwt, authMiddleware, JWT_SECRET,
+  hashPassword, verifyPassword, signJwt, authMiddleware,
 } = require('./lib/auth');
 
-// === Master Key 檢查 ===
-const MASTER_KEY_HEX = process.env.MASTER_KEY
-  || '0000000000000000000000000000000000000000000000000000000000000000';
-const MASTER_KEY = Buffer.from(MASTER_KEY_HEX, 'hex');
+// === Master Key：沒設就不啟動 ===
+const MASTER_KEY = Buffer.from(process.env.MASTER_KEY || '', 'hex');
 if (MASTER_KEY.length !== 32) {
-  throw new Error('MASTER_KEY must be 64 hex chars (32 bytes)');
+  throw new Error('MASTER_KEY is required: 64 hex chars (32 bytes)（啟動方式見 backend/README.md）');
 }
-if (MASTER_KEY_HEX === '00'.repeat(32)) {
-  console.warn('[WARN] using default MASTER_KEY — demo only!');
-}
+// 同一把 master key 衍生出兩把用途不同的 key
+const KEY_WRAP_KEY = deriveKey(MASTER_KEY, 'image-key-wrap');   // 包裝每張圖的 key
+const URL_SIGN_KEY = deriveKey(MASTER_KEY, 'key-url-sign');     // 簽 key URL
 
 const ENC_DIR = path.join(__dirname, 'data', 'encrypted');
+const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 const app = express();
 app.use(cors());
@@ -44,29 +44,51 @@ if (fs.existsSync(FRONTEND)) {
 
 // === Auth ===
 
-app.post('/api/register', (req, res) => {
+// 登入、註冊依 IP 限流，擋暴力猜密碼
+const authLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, standardHeaders: true });
+
+function readCredentials(req) {
   const { username, password } = req.body || {};
-  if (!username || !password) {
-    return res.status(400).json({ error: 'missing fields' });
+  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+    return null;
   }
+  return { username, password };
+}
+
+app.post('/api/register', authLimiter, (req, res) => {
+  const cred = readCredentials(req);
+  if (!cred) return res.status(400).json({ error: 'missing fields' });
   const id = uuid();
   try {
     db.prepare(
       'INSERT INTO users (id, username, passwordHash, createdAt) VALUES (?,?,?,?)'
-    ).run(id, username, hashPassword(password), Date.now());
+    ).run(id, cred.username, hashPassword(cred.password), Date.now());
   } catch {
     return res.status(409).json({ error: 'username taken' });
   }
-  res.json({ token: signJwt({ userId: id, username }) });
+  res.json({ token: signJwt({ userId: id, username: cred.username }) });
 });
 
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body || {};
-  const u = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-  if (!u || !verifyPassword(password, u.passwordHash)) {
+app.post('/api/login', authLimiter, (req, res) => {
+  const cred = readCredentials(req);
+  if (!cred) return res.status(400).json({ error: 'missing fields' });
+  const u = db.prepare('SELECT * FROM users WHERE username = ?').get(cred.username);
+  if (!u || !verifyPassword(cred.password, u.passwordHash)) {
     return res.status(401).json({ error: 'bad credentials' });
   }
   res.json({ token: signJwt({ userId: u.id, username: u.username }) });
+});
+
+// === Friends：把對方加為好友後，對方可以看你 visibility = friends 的圖 ===
+
+app.post('/api/friends', authMiddleware, (req, res) => {
+  const { username } = req.body || {};
+  if (typeof username !== 'string' || !username) return res.status(400).json({ error: 'missing username' });
+  const friend = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
+  if (!friend) return res.status(404).json({ error: 'no such user' });
+  if (friend.id === req.user.userId) return res.status(400).json({ error: 'cannot add yourself' });
+  db.prepare('INSERT OR IGNORE INTO friends (a, b) VALUES (?, ?)').run(req.user.userId, friend.id);
+  res.json({ ok: true });
 });
 
 // === Upload (Chapter 03 加密 + Chapter 04 wrap key) ===
@@ -79,6 +101,10 @@ const upload = multer({
 app.post('/api/upload', authMiddleware, upload.single('image'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'no file' });
 
+  // 用 magic number 判斷格式，不信任瀏覽器送來的 mimetype
+  const mime = detectImageType(req.file.buffer);
+  if (!mime) return res.status(415).json({ error: 'not a supported image' });
+
   const visibility = ['public', 'friends', 'private'].includes(req.body.visibility)
     ? req.body.visibility
     : 'private';
@@ -86,7 +112,8 @@ app.post('/api/upload', authMiddleware, upload.single('image'), (req, res) => {
   const id = uuid();
   const imgKey = crypto.randomBytes(32);
   const iv = crypto.randomBytes(16);
-  const encrypted = encryptHeader(req.file.buffer, imgKey, iv);
+  const headerLen = computeHeaderLen(req.file.buffer);
+  const encrypted = encryptHeader(req.file.buffer, imgKey, iv, headerLen);
 
   fs.writeFileSync(path.join(ENC_DIR, `${id}.enc`), encrypted);
 
@@ -95,9 +122,9 @@ app.post('/api/upload', authMiddleware, upload.single('image'), (req, res) => {
       (id, ownerId, mime, headerLen, ivHex, wrappedKey, visibility, createdAt)
     VALUES (?,?,?,?,?,?,?,?)
   `).run(
-    id, req.user.userId, req.file.mimetype, HEADER_LEN,
+    id, req.user.userId, mime, headerLen,
     iv.toString('hex'),
-    wrapKey(imgKey.toString('hex'), MASTER_KEY),
+    wrapKey(imgKey, KEY_WRAP_KEY, id),
     visibility, Date.now()
   );
 
@@ -129,14 +156,22 @@ function permitted(img, userId) {
   return false;
 }
 
-app.get('/api/image/:id/sign', authMiddleware, (req, res) => {
+// 依「帳號」限流：已登入的爬蟲換 IP 也沒用
+const signLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  keyGenerator: (req) => req.user.userId,
+});
+
+app.get('/api/image/:id/sign', authMiddleware, signLimiter, (req, res) => {
   const img = db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
   if (!img) return res.status(404).end();
   if (!permitted(img, req.user.userId)) return res.status(403).json({ error: 'forbidden' });
 
   const exp = Date.now() + 60 * 1000;
   const payload = `${img.id}|${req.user.userId}|${exp}`;
-  const sig = hmacSign(JWT_SECRET, payload);
+  const sig = hmacSign(URL_SIGN_KEY, payload);
 
   res.json({
     keyUrl: `/api/image/${img.id}/key?u=${req.user.userId}&exp=${exp}&sig=${sig}`,
@@ -146,7 +181,7 @@ app.get('/api/image/:id/sign', authMiddleware, (req, res) => {
 
 // === Key API ===
 
-const keyLimiter = rateLimit({ windowMs: 60 * 1000, max: 60, standardHeaders: true });
+const keyLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true });
 
 app.get('/api/image/:id/key', keyLimiter, (req, res) => {
   const { u, exp, sig } = req.query;
@@ -154,16 +189,17 @@ app.get('/api/image/:id/key', keyLimiter, (req, res) => {
   if (Date.now() > Number(exp)) return res.status(403).json({ error: 'expired' });
 
   const payload = `${req.params.id}|${u}|${exp}`;
-  if (!hmacVerify(JWT_SECRET, payload, String(sig))) {
+  if (!hmacVerify(URL_SIGN_KEY, payload, sig)) {
     return res.status(403).json({ error: 'bad sig' });
   }
 
   const img = db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
   if (!img) return res.status(404).end();
 
-  const imgKeyHex = unwrapKey(img.wrappedKey, MASTER_KEY);
+  const imgKey = unwrapKey(img.wrappedKey, KEY_WRAP_KEY, img.id);
+  res.set('Cache-Control', 'no-store');   // key 不要留在任何快取裡
   res.json({
-    keyHex: imgKeyHex,
+    keyHex: imgKey.toString('hex'),
     ivHex: img.ivHex,
     headerLen: img.headerLen,
     mime: img.mime,
@@ -172,9 +208,11 @@ app.get('/api/image/:id/key', keyLimiter, (req, res) => {
 
 // === Encrypted asset ===
 
-const encLimiter = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true });
+const encLimiter = rateLimit({ windowMs: 60 * 1000, max: 240, standardHeaders: true });
 
 app.get('/api/image/:id.enc', encLimiter, (req, res) => {
+  // 只接受 UUID，避免 ..%2F 之類的路徑穿越
+  if (!ID_RE.test(req.params.id)) return res.status(404).end();
   const file = path.join(ENC_DIR, `${req.params.id}.enc`);
   if (!fs.existsSync(file)) return res.status(404).end();
   res.set('Content-Type', 'application/octet-stream');
@@ -185,6 +223,5 @@ app.get('/api/image/:id.enc', encLimiter, (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`[Image Vault] http://localhost:${PORT}`);
-  console.log(`[Image Vault] open ${FRONTEND}/login.html via the URL above`);
+  console.log(`[Image Vault] http://localhost:${PORT}/login.html`);
 });

@@ -2094,14 +2094,16 @@ public ProductView findById(String id) { ... }
 public <T> T get(Object key, Callable<T> valueLoader) {
     ValueWrapper result = get(key);
     if (result != null) { return (T) result.get(); }
-    // ⚠️ 這裡有一個 JVM 內的鎖（synchronized on a per-key lock）
+    // ⚠️ 這裡有一個 JVM 內的鎖（每個 RedisCache 一把 ReentrantLock，非 per-key）
     //    但那個鎖【不跨 JVM】
     return (T) getSynchronized(key, valueLoader);
 }
 ```
 
-**於是 Redis 上的 `sync = true` 等於「每個 JVM 一次載入」** ——
-與限制 1 是同一件事。
+**Spring Data Redis 3.2.5 的這把鎖以整個 RedisCache 為範圍**：
+同一個 JVM 內，不同 key 的 miss 載入也會互相等待，不能描述為每個 key 各一把鎖。
+它仍不跨 JVM；每個實例各自載入的問題依然存在。此結論有版本限制，升級需重驗。
+不同 key 的效能與熱 key 的跨實例保護，應分開量測。
 
 #### 真正跨 JVM 的擊穿保護：分散式鎖
 
@@ -2812,6 +2814,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.jsontype.BasicPolymorphicTypeValidator;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
+import org.springframework.cache.support.NullValue;
 
 /**
  * ★★ 快取專用的 ObjectMapper。
@@ -2836,12 +2839,13 @@ public final class CacheObjectMappers {
         // ★ 型別白名單 —— activateDefaultTyping 沒有它是一個反序列化漏洞
         var typeValidator = BasicPolymorphicTypeValidator.builder()
                 .allowIfSubType("example.shop.")
+                .allowIfSubType(NullValue.class) // 只放行 Spring 的空值 marker，不開放整個 org.springframework
                 .allowIfSubType("java.util.")
                 .allowIfSubType("java.time.")
                 .allowIfSubType("java.math.")
                 .build();
 
-        return new ObjectMapper()
+        ObjectMapper mapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())                        // 5.8.1
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)      // 時間用 ISO-8601
                 // ★ 5.8.3：不要把 isZero() 這種衍生述詞序列化出來
@@ -2850,6 +2854,9 @@ public final class CacheObjectMappers {
                 .activateDefaultTyping(typeValidator,
                                        ObjectMapper.DefaultTyping.EVERYTHING,
                                        JsonTypeInfo.As.PROPERTY);
+        // 自訂 mapper 的建構子不會替我們註冊 NullValue serializer。
+        GenericJackson2JsonRedisSerializer.registerNullValueSerializer(mapper, "@class");
+        return mapper;
     }
 
     public static GenericJackson2JsonRedisSerializer serializer() {
@@ -3241,8 +3248,8 @@ public Article readAndCount(String id) {
  */
 @ArchTest
 static final ArchRule Cacheable方法不可呼叫寫入交易 =
-        noMethods().that().areAnnotatedWith(Cacheable.class)
-                   .should(new ArchCondition<JavaMethod>("呼叫寫入交易的方法") {
+        methods().that().areAnnotatedWith(Cacheable.class)
+                   .should(new ArchCondition<JavaMethod>("不呼叫寫入交易的方法") {
                        @Override
                        public void check(JavaMethod m, ConditionEvents events) {
                            m.getMethodCallsFromSelf().stream()

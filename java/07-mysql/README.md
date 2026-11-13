@@ -60,3 +60,14 @@
 一份訂單系統的**完整 MySQL schema + Flyway 遷移腳本**，
 含索引設計說明、`EXPLAIN` 前後對照的優化實驗、一份「慢查詢排查 SOP」，
 以及一份**演練過的災難復原文件**（含實測的 RTO）與讀寫分離的實作。
+
+## 可重跑的回歸驗證
+
+[`verification/README.md`](./verification/README.md) 說明如何用 Docker 抽取並執行本課程的 Java、SQL 與維運腳本，
+涵蓋雙資料庫遷移、庫存／Outbox、索引守門、GTID 讀己之寫，以及備份還原的成功與失敗分支。
+
+```bash
+bash java/07-mysql/verification/run.sh
+```
+
+命令從儲存庫根目錄執行，需要 Docker、Bash 與 Python 3；測試結束會清理建立的資料庫容器。

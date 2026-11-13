@@ -1766,7 +1766,7 @@ order.setCustomer(customers.findById(order.getCustomer().getId()).get());
 > **這一章給你的 `Pc.isDirty` 就是為了讓你能三行程式碼確認一次，而不是相信推論。**
 
 **而 01 章 1.10.1 那個 `BigDecimal` 的坑是真的**，只是它不在髒檢查這一層：
-`precision`/`scale` 跟 DB 不一致時，**寫進去的值會被靜默四捨五入**。
+`precision`/`scale` 註解與 DB 不一致，不會自行替 BigDecimal 捨入；寫入值是否捨入取決於實際 DB 欄位的小數位數（01 章 1.10.1）。
 兩件事不要混在一起。
 
 ### 3.4.6 實測：改一個欄位，`UPDATE` 幾個欄位

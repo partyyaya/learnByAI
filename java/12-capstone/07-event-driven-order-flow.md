@@ -364,7 +364,10 @@ mvn test -Pexperiments -Dtest=H3RefundResponseLostTest
 | `V13__inventory_reservation_counted.sql` | `inventory_reservations.counted BOOLEAN NOT NULL DEFAULT TRUE, ALGORITHM=INSTANT`（7.6.1） |
 | `V14__shared_outbox_claim_lease.sql` | `outbox_events.claimed_until DATETIME(3) NULL, ALGORITHM=INSTANT`：relay 的租約（7.4.2、7.9.2） |
 
-`outbox_events`、`processed_messages`、`notifications`、`refunds` 都是第 02 章就建好的（V6～V8）；除了 V14 給 `outbox_events` 加的租約欄位 `claimed_until`（7.9.2），欄位一個都不用改 —— 第 02 章 2.3 照著 0.3.4 的「模組與資料歸屬」把它們先建好，這一章只是第一次用它們。
+`outbox_events`、`processed_messages`、`notifications`、`refunds` 都是第 02 章建好的（V6～V8）。
+V14 給 outbox_events 加上 relay 的 claimed_until（7.9.2）；修訂版 V7 已含通知認領用的
+claimed_until／claim_token（7.7.2），舊庫另依 09 章追加遷移。其餘欄位不必改。
+第 02 章 2.3 依 0.3.4 的模組歸屬先建立這些表，這一章開始使用它們。
 
 模組依賴沒有變（`ModuleBoundaryTest` 的 6 條規則沒有改）：
 
@@ -613,8 +616,18 @@ JSON 解析失敗                        → 直接進死信：重試也不會�
 
 `RabbitConsumers` 的完整內容 —— 重試次數怎麼記在 `shop-attempt` header 上（`parse()` 讀、`copy()` 加一）、`settle()` 怎麼「先轉送、等 confirm、再 ack」、container 的設定 —— 在 7.13.1；消費者收到的 `Event` record 也在那裡。
 
-> 📌 **這條 at-least-once 有一段不歸我們管：重試佇列「到期 → 回原佇列」那一跳。** 消費者把訊息送進 `shop.retry.{1s…16s}` 時等了 confirm；但 TTL 到期之後，訊息經由 dead-letter 送到 `shop.retry.return`、再回到原佇列，是 **broker 自己轉送**的，不經過任何 publisher confirm。RabbitMQ 的 dead-lettering 預設是 at-most-once：轉送的那一刻 broker 出事，或者 headers exchange 找不到任何一條綁定（例如消費者改了名字，新佇列的綁定條件對不上舊訊息上的 `shop-target`），那一則就**無聲地**沒了 —— 不會進死信佇列，消費者那一側也沒有任何日誌。
-> quorum 佇列可以把這一跳改成 at-least-once（佇列參數 `x-dead-letter-strategy: at-least-once`，前提是那個佇列設了 `overflow: reject-publish`）。這一章沒有改：重試佇列沒有設 `overflow`，這一跳仍然是 at-most-once。要發現它掉了東西，只能拿 `shop.events.retried` 跟後續的處理結果對帳。
+TTL 到期回原佇列是 broker 自己的 dead-lettering，不受原本 publisher confirm 保護。
+修訂版在 retry quorum queue 同時設定 `x-dead-letter-strategy=at-least-once`、
+`overflow=reject-publish` 與長度上限；RabbitMQ 3.13 的 stream_queue feature flag 也須啟用。
+回送 exchange／binding 暫時消失時，訊息留在來源等修復，不會默默清空。
+內部重試可能產生副本，EventDispatcher 仍要冪等；來源保留變多也可能拒收新的 retry，
+此時 `settle()` 必須保留原訊息，不能 ACK。
+
+已有舊佇列不能直接改 immutable 宣告參數。請先在新 vhost 驗證，或暫停流入、
+等待舊 retry 排乾後切換版本化 queue／binding；也可由維運為未硬編碼參數的舊 quorum queue
+套用一致的 policy。不能用刪除含訊息 queue 的方式升級。
+[verification](./verification/README.md) 會移除回送 binding，驗證 TTL 過後來源仍保留訊息，
+修復 binding 後可送回單一原佇列；測試縮短 broker 內部重試間隔，不改課文預設。
 
 ### 7.5.2 冪等：`processed_messages` 跟效果同一個交易
 
@@ -663,6 +676,9 @@ for (Duration delay : props.messaging().retryDelays()) {             // 1s, 2s, 
     Queue q = QueueBuilder.durable(retryQueue(delay)).quorum()
             .ttl((int) delay.toMillis())
             .deadLetterExchange(RETRY_RETURN)                       // 沒有 dead-letter routing key：靠 headers 回去
+            .overflow(QueueBuilder.Overflow.rejectPublish)
+            .maxLength(MAX_LENGTH)
+            .withArgument("x-dead-letter-strategy", "at-least-once")
             .build();
     d.add(q);
     d.add(BindingBuilder.bind(q).to(retry).with(tier(delay)));
@@ -1118,7 +1134,7 @@ if (released != null && released > 0)
 
 `HotStockFlowTest.cancelAndRestockAddBack` 跟著改了：取消之後 Redis **還是** 2（加回是事件，commit 之後才發生），交付事件之後才是 3。
 
-還沒做的一個：**`ProductCache` 的 `pendingEvictions`（6.4.2）** 一樣只在記憶體裡。它的後果是「舊價格留到 TTL（10 分鐘多）」，不會賣錯東西，這一章沒有把它換成事件（練習一）。
+**`ProductCache` 的 `pendingEvictions`（6.4.2）** 仍只在記憶體裡，但修訂版已有世代比對與最長 1 秒 TTL；重啟遺失標記不再讓舊價格留 10 分鐘。這裡沒有把修復改成持久事件，練習一可比較兩者的成本與故障界線。
 
 ### 7.6.6 搶購壓測：第二次嘗試
 
@@ -1367,101 +1383,26 @@ AC-1 說「本專題以寫入 `notifications` 表 + 日誌模擬寄信」：`Sim
 0.5.4：退款 {status=SUCCEEDED, attempts=1, provider_refund_id=RF1541227272}；金流實際退款 1 次；買家的通知 [ORDER_PLACED, ORDER_PAID, ORDER_CANCELLED, REFUND_SUCCEEDED]；賣家 [NEW_ORDER]
 ```
 
-### 7.7.2 寄信沒有交易：dedup_key、認領、與擋不住的那一次
+### 7.7.2 寄信沒有分散式交易：完成狀態、租約與 token
 
-寄信不在 MySQL 裡，`processed_messages` 保護不了它（7.2.3）。這個消費者是 `transactional() = false`，冪等靠 `notifications` 自己：
+只用 `attempts=n` CAS 不足：A 把 0 改成 1 後正在寄，B 可以讀到 1、再改成 2，也去寄。
+修訂版的完整 NotificationHandler 已放在 7.13.1，包含 `CLAIM_LEASE`、`InFlight` 定義。
+`notifications` 的修訂版 V7 DDL（2.3）提供 claimed_until、claim_token；
+若使用已套用的舊版 migrations，請保留原檔，至 09 章用新增的 V26 做升級，不能改既有 checksum。
 
-```java
-for (Target t : targets(e)) {
-    String dedup = e.eventId() + ":" + t.type();
-    jdbc.update("""
-            INSERT INTO notifications (user_id, type, dedup_key, payload) VALUES (?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE id = id""", t.userId(), t.type(), dedup, payload(e, t));          // ① V7 的 uk_notifications_dedup
-    Map<String, Object> row = jdbc.queryForMap("SELECT id, status, attempts FROM notifications WHERE dedup_key = ?", dedup);
-    if ("SENT".equals(row.get("status"))) continue;                // AC-3：已經寄過了
-    long id = ((Number) row.get("id")).longValue();
-    int attempts = ((Number) row.get("attempts")).intValue();
-    int claimed = jdbc.update("UPDATE notifications SET attempts = attempts + 1 WHERE id = ? AND status <> 'SENT' AND attempts = ?", id, attempts);
-    if (claimed == 0) continue;                                     // ② 同一則訊息的另一份正在寄（或剛寄完）
-    mailer.send(t.userId(), t.type(), dedup, t.text());             // 失敗 → 例外 → 重試階梯（AC-4）
-    jdbc.update("UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP(3) WHERE id = ?", id);   // ③
-}
-```
+每次認領用條件式 UPDATE，蓋 10 秒租約及新的 UUID token。認領不到先重讀 SENT；
+尚未完成就拋 InFlight，走有限重試，不能正常回傳 ACK 掉唯一剩下的副本。
+寄失敗只清除自己的 token；成功也只有持有同一 token 才能標 SENT。
+舊 worker 即使暫停後醒來，也不能清除或完成另一個 worker 的新租約。
 
-（`targets()` —— 每一種事件寄給誰、寄什麼 —— 與 `onDeadLetter()` 在 7.13.1 的完整 `NotificationHandler` 裡；`SimulatedMailer` 也在那裡。）
+租約須比供應商的連線／讀取逾時長，且重試階梯總長要涵蓋租約。
+課文預設 10 秒、小於 31 秒階梯；測試的短階梯不代表能容忍相同的行程停頓。
+這仍不是 SMTP exactly-once：供應商已寄出、標 SENT 前崩潰，或停頓超過租約，仍可能重寄。
+真正要去除這類外部副作用，須由供應商持久支援相同 idempotency key。
 
-- **① `dedup_key` = eventId + 通知類型**：第 02 章 V7 就有的唯一索引（「同一事件只通知一次，US-NTF-1 AC-3」）。同一個事件、同一種通知，只會有一列。
-- **② 認領**：`attempts` 從 n 改成 n + 1，條件是「還是 n」—— 同一則訊息同時被兩條執行緒處理（Q10 就是這樣送的），只有一條會成功認領，另一條什麼都不做。這是 0.5.5 的條件式 UPDATE，換了一張表。
-- **③ 寄完才標 `SENT`。**
-
-**擋不住的一種：寄出去了、③ 之前行程死掉。** 重送時 `status` 還是 `PENDING`，再認領、再寄一次 —— 買家收到兩封。SMTP 沒有冪等鍵，這個窗只能縮小（③ 緊跟在寄信之後），不能消失。這是 at-least-once 在「外部效果沒有冪等鍵」時的最後一塊，0.4.8 的 AC-3「只收到一次」在這個窗裡不成立；它要的是「行程剛好死在寄信與一句 UPDATE 之間」。這一章沒有量它發生的頻率（練習四）。
-
-Q10 的通知那一半（7.11.2）：同一則 `order.placed` 同時送 10 次 → `notifications` 1 列、`attempts = 1`。
-
-> ⚠️ **② 的「只有一條會成功認領」，在一個順序下不成立。** 驗收 Q10 偶爾會紅：`notification_attempts=2`。
->
-> 「`attempts` 還是我讀到的那個 n」擋得住**兩條讀到同一個 n**，擋不住這一種：
->
-> - A 讀到 0，認領（0 → 1），開始寄。
-> - B 在 A 認領**之後**、標 `SENT` **之前**才讀：讀到 1、`status` 還是 `PENDING`。它用「還是 1」認領（1 → 2）—— 成功，也寄。
->
-> 買家收到兩封，而且兩邊都沒有死掉。`NotificationClaimTest`（`notification.internal`）把 A 停在那個窗裡：它的 mailer 第一封信停在 `send()` 裡，等測試放行；B 在這時候用同一個事件呼叫 `handle()`。修正前：
->
-> ```
-> 7.7.2 ②：A 停在寄信裡時 B 來了 → B 沒有例外，那時 {status=SENT, attempts=2}；A 寄完、B 重試 → 沒有例外；寄了 2 封，{status=SENT, attempts=2}
-> [ERROR]   NotificationClaimTest.secondCopyWhileTheFirstIsSending:88 
-> Expected size: 1 but was: 2 in:
-> ```
->
-> **只看 `attempts`，分不出「有人正在寄」與「上一次寄失敗了」。** 後者必須能再認領 —— AC-4 的重試就是這樣寄第 2～6 次的。分得出來的是一個**租約**，跟 7.4.2 的 relay 同一個做法（V14 的 `outbox_events.claimed_until`）。下面的 V26 接在第 09 章最後一個 migration（V25）之後：
->
-> ```sql
-> -- V26__notification_claim_lease.sql
-> ALTER TABLE notifications ADD COLUMN claimed_until DATETIME(3) NULL, ALGORITHM=INSTANT;
-> ```
->
-> ```diff
-> -            Map<String, Object> row = jdbc.queryForMap("SELECT id, status, attempts FROM notifications WHERE dedup_key = ?", dedup);
-> +            Map<String, Object> row = jdbc.queryForMap("SELECT id, status FROM notifications WHERE dedup_key = ?", dedup);
->              if ("SENT".equals(row.get("status"))) continue;                // AC-3：已經寄過了
->              long id = ((Number) row.get("id")).longValue();
-> -            int attempts = ((Number) row.get("attempts")).intValue();
-> -            int claimed = jdbc.update("UPDATE notifications SET attempts = attempts + 1 WHERE id = ? AND status <> 'SENT' AND attempts = ?", id, attempts);
-> -            if (claimed == 0) continue;                                     // 同一則訊息的另一份正在寄（或剛寄完）
-> -            mailer.send(t.userId(), t.type(), dedup, t.text());             // 失敗 → 例外 → 重試階梯（AC-4）
-> +            int claimed = jdbc.update("""
-> +                    UPDATE notifications SET attempts = attempts + 1, claimed_until = CURRENT_TIMESTAMP(3) + INTERVAL ? MICROSECOND
-> +                     WHERE id = ? AND status <> 'SENT' AND (claimed_until IS NULL OR claimed_until < CURRENT_TIMESTAMP(3))""",
-> +                    CLAIM_LEASE.toMillis() * 1000, id);
-> +            if (claimed == 0) throw new InFlight(dedup);                    // 另一份正在寄（或剛寄完）：重試階梯的下一級再來看
-> +            try {
-> +                mailer.send(t.userId(), t.type(), dedup, t.text());         // 失敗 → 例外 → 重試階梯（AC-4）
-> +            } catch (RuntimeException ex) {
-> +                jdbc.update("UPDATE notifications SET claimed_until = NULL WHERE id = ?", id);   // 放掉租約：下一級重試不用等它過期
-> +                throw ex;
-> +            }
->              jdbc.update("UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP(3) WHERE id = ?", id);
-> ```
->
-> 三個決定：
->
-> - **認領不到，丟例外，不是 `continue`。** 認領不到就跳過的話，那一份訊息會被 ack 掉。如果 A 寄到一半行程死了，A 那一份會被 broker 重新投遞；它一進來就撞上 A 還沒過期的租約，跳過、ack，**這封信就永遠不會寄了**。丟例外（`InFlight`）讓它走 7.5.3 的重試階梯，晚一點再看：那時候不是 `SENT`（跳過），就是租約過期了（再認領）。
-> - **寄失敗要放掉租約。** 不然 AC-4 的下一級重試（正式環境 1 秒後）會撞上自己剛蓋的租約。
-> - **租約 10 秒**（`CLAIM_LEASE`）：要比寄一封信的逾時長（不然還在寄，另一份就認領得到），比重試階梯的總長短（1 + 2 + 4 + 8 + 16 = 31 秒；不然行程死掉之後，另一份的重試用完、進了死信，租約都還沒過期）。測試環境的階梯縮短成 3.1 秒，在那裡行程死在寄信裡的話會進死信 —— 沒有測試走這條路。
->
-> 修正之後，同一個測試，加上兩個新的（行程死掉留下的租約；寄失敗放掉租約）：
->
-> ```
-> 7.7.2 ②：A 停在寄信裡時 B 來了 → B com.example.shop.notification.internal.NotificationHandler$InFlight: 通知 e5995fc8-a979-4fbe-a73f-74625180d661:ORDER_PLACED 正在由另一份投遞寄送（租約還沒過期），那時 {status=PENDING, attempts=1}；A 寄完、B 重試 → 沒有例外；寄了 1 封，{status=SENT, attempts=1}
-> 7.7.2：第一次寄失敗 → com.example.shop.notification.internal.SimulatedMailer$MailException: SMTP 暫時失敗，{status=PENDING, attempts=1, claimed_until=null}；馬上重試 → 沒有例外，寄了 1 封，{status=SENT, attempts=2}
-> 7.7.2：死掉的行程留下租約 → 租約內重送 com.example.shop.notification.internal.NotificationHandler$InFlight: 通知 bee822a8-934d-4777-a0f5-1dfb9b8cd0be:ORDER_PLACED 正在由另一份投遞寄送（租約還沒過期）、寄了 0 封；過期之後重試 → 沒有例外、寄了 1 封，{status=SENT, attempts=2}
-> ```
->
-> 第三行就是上面「擋不住的一種」，現在的樣子：行程死在寄信與標記之間，那封信可能已經寄出去了；租約過期之後，重送的那一份**再寄一次**。這個窗還在 —— 租約讓它從「馬上」變成「10 秒之後」，沒有讓它消失。
->
-> 把租約的條件拿掉（突變），只跑 `NotificationClaimTest`：3 個裡紅 2 個。改完之後，Q10 的 10 份投遞裡如果有 1 份剛好撞進了這個窗，日誌裡會有一行 `EVENT_RETRY consumer=notification.order-events … attempt=1，PT0.1S 後重試：…InFlight…`，100 ms 後重試、看到 `SENT`、跳過 —— `notification_attempts=1`。舊的程式碼遇到同一個順序，會寄第二封。
->
-> （7.13.1 的完整 `NotificationHandler` 是修正之前的樣子。參考實作的 `ch07` 分支上還是改之前的寫法。）
+`NotificationClaimTest` 的可執行版本在 [verification](./verification/README.md)：
+A 停在 send 時 B 不可寄第二封；失敗釋放租約後可重試；模擬行程遺留租約過期後可接手；
+舊認領失敗也不能清掉新 token。課文的模擬 mailer 不連接真實 SMTP。
 
 ### 7.7.3 AC-4：重試 5 次、死信、下單不受影響
 
@@ -2589,6 +2530,9 @@ class RabbitTopology {
             Queue q = QueueBuilder.durable(retryQueue(delay)).quorum()
                     .ttl((int) delay.toMillis())
                     .deadLetterExchange(RETRY_RETURN)                       // 沒有 dead-letter routing key：靠 headers 回去
+                    .overflow(QueueBuilder.Overflow.rejectPublish)
+                    .maxLength(MAX_LENGTH)
+                    .withArgument("x-dead-letter-strategy", "at-least-once")
                     .build();
             d.add(q);
             d.add(BindingBuilder.bind(q).to(retry).with(tier(delay)));
@@ -3285,15 +3229,22 @@ ALTER TABLE outbox_events ADD COLUMN claimed_until DATETIME(3) NULL, ALGORITHM=I
     record Held(long id, long productId, int quantity, boolean counted) {}
 
     /**
-     * 這張訂單還佔著庫存的預留，依 productId 排序。先鎖預留列（FOR UPDATE），再依序改 inventory：
-     * 同一張訂單的兩個釋放（例如兩個排程實例）會在第一句就排隊，第二個進來時看到的已經是 RELEASED —— 不會重複減。
+     * 這張訂單還佔著庫存的預留，依 productId 排序。先找完整 id，再以主鍵等值 FOR UPDATE 鎖現有預留列：
+     * 同一張訂單的兩個釋放（例如兩個排程實例）會在主鍵鎖定讀排隊，第二個進來時看到的已經是 RELEASED —— 不會重複減。
      * 註：這裡的 statuses 只會是程式裡的常數，不是使用者輸入。
      */
     private List<Held> held(long orderId, String statuses) {
-        return jdbc.query("""
-                SELECT id, product_id, quantity, counted FROM inventory_reservations
-                 WHERE order_id = ? AND status IN (%s) ORDER BY product_id FOR UPDATE""".formatted(statuses),
-                (rs, i) -> new Held(rs.getLong(1), rs.getLong(2), rs.getInt(3), rs.getBoolean(4)), orderId);
+        // 訂單成立後預留的 id／productId 集合不再新增或刪除；先找完整主鍵，不在範圍查詢拿 gap lock。
+        List<Long> ids = jdbc.queryForList(
+                "SELECT id FROM inventory_reservations WHERE order_id = ? ORDER BY product_id", Long.class, orderId);
+        List<Held> result = new ArrayList<>();
+        for (long id : ids) {
+            result.addAll(jdbc.query("""
+                    SELECT id, product_id, quantity, counted FROM inventory_reservations FORCE INDEX (PRIMARY)
+                     WHERE id = ? AND order_id = ? AND status IN (%s) FOR UPDATE""".formatted(statuses),
+                    (rs, row) -> new Held(rs.getLong(1), rs.getLong(2), rs.getInt(3), rs.getBoolean(4)), id, orderId));
+        }
+        return result;
     }
 
     @Override
@@ -4074,13 +4025,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
+import java.time.Duration;
 
 /**
  * 7.7 US-NTF-1 訂單通知。0.5.4 表格右欄的「通知……」都在這裡。
  *
  * transactional() = false：寄信不在 MySQL 裡，processed_messages 保護不了它。冪等靠 notifications 自己：
  *  ① dedup_key = eventId:類型（V7 的唯一索引）：同一個事件、同一種通知只有一列（AC-3）
- *  ② 寄之前先「認領」：attempts 從 n 改成 n + 1，只有一個人會成功 —— 同一則訊息同時被投遞兩次，只有一個去寄
+ *  ② 寄之前先「認領」：取得有期限且帶 token 的處理權，同一時間只有一個有效認領者 —— 同一則訊息同時被投遞兩次，只有一個去寄
  *  ③ 寄完標 SENT；之後再來的同一個事件看到 SENT 就跳過
  * 擋不住的一種：寄出去了、標 SENT 之前行程死掉 → 重送時再寄一次。寄信本身沒有冪等鍵 —— 這是 at-least-once 的代價（7.7.2）。
  */
@@ -4089,6 +4042,10 @@ class NotificationHandler implements EventHandler {
 
     private static final Logger log = LoggerFactory.getLogger(NotificationHandler.class);
 
+    static final Duration CLAIM_LEASE = Duration.ofSeconds(10);
+    static class InFlight extends RuntimeException {
+        InFlight(String dedup) { super("通知 "+dedup+" 的處理權仍由另一份投遞持有"); }
+    }
     record Target(long userId, String type, String text) {}
 
     private final JdbcTemplate jdbc;
@@ -4137,14 +4094,31 @@ class NotificationHandler implements EventHandler {
             jdbc.update("""
                     INSERT INTO notifications (user_id, type, dedup_key, payload) VALUES (?, ?, ?, ?)
                     ON DUPLICATE KEY UPDATE id = id""", t.userId(), t.type(), dedup, payload(e, t));
-            Map<String, Object> row = jdbc.queryForMap("SELECT id, status, attempts FROM notifications WHERE dedup_key = ?", dedup);
-            if ("SENT".equals(row.get("status"))) continue;                // AC-3：已經寄過了
+            Map<String, Object> row = jdbc.queryForMap("SELECT id, status FROM notifications WHERE dedup_key = ?", dedup);
+            if ("SENT".equals(row.get("status"))) continue;
             long id = ((Number) row.get("id")).longValue();
-            int attempts = ((Number) row.get("attempts")).intValue();
-            int claimed = jdbc.update("UPDATE notifications SET attempts = attempts + 1 WHERE id = ? AND status <> 'SENT' AND attempts = ?", id, attempts);
-            if (claimed == 0) continue;                                     // 同一則訊息的另一份正在寄（或剛寄完）
-            mailer.send(t.userId(), t.type(), dedup, t.text());             // 失敗 → 例外 → 重試階梯（AC-4）
-            jdbc.update("UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP(3) WHERE id = ?", id);
+            String token = UUID.randomUUID().toString(); // 識別這一次認領，不能用 eventId 代替
+            int claimed = jdbc.update("""
+                    UPDATE notifications SET attempts = attempts + 1, claim_token = ?,
+                           claimed_until = CURRENT_TIMESTAMP(3) + INTERVAL ? MICROSECOND
+                     WHERE id = ? AND status <> 'SENT'
+                       AND (claimed_until IS NULL OR claimed_until < CURRENT_TIMESTAMP(3))""",
+                    token, CLAIM_LEASE.toMillis() * 1000, id);
+            if (claimed == 0) {
+                // 也可能另一份剛完成：重讀避免把已完成工作當錯誤。
+                if ("SENT".equals(jdbc.queryForObject("SELECT status FROM notifications WHERE id = ?", String.class, id))) continue;
+                throw new InFlight(dedup); // 讓 broker 的有限重試稍後再看，不能 continue 後 ACK
+            }
+            try {
+                mailer.send(t.userId(), t.type(), dedup, t.text());
+            } catch (RuntimeException failed) {
+                jdbc.update("UPDATE notifications SET claimed_until = NULL, claim_token = NULL WHERE id = ? AND claim_token = ?", id, token);
+                throw failed;
+            }
+            int completed = jdbc.update("""
+                    UPDATE notifications SET status = 'SENT', sent_at = CURRENT_TIMESTAMP(3),
+                           claimed_until = NULL, claim_token = NULL WHERE id = ? AND claim_token = ?""", id, token);
+            if (completed == 0) throw new InFlight(dedup); // 舊認領不能完成或清除新一代的租約
         }
     }
 
@@ -4152,7 +4126,7 @@ class NotificationHandler implements EventHandler {
     @Override
     public void onDeadLetter(Event e, Exception lastError) {
         for (Target t : targets(e))
-            jdbc.update("UPDATE notifications SET status = 'FAILED' WHERE dedup_key = ? AND status = 'PENDING'", e.eventId() + ":" + t.type());
+            jdbc.update("UPDATE notifications SET status = 'FAILED' WHERE dedup_key = ? AND status = 'PENDING' AND (claimed_until IS NULL OR claimed_until < CURRENT_TIMESTAMP(3))", e.eventId() + ":" + t.type());
         log.error("NOTIFICATION_FAILED eventId={} type={}：{}", e.eventId(), e.type(), lastError.toString());
     }
 

@@ -1,0 +1,41 @@
+rule_files: [alerts.yml]
+evaluation_interval: 15s
+tests:
+  - name: low-volume-ready-with-zero-reported-lag
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{vhost="/",queue="shop.notification.order-events"}'
+        values: '12+0x20'
+      - series: 'shop_events_lag_seconds{job="shop",consumer="notification.order-events",quantile="0.99"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ShopConsumerStalled
+        exp_alerts:
+          - exp_labels: {vhost: '/', queue: shop.notification.order-events, severity: page}
+            exp_annotations:
+              summary: 'shop.notification.order-events 有待處理訊息且持續沒有 ACK 進度'
+              why: '含 ready 與 unacked；低流量停住也要告警。1 分鐘 ACK 視窗再持續 1 分鐘，不能取代逐訊息 60 秒 SLO'
+  - name: unacked-only-idle-and-progressing
+    interval: 15s
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{vhost="/",queue="shop.inventory.hot-settlement"}'
+        values: '10+0x20'
+      - series: 'rabbitmq_detailed_queue_messages_ready{vhost="/",queue="shop.inventory.hot-settlement"}'
+        values: '0+0x20'
+      - series: 'rabbitmq_detailed_channel_messages_acked_total{vhost="/",queue="shop.inventory.hot-settlement",channel="a"}'
+        values: '0+0x20'
+      - series: 'rabbitmq_detailed_queue_messages{vhost="/",queue="shop.notification.order-events"}'
+        values: '0+0x20'
+      - series: 'rabbitmq_detailed_queue_messages{vhost="/",queue="shop.payment.refunds"}'
+        values: '5+0x20'
+      - series: 'rabbitmq_detailed_channel_messages_acked_total{vhost="/",queue="shop.payment.refunds",channel="a"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: ShopConsumerStalled
+        exp_alerts:
+          - exp_labels: {vhost: '/', queue: shop.inventory.hot-settlement, severity: page}
+            exp_annotations:
+              summary: 'shop.inventory.hot-settlement 有待處理訊息且持續沒有 ACK 進度'
+              why: '含 ready 與 unacked；低流量停住也要告警。1 分鐘 ACK 視窗再持續 1 分鐘，不能取代逐訊息 60 秒 SLO'
