@@ -157,6 +157,8 @@ println!("{x} {y}"); // ✅ x 還能用！
 
 **規則很簡單**：**純粹放在 stack 的小型資料是 `Copy`（複製便宜就直接複製）；牽涉 heap 的是 Move（複製貴，所以移交所有權）。**
 
+> **但要注意**：「能不能 Copy」是型別自己宣告的，不是編譯器看資料放哪裡自動決定。你自己定義的 struct（第 03 章），就算欄位全是整數，預設也是 move；要在型別上加 `#[derive(Clone, Copy)]`，它才會變成 Copy。
+
 ### 需要真的複製一份？用 `.clone()`
 
 如果你就是想要兩份獨立的 `String`，明確呼叫 `.clone()`：
@@ -256,7 +258,7 @@ println!("{r1} {r2}");
 
 > **絕不允許「有人在寫的同時，還有別人在讀或寫同一份資料」。**
 
-這正是「資料競爭（data race）」的定義。Rust 把它變成**編譯錯誤**，於是你在單執行緒就會被擋下，更別說多執行緒（第 08 章你會看到，這條規則直接讓 Rust 的併發變得安全）。
+這正是「資料競爭（data race）」的成立條件：多個執行緒同時存取同一份資料，其中至少一個在寫，而且彼此之間沒有同步（例如沒有加鎖）。Rust 把「寫的同時還有別人在讀寫」變成**編譯錯誤**，於是你在單執行緒就會被擋下，更別說多執行緒（第 08 章你會看到，這條規則直接讓 Rust 的併發變得安全）。
 
 > **心智模型**：把可變借用想成「一支麥克風」。同一時間只能一個人拿著麥克風講話（寫）；或者大家都不講、一起聽（多個唯讀）。不能有人講話的同時別人也搶著講、或有人邊聽邊被改詞。
 
@@ -289,7 +291,7 @@ fn dangle() -> &String {          // ❌ 編譯錯誤
 }                                 // 但 s 在這裡就 drop 了，參考會指向已釋放的記憶體
 ```
 
-編譯器會說「這個回傳的參考沒有值可以指」。正確做法是**直接回傳 `String`（把所有權交出去）**：
+編譯器會報 `error[E0106]: missing lifetime specifier`，並說明 `this function's return type contains a borrowed value, but there is no value for it to be borrowed from`（回傳值是借來的，但沒有任何東西可以借）。它接著會建議加上 `'static`（2.10 會講），但照做也過不了：`s` 是函式裡的區域變數，改完會變成 `E0515: cannot return reference to local variable`。正確做法是**直接回傳 `String`（把所有權交出去）**，這也是編譯器的第二個建議（`return an owned value`）：
 
 ```rust
 fn no_dangle() -> String {
@@ -317,6 +319,8 @@ let whole = &s[..];         // 整個
 s: h e l l o _ w o r l d
    └─&s[0..5]─┘   └─[6..11]┘
 ```
+
+> **中文字串要小心**：範圍裡的數字是 **byte 位置**，不是第幾個字。Rust 的字串是 UTF-8，一個中文字通常佔 3 個 byte，所以 `"你好"` 的 `&s[0..3]` 是 `"你"`，而 `&s[0..1]` 會切到「你」的中間，執行期直接 panic（`byte index 1 is not a char boundary`）。要「取前幾個字」時，用 `s.chars()` 逐字處理（第 05 章的迭代器）。
 
 ### `&str` vs `String`：初學必懂的區別
 
@@ -364,7 +368,40 @@ fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
 
 **它在說什麼？** 「我回傳的參考，其存活時間不會超過傳進來的 x 和 y 中較短的那個。」這樣編譯器就能保證：呼叫端拿到的參考，絕不會指向一個已經被釋放的東西。
 
+看呼叫端怎麼被它擋下：
+
+```rust
+fn main() {
+    let string1 = String::from("long string is long");
+    let result;
+    {
+        let string2 = String::from("xyz");
+        result = longest(string1.as_str(), string2.as_str());
+    }                       // string2 在這裡 drop
+    println!("{result}");   // ❌ E0597：`string2` does not live long enough
+}
+```
+
+`result` 有可能指向 `string2`，而 `string2` 已經被釋放了。就算這次實際上回傳的是比較長的 `string1`，編譯器也只看簽章：`'a` 說回傳值最多活到 x、y 中較短的那個，所以照樣擋下。把 `println!` 移進內層 `{}` 裡就能編過。
+
 > **關鍵澄清**：生命週期標註**不會改變任何東西存活多久**，它只是**把「參考之間的存活關係」講給編譯器聽**，讓它能檢查你有沒有搞出懸空參考。你不是在「設定壽命」，而是在「描述壽命關係」。
+
+### 為什麼 `first_word` 不用寫 `'a`？省略規則
+
+2.9 的 `fn first_word(s: &str) -> &str` 也回傳參考，卻沒寫 `'a`。因為編譯器有幾條**生命週期省略規則（lifetime elision）**，套得上就自動補，不用你寫：
+
+1. 每個參考參數各自得到一個生命週期。
+2. 如果**只有一個**參考參數，回傳的參考就跟它同壽命。`first_word` 就是這種：回傳值只可能借自 `s`。
+3. 如果是方法、參數裡有 `&self` 或 `&mut self`，回傳的參考跟 `self` 同壽命（方法是第 03 章的內容）。
+
+`longest` 有兩個參考參數，第 2 條套不上，編譯器猜不出回傳值借自誰。拿掉 `'a` 就會報：
+
+```text
+error[E0106]: missing lifetime specifier
+  = help: this function's return type contains a borrowed value, but the signature does not say whether it is borrowed from `x` or `y`
+```
+
+這時就輪到你手寫 `'a`，把關係講清楚。
 
 ### `'static`：活整個程式期間
 
@@ -376,12 +413,15 @@ fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
 
 ## 2.11 常見錯誤
 
-- **`use of moved value`**：把值 move 走（賦值給別人或傳進函式）之後又想用原變數。→ 改用借用 `&`，或如果真需要兩份就 `.clone()`。
-- **同時借出可變與不可變**：`cannot borrow as mutable because it is also borrowed as immutable`。→ 調整順序讓借用不重疊（善用 NLL），或縮小借用範圍。
-- **兩個 `&mut`**：`cannot borrow ... as mutable more than once`。→ 同時只能一個可寫借用。
-- **忘了讓變數 `mut` 就想拿 `&mut`**：要先 `let mut`，才能 `&mut`。
-- **回傳區域變數的參考**（懸空）：改成回傳擁有所有權的值（如 `String`）。
+- **`use of moved value` / `borrow of moved value`（E0382）**：把值 move 走（賦值給別人或傳進函式）之後又想用原變數。→ 改用借用 `&`，或如果真需要兩份就 `.clone()`。
+- **同時借出可變與不可變（E0502）**：`cannot borrow ... as mutable because it is also borrowed as immutable`。→ 調整順序讓借用不重疊（善用 NLL），或縮小借用範圍。
+- **兩個 `&mut`（E0499）**：`cannot borrow ... as mutable more than once at a time`。→ 同時只能一個可寫借用。
+- **忘了讓變數 `mut` 就想拿 `&mut`（E0596）**：`cannot borrow ... as mutable, as it is not declared as mutable`。要先 `let mut`，才能 `&mut`。
+- **回傳區域變數的參考**（懸空，E0106 / E0515）：改成回傳擁有所有權的值（如 `String`）。
+- **借用活得比原資料久（E0597）**：`... does not live long enough`。→ 讓原資料活久一點（移到外層作用域），或改成擁有所有權。
 - **到處 `.clone()` 消滅編譯錯誤**：能編過但可能很慢。先想「是不是用借用 `&` 就好」，clone 是最後手段。
+
+> 錯誤碼可以拿去查：`rustc --explain E0382` 會印出這個錯誤的完整說明與範例。
 
 ---
 

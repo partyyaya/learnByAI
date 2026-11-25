@@ -67,7 +67,7 @@
 
 > **為什麼 Rust 生態選 wgpu**：它是純 Rust、跨平台、又能編譯到 WebAssembly 跑在瀏覽器裡。連知名的 AI 框架 **Burn** 都用 wgpu 當它的跨平台 GPU 後端（第 17 章會看到）——所以學會 wgpu，等於同時打通「自己寫 GPU 運算」與「理解 AI 框架底層」兩條路。
 
-> **版本提醒（很重要）**：wgpu 的 API 在版本之間變動頗大（欄位增減、函式簽章調整）。本章程式碼以近期穩定版的形態示範，**概念是穩定的、但確切的欄位名/簽章請以你 `Cargo.toml` 鎖定版本的官方文件（docs.rs/wgpu）為準**。學習時建議明確鎖版本，例如 `wgpu = "=某版本"`，避免升級後 API 對不上而卡住。
+> **版本**：本章與第 16、17 章的 wgpu 程式碼對應 **wgpu 30**（15.5 用 `cargo add wgpu@30` 安裝）。wgpu 的主版本之間常有破壞性變更，所以安裝時要帶上主版本號；日後想升級，先讀它的 CHANGELOG 再改程式。
 
 ---
 
@@ -104,7 +104,7 @@
 ```bash
 cargo new gpu_hello
 cd gpu_hello
-cargo add wgpu
+cargo add wgpu@30
 cargo add pollster
 cargo add bytemuck --features derive
 ```
@@ -175,7 +175,7 @@ async fn run() {
 
 > **為什麼要 async？** 取得 adapter/device 可能要跟作業系統、驅動溝通，是會「等待」的操作，所以設計成 `async`（回扣第 08 章）。我們用 `pollster` 的 `block_on` 把它在同步 `main` 裡跑完，不必動用 Tokio。
 
-> **版本差異提醒**：`DeviceDescriptor` 的欄位（如 `required_features` / `required_limits` / `memory_hints` / `trace`）與 `request_device` 的簽章在不同 wgpu 版本略有出入。若編譯報「欄位不存在」或「參數數量不符」，對照你版本的 docs.rs 調整即可——**四大件的概念不變**。
+> **`..Default::default()` 帶過的欄位**：`DeviceDescriptor` 還有 `experimental_features`、`memory_hints`、`trace` 等欄位，本課都用預設值。`request_adapter` 與 `request_device` 回傳的都是 `Result`，所以 `.await` 之後接 `.expect(...)`：找不到 GPU 或建立失敗時，程式會帶著你寫的訊息停下來。
 
 ---
 
@@ -223,7 +223,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 GPU 看不到你 Rust `Vec` 裡的資料——你得建立 **buffer**（GPU 上的記憶體區塊）並把資料複製過去。本例需要兩種 buffer：
 
 1. **Storage buffer**：GPU 運算實際讀寫的地方（對應 shader 裡的 `data`）。
-2. **Staging buffer（讀回用）**：一塊 CPU 能「映射（map）讀取」的 buffer。**GPU 用來運算的 storage buffer 通常不能直接被 CPU 讀**，所以算完要先把結果**複製**到這塊 staging buffer，CPU 才能讀。
+2. **Staging buffer（讀回用）**：一塊 CPU 能「映射（map）讀取」的 buffer。**GPU 用來運算的 storage buffer 不能直接被 CPU 讀**（WebGPU 規定：帶 `MAP_READ` 的 buffer 只能再搭配 `COPY_DST`，不能同時是 `STORAGE`），所以算完要先把結果**複製**到這塊 staging buffer，CPU 才能讀。
 
 ```rust
 use wgpu::util::DeviceExt; // 提供 create_buffer_init
@@ -361,7 +361,9 @@ queue.submit(Some(encoder.finish()));
 
 > **為什麼要 `div_ceil`（向上取整）？** 如果元素數不是 64 的倍數（例如 1000 個），`ceil(1000/64)=16` 個 workgroup 會發射 `16×64=1024` 個執行緒——**比資料多 24 個**。這就是為什麼 shader 裡要有 `if (i >= arrayLength(&data)) { return; }`：多出來的執行緒直接跳過，不越界。這個「多開一點 + 邊界檢查」是 GPU 程式的標準慣用法。
 
-> **批次思維（回扣第 08 章）**：注意我們是「**錄一整批指令再一次 submit**」，而不是一個指令來回跟 GPU 溝通一次。跟 GPU 溝通有固定開銷，所以永遠是「攢一批、一次送」。這跟後端「批次寫 DB」的思路一致。
+> **dispatch 的上限**：`Limits::default()` 規定每個維度最多發射 **65535 個 workgroup**。以 `@workgroup_size(64)` 來說，一維 dispatch 最多涵蓋 65535 × 64 ≈ 419 萬個元素；超過就會得到驗證錯誤。資料更大時，改用 2D dispatch（第 16 章），或讓每個執行緒在迴圈裡處理好幾個元素。
+
+> **批次思維**：注意我們是「**錄一整批指令再一次 submit**」，而不是一個指令來回跟 GPU 溝通一次。跟 GPU 溝通有固定開銷，所以永遠是「攢一批、一次送」。這跟後端把多筆寫入合成一次資料庫往返、而不是一筆一筆送，是同一個道理。
 
 ---
 
@@ -380,17 +382,19 @@ buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
 });
 
 // 關鍵：device.poll 推動 GPU 把工作做完（包含上面的 map 請求）。
-// Wait 表示「阻塞直到所有已提交工作完成」。
-device.poll(wgpu::Maintain::Wait);
+// wait_indefinitely 表示「阻塞到最近一次 submit 的工作做完」。
+// 它回傳 Result（例如等待途中出錯），這裡直接 unwrap。
+device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
 
-// 等映射完成的通知
+// 等映射完成的通知：外層 unwrap 是 channel 的錯誤，內層是映射本身的錯誤
 receiver.recv().unwrap().unwrap();
 
 // 現在可以讀了：拿到位元組，再用 bytemuck 轉回 f32
-let data = buffer_slice.get_mapped_range();
+// get_mapped_range 也回傳 Result（buffer 沒映射好時是 Err）
+let data = buffer_slice.get_mapped_range().unwrap();
 let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
 
-// 讀完務必解除映射（drop 掉借用後才能 unmap）
+// 讀完務必解除映射：先 drop 掉 data，再 unmap（順序反了會 panic）
 drop(data);
 staging_buffer.unmap();
 
@@ -401,10 +405,10 @@ println!("前 8 個結果：{:?}", &result[..8]);
 三個容易忽略的重點：
 
 - **`map_async` 是非同步的**：你不能馬上讀，要等它完成的回呼。這裡用最簡單的 `std::sync::mpsc`（回扣第 08 章的 channel）在完成時收通知。
-- **`device.poll(Maintain::Wait)` 不可少**：wgpu 需要你「推動」它去實際執行已排入的工作（包括完成 map）。少了這行，回呼永遠不會被觸發，程式卡死。
-- **讀完要 `unmap`**：映射佔用資源，讀完（且 drop 掉 `get_mapped_range` 回傳的借用）後要 `unmap` 釋放。
+- **`device.poll(...)` 不可少**：在原生平台（非瀏覽器）上，wgpu 需要你「推動」它去檢查工作是否完成、並呼叫 map 的回呼。少了這行，回呼永遠不會被觸發，`receiver.recv()` 就一直卡著。
+- **讀完要 `unmap`**：`get_mapped_range` 回傳的 `data`（型別是 `BufferView`）要先 drop，再呼叫 `unmap`；還有 view 沒 drop 就 `unmap`，wgpu 會 panic。buffer 在映射狀態時也不能交給 GPU 使用，所以讀完一定要 `unmap`。
 
-> **版本差異提醒**：讀回結果的細節（`Maintain::Wait` vs 新版的 `PollType`/`poll` 回傳值）在不同 wgpu 版本略有調整。若這段編譯不過，對照你版本文件微調——但「map → poll 推動 → 讀 → unmap」四步的**順序與概念是固定的**。
+整個讀回流程固定是「map → poll 推動 → 讀 → drop view → unmap」五步，第 16 章會把它包成一個函式，之後就不用每次重寫。
 
 ---
 
@@ -495,10 +499,10 @@ async fn run() {
     let slice = staging_buffer.slice(..);
     let (tx, rx) = std::sync::mpsc::channel();
     slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
-    device.poll(wgpu::Maintain::Wait);
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
     rx.recv().unwrap().unwrap();
 
-    let data = slice.get_mapped_range();
+    let data = slice.get_mapped_range().unwrap();
     let result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
     drop(data);
     staging_buffer.unmap();
@@ -529,11 +533,11 @@ cargo run
 ## 15.13 常見錯誤
 
 - **buffer `usage` 旗標漏了** → 例如 storage buffer 忘了 `COPY_SRC` 就想 `copy_buffer_to_buffer`，或 staging 忘了 `MAP_READ` 就想 map，wgpu 會直接報驗證錯誤。**用途要事先宣告齊全。**
-- **想直接 map storage buffer** → 一般 storage buffer 沒有 `MAP_READ`，不能被 CPU 讀。要先 `copy_buffer_to_buffer` 到 staging buffer 再 map。
+- **想直接 map storage buffer** → storage buffer 沒有 `MAP_READ`，不能被 CPU 讀；硬加上 `MAP_READ` 也不行，`STORAGE | MAP_READ` 這種組合在建立 buffer 時就會被拒絕。要先 `copy_buffer_to_buffer` 到 staging buffer 再 map。
 - **忘了 `device.poll(...)`** → `map_async` 的回呼永遠不觸發，程式卡住。map 之後一定要 poll 推動。
-- **讀完沒 `unmap` 或沒 drop 掉 `get_mapped_range` 的借用** → 下次操作該 buffer 會出錯。順序是「讀 → drop 借用 → unmap」。
+- **還沒 drop `get_mapped_range` 的 view 就 `unmap`** → wgpu 直接 panic。**讀完忘了 `unmap`，又把這塊 buffer 用在下一次 submit** → 同樣會出錯。順序是「讀 → drop view → unmap」。
 - **dispatch 數量算錯（用整除而非向上取整）** → 元素數不是 workgroup_size 倍數時，最後幾個元素不會被處理。用 `div_ceil` 並在 shader 做邊界檢查。
-- **shader 沒做邊界檢查** → 多開的執行緒越界存取，結果錯誤或崩潰。`if (i >= arrayLength(&data)) { return; }` 不能省。
+- **shader 沒做邊界檢查** → 多開的執行緒會去存取陣列外的位置。wgpu 預設會替 shader 加上越界保護（依後端不同，越界的索引會被夾回陣列範圍內，或越界的寫入被丟掉），所以通常不會崩潰，結果甚至可能看起來正確；但被夾回範圍內的執行緒會去讀寫最後一格，跟負責那一格的執行緒互相踩踏，換一個運算就可能悄悄算錯。這層保護是安全網，不是演算法的一部分——`if (i >= arrayLength(&data)) { return; }` 不能省。
 - **`@workgroup_size` 與 `dispatch_workgroups` 沒對上** → 記住：總執行緒數 = dispatch 的 workgroup 數 × shader 宣告的 workgroup_size。兩邊要一致地思考。
 - **用了 `bytemuck` 卻沒開 `derive` feature 或型別沒對齊** → 轉型失敗。基本型別（`f32`/`u32`）沒問題；自訂 struct 要 `#[repr(C)]` 且滿足對齊（第 16 章談 uniform 時會遇到）。
 - **在小資料上用 GPU 反而更慢** → 別忘了搬運成本。1024 個數字乘 2，CPU 一個迴圈瞬間完成；GPU 版慢是因為初始化與傳輸開銷。GPU 的價值要在**大資料 + 密集運算**才顯現（第 16、17 章）。
@@ -549,7 +553,7 @@ cargo run
 - WGSL compute shader 用 `@compute @workgroup_size(N)` 宣告，`@builtin(global_invocation_id)` 給每個執行緒不同索引；程式要用「單一執行緒視角」寫。
 - 資料流：建 **storage buffer**（GPU 運算）+ **staging buffer**（`MAP_READ` 讀回）；用 `bytemuck` 在 `&[f32]` 與 `&[u8]` 間轉換。
 - 執行：**shader → pipeline → bind group** 接好，用 **command encoder** 錄製 `dispatch_workgroups` + `copy_buffer_to_buffer`，`queue.submit` 提交。
-- 讀回：`map_async` → `device.poll(Wait)` 推動 → 讀 → `unmap`。
+- 讀回：`map_async` → `device.poll(PollType::wait_indefinitely())` 推動 → 讀 → drop view → `unmap`。
 - **dispatch 用 `div_ceil` 向上取整 + shader 邊界檢查**是標準慣用法。
 
 ---
@@ -558,9 +562,9 @@ cargo run
 
 1. 照 15.12 把「陣列 ×2」跑起來，改成 `data[i] = data[i] * data[i]`（平方），驗證結果。
 2. 把 `@workgroup_size(64)` 改成 `256`，同步調整 `dispatch_workgroups` 的計算（`div_ceil(256)`），確認結果不變——體會「workgroup_size 與 dispatch 要一起想」。
-3. 把元素數改成 **1000**（不是 64 的倍數），確認邊界檢查讓結果依然正確；再故意把 shader 的 `if (i >= arrayLength(&data))` 拿掉，觀察會發生什麼（可能越界/錯誤）。
+3. 把元素數改成 **1000**（不是 64 的倍數），確認邊界檢查讓結果依然正確；再故意把 shader 的 `if (i >= arrayLength(&data))` 拿掉，觀察結果，並對照 15.13 想想：為什麼看起來沒出事，邊界檢查仍然不能省？
 4. 用 `adapter.get_info()` 印出你的 GPU 型號與所用後端（backend 欄位，例如 Metal/Vulkan/Dx12）。
-5. 加一個計時：分別量「純 GPU 運算 + 傳輸」與「CPU 用 `iter().map()` 做同樣的 ×2」在 1024、100 萬、1 億元素下的耗時，找出「GPU 開始比 CPU 快」的資料量門檻（體會搬運成本）。
+5. 加一個計時（`std::time::Instant`）：分別量「GPU 運算 + 上傳下載」與「CPU 用 `iter().map()` 做同樣的 ×2」在 1024、10 萬、400 萬元素下的耗時，觀察 GPU 是否、以及從多大的資料量開始比 CPU 快（體會搬運成本）。400 萬已接近 15.10 說的一維 dispatch 上限；想再往上加，得先讓每個執行緒處理多個元素。
 6. （挑戰）把輸入輸出分成兩塊 buffer：新增一個 `output` storage buffer，shader 改成 `output[i] = input[i] * 2.0`（輸入唯讀、輸出唯寫）。你需要在 WGSL 宣告兩個綁定、在 bind group 提供兩個 entry。
 
 ---

@@ -42,7 +42,7 @@ const notYet = function () {};
 
 提升的細節在 [3.2 節](03-scope-closures-and-hoisting.md#32-提升與-tdz)，`this` 的差別在 [5.3 節](05-this-prototypes-and-classes.md#53-箭頭函式沒有自己的-this)。實務上的選擇：
 
-- 模組裡的具名函式用**函式宣告**，讀起來清楚，堆疊追蹤裡也有名字。
+- 模組裡的具名函式用**函式宣告**：讀起來清楚，而且會整個提升，可以把主流程寫在上面、輔助函式寫在下面。
 - 傳給別人的 callback 用**箭頭函式**，短，而且 `this` 不會跑掉。
 - 物件的方法用方法簡寫 `{ save() {...} }`（[4.1 節](04-objects-and-arrays.md#41-物件字面值)），不要用箭頭函式。
 
@@ -58,7 +58,7 @@ const oops = (x) => { value: x };    // 沒加小括號：大括號被當成函�
 
 ## 2.2 參數
 
-JavaScript 不檢查參數個數。少傳的參數是 `undefined`，多傳的被忽略；也沒有依參數型別區分的多載（overloading），同名函式後宣告的會覆蓋前面的。
+JavaScript 不檢查參數個數。少傳的參數是 `undefined`，多傳的被忽略。也沒有依參數型別區分的多載（overloading）：在模組最上層寫兩個同名的函式宣告會直接 `SyntaxError`，在函式內或傳統 script 裡則是後宣告的覆蓋前面的。要依參數做不同處理，只能在同一個函式裡自己判斷，或改用選項物件。
 
 ### 預設值
 
@@ -104,6 +104,8 @@ const nums = [5, 1, 9];
 Math.max(...nums); // 9，呼叫時把陣列展開成參數
 ```
 
+展開成參數有數量上限，陣列一大（V8 大約十幾萬個元素）就會丟出 `RangeError: Maximum call stack size exceeded`。資料量不固定時改用迴圈或 `nums.reduce((max, n) => Math.max(max, n), -Infinity)`。
+
 舊程式碼會用 `arguments` 取得所有參數。它不是真正的陣列（沒有 `map`、`filter`），箭頭函式裡也沒有，新程式碼一律用 `...rest`。
 
 ### 用物件傳選項
@@ -118,6 +120,7 @@ function createUser({ name, role = "user", active = true } = {}) {
 createUser({ name: "Ann" }); // { name: "Ann", role: "user", active: true }
 createUser({ name: "Bob", active: false });
 createUser(); // 最後的 = {} 讓不傳參數也不會出錯
+createUser(null); // TypeError：= {} 和其他預設值一樣，只在 undefined 時生效
 ```
 
 呼叫端可以只給需要的欄位，順序無關，讀起來也知道每個值的意思。解構語法在 [4.2 節](04-objects-and-arrays.md#42-解構)詳細說明。
@@ -137,7 +140,7 @@ function getConfig() {
 getConfig(); // undefined
 ```
 
-`return` 後面被補了分號，變成 `return;`。要回傳的值要和 `return` 寫在同一行。用 Prettier 這類格式化工具（[18.3 節](18-from-script-to-project.md#183-程式碼檢查eslint-與-prettier)）可以避免這種排版。
+`return` 後面被補了分號，變成 `return;`。要回傳的值要和 `return` 寫在同一行。Prettier 會把這段排成 `return;` 加一個獨立的區塊，讓問題一眼看出來；ESLint 的 `no-unreachable` 規則（在 recommended 設定裡）會直接報錯（[18.3 節](18-from-script-to-project.md#183-程式碼檢查eslint-與-prettier)）。
 
 ## 2.4 函式是值
 

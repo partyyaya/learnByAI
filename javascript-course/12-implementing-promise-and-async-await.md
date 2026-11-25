@@ -50,7 +50,7 @@ class MyPromise {
 
 - `if (this.state !== PENDING) return` 讓狀態只能改變一次。executor 裡呼叫兩次 `resolve`，或先 `resolve` 再 `reject`，後面的都會被忽略。
 - `resolve`、`reject` 用箭頭函式，`this` 才會指向這個 Promise 實例（`this` 的規則見 [5.1 節](05-this-prototypes-and-classes.md#51-this-由呼叫方式決定)）。executor 拿到它們之後，不管在哪裡呼叫都正確。
-- executor 同步丟出錯誤時，用 `try/catch` 轉成 rejected。這就是 `new Promise(() => { throw err })` 不會讓程式當掉、而是得到 rejected Promise 的原因。
+- executor 同步丟出錯誤時，用 `try/catch` 轉成 rejected。這就是 `new Promise(() => { throw err })` 不會從那一行同步丟出、而是得到 rejected Promise 的原因。這個 Promise 仍然要有人處理，否則就是 [11.11 節](11-promise-and-async-await.md#1111-常見錯誤與排查)的未處理 rejection。
 
 ## 12.2 `then` 與鏈式串接
 
@@ -289,11 +289,58 @@ sync -> my-then -> native-then -> timeout
 
 這是教學用的簡化版，和 Promises/A+ 規範與原生 Promise 還差幾件事：
 
-- **只認得自己**。規範要求接受任何有 `then` 方法的物件（thenable），所以原生 Promise 能 `await` 第三方函式庫的 Promise。這裡的 `resolvePromise` 只判斷 `instanceof MyPromise`。
+- **只認得自己**。規範要求接受任何有 `then` 方法的物件（thenable），所以原生 Promise 能 `await` 第三方函式庫的 Promise。這裡的 `resolvePromise` 只判斷 `instanceof MyPromise`：在 `MyPromise` 的 `then` 裡回傳原生 Promise，下一步拿到的是那個 Promise 物件本身，而不是它的結果。反過來就沒問題，原生的 `await` 認得 `MyPromise`，因為它有 `then` 方法：`await MyPromise.resolve(42)` 得到 42。
 - **executor 的 `resolve` 不會攤平**。原生的 `new Promise((r) => r(otherPromise))` 會等 `otherPromise`；這裡會把 `otherPromise` 本身當成值。
 - **沒有 unhandled rejection 的偵測**。原生 Promise 被 reject 卻沒人處理時，瀏覽器和 Node 會發出警告；`MyPromise` 的錯誤會默默消失。
+- **參數檢查比較少**。靜態方法只接受陣列，原生版接受任何可迭代物件（`MyPromise.all(new Set([1, 2]))` 不會丟錯，而是永遠停在 pending）；`finally` 沒有檢查參數是不是函式。
 
-想要完整實作，可以拿 [Promises/A+ 的測試套件](https://github.com/promises-aplus/promises-tests)來跑。
+拿 [Promises/A+ 的測試套件](https://github.com/promises-aplus/promises-tests)（`promises-aplus-tests`）實際跑一次，872 項測試中，失敗的都集中在 2.3.3 節，也就是 thenable 的處理，其他各節都通過。把 `resolvePromise` 改成認得任何 thenable，就能全部通過：
+
+```js
+function resolvePromise(nextPromise, result, resolve, reject) {
+  if (nextPromise === result) {
+    return reject(new TypeError("Chaining cycle detected"));
+  }
+
+  if (result !== null && (typeof result === "object" || typeof result === "function")) {
+    let then;
+    try {
+      then = result.then; // 讀 then 本身可能丟錯（例如 getter）
+    } catch (err) {
+      return reject(err);
+    }
+
+    if (typeof then === "function") {
+      let called = false; // thenable 可能呼叫好幾次，只採用第一次
+      try {
+        then.call(
+          result,
+          (value) => {
+            if (called) return;
+            called = true;
+            resolvePromise(nextPromise, value, resolve, reject); // value 也可能是 thenable
+          },
+          (reason) => {
+            if (called) return;
+            called = true;
+            reject(reason);
+          },
+        );
+      } catch (err) {
+        if (!called) {
+          called = true;
+          reject(err);
+        }
+      }
+      return;
+    }
+  }
+
+  resolve(result);
+}
+```
+
+和原本的版本相比，判斷條件從「是不是 `MyPromise`」改成「有沒有 `then` 方法」；多出來的程式碼都在防範寫得不好的 thenable：讀 `then` 時丟錯、`then` 裡同時呼叫成功和失敗、呼叫好幾次。
 
 ## 12.5 用 generator 模擬 async/await
 

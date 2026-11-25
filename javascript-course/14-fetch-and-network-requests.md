@@ -1,6 +1,6 @@
 # 14 — fetch 與網路請求
 
-> `fetch` 只在連不上伺服器時失敗；伺服器回 404、500，對 `fetch` 來說都是成功。檢查狀態碼、處理取消與逾時、防止舊回應蓋掉新結果，是每個請求都要做的事。
+> `fetch` 只在拿不到回應時失敗；伺服器回 404、500，對 `fetch` 來說都是成功。檢查狀態碼、處理取消與逾時、防止舊回應蓋掉新結果，是每個請求都要做的事。
 
 `fetch` 在瀏覽器和 Node 18 以上都內建，介面相同。這一章從 `fetch` 的基本行為開始，接著處理實務上一定會遇到的問題：錯誤判斷、組網址、送出資料、取消、競態、串流、CORS，最後把它們組成一個小型的 API 客戶端。
 
@@ -31,7 +31,7 @@ const product = await response.json();
 ```js
 response.ok;          // 狀態碼在 200～299 之間時為 true
 response.status;      // 404
-response.statusText;  // "Not Found"
+response.statusText;  // HTTP/1.1 是 "Not Found"；HTTP/2、HTTP/3 沒有這個欄位，是空字串
 response.headers.get("content-type"); // "application/json"
 response.url;         // 經過重新導向後的最終網址
 ```
@@ -59,7 +59,12 @@ res.status; // 404
 // 沒有丟出任何錯誤
 ```
 
-`fetch` 的 Promise 只在**無法取得回應**時失敗：網路斷線、DNS 查不到、連線被拒、CORS 被擋、請求被取消。這時丟出的是 `TypeError`，訊息在瀏覽器是 `Failed to fetch`、在 Node 是 `fetch failed`，看不出具體原因（詳細原因在 DevTools 的 Network 和 Console 分頁）。
+`fetch` 的 Promise 只在**無法取得回應**時失敗：
+
+- 網路斷線、DNS 查不到、連線被拒、CORS 被擋時，丟出 `TypeError`。
+- 請求被取消或逾時，丟出 `AbortError`、`TimeoutError`（14.5 節）。
+
+`TypeError` 的訊息依環境而異：Chrome 和 Edge 是 `Failed to fetch`，Safari 是 `Load failed`，Firefox 是 `NetworkError when attempting to fetch resource.`，所以不要用訊息字串判斷錯誤種類。瀏覽器刻意不讓程式知道細節，原因要看 DevTools 的 Network 和 Console 分頁。Node 的訊息是 `fetch failed`，具體原因在 `err.cause`，例如 `err.cause.code === "ECONNREFUSED"`。
 
 伺服器有回應，不管是 404 還是 500，`fetch` 都算成功。如果只寫 `await res.json()`，404 的錯誤訊息會被當成正常資料往下傳。每個請求都要檢查 `res.ok`。
 
@@ -70,7 +75,7 @@ res.status; // 404
 ```js
 class HttpError extends Error {
   constructor(response, body) {
-    super(`HTTP ${response.status} ${response.statusText}`);
+    super(`HTTP ${response.status}`); // HTTP/2 的 statusText 是空字串，不放進訊息
     this.name = "HttpError";
     this.status = response.status;
     this.body = body; // 伺服器回傳的錯誤內容，通常有錯誤訊息
@@ -78,13 +83,14 @@ class HttpError extends Error {
 }
 
 async function request(url, options = {}) {
-  const response = await fetch(url, {
-    ...options,
-    headers: { Accept: "application/json", ...options.headers },
-  });
+  // options.headers 可能是物件、陣列或 Headers，交給 Headers 統一處理
+  const headers = new Headers(options.headers);
+  if (!headers.has("Accept")) headers.set("Accept", "application/json");
+  const response = await fetch(url, { ...options, headers });
 
   const text = await response.text();
-  const isJson = response.headers.get("content-type")?.includes("application/json");
+  // application/json，以及 application/problem+json 這類 +json 的類型
+  const isJson = /[/+]json\b/i.test(response.headers.get("content-type") ?? "");
   const body = isJson && text ? JSON.parse(text) : text || null;
 
   if (!response.ok) throw new HttpError(response, body);
@@ -99,12 +105,17 @@ try {
   await request(`${base}/orders/999`);
 } catch (err) {
   if (err instanceof HttpError && err.status === 404) {
-    showMessage(err.body?.message ?? "找不到資料");
+    showMessage(err.body?.detail ?? err.body?.message ?? "找不到資料");
   } else {
     throw err;
   }
 }
 ```
+
+幾個細節：
+
+- **標頭用 `new Headers()` 合併**。呼叫端傳的若是 `Headers` 物件，`{ ...options.headers }` 展開不到裡面的值，標頭會無聲地遺失。
+- **錯誤內容的格式**。Spring Boot 3 的 `ProblemDetail`、ASP.NET Core 的錯誤回應採用 RFC 9457 的 `application/problem+json`，訊息放在 `detail`、`title`，不是 `message`。
 
 為什麼先讀 `text()` 再自己解析，而不是直接 `json()`：
 
@@ -118,6 +129,7 @@ try {
 不要手工拼接查詢字串：
 
 ```js
+const keyword = "Vue & React";
 // 錯誤：& 會被當成參數的分隔符號，伺服器收到的 q 是 "Vue "
 fetch(`/api/search?q=${keyword}`);
 ```
@@ -178,6 +190,13 @@ await fetch("/api/profile", { method: "POST", body: data });
 await fetch("https://api.example.com/me", { credentials: "include" });
 ```
 
+`credentials` 只決定 `fetch` 願不願意帶 cookie，cookie 實際會不會送出，還要看它自己的屬性：
+
+- **同站**（例如 `app.example.com` 呼叫 `api.example.com`）雖然跨來源，`SameSite=Lax` 的 cookie 照樣會送。
+- **跨站**（不同的網域，例如 `myapp.com` 呼叫 `api-host.net`）時，cookie 必須設成 `SameSite=None; Secure`；而且 Safari 預設封鎖所有第三方 cookie，跨站的 cookie 驗證在 Safari 一律不通。
+
+所以用 cookie 驗證時，把 API 放在同一個站（子網域），或用反向代理讓前端與 API 同源。
+
 ## 14.5 取消請求：AbortController
 
 ```js
@@ -207,6 +226,8 @@ try {
 } catch (err) {
   if (err.name === "TimeoutError") {
     showMessage("伺服器回應太慢，請稍後再試");
+  } else {
+    throw err;
   }
 }
 ```
@@ -285,7 +306,7 @@ latestSearch.dispose();
 兩道保護各有用途：
 
 - **取消舊請求**省下頻寬與伺服器資源，也讓舊請求的 `fetch` 以 `AbortError` 結束。
-- **版本檢查**（`myVersion === version`）保證只有最後一次搜尋的結果會寫回。即使舊請求來不及取消（回應已經在讀取中），也不會蓋掉新結果。UI 有 loading 狀態時，清除 loading 前也要確認自己仍是最新的那次請求。
+- **版本檢查**（`myVersion === version`）保證只有最後一次搜尋的結果會寫回。取消只影響綁了這個 signal 的步驟；如果拿到資料後還有沒接 signal 的非同步處理（例如再 `await` 一個轉換函式），舊結果仍可能晚一步回來，版本檢查就是第二道保險。UI 有 loading 狀態時，清除 loading 前也要確認自己仍是最新的那次請求。
 
 取消和 debounce 解決的是不同問題：取消處理「已經送出的請求」，debounce（[3.5 節](03-scope-closures-and-hoisting.md#35-閉包的應用)）減少「送出的請求數」。搜尋框通常兩者都要。
 
@@ -306,13 +327,14 @@ while (true) {
 
 `TextDecoderStream` 把位元組轉成文字。直接用 `TextDecoder` 自己解碼時要傳 `{ stream: true }`，否則一個中文字的位元組剛好被切在兩段之間時，會解出亂碼。
 
-Node 和較新的瀏覽器裡，`ReadableStream` 也可以用 `for await...of` 走訪（[7.7 節](07-collections-iterators-and-generators.md#77-非同步迭代)）：
+Node、Chrome 124、Firefox 110、Safari 27 起，`ReadableStream` 也可以用 `for await...of` 走訪（[7.7 節](07-collections-iterators-and-generators.md#77-非同步迭代)）。要支援較舊的 Safari 時，用上面的 `getReader()` 寫法。
 
 ```js
 const decoder = new TextDecoder();
 for await (const chunk of res.body) {
   process.stdout.write(decoder.decode(chunk, { stream: true }));
 }
+process.stdout.write(decoder.decode()); // 送出最後殘留的位元組
 ```
 
 ### 下載進度
@@ -354,9 +376,12 @@ const blob = new Blob(chunks);
   │ ◀─ 200 + Access-Control-Allow-Origin ─── │  標頭允許，JavaScript 才讀得到
 ```
 
-- 使用 `Content-Type: application/json`、自訂標頭（例如 `Authorization`），或 `PUT`、`DELETE` 這類方法時，瀏覽器會先送一個 `OPTIONS` **預檢請求**，確認伺服器允許後才送出真正的請求。
+- 使用 `Content-Type: application/json`、不在 CORS 安全清單上的標頭（例如 `Authorization`、自訂的 `X-Request-Id`），或 `PUT`、`DELETE` 這類方法時，瀏覽器會先送一個 `OPTIONS` **預檢請求**，確認伺服器允許後才送出真正的請求。伺服器回 `Access-Control-Allow-Headers: *` 時不涵蓋 `Authorization`，要明確列出。
 - 跨來源帶 cookie（`credentials: "include"`）時，伺服器必須回 `Access-Control-Allow-Credentials: true`，而且 `Access-Control-Allow-Origin` 不能是 `*`，要寫明確的來源。
-- 被 CORS 擋下時，`fetch` 丟出的是 `TypeError: Failed to fetch`，程式拿不到任何細節。原因要看 DevTools 的 Console。
+- 跨來源時，JavaScript 預設只讀得到安全清單上的回應標頭（`Content-Type`、`Content-Length`、`Cache-Control` 等）。像分頁用的 `X-Total-Count`，`headers.get()` 會得到 `null`，伺服器要加上 `Access-Control-Expose-Headers: X-Total-Count` 才讀得到。
+- 被 CORS 擋下時，`fetch` 丟出的是 `TypeError`（訊息依瀏覽器而異，14.2 節），程式拿不到任何細節。原因要看 DevTools 的 Console。
+
+CORS 擋的是**讀取回應**，不是**送出請求**。不需要預檢的請求（`GET`，以及 body 是表單、`FormData` 或純文字的 `POST`）一樣會送到伺服器並被處理，只是頁面讀不到結果，所以伺服器仍然需要 CSRF 防護。另外，body 是字串又沒設定 `Content-Type` 時，會以 `text/plain;charset=UTF-8` 送出：不會觸發預檢，但後端的 JSON 解析（Spring 的 `@RequestBody`、Express 的 `express.json()`）不會處理它，這也是 14.4 節要自己設定 `Content-Type` 的原因。
 
 CORS 是**瀏覽器**執行的保護，前端程式無法繞過，只能在伺服器設定。`mode: "no-cors"` 不能讓你讀到資料，只會得到一個看不到內容的回應。開發時常用的做法是讓開發伺服器代理 API（例如 Vite 的 `server.proxy`），讓瀏覽器以為是同源請求；正式環境則由伺服器設定 CORS，或用反向代理讓前端與 API 同源。
 
@@ -368,8 +393,10 @@ Node 裡的 `fetch` 沒有同源政策，所以同一段程式在 Node 能跑、
 
 ```js
 export function createApiClient(baseUrl, { timeoutMs = 10_000 } = {}) {
+  const base = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
+
   async function call(method, path, { query, body, signal } = {}) {
-    const url = new URL(path, baseUrl);
+    const url = new URL(path.replace(/^\//, ""), base); // 保留 baseUrl 的路徑，見下方說明
     for (const [key, value] of Object.entries(query ?? {})) {
       if (value != null) url.searchParams.set(key, String(value));
     }
@@ -393,11 +420,13 @@ export function createApiClient(baseUrl, { timeoutMs = 10_000 } = {}) {
 ```
 
 ```js
-const api = createApiClient("https://api.example.com");
+const api = createApiClient("https://api.example.com/v1");
 
-const products = await api.get("/products", { query: { page: 2, q: "pen" } });
+const products = await api.get("/products", { query: { page: 2, q: "pen" } }); // GET /v1/products?page=2&q=pen
 const order = await api.post("/orders", { productId: 1, qty: 2 });
 ```
+
+組網址時要注意 `new URL(path, base)` 的規則：`path` 以 `/` 開頭時從網域根目錄算起，`new URL("/products", "https://api.example.com/v1")` 得到的是 `https://api.example.com/products`，`/v1` 不見了；`base` 結尾沒有 `/` 時，最後一段也會被換掉。所以 `call` 先補上 `base` 結尾的 `/`，再去掉 `path` 開頭的 `/`。
 
 `request()` 是 14.2 節的函式。要加上重試時，只對**可以安全重試**的請求加（GET，或伺服器支援冪等鍵的寫入），並且只重試網路錯誤、逾時和 5xx（[11.10 節](11-promise-and-async-await.md#1110-重試與退避)）。
 
@@ -410,7 +439,7 @@ const order = await api.post("/orders", { productId: 1, qty: 2 });
 - 用 `AbortController` 取消、`AbortSignal.timeout` 逾時、`AbortSignal.any` 合併；取消不會撤銷伺服器已完成的動作。
 - 搜尋這類連續請求，要取消舊請求並檢查版本，避免舊結果蓋掉新結果。
 - `response.body` 可以串流讀取，用來逐段顯示與計算下載進度。
-- CORS 由伺服器決定，前端無法繞過；被擋時錯誤訊息看不出原因，要看 Console。
+- CORS 由伺服器決定，前端無法繞過；它只擋讀取、不擋送出。被擋時錯誤訊息看不出原因，要看 Console。
 
 下一章：[15 — 瀏覽器原生 API](15-browser-native-apis.md)，Observer、排程、儲存與其他頁面互動。
 

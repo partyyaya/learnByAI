@@ -21,6 +21,10 @@
 
 ## 1.2 變數：預設不可變
 
+> **怎麼跑本章的範例**：沿用第 00 章用 `cargo new` 建的專案，把程式碼貼進 `src/main.rs`，再 `cargo run`。有完整 `fn main()` 的範例直接整段取代；只有幾行、沒寫 `fn main()` 的片段，請放進 `fn main() { ... }` 裡面再跑。
+>
+> `println!` 的兩種寫法都會出現：`println!("{x}")` 是把變數 `x` 直接寫進大括號；`println!("{}", arr[0])` 是用空的 `{}` 佔位，依序填入後面的參數。大括號裡可以直接寫變數名，但不能寫運算式，像 `arr[0]`、`a + b` 要用後一種寫法。
+
 先看一段會**編譯失敗**的程式：
 
 ```rust
@@ -120,7 +124,7 @@ let b: u8 = 255;          // u8 範圍是 0~255
 let big: u64 = 10_000_000_000;
 ```
 
-> **整數溢位的陷阱**：`u8` 最大是 255，如果你在 debug 模式做 `255 + 1`，程式會**panic（當掉）**；但在 release 模式，它會「繞回」變成 0（wrapping）。這是 Rust 的取捨——debug 幫你抓 bug，release 求效能。要明確處理溢位時，用 `wrapping_add`、`checked_add`、`saturating_add` 這些方法，別依賴預設行為。
+> **整數溢位的陷阱**：`u8` 最大是 255。如果一個 `u8` 在**執行期**算出 `255 + 1`（例如值來自使用者輸入），debug 模式（`cargo run`）會 **panic（當掉）**，訊息是 `attempt to add with overflow`；release 模式（`cargo run --release`）則預設不檢查，它會「繞回」變成 0（wrapping）。這是 Rust 的取捨——debug 幫你抓 bug，release 求效能。如果是寫死在程式碼裡、編譯器自己就算得出來的溢位（像 `let b: u8 = 255; let c = b + 1;`），連編譯都過不了（`this arithmetic operation will overflow`）。要明確處理溢位時，用 `wrapping_add`、`checked_add`、`saturating_add` 這些方法，別依賴預設行為。
 
 ### 浮點數
 
@@ -139,7 +143,7 @@ let c = 'z';                    // char 用單引號
 let heart = '❤';                // Rust 的 char 是 4 bytes，能存任何 Unicode 字元（含中文、emoji）
 ```
 
-> **注意**：`'z'`（單引號）是**字元 `char`**，`"z"`（雙引號）是**字串 `&str`**，兩者是不同型別。這跟 Python 不同（Python 沒有 char）。
+> **注意**：`'z'`（單引號）是**字元 `char`**，`"z"`（雙引號）是**字串 `&str`**，兩者是不同型別。這跟 Python 不同（Python 沒有 char）。一個 `char` 正好裝一個 Unicode 碼位（code point）；有些看起來是一個符號的 emoji（例如帶顏色樣式的 `❤️`、膚色 emoji）其實由好幾個碼位組成，寫成 `'❤️'` 會報 `character literal may only contain one codepoint`，這種要用字串 `"❤️"`。
 
 ---
 
@@ -169,9 +173,9 @@ println!("{}", arr[0]);               // 取索引
 let len = arr.len();                  // 5
 ```
 
-**關鍵**：Rust 的 array **長度固定、編譯期就決定**，而且它存在堆疊（stack）上。如果你要「可變長度、能增刪」的清單，用的是 `Vec<T>`（第 05 章的重點），不是 array。
+**關鍵**：Rust 的 array **長度固定、編譯期就決定**，長度也是型別的一部分（`[i32; 5]` 和 `[i32; 3]` 是不同型別），區域變數的 array 直接放在堆疊（stack）上（stack 是什麼，第 02 章會講）。如果你要「可變長度、能增刪」的清單，用的是 `Vec<T>`（第 05 章的重點），不是 array。
 
-> **越界會怎樣？** `arr[10]` 這種越界存取，Rust 會在執行期 **panic**，而不是像 C 那樣讀到隨機記憶體。這就是「記憶體安全」的具體展現之一——它寧可讓程式當掉，也不讓你讀到不該讀的地方。
+> **越界會怎樣？** 索引超出範圍時，Rust 會在執行期 **panic**（`index out of bounds: the len is 5 but the index is 10`），而不是像 C 那樣讀到隨機記憶體。這就是「記憶體安全」的具體展現之一——它寧可讓程式當掉，也不讓你讀到不該讀的地方。如果索引是寫死的常數（例如對上面的 `arr` 寫 `arr[10]`），編譯器看得出來一定越界，會直接編譯失敗；索引是執行期才算出來的（迴圈變數、使用者輸入），才會變成執行期 panic。
 
 ---
 
@@ -372,14 +376,14 @@ if let Some(x) = some_value {
 
 ## 1.10 一段綜合範例：猜數字（精簡版）
 
-把本章語法串起來（部分語法第 04、05 章會再深入，先感受形狀）：
+把本章語法串起來（部分語法第 04、05 章會再深入，先感受形狀）。這段用到第 00 章加過的 `rand` crate；如果你開的是新專案，要先在專案目錄執行 `cargo add rand@0.10`。
 
 ```rust
-use rand::Rng;
+use rand::RngExt;   // 引入 RngExt trait，才能用 random_range（跟第 00 章一樣）
 use std::io;
 
 fn main() {
-    let secret = rand::thread_rng().gen_range(1..=100);
+    let secret = rand::rng().random_range(1..=100);   // 1~100 的隨機數（含 100）
     println!("猜一個 1~100 的數字：");
 
     loop {
@@ -411,6 +415,8 @@ fn main() {
 }
 ```
 
+`cargo run` 之後在終端機輸入數字、按 Enter 就能猜；猜中時 `break` 跳出 `loop`，程式結束。`secret` 沒有標型別，編譯器從後面 `guess.cmp(&secret)` 推斷出它跟 `guess` 一樣是 `u32`。
+
 你現在不用完全懂每一行（`String`、`&mut`、`match Ok/Err` 之後都會細講），重點是感受：**變數、迴圈、`match`、運算式回傳** 這些本章觀念是怎麼組合成一支真正的程式。
 
 ---
@@ -418,11 +424,11 @@ fn main() {
 ## 1.11 常見錯誤
 
 - **忘了 `mut` 就想改值** → `cannot assign twice to immutable variable`。加 `mut`。
-- **函式回傳那行多加了分號** → 型別變成 `()`，報「expected i32, found ()」。把分號去掉。
-- **`if` 兩個分支型別不一致** → 編譯錯誤。確保 `if` 和 `else` 回傳同型別。
-- **用 `==` 比較不同型別**（例如 `i32` 跟 `i64`）→ Rust 不會自動轉型，得明確 `as` 轉換或統一型別。
+- **函式回傳那行多加了分號** → 型別變成 `()`，報「expected `i32`, found `()`」，編譯器還會提示 `remove this semicolon to return this value`。把分號去掉。
+- **`if` 兩個分支型別不一致** → 編譯錯誤（`` `if` and `else` have incompatible types ``）。確保 `if` 和 `else` 回傳同型別。
+- **用 `==` 比較不同型別**（例如 `i32` 跟 `i64`）→ `mismatched types`。Rust 不會自動轉型，得明確 `as` 轉換或統一型別。
 - **陣列越界** → 執行期 panic。用 `.get(i)` 會回傳 `Option`（安全）而不是直接 panic。
-- **整數型別不匹配** → Rust 幾乎不自動轉型，`let x: u64 = some_i32;` 會錯，要 `some_i32 as u64`。
+- **整數型別不匹配** → Rust 幾乎不自動轉型，`let x: u64 = some_i32;` 會錯，要 `some_i32 as u64`。注意 `as` **不檢查範圍**：`-1_i32 as u64` 會變成 18446744073709551615。值可能超出範圍時，改用 `u64::try_from(some_i32)`，它回傳 `Result`（第 04 章），轉不過去時你會拿到錯誤而不是一個怪數字。
 
 ---
 
@@ -441,7 +447,7 @@ fn main() {
 ## 1.13 動手作業
 
 1. 寫一個函式 `fahrenheit_to_celsius(f: f64) -> f64`，並在 `main` 呼叫、印出結果。
-2. 用 `for` 迴圈印出 1~20 的偶數（提示：`if i % 2 == 0` 或 `(1..=20).step_by(2)`）。
+2. 用 `for` 迴圈印出 1~20 的偶數（提示：`if i % 2 == 0` 或 `(2..=20).step_by(2)`）。
 3. 寫一個 `grade(score: u32) -> &'static str`，用 `match` 把分數轉成 A/B/C/D/F（先照抄回傳型別 `&'static str`，第 02 章會懂那個 `'static`）。
 4. 用 `loop` + `break 值` 寫一個「從 1 開始累加，直到總和超過 100 就停，回傳當時的數字」。
 5. 故意在一個回傳 `i32` 的函式最後一行加上分號，看編譯器報什麼錯，再把分號拿掉修好。

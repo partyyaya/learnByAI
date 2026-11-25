@@ -48,15 +48,12 @@ Observer 讓瀏覽器替你追蹤特定變化，再一次送來一批紀錄。ca
 ```js
 function listenForScroll(onScroll) {
   const controller = new AbortController();
-  window.addEventListener("scroll", onScroll, {
-    passive: true,
-    signal: controller.signal,
-  });
+  window.addEventListener("scroll", onScroll, { signal: controller.signal });
   return () => controller.abort();
 }
 ```
 
-`passive: true` 表示 callback 不會呼叫 `preventDefault()`，不代表自動節流；在 passive listener 裡呼叫 `preventDefault()` 也無法阻止預設行為。signal 不會自動停止 Observer，Observer 仍要呼叫各自的清理方法。
+`scroll` 事件本來就不能取消，所以這裡不需要 `passive`；它用在 `touchstart`、`wheel` 這類可以阻止捲動的事件（13.5 節）。signal 不會自動停止 Observer，Observer 仍要呼叫各自的清理方法。
 
 本章的 helper 都回傳一個「停止」函式。呼叫端只要記得在不需要時呼叫它，不必知道底層用的是哪一種清理方法；15.11 節會把這個慣例接到框架的生命週期上。
 
@@ -218,9 +215,11 @@ function observeContentSize(element, onSize) {
 }
 ```
 
-這個範例回報 content box，不包含 padding 與 border。`borderBoxSize` 提供 border box 的尺寸；它的 `inlineSize`、`blockSize` 是依書寫方向的邏輯尺寸，直書時不等於寬和高。選用哪種 box，要和圖表或 canvas 的尺寸定義一致。
+這個範例回報 content box，不包含 padding 與 border。`entry.borderBoxSize[0]` 提供 border box 的尺寸（`borderBoxSize` 是陣列，一般元素只有一個項目，直接讀 `.inlineSize` 會得到 `undefined`）；它的 `inlineSize`、`blockSize` 是依書寫方向的邏輯尺寸，直書時不等於寬和高。選用哪種 box，要和圖表或 canvas 的尺寸定義一致。
 
 通知在瀏覽器繪製前的渲染流程中送出。如果 callback 又把被觀察的元素加寬，下一次通知再加寬，就會形成 resize loop。上例只排除「尺寸沒變」的重複處理；如果每次都改出新的尺寸，仍然會循環。要比較目標尺寸，避免觀察到的值和寫入的值互相推動。把修改包進 rAF 只改變時機，修不好「永遠變大」的邏輯。
+
+瀏覽器不會因此卡死：callback 改了尺寸之後，剩下的通知延到下一幀，並在 `window` 觸發 `error` 事件，訊息是 `ResizeObserver loop completed with undelivered notifications.`。這是錯誤監控服務（例如 Sentry）裡很常見的訊息：偶爾出現一次通常無害，持續出現就是上面說的互相推動。
 
 純粹的版面斷點優先用 CSS 的 media query 或 container query；需要 JavaScript 知道尺寸時才用 Observer。
 
@@ -291,7 +290,7 @@ function createFrameWriter(write) {
 
 ### `requestIdleCallback`：低優先、可拆小的工作
 
-適合非必要的預先處理，不適合登入、立即回饋或必須準時完成的工作。不是每個目標瀏覽器都支援，要準備替代方案：
+適合非必要的預先處理，不適合登入、立即回饋或必須準時完成的工作。Safari 正式版目前還不支援，要準備替代方案：
 
 ```js
 function scheduleSmallBackgroundTask(work) {
@@ -349,6 +348,20 @@ function watchPageVisibility(onChange) {
 
 `visible` 不代表使用者正專心看著這個視窗；分頁被切走也不等於應用程式正常結束。不能依賴「關閉頁面時一定有機會完成非同步工作」，重要資料要在使用者操作當下就送出或保存。
 
+統計、紀錄這類「頁面離開前送出」的資料，在變成 `hidden` 時用 `navigator.sendBeacon` 或帶 `keepalive` 的 `fetch` 送出，頁面關閉後請求仍會完成：
+
+```js
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    const body = new Blob([JSON.stringify(collectStats())], { type: "application/json" });
+    navigator.sendBeacon("/api/stats", body);
+    // 或：fetch("/api/stats", { method: "POST", body, keepalive: true });
+  }
+});
+```
+
+不要用 `unload`、`beforeunload` 做這件事：行動版 Safari 常常不觸發，Chrome 也在逐步停用 `unload`。`keepalive` 請求的 body 上限約 64 KB。
+
 ## 15.8 保存與同步：Storage、BroadcastChannel
 
 ### localStorage 與 sessionStorage
@@ -381,7 +394,7 @@ function savePreferences(preferences) {
 
 `readPreferences` 不直接信任讀到的內容：JSON 可能損壞（`JSON.parse` 丟錯），欄位也可能是舊版本或被手動改過的值，所以只接受已知的值，其他一律用預設值。
 
-Web Storage 是同步執行、只存字串，不適合頻繁寫入大型 JSON，也不是存放敏感資料（例如 token）的安全位置：頁面上任何 JavaScript 都讀得到它。`localStorage` 的 `storage` 事件會通知共用這個儲存區的**其他**頁面，發起寫入的頁面自己不會收到。`sessionStorage` 的事件不會跨到其他獨立分頁。
+Web Storage 是同步執行、只存字串，不適合頻繁寫入大型 JSON，也不是存放敏感資料（例如 token）的安全位置：頁面上任何 JavaScript 都讀得到它。「可能被清除」也不只是使用者手動清：Safari 會在使用者連續 7 天使用 Safari、期間沒有和你的網站互動之後，刪除這個網站用 script 寫入的儲存（`localStorage`、IndexedDB 等；加到主畫面的 web app 除外）。所以這些儲存只能當快取，正本要放在伺服器。`localStorage` 的 `storage` 事件會通知共用這個儲存區的**其他**頁面，發起寫入的頁面自己不會收到。`sessionStorage` 的事件不會跨到其他獨立分頁。
 
 ### BroadcastChannel：同來源分頁互傳訊息
 
@@ -468,7 +481,21 @@ copyButton.addEventListener("click", async () => {
 });
 ```
 
-Clipboard API 需要安全環境（HTTPS；`localhost` 開發時也算）。權限與「使用者剛操作過」的要求依瀏覽器而異，所以要在使用者的操作（例如 click）裡直接呼叫，並處理被拒絕的情況。不要先 `await` 一個耗時的 API 再複製，等待太久會失去「使用者剛操作過」的狀態；先準備好文字，再讓使用者按按鈕。
+Clipboard API 需要安全環境（HTTPS；`localhost` 開發時也算）。權限與「使用者剛操作過」的要求依瀏覽器而異，所以要在使用者的操作（例如 click）裡直接呼叫，並處理被拒絕的情況。不要先 `await` 一個耗時的 API 再複製，等待太久會失去「使用者剛操作過」的狀態，Safari 尤其嚴格；先準備好文字，再讓使用者按按鈕。
+
+文字一定要先向伺服器拿時，把「之後才會有的內容」包成 Promise 交給 `ClipboardItem`，然後在 click 裡**同步**呼叫 `write()`，Safari 也能接受：
+
+```js
+copyButton.addEventListener("click", () => {
+  const blob = fetch("/api/share-link")
+    .then((res) => res.text())
+    .then((text) => new Blob([text], { type: "text/plain" }));
+  navigator.clipboard
+    .write([new ClipboardItem({ "text/plain": blob })])
+    .then(() => (status.textContent = "已複製"))
+    .catch(() => (status.textContent = "無法存取剪貼簿，請手動複製"));
+});
+```
 
 `copyText` 回傳結果物件而不是丟出錯誤：複製失敗是預期中的情況，呼叫端只需要把訊息顯示出來（[8.8 節](08-error-handling.md#88-預期的失敗不一定要丟例外)）。
 

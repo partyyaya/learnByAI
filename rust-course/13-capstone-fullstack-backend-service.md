@@ -65,6 +65,8 @@ bookshelf/
 ├── .env                             ← 本機組態（gitignore）
 ├── docker-compose.yml               ← Postgres + app
 ├── Dockerfile                       ← 多階段建置
+├── .dockerignore
+├── .sqlx/                           ← cargo sqlx prepare 產生（13.10），要 commit
 ├── migrations/
 │   └── 0001_create_books.sql
 └── crates/
@@ -82,28 +84,107 @@ bookshelf/
     │       └── open_library.rs      ← reqwest 實作 BookMetadataProvider
     └── api/
         ├── Cargo.toml
-        └── src/
-            ├── main.rs              ← 組合根：載組態、接依賴、跑 server
-            ├── config.rs
-            ├── state.rs             ← AppState
-            ├── error.rs            ← ApiError + IntoResponse
-            └── handlers.rs          ← handler + router
+        ├── build.rs                 ← 新增 migration 時讓 migrate! 重新打包（第 10.5 節）
+        ├── src/
+        │   ├── main.rs              ← 組合根：載組態、接依賴、跑 server
+        │   ├── lib.rs               ← 公開下面幾個模組，讓 main.rs 和 tests/ 都能用
+        │   ├── config.rs
+        │   ├── state.rs             ← AppState
+        │   ├── error.rs             ← ApiError + IntoResponse
+        │   └── handlers.rs          ← handler + router
+        └── tests/
+            └── books_api.rs         ← 整合測試（13.9）
 ```
 
-根 `Cargo.toml`：
+建立骨架（在 `bookshelf/` 目錄裡）：
+
+```bash
+cargo new --lib crates/domain
+cargo new --lib crates/application
+cargo new --lib crates/infrastructure
+cargo new crates/api                 # 唯一的執行檔
+```
+
+接著寫根 `Cargo.toml`，把四個 crate 列為成員，並集中管理共用依賴的版本：
 
 ```toml
 [workspace]
-resolver = "2"
+resolver = "3"
 members = ["crates/domain", "crates/application", "crates/infrastructure", "crates/api"]
 
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
-thiserror = "1"
+thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "macros", "migrate"] }
+reqwest = { version = "0.13", features = ["json"] }
+```
+
+各 crate 的依賴（`cargo new` 產生的 `[package]` 段保留不動，只補 `[dependencies]`）。依賴方向跟第 09 章一樣：domain 誰都不靠，application 只靠 domain，sqlx / reqwest 只出現在 infrastructure 和組合根 api：
+
+```toml
+# crates/domain/Cargo.toml
+[dependencies]
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+```
+
+```toml
+# crates/application/Cargo.toml
+[dependencies]
+domain = { path = "../domain" }
+thiserror = { workspace = true }
+
+[dev-dependencies]                     # 只有用例測試（13.9）用得到
+tokio = { workspace = true }
+async-trait = { workspace = true }
+```
+
+```toml
+# crates/infrastructure/Cargo.toml
+[dependencies]
+domain = { path = "../domain" }
+async-trait = { workspace = true }
+serde = { workspace = true }
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+```
+
+```toml
+# crates/api/Cargo.toml
+[dependencies]
+domain = { path = "../domain" }
+application = { path = "../application" }
+infrastructure = { path = "../infrastructure" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+reqwest = { workspace = true }
+axum = "0.8"
+tower-http = { version = "0.7", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }   # main.rs 用到 EnvFilter
+dotenvy = "0.15"
+envy = "0.4"
+
+[dev-dependencies]                     # 整合測試（13.9）
+wiremock = "0.6"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+```
+
+`crates/api/build.rs`（第 10.5 節）：`main.rs` 用 `sqlx::migrate!` 把 migration 編進執行檔，只新增 `.sql` 檔、沒改 Rust 程式碼時，靠它讓 Cargo 知道要重新編譯：
+
+```rust
+fn main() {
+    println!("cargo:rerun-if-changed=../../migrations");
+}
 ```
 
 ---
@@ -160,7 +241,7 @@ pub enum RepoError {
     Backend(String),
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum MetadataError {
     #[error("找不到這本書的資料")]
     NotFound,
@@ -184,9 +265,33 @@ pub trait BookRepository: Send + Sync {
 pub trait BookMetadataProvider: Send + Sync {
     async fn lookup(&self, isbn: &Isbn) -> Result<BookMetadata, MetadataError>;
 }
+
+// ── 讓 Arc<dyn ...> 也能塞進泛型用例（第 09 章 9.9）：每個方法都轉交給 Arc 裡面的實作 ──
+#[async_trait]
+impl<T: BookRepository + ?Sized> BookRepository for std::sync::Arc<T> {
+    async fn insert(&self, isbn: &Isbn, meta: &BookMetadata) -> Result<Book, RepoError> {
+        (**self).insert(isbn, meta).await
+    }
+    async fn find_by_id(&self, id: i64) -> Result<Option<Book>, RepoError> {
+        (**self).find_by_id(id).await
+    }
+    async fn list(&self, author_filter: Option<&str>) -> Result<Vec<Book>, RepoError> {
+        (**self).list(author_filter).await
+    }
+    async fn delete(&self, id: i64) -> Result<bool, RepoError> {
+        (**self).delete(id).await
+    }
+}
+
+#[async_trait]
+impl<T: BookMetadataProvider + ?Sized> BookMetadataProvider for std::sync::Arc<T> {
+    async fn lookup(&self, isbn: &Isbn) -> Result<BookMetadata, MetadataError> {
+        (**self).lookup(isbn).await
+    }
+}
 ```
 
-注意：domain 的 `Cargo.toml` **只有** `async-trait / thiserror / serde`——沒有 sqlx、沒有 reqwest、沒有 axum。核心是純的。
+注意：domain 的 `Cargo.toml` **只有** `async-trait` 與 `thiserror`——沒有 sqlx、沒有 reqwest、沒有 axum。核心是純的。
 
 ---
 
@@ -311,7 +416,7 @@ impl BookRepository for PgBookRepository {
     }
 
     async fn list(&self, author_filter: Option<&str>) -> Result<Vec<Book>, RepoError> {
-        // 動態條件：有 author 就過濾，沒有就全查（用一句 SQL + COALESCE 技巧）
+        // 動態條件：有 author 就過濾，沒有就全查（同一句 SQL：$1 是 NULL 時 OR 左邊成立，等於不過濾）
         let rows = sqlx::query!(
             "SELECT id, isbn, title, author, published_year FROM books
              WHERE ($1::text IS NULL OR author ILIKE $1)
@@ -384,10 +489,12 @@ impl BookMetadataProvider for OpenLibraryProvider {
         let resp = resp.error_for_status().map_err(map_err)?;   // 其他 4xx/5xx → 錯誤
         let body: OlBook = resp.json().await.map_err(map_err)?;
 
-        // 從 publish_date 抓出年份（簡化：找出四位數字）
-        let year = body.publish_date.and_then(|d| {
-            d.split_whitespace().find_map(|w| w.parse::<i32>().ok())
-                .filter(|y| (1000..=2100).contains(y))
+        // 從 publish_date 抓出年份：格式不固定（"2017"、"December 27, 2017"、"2017-12-27"），
+        // 所以用非數字字元切開，取第一段四位數字
+        let year = body.publish_date.as_deref().and_then(|d| {
+            d.split(|c: char| !c.is_ascii_digit())
+                .find(|part| part.len() == 4)
+                .and_then(|part| part.parse::<i32>().ok())
         });
 
         Ok(BookMetadata {
@@ -399,7 +506,7 @@ impl BookMetadataProvider for OpenLibraryProvider {
 }
 ```
 
-> 真實 Open Library 的作者名要再打一次 `/authors/{key}.json` 才拿得到（作者是另一個資源）。這裡簡化成用 key 當作者，重點是示範「reqwest + serde + 錯誤映射」的完整形狀，不是把 Open Library 串到完美。你自己的專案換成任何 API 都是同一套路。
+> 真實 Open Library 的作者名要再打一次 `/authors/{key}.json` 才拿得到（作者是另一個資源）；有些版本的資料甚至沒有 `authors` 欄位，作者只掛在 `works` 底下，這時會得到「未知」（13.8 試的那本就是）。這裡簡化成用 key 當作者，重點是示範「reqwest + serde + 錯誤映射」的完整形狀，不是把 Open Library 串到完美。你自己的專案換成任何 API 都是同一套路。
 
 `crates/infrastructure/src/lib.rs`：
 
@@ -413,6 +520,16 @@ pub use open_library::OpenLibraryProvider;
 ---
 
 ## 13.7 api：組裝、handler、錯誤映射
+
+api 是執行檔，但我們把模組放在 `lib.rs` 底下公開，`main.rs` 再從 `api::...` 引用。原因是 `tests/` 底下的整合測試只能存取 library 的公開 API（第 06 章），進不去 `main.rs`；這樣 13.9 的整合測試才拿得到 `router`。
+
+```rust
+// lib.rs
+pub mod config;
+pub mod error;
+pub mod handlers;
+pub mod state;
+```
 
 ### 組態與狀態（`config.rs` / `state.rs`）
 
@@ -443,13 +560,14 @@ impl Config {
 // state.rs（第 09、11 章）
 use std::sync::Arc;
 use application::AddBook;
-use infrastructure::{OpenLibraryProvider, PgBookRepository};
+use domain::{BookMetadataProvider, BookRepository};
 
 #[derive(Clone)]
 pub struct AppState {
-    // 用泛型具體型別包起來，用 Arc 共享（也可用 Arc<dyn Trait>）
-    pub add_book: Arc<AddBook<OpenLibraryProvider, PgBookRepository>>,
-    pub repo: Arc<dyn domain::BookRepository>,
+    // 用例保持泛型，這裡把兩個 port 都指定成 Arc<dyn ...>（第 09 章 9.9、第 11 章 11.7）：
+    // AppState 不寫死 Postgres / Open Library，具體實作由組合根決定，測試時可整個換成假的
+    pub add_book: Arc<AddBook<Arc<dyn BookMetadataProvider>, Arc<dyn BookRepository>>>,
+    pub repo: Arc<dyn BookRepository>,
 }
 ```
 
@@ -465,8 +583,8 @@ pub enum ApiError {
     NotFound,
     #[error(transparent)]
     AddBook(#[from] application::AddBookError),
-    #[error("內部錯誤")]
-    Internal,
+    #[error(transparent)]
+    Repo(#[from] domain::RepoError),            // 查詢類 handler 直接呼叫 repo 時的錯誤
 }
 
 impl IntoResponse for ApiError {
@@ -484,10 +602,11 @@ impl IntoResponse for ApiError {
                 (StatusCode::GATEWAY_TIMEOUT, "書目服務逾時".into()),
             ApiError::AddBook(Metadata(_)) =>
                 (StatusCode::BAD_GATEWAY, "書目服務暫時無法使用".into()),
-            ApiError::AddBook(Repo(_)) | ApiError::Internal =>
+            ApiError::AddBook(Repo(_)) | ApiError::Repo(_) =>
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
         };
-        // 內部錯誤要在伺服器端記 log（第 11 章），對外只回泛用訊息
+        // 內部錯誤要在伺服器端記 log（第 11 章），對外只回泛用訊息；
+        // self 裡保留著原始的 RepoError，log 才看得到真正的資料庫錯誤
         if status.is_server_error() {
             tracing::error!(error = %self, "handler 發生伺服器錯誤");
         }
@@ -500,12 +619,14 @@ impl IntoResponse for ApiError {
 
 ### handler 與 router（`handlers.rs`，第 11 章）
 
+新增書要協調外部 API 與資料庫，所以走 `AddBook` 用例；列出、查單筆、刪除沒有額外的業務規則，handler 直接呼叫 repo（13.5 的 `ListBooks` 示範了「想讓每個動作都走用例」時要怎麼包）。
+
 ```rust
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get},
+    routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -539,22 +660,21 @@ async fn list_books(
     State(st): State<AppState>,
     Query(q): Query<ListQuery>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let books = st.repo.list(q.author.as_deref()).await.map_err(|_| ApiError::Internal)?;
+    let books = st.repo.list(q.author.as_deref()).await?;     // RepoError 經 #[from] 轉成 ApiError::Repo
     Ok(Json(books.into_iter().map(BookView::from).collect::<Vec<_>>()))
 }
 
 async fn get_book(
     State(st): State<AppState>, Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let book = st.repo.find_by_id(id).await.map_err(|_| ApiError::Internal)?
-        .ok_or(ApiError::NotFound)?;
+    let book = st.repo.find_by_id(id).await?.ok_or(ApiError::NotFound)?;
     Ok(Json(BookView::from(book)))
 }
 
 async fn delete_book(
     State(st): State<AppState>, Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let removed = st.repo.delete(id).await.map_err(|_| ApiError::Internal)?;
+    let removed = st.repo.delete(id).await?;
     if removed { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::NotFound) }
 }
 
@@ -574,17 +694,18 @@ pub fn router(state: AppState) -> Router {
 ### 組合根（`main.rs`）——一切在此接起來
 
 ```rust
-mod config; mod state; mod error; mod handlers;
 use std::sync::Arc;
 use std::time::Duration;
-use config::Config;
-use state::AppState;
+use api::{config::Config, handlers, state::AppState};   // 從 lib.rs 公開的模組引用
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 1. 日誌（第 11 章）
+    // 1. 日誌（第 11 章）：有設 RUST_LOG 就照它，沒設就用預設值
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("info,tower_http=debug"))
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,tower_http=debug")),
+        )
         .init();
 
     // 2. 組態（第 09 章）
@@ -605,14 +726,14 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
 
     // 5. 組裝依賴（第 09 章組合根：在這裡、也只在這裡，決定用哪些具體實作）
-    let provider = infrastructure::OpenLibraryProvider::new(http, config.open_library_base.clone());
-    let repo_for_uc = infrastructure::PgBookRepository::new(pool.clone());
-    let repo_shared: Arc<dyn domain::BookRepository> =
-        Arc::new(infrastructure::PgBookRepository::new(pool.clone()));
+    let provider: Arc<dyn domain::BookMetadataProvider> =
+        Arc::new(infrastructure::OpenLibraryProvider::new(http, config.open_library_base.clone()));
+    // 同一個 repo（同一個 Arc）同時交給用例和查詢 handler
+    let repo: Arc<dyn domain::BookRepository> = Arc::new(infrastructure::PgBookRepository::new(pool));
 
     let state = AppState {
-        add_book: Arc::new(application::AddBook::new(provider, repo_for_uc)),
-        repo: repo_shared,
+        add_book: Arc::new(application::AddBook::new(provider, repo.clone())),
+        repo,
     };
 
     // 6. 起 server + 優雅關機（第 11 章）
@@ -621,11 +742,33 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("Bookshelf 啟動於 http://{addr}");
     axum::serve(listener, app)
-        .with_graceful_shutdown(async { tokio::signal::ctrl_c().await.ok(); })
+        .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
 }
+
+// Ctrl-C（本機）或 SIGTERM（docker stop、k8s 滾動更新送的訊號）都觸發優雅關機
+async fn shutdown_signal() {
+    let ctrl_c = async { tokio::signal::ctrl_c().await.ok(); };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("安裝 SIGTERM handler 失敗")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();   // Windows 沒有 SIGTERM，只等 Ctrl-C
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("收到關機訊號，等進行中的請求做完再關");
+}
 ```
+
+> **為什麼不只等 Ctrl-C？** `ctrl_c()` 只接 SIGINT（終端機按 Ctrl-C）。容器平台要停掉服務時送的是 **SIGTERM**：`docker stop`、k8s 滾動更新都是。只等 Ctrl-C 的話，SIGTERM 來了不會走優雅關機；程式在容器裡又是 PID 1，沒裝 handler 的 SIGTERM 會被忽略，平台等滿寬限期（Docker 預設 10 秒）後直接 SIGKILL，進行中的請求照樣被砍斷。
 
 > **停下來欣賞這 6 步**：組態 → 連線池 → migration → HTTP client → 組裝依賴 → 起 server。這就是幾乎所有 Rust 後端 `main` 的樣板。每一步都是前面某一章的成果。整個服務**只有這個檔案知道「用的是 Postgres 和 Open Library」**——想換 DB、換書目來源，改這裡即可，其他層一律不動。
 
@@ -641,7 +784,8 @@ docker compose up -d db
 #    DATABASE_URL=postgres://dev:dev@localhost:5432/bookshelf
 #    OPEN_LIBRARY_BASE=https://openlibrary.org
 
-# 3. 準備編譯期 SQL 檢查用的 DB（第 10 章）
+# 3. 先建表：query! 在編譯期會連 DB 檢查 SQL，表不存在就編譯失敗（第 10 章）
+#    sqlx 指令來自第 10.5 節裝的 sqlx-cli；在 bookshelf/ 根目錄執行，它會找 migrations/
 export DATABASE_URL=postgres://dev:dev@localhost:5432/bookshelf
 sqlx migrate run
 
@@ -740,9 +884,84 @@ mod tests {
 }
 ```
 
-### 整合測試：真 DB + mock 外部（`crates/api/tests/`）
+### 整合測試：真 DB + mock 外部（`crates/api/tests/books_api.rs`）
 
-用 Docker 的測試 DB + `wiremock`（第 12 章）假的 Open Library，用 `oneshot`（第 11 章）打真 router。這類慢、依賴環境，數量要少，只驗「關鍵路徑真的能串起來」。
+用 Docker 起的 Postgres + `wiremock`（第 12 章）假的 Open Library，用 `oneshot`（第 11 章）打真 router。這類慢、依賴環境，數量要少，只驗「關鍵路徑真的能串起來」。
+
+資料庫的部分交給 `#[sqlx::test]`：它讀 `DATABASE_URL`，為每個測試建一個全新的暫時資料庫、跑完 migration，再把連到它的 `PgPool` 當參數傳進來，測試結束自動刪掉，測試之間不會互相污染。
+
+```rust
+use std::sync::Arc;
+
+use api::{handlers, state::AppState};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
+use http_body_util::BodyExt; // 提供 .collect()，把回應 body 讀成 bytes
+use infrastructure::{OpenLibraryProvider, PgBookRepository};
+use tower::ServiceExt; // 提供 .oneshot()
+use wiremock::{
+    matchers::{method, path},
+    Mock, MockServer, ResponseTemplate,
+};
+
+// migrations 路徑跟 migrate! 一樣，相對於 crates/api/
+#[sqlx::test(migrations = "../../migrations")]
+async fn add_then_get_book(pool: sqlx::PgPool) {
+    // 1. 假的 Open Library：只認得這一本 ISBN
+    let ol = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/isbn/9780134685991.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "title": "Effective Java",
+            "authors": [{ "key": "/authors/OL1A" }],
+            "publish_date": "December 27, 2017"
+        })))
+        .mount(&ol)
+        .await;
+
+    // 2. 跟 main.rs 一樣組裝，只是 base_url 指向 mock、pool 指向測試資料庫
+    let provider: Arc<dyn domain::BookMetadataProvider> =
+        Arc::new(OpenLibraryProvider::new(reqwest::Client::new(), ol.uri()));
+    let repo: Arc<dyn domain::BookRepository> = Arc::new(PgBookRepository::new(pool));
+    let state = AppState {
+        add_book: Arc::new(application::AddBook::new(provider, repo.clone())),
+        repo,
+    };
+    let app = handlers::router(state);
+
+    // 3. POST /books：整條「驗 ISBN → 查外部 → 寫 DB → 回 JSON」
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/books")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"isbn":"978-0-13-468599-1"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let created: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(created["title"], "Effective Java");
+    assert_eq!(created["published_year"], 2017);
+
+    // 4. GET /books/{id}：確認真的寫進資料庫了
+    let id = created["id"].as_i64().unwrap();
+    let resp = app
+        .oneshot(Request::get(format!("/books/{id}")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+```
+
+```bash
+# DB 要先起來（13.8 的 docker compose up -d db），DATABASE_URL 用 13.8 那條
+cargo test --workspace
+```
 
 > **測試哲學**：多寫又快又穩的單元/用例測試（不依賴外部），少寫慢又脆的整合測試（依賴環境）。因為架構分層做得好，**大部分邏輯都能用假依賴測到**——這是第 09 章分層最實際的回報。
 
@@ -750,28 +969,50 @@ mod tests {
 
 ## 13.10 容器化與部署
 
+### 先產生 `.sqlx/`：讓 Docker 建置不必連 DB
+
+Docker 建置時沒有資料庫可連，`query!` 要改讀離線快取（第 10.10 節）。在 DB 還開著時，於 `bookshelf/` 根目錄執行：
+
+```bash
+cargo sqlx prepare --workspace     # 在 workspace 根目錄一定要加 --workspace，不加會報錯
+git add .sqlx                      # 產生在根目錄的 .sqlx/，要 commit
+```
+
+之後改了任何 `query!` 的 SQL，都要重跑一次，否則離線建置會因為快取對不上而失敗。
+
 ### 多階段 Dockerfile
 
 ```dockerfile
 # ── 建置階段 ──
-FROM rust:1.82 AS builder
+FROM rust:1.100-trixie AS builder
 WORKDIR /app
 COPY . .
-ENV SQLX_OFFLINE=true                 # 用 .sqlx 快取，建置時不連 DB（第 10 章）
+# 用 .sqlx 快取做 SQL 檢查，建置時不連 DB（第 10.10 節）
+ENV SQLX_OFFLINE=true
 RUN cargo build --release -p api
 
 # ── 執行階段：用小映像，只帶執行檔 ──
-FROM debian:bookworm-slim
+# 跟建置階段用同一版 Debian（trixie），glibc 版本才對得上
+FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/api /usr/local/bin/api
-COPY --from=builder /app/migrations /migrations
+# migration 已由 sqlx::migrate! 編進執行檔，不用另外複製 migrations/
 EXPOSE 8080
 CMD ["api"]
 ```
 
-- **多階段建置**：第一階段用完整 Rust 工具鏈編譯，第二階段只複製最終執行檔到精簡映像。成品映像可以很小（Rust 編出來是單一靜態執行檔，這是它的一大優勢——不用帶 runtime、直譯器）。
-- `SQLX_OFFLINE=true` + commit 進去的 `.sqlx/`：建置時不需要真 DB（第 10.10 節）。
-- `ca-certificates`：reqwest 打 HTTPS 需要根憑證。
+`.dockerignore`（`COPY . .` 會把整個目錄送進建置環境：`target/` 動輒好幾 GB，`.env` 裡的連線字串、金鑰也不該送進去）：
+
+```text
+target
+.env
+```
+
+- **多階段建置**：第一階段用完整 Rust 工具鏈編譯，第二階段只複製最終執行檔到精簡映像。成品映像可以很小：Rust 編出來是單一執行檔，除了系統的 C 函式庫（glibc）之外不需要別的執行環境——不用帶 runtime、直譯器。
+- **建置與執行映像的 Debian 版本要一致**：執行檔會動態連結建置環境的 glibc，在較新的 glibc 上編、搬到較舊的映像跑，啟動時會出現 `GLIBC_2.xx not found`。`rust:1.100-trixie` 配 `debian:trixie-slim` 就不會有這問題。（想要完全不依賴 glibc 的靜態執行檔，可以改編 `x86_64-unknown-linux-musl` 目標，但那要另外處理工具鏈，這裡不展開。）
+- **Rust 版本**：sqlx 0.9 需要 Rust 1.94 以上、edition 2024 需要 1.85 以上，太舊的 `rust:` 映像會編譯失敗。
+- `SQLX_OFFLINE=true` + commit 進去的 `.sqlx/`：建置時不需要真 DB。注意 Dockerfile 的 `#` 註解只能單獨成行，寫在 `ENV` 同一行後面會被當成參數而建置失敗。
+- `ca-certificates`：reqwest 0.13 用作業系統的根憑證驗證 HTTPS，slim 映像預設沒有，要自己裝；少了它，打 Open Library 會出現憑證驗證失敗。
 
 ### docker-compose 一鍵起全套
 
@@ -807,9 +1048,9 @@ docker compose up --build       # 一鍵起 DB + app
 ### 部署要點清單
 
 - **組態走環境變數**（第 09 章）：不同環境注入不同值，金鑰用 secret 管理，別進映像。
-- **migration 策略**：小服務可開機自動跑（`migrate!`）；大團隊常在部署流程獨立跑，避免多實例同時跑衝突。
+- **migration 策略**：小服務可開機自動跑（`migrate!`）。SQLx 在 Postgres 上跑 migration 前會先拿 advisory lock，多個實例同時啟動也只有一個真的執行、其他的等它做完。大團隊常改在部署流程獨立跑：耗時的 migration 不會卡住開機與健康檢查，也能先確認 schema 改成功、再放新版程式上線。
 - **健康檢查**：`/health` 給 load balancer / k8s 探測；DB 用 `pg_isready`。
-- **優雅關機**（第 11 章）：滾動更新時不掉請求。
+- **優雅關機**（第 11 章）：滾動更新時不掉請求；記得同時接 SIGTERM（13.7 的 `shutdown_signal`）。
 - **觀測性**：`tracing` 輸出結構化 log（正式可接 OpenTelemetry），加上指標與追蹤。
 - **資源上限**：連線池大小 × 實例數 別超過 DB 連線上限；外呼逾時務必設好（第 12 章）。
 
@@ -835,11 +1076,13 @@ docker compose up --build       # 一鍵起 DB + app
 
 - **`AppState` 型別對不上 handler 的 `State<...>`**→ 確認 `router` 用的 state 型別跟 handler 期待的一致。
 - **compose 裡 app 連不上 db**→ 連線 host 要用服務名（`db`）不是 `localhost`；並用 healthcheck 確保 DB ready 才起 app。
-- **Docker 建置在 `query!` 卡住**→ 忘了 `SQLX_OFFLINE=true` + commit `.sqlx/`（第 10.10 節）。
+- **Docker 建置在 `query!` 卡住**→ 忘了 `SQLX_OFFLINE=true` + commit `.sqlx/`（第 10.10 節）；workspace 要用 `cargo sqlx prepare --workspace` 產生。
+- **容器一啟動就報 `GLIBC_2.xx not found`**→ 建置映像的 Debian 比執行映像新。兩階段用同一版（例如都用 trixie）。
 - **外呼在容器內 TLS 失敗**→ 精簡映像少了 `ca-certificates`，補上。
+- **`docker stop` 要等 10 秒才停、進行中的請求被砍**→ 只等了 Ctrl-C，沒接 SIGTERM。用 13.7 的 `shutdown_signal`。
 - **用例把 `reqwest`/`sqlx` 型別漏進 application 層**→ 破壞分層。錯誤與型別要在 infrastructure 邊界翻譯乾淨。
 - **整合測試打真的 Open Library**→ 慢又不穩。用 wiremock 假的（第 12 章）。
-- **migration 在多實例同時啟動時互相衝突**→ 大規模部署改用獨立 migration 步驟。
+- **把耗時的 migration 放在開機時跑**→ 大表加索引、改欄位型別可能跑好幾分鐘，這段時間服務起不來、健康檢查失敗，被平台當成啟動失敗而重啟。這類 migration 改在部署流程獨立執行。
 
 ---
 
@@ -887,14 +1130,14 @@ docker compose up --build       # 一鍵起 DB + app
 - **進階能力（07～08）**：智慧指標與內部可變性、以及無懼併發與 async/Tokio。
 - **工程實戰（09～13）**：分層架構、SQLx 資料庫、Axum Web API、reqwest 外部串接，最後整合成一個能上線的成品。
 
-你已經不再是「跟編譯器打架的初學者」，而是能**用 Rust 做工程決策、蓋出乾淨可測後端**的工程師。README 承諾的四項主線需求——**架構設計、資料庫串接、網路 API 串接、成品範例**——你全部做到了。接下來第 14 章會把這個成品強化成更接近生產環境的高併發服務；第 15～17 章則是 GPU/AI 選修進階路線。
+你已經不再是「跟編譯器打架的初學者」，而是能**用 Rust 做工程決策、蓋出乾淨可測後端**的工程師。README 承諾的四項主線需求——**架構設計、資料庫串接、網路 API 串接、成品範例**——你全部做到了。接下來第 14 章會把這個成品強化成更接近生產環境的高併發服務；第 15～17 章是 GPU/AI 選修進階路線，第 18 章是把 Rust 編成 WebAssembly 跑在瀏覽器的選修路線。
 
 ### 下一步可以往哪走
 
 - **深化語言**：`Pin`/自訂 `Future`、進階生命週期、`unsafe` 與 FFI、巨集（`macro_rules!` / proc-macro）。
 - **強化生產力**：可觀測性（OpenTelemetry、metrics）、認證授權（JWT、OAuth）、背景任務與排程、訊息佇列。
 - **效能與規模**：壓測與 profiling、快取（Redis）、資料庫最佳化、水平擴展——這些「讓服務扛得住流量尖峰」的主題，[第 14 章](./14-high-concurrency-and-resilience.md)有完整實作（背壓、限流、負載卸除、斷路器、快取、容量規劃）。
-- **更廣的生態**：gRPC（`tonic`）、GraphQL（`async-graphql`）、WebAssembly、嵌入式、CLI 工具（`clap`）。
+- **更廣的生態**：gRPC（`tonic`）、GraphQL（`async-graphql`）、WebAssembly（第 18 章）、嵌入式、CLI 工具（`clap`）。
 - **讀好程式碼**：去讀 Axum、Tokio、SQLx 的原始碼——你現在有能力看懂它們了。
 
 > 學程式沒有終點，但你已經跨過最陡的那段坡。接下來，去**做東西**——把你想做的服務用 Rust 蓋出來，遇到問題查、卡住了回來複習對應章節。這門課會一直在這裡當你的參考書。

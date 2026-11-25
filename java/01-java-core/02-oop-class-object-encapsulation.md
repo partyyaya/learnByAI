@@ -802,6 +802,14 @@ public final class MoneyUtils {
     public static final int SCALE = 2;
 
     // ② 編譯一次就重用的重物件（Pattern 編譯很貴，不要每次呼叫都建）
+    // 用途：檢查金額字串格式，允許整數，或帶 1～2 位小數，例如 "99"、"99.9"、"99.99"。
+    // Pattern.compile 將正規表示式編譯成可重用的規則；實際檢查在下方 isValidAmount 中執行。
+    // 正規表示式本身是 ^\d+(\.\d{1,2})?$，各部分的意思如下：
+    // ^ 與 $：字串開頭與結尾；\d+：至少一個數字（本例未啟用 Unicode 字元類別，指 0～9）。
+    // \.：字面上的小數點（沒有反斜線的 . 在正規表示式中代表任意字元，預設不含換行）。
+    // \d{1,2}：1～2 個數字；(...) 將小數點與小數位分成一組；? 讓這一組可出現 0 或 1 次。
+    // Java 字串也有跳脫規則，所以要寫 "\\d"、"\\."，才能讓正規表示式收到 \d、\.。
+    // 不接受負號、空白、千分位逗號或超過兩位小數；只檢查格式，不判斷金額上限或業務規則。
     private static final Pattern AMOUNT_PATTERN = Pattern.compile("^\\d+(\\.\\d{1,2})?$");
 
     // ③ 工具類別不該被實例化
@@ -811,7 +819,14 @@ public final class MoneyUtils {
 
     // ④ 純函式：輸入決定輸出，不依賴任何狀態
     public static BigDecimal withTax(BigDecimal amount) {
+        // 用途：將未稅金額換算成含稅金額，公式為「未稅金額 ×（1 + 稅率）」。
+        // BigDecimal.ONE 是值為 1 的 BigDecimal；加上 TAX_RATE（0.05）得到 1.05。
+        // multiply 再將 amount 乘上 1.05，例如 100 × 1.05 = 105。
         return amount.multiply(BigDecimal.ONE.add(TAX_RATE))
+                     // setScale 保留 SCALE（2）位小數，例如 105 變成 105.00。
+                     // HALF_UP 取最接近的值，恰好在中間時向遠離 0 的方向取值，
+                     // 例如 105.005 → 105.01、-105.005 → -105.01，通常稱為「四捨五入」。
+                     // BigDecimal 不可變：這些運算回傳新物件，不會修改傳入的 amount。
                      .setScale(SCALE, RoundingMode.HALF_UP);
     }
 
@@ -860,6 +875,28 @@ public class Duration2 {
 ```
 
 JDK 裡到處是這種寫法：`List.of()`、`Optional.of()`、`Integer.valueOf()`、`LocalDate.of()`。
+
+```java
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+// List.of：用指定元素建立不可新增、刪除或替換元素的清單；元素不可為 null。
+List<String> names = List.of("Amy", "Ben");
+
+// Optional.of：將非 null 的值包成 Optional，表示「有值」；傳入 null 會拋例外。
+// 值可能為 null 時用 Optional.ofNullable(value)，明確沒有值時用 Optional.empty()。
+Optional<String> name = Optional.of("Amy");
+
+// Integer.valueOf：將基本型別 int 包成 Integer 物件；可能重用快取，不一定建立新物件。
+Integer count = Integer.valueOf(42);
+
+// LocalDate.of：指定年、月、日來建立日期；LocalDate 不包含時間與時區。
+LocalDate date = LocalDate.of(2026, 11, 17);
+```
+
+共同點是**透過類別上的靜態方法取得物件**，呼叫端不必直接寫 `new`；
+方法內部可以建立新物件，也可以回傳可重用的既有物件。
 
 ### ⚠️ `static` 為什麼會毀掉你的可測性
 
@@ -926,28 +963,45 @@ public class OrderService {
 ```java
 public class InitOrder {
 
-    static { System.out.println("2. 靜態初始化區塊"); }
-
+    // 靜態欄位：屬於類別本身，所有物件共用同一份。
+    // 等號右邊的 init(...) 會在類別初始化時執行，順便印出標籤，讓你看到它何時被賦值。
     private static final String STATIC_FIELD = init("1. 靜態欄位");
 
-    { System.out.println("4. 實例初始化區塊"); }
+    // 靜態初始化區塊（static initializer）：類別本體裡可以直接放的一種成員，和欄位、方法、建構子同一層級。
+    // 它沒有名字、參數與回傳型別，程式無法呼叫它；JVM 在類別初始化時自動執行，只執行一次。
+    // 編譯器會把「靜態欄位的初始值」和「static {} 區塊」依原始碼由上到下合併成隱藏方法 <clinit>，
+    // 這裡它寫在 STATIC_FIELD 下面，所以在 STATIC_FIELD 之後執行。
+    // 執行時還沒有任何物件，區塊內不能使用 this，也不能存取實例欄位。
+    // 常見用途是一行運算式寫不完的靜態初始化，例如用迴圈填好一個 Map，或需要 try/catch 的設定。
+    // 寫成一行只是排版，和把 System.out.println(...) 換行寫在大括號裡完全相同。
+    static { System.out.println("2. 靜態初始化區塊"); }
 
+    // 實例欄位：每個物件各有一份，每次 new 都會重新執行 init(...)。
     private final String instanceField = init("3. 實例欄位");
 
+    // 實例初始化區塊：沒有 static 的 {}，每次 new 都會執行。
+    // 編譯器會把「實例欄位的初始值」和「{} 區塊」依原始碼順序插入每個建構子，排在建構子本體之前，
+    // 這裡它寫在 instanceField 下面，所以在 instanceField 之後、建構子本體之前執行。
+    { System.out.println("4. 實例初始化區塊"); }
+
+    // 建構子本體：實例欄位與實例初始化區塊都執行完之後才輪到它。
     public InitOrder() {
         System.out.println("5. 建構子本體");
     }
 
+    // 輔助方法：印出標籤再原樣回傳，用來觀察欄位初始化發生的時間點。
+    // 宣告成 static，是因為 STATIC_FIELD 初始化時也要呼叫它，那時還沒有物件。
     private static String init(String label) {
         System.out.println(label);
         return label;
     }
 
+    // 執行 main 之前，JVM 必須先載入並初始化 InitOrder，所以 1、2 會出現在「main 開始」之前。
     public static void main(String[] args) {
         System.out.println("--- main 開始 ---");
-        new InitOrder();
+        new InitOrder();     // 第一個物件：依序印出 3、4、5
         System.out.println("--- 第二個物件 ---");
-        new InitOrder();
+        new InitOrder();     // 第二個物件：再印一次 3、4、5；類別已經初始化過，1、2 不會再出現
     }
 }
 ```
@@ -969,11 +1023,14 @@ public class InitOrder {
 
 **規則：**
 
-1. **靜態的**（欄位 + `static {}`）在**類別載入時執行一次**，依原始碼順序。
+1. **靜態的**（欄位 + `static {}`）在**類別初始化時執行一次**（第一次用到這個類別時），依原始碼順序。
 2. **實例的**（欄位 + `{}`）在**每次 `new` 時執行**，依原始碼順序，且**在建構子本體之前**。
 3. 有繼承時，父類別的初始化先於子類別（第 03 章）。
 
-注意上面輸出：靜態區塊在 `main` **之前**就跑了，因為 JVM 要先載入 `InitOrder` 才能執行它的 `main`。
+「依原始碼順序」看的是**寫在第幾行，不看是欄位還是區塊**。把上面的 `static {}` 移到 `STATIC_FIELD` 上面，
+輸出就會變成先印 2 再印 1；`{}` 移到 `instanceField` 上面也一樣，會先印 4 再印 3。
+
+注意上面輸出：靜態區塊在 `main` **之前**就跑了，因為 JVM 要先載入並初始化 `InitOrder`，才能執行它的 `main`。
 
 ### 實務案例：靜態區塊初始化失敗，錯誤訊息很難懂
 

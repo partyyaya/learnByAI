@@ -141,7 +141,8 @@ pub enum RepoError {
 
 幾個要點：
 
-- **`#[async_trait]`**：目前穩定版 Rust 的 trait 裡要放 `async fn`，最省事的做法是加 `async-trait` 這個 crate（`cargo add async-trait`）。它幫你把 async trait 方法包成回傳 `Box<dyn Future>`。（註：較新版 Rust 已逐步支援原生 async trait，但生態仍普遍用 `async_trait`，本課沿用它以求相容。）
+- **`#[async_trait]`（來自 `async-trait` crate）**：Rust 1.75 起，trait 裡已經可以直接寫 `async fn`（原生寫法），那為什麼還要這個 crate？因為原生 `async fn` 的 trait **不是 dyn-compatible**——不能做成 `dyn OrderRepository`。每個實作回傳的 future 型別、大小都不同，編譯器沒辦法把它們放進同一張 vtable（trait 物件的方法表，第 07 章）。而我們在 9.9 節與第 11 章要把 repo 放進 `Arc<dyn OrderRepository>` 共享，硬寫會得到 `the trait OrderRepository is not dyn compatible` 的編譯錯誤。`#[async_trait]` 的做法是把每個 async 方法改寫成回傳 `Pin<Box<dyn Future<Output = ...> + Send>>`：大小固定、能放進 vtable，而且保證 future 是 `Send`（能被 Tokio 搬到別的執行緒跑）。代價是每次呼叫多一次堆積配置，跟一次 DB 查詢比起來可以忽略。
+  - 經驗法則：trait **只會用在泛型**（`<R: OrderRepository>`）→ 原生 `async fn` 就夠；**要做成 `dyn Trait`** → 用 `#[async_trait]`。注意 trait 定義和每個 `impl` 上都要加 `#[async_trait]`。
 - **`Send + Sync`**（回扣第 08 章）：因為這個 repo 之後會被多個 async task 共享（跨執行緒），所以 trait 要求實作者是執行緒安全的。
 - 這個 trait **完全不提 SQL、不提 Postgres**。它只說「能存、能找」。這就是「port」——一個對外界能力的抽象需求。
 
@@ -150,7 +151,7 @@ pub enum RepoError {
 你可能聽過「六邊形架構」「Ports and Adapters」。它就是上面這件事的正式名字：
 
 - **Port（埠）**＝內層定義的 trait（`OrderRepository`）。
-- **Adapter（轉接器）**＝外層對這個 trait 的具體實作（`PostgresOrderRepo`、`InMemoryOrderRepo`）。
+- **Adapter（轉接器）**＝外層對這個 trait 的具體實作（`PgOrderRepo`、`InMemoryOrderRepo`）。
 
 > **心智模型**：port 像牆上的插座規格（220V 兩孔）；adapter 是你插上去的各種電器。core（你的業務邏輯）只認識插座規格，換什麼電器都行。
 
@@ -186,26 +187,38 @@ myshop/
 
 ```toml
 [workspace]
-resolver = "2"
+resolver = "3"
 members = ["crates/domain", "crates/application", "crates/infrastructure", "crates/api"]
 
 # 用 workspace 統一管理版本，各 crate 直接繼承（避免版本打架）
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
-thiserror = "1"
+thiserror = "2"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 ```
 
-各 crate 的依賴宣告——**注意箭頭方向**：
+先放好這份根 `Cargo.toml`，再用 `cargo new` 建出四個成員 crate：
+
+```bash
+mkdir myshop && cd myshop
+# （把上面的根 Cargo.toml 存進來）
+cargo new --lib crates/domain
+cargo new --lib crates/application
+cargo new --lib crates/infrastructure
+cargo new crates/api            # 進入點是執行檔（bin），不加 --lib
+```
+
+建前幾個時，cargo 會警告「workspace 設定有問題」，那是因為 `members` 列的其他 crate 還沒建出來；四個都建好就不會再出現。
+
+各 crate 的依賴宣告——**注意箭頭方向**。可以直接編輯各自的 `Cargo.toml`，也可以在根目錄用 `cargo add -p <crate 名>` 加；遇到 `[workspace.dependencies]` 裡已有的套件，`cargo add` 會自動寫成 `workspace = true`：
 
 ```toml
 # crates/domain/Cargo.toml —— 最純，不依賴任何一層，也不依賴框架
 [dependencies]
 async-trait = { workspace = true }
 thiserror = { workspace = true }
-serde = { workspace = true }
 # ❌ 這裡「不會」出現 sqlx、axum、reqwest
 ```
 
@@ -222,8 +235,10 @@ thiserror = { workspace = true }
 [dependencies]
 domain = { path = "../domain" }
 async-trait = { workspace = true }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres"] }  # 第 10 章
-reqwest = { version = "0.12", features = ["json"] }                    # 第 12 章
+# 下面兩行到第 10、12 章真的用到時再打開註解
+# （加了卻沒用到，cargo build 會出現 `warning: unused dependency`）
+# sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono"] }  # 第 10 章
+# reqwest = { version = "0.13", features = ["json"] }                                                # 第 12 章
 ```
 
 ```toml
@@ -232,10 +247,12 @@ reqwest = { version = "0.12", features = ["json"] }                    # 第 12 
 domain = { path = "../domain" }
 application = { path = "../application" }
 infrastructure = { path = "../infrastructure" }
-axum = "0.7"                                        # 第 11 章
 tokio = { workspace = true }
 anyhow = { workspace = true }
+# axum = "0.8"                                      # 第 11 章再打開
 ```
+
+> **版本號為什麼這樣寫**：`"0.9"` 在 Cargo 的意思是「0.9.x 都可以，但不會跳到 0.10」。0.x 版的 crate 每升一個次版號都可能有破壞性變更，把次版號釘住，課文的程式碼之後才不會因為某天 `cargo update` 而編不過。
 
 > **這就是重點**：如果哪天你手滑想在 `domain/src/lib.rs` 裡 `use sqlx::...`，因為 domain 的 `Cargo.toml` 根本沒有 sqlx，**編譯直接失敗**。架構不再是「口頭紀律」，而是「編譯器強制的規則」。這是 Rust 做分層架構的一大爽點。
 
@@ -357,7 +374,7 @@ impl<R: OrderRepository> CreateOrder<R> {
 use async_trait::async_trait;
 use domain::{Order, OrderId, OrderRepository, RepoError};
 use std::collections::HashMap;
-use std::sync::Mutex;      // 回扣第 07/08 章
+use std::sync::Mutex;      // 回扣第 07/08 章；鎖只在同步程式碼裡持有、不跨 .await，用標準庫的 Mutex 就好
 
 // 記憶體實作：拿來測試與本地開發超好用
 #[derive(Default)]
@@ -413,7 +430,9 @@ async fn main() -> anyhow::Result<()> {
 }
 ```
 
-> **關鍵洞察**：整個系統只有 `main.rs`（組合根）知道「用的是 `InMemoryOrderRepo`」。第 10 章我們寫好 `PostgresOrderRepo` 後，**只要改這一行**——`let repo = PostgresOrderRepo::new(pool);`——其他所有層一個字都不用動。這就是分層 + 依賴反轉的回報。
+> **關鍵洞察**：整個系統只有 `main.rs`（組合根）知道「用的是 `InMemoryOrderRepo`」。第 10 章我們寫好 `PgOrderRepo` 後，**只要改這一行**——`let repo = PgOrderRepo::new(pool);`——其他所有層一個字都不用動（`main.rs` 只是多了建連線池的那幾行）。這就是分層 + 依賴反轉的回報。
+
+寫完四個 crate，在 `myshop/` 根目錄 `cargo run -p api`，應該會印出 `建立訂單成功：Order { id: OrderId(1), customer: "Alice", amount: Money(12000) }`。
 
 ---
 
@@ -470,15 +489,17 @@ impl Config {
 }
 ```
 
-搭配的 crate：
+搭配的 crate（在 `myshop/` 根目錄執行，加到 `api` 這個 crate）：
 
 ```bash
-cargo add dotenvy       # 讀 .env 檔（僅本地開發用）
-cargo add envy          # 把環境變數反序列化成 struct
-cargo add serde --features derive
+cargo add -p api dotenvy@0.15     # 讀 .env 檔（僅本地開發用）
+cargo add -p api envy@0.4         # 把環境變數反序列化成 struct
+cargo add -p api serde            # workspace 已設定 derive feature，會寫成 serde.workspace = true
 ```
 
-`.env`（本機開發用，**務必加進 `.gitignore`，絕不 commit**）：
+`envy` 會把環境變數名稱轉成小寫再對到欄位：`DATABASE_URL` → `database_url`、`EXTERNAL_API_KEY` → `external_api_key`。沒有預設值的欄位若找不到對應的環境變數，`from_env()` 會回錯誤（例如 `missing value for field external_api_key`），服務一開機就停下來，而不是跑到一半才發現少設定。
+
+`.env` 放在 `myshop/` 根目錄（本機開發用，**務必加進 `.gitignore`，絕不 commit**）。`dotenvy::dotenv()` 會從目前工作目錄往上找 `.env`，所以在根目錄 `cargo run -p api` 就讀得到：
 
 ```bash
 DATABASE_URL=postgres://dev:dev@localhost:5432/myshop
@@ -487,9 +508,12 @@ LOG_LEVEL=debug
 EXTERNAL_API_KEY=sk-local-xxxx
 ```
 
-在組合根載入：
+在組合根載入（`crates/api/src/main.rs`）：
 
 ```rust
+mod config;                 // 對應 src/config.rs
+use config::Config;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;      // 一開機就把組態讀進來、驗證好
@@ -540,7 +564,41 @@ pub struct AppState {
 }
 ```
 
-`Arc`（回扣第 07 章）讓多個 async task 安全共享同一份 repo，`clone` 只是加參考計數、不複製底層資料——這正是共享狀態的標準做法。
+`Arc`（回扣第 07 章）讓多個 async task 安全共享同一份 repo，`clone` 只是加參考計數、不複製底層資料——這正是共享狀態的標準做法。`Arc<dyn domain::OrderRepository>` 之所以寫得出來，正是因為 9.4 節的 trait 用了 `#[async_trait]`；換成原生 `async fn`，這一行就會編譯失敗。
+
+### 兩種風格並用：讓 `Arc<dyn OrderRepository>` 也能塞進泛型用例
+
+用例 `CreateOrder<R: OrderRepository>` 是泛型（風格 A），`AppState` 裡放的卻是 `Arc<dyn OrderRepository>`（風格 B）。想讓用例直接吃 `AppState` 裡那份 repo，就要讓 `Arc<...>` 本身也算一個 `OrderRepository`。在 domain 補一段「轉交」的實作即可（加在 `crates/domain/src/lib.rs`；Rust 的孤兒規則只允許在定義 trait 的 crate 或定義型別的 crate 寫這種 impl，所以只能放 domain）：
+
+```rust
+// 讓 Arc<T>（包含 Arc<dyn OrderRepository>）本身也是一個 OrderRepository：
+// 每個方法都轉交給 Arc 裡面的那個實作
+#[async_trait]
+impl<T: OrderRepository + ?Sized> OrderRepository for std::sync::Arc<T> {
+    async fn save(&self, order: &Order) -> Result<(), RepoError> {
+        (**self).save(order).await
+    }
+    async fn find(&self, id: OrderId) -> Result<Option<Order>, RepoError> {
+        (**self).find(id).await
+    }
+    async fn list(&self) -> Result<Vec<Order>, RepoError> {
+        (**self).list().await
+    }
+}
+```
+
+- `?Sized`：讓 `T` 可以是 `dyn OrderRepository` 這種「大小編譯期未知」的型別。
+- `(**self)`：`self` 是 `&Arc<T>`，解兩層參考拿到裡面的 `T`，再呼叫它的方法。
+
+有了它，組合根就能「建一份 repo，同時給用例和其他地方共用」：
+
+```rust
+let repo: Arc<dyn OrderRepository> = Arc::new(InMemoryOrderRepo::default());
+let create_order = CreateOrder::new(repo.clone());   // R = Arc<dyn OrderRepository>
+// repo 本身還能放進 AppState，給查詢用的 handler 使用（第 11 章）
+```
+
+兩邊拿到的是同一份資料：用例存進去的訂單，另一邊查得到。第 11 章的 `AppState` 就是這樣組的。
 
 ---
 
@@ -586,6 +644,10 @@ infrastructure = { path = "../infrastructure" }
 tokio = { workspace = true }
 ```
 
+在 `myshop/` 根目錄跑 `cargo test -p application`（或 `cargo test` 跑整個 workspace），應該看到兩個測試都 `ok`。
+
+> `[dev-dependencies]` 只在編譯測試時才生效，所以 application 的正式程式碼仍然 `use` 不到 infrastructure，依賴方向沒有被破壞。
+
 > **這就是分層的最大回報**：業務規則的測試**又快又不依賴外部環境**。你不用起 Docker、不用連 DB，`cargo test` 毫秒級跑完。等第 10 章有了 Postgres 版 repo，那些「真的連 DB」的測試歸為整合測試，跟這些單元測試分開跑。
 
 ---
@@ -596,7 +658,7 @@ tokio = { workspace = true }
 - **把 DTO（對外的資料形狀）當成 domain 實體**→ 外部 API 一改，你的核心模型就被牽動。兩者要分開，用例層負責轉換。
 - **在內層直接讀 `std::env::var`**→ 依賴變隱形、難測。組態在組合根載入後往內注入。
 - **金鑰、連線字串寫死或 commit 進 git**→ 外洩風險。用環境變數 + `.env`（且 `.env` 進 `.gitignore`）。
-- **想用 async fn 卻放進普通 trait**→ 加 `#[async_trait]`，或改用支援原生 async trait 的新版寫法。
+- **trait 用原生 `async fn`，卻想做成 `Arc<dyn Trait>`**→ 編譯錯誤 `the trait ... is not dyn compatible`。要當 trait 物件用，就在 trait 定義和每個 `impl` 上加 `#[async_trait]`；只用在泛型的 trait 則原生 `async fn` 就行。
 - **一開始就過度設計**（小服務也硬拆四層 + 一堆 trait）→ 分層是為了「應付變化」，變化不大的小工具別過度抽象。先讓它會動，複雜到痛了再拆。
 - **忘了 trait 加 `Send + Sync`**→ 之後要在多 task 間共享會編譯錯（回扣第 08 章）。
 
@@ -641,4 +703,4 @@ tokio = { workspace = true }
 
 **架構篇（09）到此完成。** 你已經有了整個後端的「設計骨架」：一個乾淨、可測、可替換的分層系統，而且 `Repository` trait 這個 port 已經備好插座。
 
-下一章 [10-database-integration-sqlx-orm.md](./10-database-integration-sqlx-orm.md) 就要來接上第一個真正的 adapter——用 **SQLx** 連 PostgreSQL，寫一個 `PostgresOrderRepo` 實作本章的 `OrderRepository` trait。你會發現，因為架構已經備好，接資料庫時「業務邏輯一行都不用動」。回到 [課程首頁](./README.md) 可複習任何章節。
+下一章 [10-database-integration-sqlx-orm.md](./10-database-integration-sqlx-orm.md) 就要來接上第一個真正的 adapter——用 **SQLx** 連 PostgreSQL，寫一個 `PgOrderRepo` 實作本章的 `OrderRepository` trait。你會發現，因為架構已經備好，接資料庫時「業務邏輯一行都不用動」。回到 [課程首頁](./README.md) 可複習任何章節。

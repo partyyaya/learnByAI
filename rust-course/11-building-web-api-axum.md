@@ -42,16 +42,18 @@ Axum 不是從零造輪子，它站在 Tokio 生態的三層之上：
 
 > **為什麼選 Axum？** 它是 Tokio 團隊維護、生態相容性最好、設計最貼近 Rust 型別系統的框架。你的 handler 就是普通 `async fn`，參數用「型別」表達你要什麼（要 JSON body 就寫 `Json<T>`、要路徑參數就寫 `Path<T>`），回傳實作 `IntoResponse` 的東西即可。沒有魔法巨集路由、沒有隱藏的全域狀態。
 
-加依賴：
+加依賴。HTTP 是最外層，所以都加到 `api` 這個 crate（`tokio`、`serde` 第 09 章已經加過）：
 
 ```bash
-cargo add axum
-cargo add tokio --features full
-cargo add serde --features derive
-cargo add serde_json
-cargo add tower-http --features "trace,cors,timeout"     # middleware
-cargo add tracing tracing-subscriber                      # 結構化日誌
+# 在 myshop/ 根目錄執行
+cargo add -p api axum@0.8
+cargo add -p api serde_json thiserror                               # thiserror 沿用 workspace 版本
+cargo add -p api tower-http@0.7 --features trace,cors,timeout       # middleware
+cargo add -p api tracing@0.1                                         # 結構化日誌
+cargo add -p api tracing-subscriber@0.3 --features env-filter        # env-filter：用 RUST_LOG 控制 log 等級
 ```
+
+> 想先在獨立的小專案練 11.3～11.10：在 `myshop/` 以外的目錄 `cargo new axum-lab`，上面的指令拿掉 `-p api`，再加 `cargo add tokio --features full` 與 `cargo add serde --features derive`。
 
 ---
 
@@ -100,7 +102,7 @@ let app = Router::new()
 
 - `get(handler)`、`post(...)`、`put(...)`、`delete(...)` 對應 HTTP 方法。
 - **同一路徑、不同方法**用鏈式：`get(list).post(create)`。
-- **路徑參數**用大括號：`/orders/{id}`（Axum 0.7 之後用 `{id}`；舊版是 `:id`）。
+- **路徑參數**用大括號：`/orders/{id}`。這是 Axum 0.8 的語法；0.7 以前寫成 `/orders/:id`，網路上的舊文章常看到。在 0.8 寫 `:id` 不會編譯錯誤，而是**程式一啟動建路由時就 panic**（`Path segments must not start with ':'`）。
 
 ### 巢狀路由與前綴
 
@@ -172,9 +174,9 @@ struct CreateOrderBody {
 | `State<S>` | 共享狀態 | 你的 `AppState`（下一節） |
 | `HeaderMap` | 請求標頭 | `Authorization` 等 |
 
-> **順序與規則**：extractor 在參數列可以有多個，但「消耗 body 的 extractor」（如 `Json`）**只能有一個、且要放最後**（因為 body 只能讀一次）。這個規則 Axum 會在編譯期或啟動時提醒你。
+> **順序與規則**：extractor 在參數列可以有多個，但「消耗 body 的 extractor」（如 `Json`）**只能有一個、且要放最後**（因為 body 只能讀一次）。違反時是**編譯錯誤**，但訊息很難讀：``the trait bound `fn(...) {create_order}: Handler<_, _>` is not satisfied``。遇到這種錯誤，在 handler 上方加 `#[axum::debug_handler]`（要開 axum 的 `macros` feature：`cargo add -p api axum@0.8 --features macros`），編譯器就會直接指出是哪個參數有問題。handler 不是 `async fn`、回傳型別沒實作 `IntoResponse`、某個參數不是 extractor，也都是同一個錯誤訊息，用同一招查。
 
-> **對比其他框架**：很多框架用「從一個 `Request` 物件裡自己撈」（`req.params['id']`、`req.body`），型別全靠你自己記、撈錯了執行期才爆。Axum 反過來——**你用型別宣告需求，框架保證給你對的東西**，撈不到（例如 JSON 格式錯）它自動回 `400`，不用你寫。
+> **對比其他框架**：很多框架用「從一個 `Request` 物件裡自己撈」（`req.params['id']`、`req.body`），型別全靠你自己記、撈錯了執行期才爆。Axum 反過來——**你用型別宣告需求，框架保證給你對的東西**，撈不到它自動回錯誤，不用你寫：路徑參數解析失敗（`/orders/abc` 對 `Path<u64>`）回 `400`；JSON 語法錯回 `400`；JSON 合法但缺欄位、型別不對回 `422`；沒帶 `Content-Type: application/json` 回 `415`。這些內建錯誤的 body 是純文字，不是 11.8 節那種 JSON 格式；想統一成 JSON，可以替這些 rejection 型別（如 `axum::extract::rejection::JsonRejection`）實作轉換、包成自己的 extractor，等 API 穩定後再做即可。
 
 ---
 
@@ -183,7 +185,7 @@ struct CreateOrderBody {
 handler 回傳任何實作 `IntoResponse` 的東西都行。`&str`、`String`、`(StatusCode, ...)`、`Json<T>` 都實作了它。
 
 ```rust
-use axum::{http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::Path, http::StatusCode, response::IntoResponse, Json};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -204,7 +206,7 @@ async fn create_order(Json(body): Json<CreateOrderBody>) -> impl IntoResponse {
 
 - `Json(某個 Serialize 的東西)` 會自動序列化成 JSON、設好 `Content-Type: application/json`。
 - 想控制狀態碼，回傳 `(StatusCode::XXX, Json(...))` 的 tuple。
-- 回傳型別寫 `impl IntoResponse` 最省事（不同分支可回不同東西）。
+- 回傳型別寫 `impl IntoResponse` 最省事。但要注意：`impl Trait` 代表「某一個固定的型別」，所以每個分支回傳的型別必須相同；分支要回不同東西時，在每個分支後面加 `.into_response()`，統一轉成 `Response`（下一節的 `match` 就是這樣寫）。
 
 ---
 
@@ -219,7 +221,8 @@ use std::sync::Arc;
 // 共享狀態：包住所有依賴（第 09 章）
 #[derive(Clone)]                                       // State 必須能 Clone
 struct AppState {
-    create_order: Arc<application::CreateOrder<infrastructure::PgOrderRepo>>,
+    // 用例保持泛型，這裡把 R 指定成 Arc<dyn OrderRepository>（第 09 章 9.9 節「兩種風格並用」）
+    create_order: Arc<application::CreateOrder<Arc<dyn domain::OrderRepository>>>,
     orders: Arc<dyn domain::OrderRepository>,          // 第 09 章的 port，第 10 章的 Postgres 實作
     // config: Arc<Config>, external: Arc<WeatherClient>, ...（第 12 章會加）
 }
@@ -228,6 +231,7 @@ async fn get_order(
     State(state): State<AppState>,                     // 注入共享狀態
     Path(id): Path<u64>,
 ) -> impl IntoResponse {
+    // OrderView::from 的實作在 11.11 節
     match state.orders.find(domain::OrderId(id)).await {
         Ok(Some(order)) => (StatusCode::OK, Json(OrderView::from(order))).into_response(),
         Ok(None) => (StatusCode::NOT_FOUND, "訂單不存在").into_response(),
@@ -236,12 +240,14 @@ async fn get_order(
 }
 ```
 
-把 state 掛到 router：
+在組合根組好 state、掛到 router：
 
 ```rust
+// 組合根：建「一份」repo，同時交給用例和查詢 handler（第 10 章的 PgOrderRepo）
+let repo: Arc<dyn domain::OrderRepository> = Arc::new(PgOrderRepo::new(pool));
 let state = AppState {
-    create_order: Arc::new(application::CreateOrder::new(PgOrderRepo::new(pool.clone()))),
-    orders: Arc::new(PgOrderRepo::new(pool)),    // 組合根注入具體實作（第 10 章）
+    create_order: Arc::new(application::CreateOrder::new(repo.clone())),   // clone 的是 Arc，不是 repo
+    orders: repo,
 };
 
 let app = Router::new()
@@ -250,7 +256,8 @@ let app = Router::new()
 ```
 
 - **`#[derive(Clone)]`**：Axum 每個請求會 clone 一份 state 給 handler。因為裡面是 `Arc`（第 07 章），clone 只是加參考計數，不會複製底層資料——共享同一個 repo、同一個連線池。
-- `Arc<dyn domain::OrderRepository>`：這是第 09 章「trait object 注入」的實戰——handler 只認識抽象 trait，執行期是 Postgres 版還是記憶體版由組合根決定。
+- `Arc<dyn domain::OrderRepository>`：這是第 09 章「trait object 注入」的實戰——handler 只認識抽象 trait，執行期是 Postgres 版還是記憶體版由組合根決定。`AppState` 裡完全沒有寫死 `PgOrderRepo`，所以 11.13 節測試時可以整個換成記憶體版。
+- 用例和 `orders` 拿到的是**同一個** repo：用例存進去的訂單，`orders.find` 一定查得到。如果各自 `new` 一個記憶體版 repo，兩邊會是兩份互不相通的資料。
 
 > **這裡把三章縫起來了**：第 09 章的 `OrderRepository` trait + 第 10 章的 `PgOrderRepo` 實作 + 本章的 `State` 注入。handler 呼叫 `state.orders.find(...)`，完全不知道底層是 Postgres——這就是分層的威力。
 
@@ -273,8 +280,8 @@ enum ApiError {
     Domain(#[from] domain::DomainError),         // 業務規則錯 → 通常是 400
     #[error(transparent)]
     Application(#[from] application::CreateOrderError),
-    #[error("內部錯誤")]
-    Internal,
+    #[error(transparent)]
+    Repo(#[from] domain::RepoError),             // 查詢時的儲存錯誤 → 500
 }
 
 // 關鍵：定義「哪種錯誤 → 哪個 HTTP 狀態碼」
@@ -284,8 +291,10 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::Domain(_) => (StatusCode::BAD_REQUEST, self.to_string()),        // 業務規則違反 → 400
             ApiError::Application(application::CreateOrderError::Domain(e)) => (StatusCode::BAD_REQUEST, e.to_string()),
-            ApiError::Application(application::CreateOrderError::Repo(_)) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
-            ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
+            ApiError::Application(application::CreateOrderError::Repo(_)) | ApiError::Repo(_) => {
+                tracing::error!(error = %self, "內部錯誤");    // 完整原因只記在伺服器 log（11.10 節設定 tracing）
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         };
         // 統一的 JSON 錯誤格式，讓前端好處理
         (status, Json(json!({ "error": msg }))).into_response()
@@ -293,9 +302,12 @@ impl IntoResponse for ApiError {
 }
 ```
 
+`match` 必須涵蓋每一種錯誤。之後替 `ApiError` 加新變體卻忘了決定它的狀態碼，編譯器會直接報錯提醒你——錯誤對應表不會悄悄漏一角。
+
 有了它，handler 就能用 `?` 寫得超乾淨——回傳型別改成 `Result<成功回應, ApiError>`：
 
 ```rust
+// CreateOrderBody 的完整定義（含 id 欄位）見 11.11 節
 async fn create_order(
     State(state): State<AppState>,
     Json(body): Json<CreateOrderBody>,
@@ -321,9 +333,10 @@ async fn create_order(
 
 > **錯誤翻譯的全鏈**（回扣第 04、09、10 章）：
 > `sqlx::Error` → `RepoError` → `CreateOrderError` → `ApiError` → HTTP 狀態碼 + JSON。
+> 查詢類的 handler 直接呼叫 repo，則是 `RepoError` → `ApiError::Repo` → 500。
 > 每一層只認識「下一層的錯誤」，最外層才決定「對外長怎樣」。內部細節（例如 SQL 錯誤訊息）**不會洩漏給 client**——這既安全又乾淨。
 
-> **安全提醒**：`Internal` 錯誤對外只回「internal error」，**別把資料庫錯誤原文回給 client**（可能洩漏結構、路徑）。但要在伺服器端用 `tracing` 把完整錯誤記下來（下一節），方便你除錯。
+> **安全提醒**：500 類錯誤對外只回「internal error」，**別把資料庫錯誤原文回給 client**（可能洩漏結構、路徑）。但要在伺服器端用 `tracing` 把完整錯誤記下來（上面 `tracing::error!` 那行；log 的設定在 11.10 節），方便你除錯。這也是為什麼 `Repo` 變體要帶著原本的錯誤：如果寫成 `.map_err(|_| ApiError::...)` 把錯誤丟掉，log 裡就只剩一句「出錯了」。
 
 ---
 
@@ -336,8 +349,23 @@ async fn create_order(
 **2. 用 `validator` crate 在邊界做基本檢查**：對「純格式」的東西（email、長度）很方便。
 
 ```bash
-cargo add validator --features derive
+cargo add -p api validator@0.21 --features derive
 ```
+
+先讓 `ApiError` 認得驗證錯誤：加一個變體，並在 `into_response` 的 `match` 補上它的狀態碼（不補的話編譯器會提醒你 `match` 沒涵蓋所有情況）：
+
+```rust
+enum ApiError {
+    // ...（11.8 節的其他變體）
+    #[error("請求資料不合法：{0}")]
+    Validation(#[from] validator::ValidationErrors),
+}
+
+// into_response 的 match 裡加一行：
+// ApiError::Validation(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+```
+
+然後在 DTO 上標註規則、在 handler 裡呼叫 `validate()`：
 
 ```rust
 use validator::Validate;
@@ -352,7 +380,7 @@ struct CreateUserBody {
 }
 
 async fn create_user(Json(body): Json<CreateUserBody>) -> Result<impl IntoResponse, ApiError> {
-    body.validate().map_err(|_| ApiError::Domain(/* ... 轉成 400 */))?;   // 驗證失敗 → 400
+    body.validate()?;              // 驗證失敗 → ValidationErrors →（#[from]）ApiError::Validation → 400
     // ... 通過才繼續
     Ok(StatusCode::CREATED)
 }
@@ -367,53 +395,68 @@ async fn create_user(Json(body): Json<CreateUserBody>) -> Result<impl IntoRespon
 有些事情「每個請求都要做」：記 log、加 CORS 標頭、設逾時、驗證 token。這些叫**橫切關注**，用 middleware 統一處理，別散在每個 handler 裡。Axum 的 middleware 就是 Tower layer。
 
 ```rust
+use axum::http::StatusCode;
 use tower_http::{trace::TraceLayer, cors::CorsLayer, timeout::TimeoutLayer};
 use std::time::Duration;
 
 let app = Router::new()
     .route("/orders", get(list_orders).post(create_order))
-    .layer(TimeoutLayer::new(Duration::from_secs(10)))   // 每個請求最多 10 秒，逾時回 408
+    // 每個請求最多 10 秒，逾時回 408（狀態碼要明確指定；舊的 TimeoutLayer::new 已標為 deprecated）
+    .layer(TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, Duration::from_secs(10)))
     .layer(CorsLayer::permissive())                       // CORS（正式環境要收緊白名單）
     .layer(TraceLayer::new_for_http())                   // 自動記錄每個請求/回應（配合 tracing）
     .with_state(state);
 ```
 
-先設定 `tracing` 才看得到 log：
+先設定 `tracing` 才看得到 log（在 `main` 的第一行呼叫 `init_tracing()`）：
 
 ```rust
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 fn init_tracing() {
+    // 有設環境變數 RUST_LOG 就照它；沒設就用預設的 "info,tower_http=debug"
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,tower_http=debug"));
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("info,tower_http=debug"))  // 用 RUST_LOG 也可覆蓋
+        .with(filter)
         .with(tracing_subscriber::fmt::layer())
         .init();
 }
 ```
+
+`EnvFilter` 需要 `tracing-subscriber` 的 `env-filter` feature（11.2 節已加）。過濾字串的意思是「預設只顯示 info 以上，`tower_http` 這個模組放寬到 debug」——`TraceLayer` 的每請求紀錄是 debug 等級，不放寬就看不到。臨時想看更細：`RUST_LOG=debug cargo run -p api`。
 
 - **`.layer(...)`**：把 middleware 包在整個 router 外。多個 layer 由**下往上**包（最後加的最外層先執行）。
 - **`TraceLayer`**：自動幫每個請求記 method、path、狀態碼、耗時——生產環境必備。
 - **`CorsLayer`**：處理跨域。`permissive()` 是開發用，正式要用 `CorsLayer::new().allow_origin(...)` 限定來源。
 - **`TimeoutLayer`**：避免某個慢請求把連線卡死。
 
-> **自訂 middleware**：需要自己寫（例如驗 JWT）時，用 `axum::middleware::from_fn`：
+> **自訂 middleware**：需要自己寫（例如驗 JWT）時，用 `axum::middleware::from_fn`。下面是只檢查「有沒有帶 Bearer token」的骨架，真正的驗簽邏輯放在註解那一段：
 >
 > ```rust
-> use axum::{middleware::Next, extract::Request, response::Response};
+> use axum::{extract::Request, http::{header, StatusCode}, middleware::Next, response::Response};
+>
 > async fn auth(req: Request, next: Next) -> Result<Response, StatusCode> {
->     // 檢查 req 的 Authorization 標頭...
->     if valid { Ok(next.run(req).await) } else { Err(StatusCode::UNAUTHORIZED) }
+>     let has_token = req
+>         .headers()
+>         .get(header::AUTHORIZATION)
+>         .and_then(|v| v.to_str().ok())
+>         .is_some_and(|v| v.starts_with("Bearer "));
+>     // 實務上這裡要驗證 token 的簽章與期限
+>     if has_token { Ok(next.run(req).await) } else { Err(StatusCode::UNAUTHORIZED) }
 > }
-> // .layer(axum::middleware::from_fn(auth))
+> // 掛上去：.layer(axum::middleware::from_fn(auth))
 > ```
 
 ---
 
 ## 11.11 綜合範例：一組完整的 RESTful CRUD
 
-把本章串起來——一組真正的訂單 API，接上第 09、10 章。這是第 13 章成品的雛形：
+把本章串起來——一組真正的訂單 API，接上第 09、10 章。這是第 13 章成品的雛形。整份放在 `crates/api/src/main.rs`（取代第 10 章那個暫時的 `main`；`config.rs` 沿用第 09 章）：
 
 ```rust
+mod config;
+
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -421,13 +464,17 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use config::Config;
+use infrastructure::PgOrderRepo;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
+use std::time::Duration;
 
 #[derive(Clone)]
 struct AppState {
-    create_order: Arc<application::CreateOrder<infrastructure::PgOrderRepo>>,
+    create_order: Arc<application::CreateOrder<Arc<dyn domain::OrderRepository>>>,
     orders: Arc<dyn domain::OrderRepository>,
 }
 
@@ -452,8 +499,8 @@ enum ApiError {
     Domain(#[from] domain::DomainError),
     #[error(transparent)]
     Application(#[from] application::CreateOrderError),
-    #[error("內部錯誤")]
-    Internal,
+    #[error(transparent)]
+    Repo(#[from] domain::RepoError),
 }
 
 impl IntoResponse for ApiError {
@@ -462,8 +509,10 @@ impl IntoResponse for ApiError {
             ApiError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             ApiError::Domain(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             ApiError::Application(application::CreateOrderError::Domain(e)) => (StatusCode::BAD_REQUEST, e.to_string()),
-            ApiError::Application(application::CreateOrderError::Repo(_)) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
-            ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
+            ApiError::Application(application::CreateOrderError::Repo(_)) | ApiError::Repo(_) => {
+                tracing::error!(error = %self, "內部錯誤");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string())
+            }
         };
         (status, Json(json!({ "error": msg }))).into_response()
     }
@@ -484,22 +533,21 @@ async fn get_order(
     State(state): State<AppState>,
     Path(id): Path<u64>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let order = state.orders.find(domain::OrderId(id)).await
-        .map_err(|_| ApiError::Internal)?
-        .ok_or(ApiError::NotFound)?;               // None → 404
+    let order = state.orders.find(domain::OrderId(id)).await?   // RepoError → ApiError::Repo
+        .ok_or(ApiError::NotFound)?;                             // None → 404
     Ok(Json(OrderView::from(order)))
 }
 
 async fn list_orders(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, ApiError> {
-    let orders = state.orders.list().await.map_err(|_| ApiError::Internal)?;
+    let orders = state.orders.list().await?;
     Ok(Json(orders.into_iter().map(OrderView::from).collect::<Vec<_>>()))
 }
 
 async fn health() -> &'static str { "ok" }
 
-// ── 組裝（組合根）──
+// ── 組裝路由 ──
 fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
@@ -508,21 +556,60 @@ fn build_router(state: AppState) -> Router {
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
+
+// init_tracing() 就是 11.10 節那個函式，貼在這裡
+
+// ── 組合根 ──
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    init_tracing();
+    let config = Config::from_env()?;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(10)
+        .acquire_timeout(Duration::from_secs(5))
+        .connect(&config.database_url)
+        .await?;
+    sqlx::migrate!("../../migrations").run(&pool).await?;
+
+    // 同一個 repo（同一個 Arc）同時交給用例和查詢 handler
+    let repo: Arc<dyn domain::OrderRepository> = Arc::new(PgOrderRepo::new(pool));
+    let state = AppState {
+        create_order: Arc::new(application::CreateOrder::new(repo.clone())),
+        orders: repo,
+    };
+
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
+    tracing::info!("listening on http://{}", listener.local_addr()?);
+    axum::serve(listener, build_router(state)).await?;
+    Ok(())
+}
 ```
 
 觀察 handler 有多薄：**取請求 → 呼叫用例 → 把結果轉 DTO → 回應**。沒有業務邏輯、沒有 SQL。這正是分層的目標——HTTP 只是「一種入口」，換成 gRPC、CLI，下面幾層原封不動。
 
-測試 API：
+跑起來（Postgres 要開著，`.env` 有 `DATABASE_URL` 與 `EXTERNAL_API_KEY`），再開另一個終端機測試 API：
 
 ```bash
-curl -X POST http://localhost:8080/orders \
+docker compose up -d
+cargo run -p api
+```
+
+```bash
+curl -i -X POST http://localhost:8080/orders \
   -H "Content-Type: application/json" \
   -d '{"id":1,"customer":"Alice","amount_cents":12000}'
 # → 201 {"id":1,"customer":"Alice","amount_cents":12000}
 
-curl http://localhost:8080/orders/1        # → 200 {...}
-curl http://localhost:8080/orders/999      # → 404 {"error":"找不到資源"}
+curl -i http://localhost:8080/orders/1        # → 200 {"id":1,"customer":"Alice","amount_cents":12000}
+curl -i http://localhost:8080/orders/999      # → 404 {"error":"找不到資源"}
+curl -i -X POST http://localhost:8080/orders \
+  -H "Content-Type: application/json" \
+  -d '{"id":2,"customer":"Bob","amount_cents":-5}'
+# → 400 {"error":"金額不可為負：-5"}（domain 的 Money::new 擋下來的）
 ```
+
+`curl -i` 會連狀態列一起印出來，方便確認狀態碼。
 
 ---
 
@@ -531,16 +618,38 @@ curl http://localhost:8080/orders/999      # → 404 {"error":"找不到資源"}
 正式服務被要求關閉時（部署、擴縮容），不該直接砍斷正在處理的請求，而要「不收新請求、等手上的做完、再關」。Axum 內建支援：
 
 ```rust
+// 等到「Ctrl-C」或「SIGTERM」其中一個先來
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c().await.expect("安裝 Ctrl-C handler 失敗");
-    println!("收到關機訊號，優雅關閉中…");
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("安裝 Ctrl-C handler 失敗");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("安裝 SIGTERM handler 失敗")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();   // Windows 沒有 SIGTERM：永遠不會完成
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("收到關機訊號，優雅關閉中…");
 }
 
-axum::serve(listener, app)
-    .with_graceful_shutdown(shutdown_signal())     // 收到訊號後等現有請求做完才關
-    .await
-    .unwrap();
+// 把 11.11 main 裡的 axum::serve 那行換成：
+axum::serve(listener, build_router(state))
+    .with_graceful_shutdown(shutdown_signal())     // 收到訊號後不再收新連線，等現有請求做完才關
+    .await?;
 ```
+
+- **為什麼要接 SIGTERM**：你在終端機按 Ctrl-C 送的是 SIGINT；但 `docker stop`、Kubernetes 要停掉容器時送的是 **SIGTERM**。只等 `ctrl_c()` 的話，部署時根本收不到訊號，等寬限期一過就被 SIGKILL 硬砍，優雅關機形同虛設。
+- `tokio::select!` 同時等好幾個 future，**誰先完成就執行誰的分支**，其餘的直接丟掉不等。這裡用它表達「兩種訊號任一個來就開始關機」。
+- `#[cfg(unix)]` 是條件編譯：這段只在 Linux/macOS 編譯，Windows 用一個永遠不會完成的 future 代替。
 
 這讓部署時「舊實例平順下線、不掉請求」，是生產級服務的基本禮儀。
 
@@ -551,32 +660,58 @@ axum::serve(listener, app)
 Axum 的 app 本質是一個 Tower `Service`，可以不真的起網路就測。搭配 `tower::ServiceExt::oneshot` 直接餵請求：
 
 ```bash
-cargo add tower --dev --features util
-cargo add http-body-util --dev
+cargo add -p api --dev tower@0.5 --features util     # 提供 ServiceExt::oneshot
+cargo add -p api --dev http-body-util@0.1             # 提供 BodyExt::collect，把回應 body 讀出來
 ```
+
+測試寫在 `crates/api/src/main.rs` 最下面：
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::{body::Body, http::{Request, StatusCode}};
+    use http_body_util::BodyExt;                    // 提供 collect()
+    use infrastructure::InMemoryOrderRepo;
     use tower::ServiceExt;                          // 提供 oneshot
+
+    // 用記憶體版 repo 組 app（第 09 章：測試不碰真 DB）
+    fn test_app() -> Router {
+        let repo: Arc<dyn domain::OrderRepository> = Arc::new(InMemoryOrderRepo::default());
+        build_router(AppState {
+            create_order: Arc::new(application::CreateOrder::new(repo.clone())),
+            orders: repo,
+        })
+    }
 
     #[tokio::test]
     async fn health_returns_ok() {
-        // 用記憶體版 repo 組 app（第 09 章：測試不碰真 DB）
-        let state = /* ... 用 InMemoryOrderRepo 組 AppState ... */;
-        let app = build_router(state);
-
-        let resp = app
+        let resp = test_app()
             .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn unknown_order_returns_404_json() {
+        let resp = test_app()
+            .oneshot(Request::builder().uri("/orders/999").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // body 是一個串流：collect() 收完整段，再轉成 bytes 解析 JSON
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "找不到資源");
+    }
 }
 ```
+
+- `oneshot` 會**吃掉**整個 router（取得所有權）。同一個測試要連發好幾個請求時，每次用 `app.clone().oneshot(...)`；`Router` 的 clone 很便宜，而且 clone 出來的共用同一份 state。
+- 用 `cargo test -p api` 執行。注意：infrastructure 裡有 `query!`，所以**編譯**時仍然要有 DB 或 `.sqlx/` 快取（第 10.10 節）；測試**執行**時則完全不連 DB。
 
 > **回報時刻**：因為分層乾淨，測試可以「用記憶體版 repo 組 app」，`oneshot` 一發請求就驗回應，**又快又不依賴 DB**。真的連 DB 的整合測試（第 06 章）另外歸類、用 Docker 起的測試 DB 跑。
 
@@ -585,10 +720,12 @@ mod tests {
 ## 11.14 常見錯誤
 
 - **`State` 的型別忘了 `#[derive(Clone)]`**→ 編譯錯。State 每請求要 clone（裡面放 `Arc` 讓 clone 便宜）。
-- **多個消耗 body 的 extractor**（兩個 `Json`）或 `Json` 沒放最後 → body 只能讀一次，會出錯。
+- **多個消耗 body 的 extractor**（兩個 `Json`）或 `Json` 沒放最後 → 編譯錯誤 ``Handler<_, _> is not satisfied``。加 `#[axum::debug_handler]` 看是哪個參數的問題（11.5）。
 - **handler 裡塞業務邏輯或 SQL**→ 違反分層，難測難換。handler 要薄，邏輯往下推。
 - **把 `sqlx::Error` / 內部錯誤原文回給 client**→ 洩漏內部細節。對外回泛用訊息，內部用 tracing 記全文。
-- **路徑參數語法用錯版本**（新版 `{id}` vs 舊版 `:id`）→ 對照你的 Axum 版本。
+- **照舊文章寫 `/orders/:id`**→ Axum 0.8 一啟動就 panic（`Path segments must not start with ':'`）。改成 `/orders/{id}`。
+- **只等 `ctrl_c()` 做優雅關機**→ 容器平台送的是 SIGTERM，收不到就被硬砍。兩種訊號都要接（11.12）。
+- **`AppState` 裡寫死 `CreateOrder<PgOrderRepo>`**→ 測試時換不成記憶體版。用 `Arc<dyn OrderRepository>`，具體實作留給組合根決定（11.7）。
 - **忘了 `.with_state(state)`**→ handler 用 `State` 會編譯錯（缺 state）。
 - **CORS 用 `permissive()` 上線**→ 安全風險。正式環境限定 origin 白名單。
 - **沒設 `tracing`**→ 出事沒 log 可查。生產務必接上結構化日誌 + `TraceLayer`。
@@ -600,11 +737,11 @@ mod tests {
 - **Axum** 站在 Tokio / Hyper / Tower 之上，handler 是普通 `async fn`，用**型別（extractor）**宣告需求、回傳實作 `IntoResponse` 的東西。
 - **`Router`** 定義「路徑 + 方法 → handler」，`nest` 加前綴分組。
 - **擷取器**：`Path`（路徑）、`Query`（查詢字串）、`Json`（body）、`State`（共享依賴）、`HeaderMap`（標頭）。
-- **`State`** 注入第 09 章的 `AppState`（含 `Arc<dyn Repository>` 與連線池），把 09、10、11 章縫起來。
+- **`State`** 注入第 09 章的 `AppState`（含 `Arc<dyn OrderRepository>`，連線池包在 repo 裡），把 09、10、11 章縫起來；具體實作由組合根決定，測試時換成記憶體版。
 - **錯誤映射**：為 `ApiError` 實作 `IntoResponse`，把分層錯誤變成 HTTP 狀態碼 + JSON；handler 用 `?` 自動處理；內部細節不外洩。
 - **驗證**：核心業務規則放 domain，格式驗證用 `validator` 在邊界輔助。
 - **middleware（Tower layer）**：`TraceLayer`（日誌）、`CorsLayer`、`TimeoutLayer`，自訂用 `from_fn`。
-- handler 要**薄**——只翻譯請求、呼叫用例、組回應。搭配優雅關機與 `oneshot` 測試。
+- handler 要**薄**——只翻譯請求、呼叫用例、組回應。搭配優雅關機（Ctrl-C 與 SIGTERM 都要接）與 `oneshot` 測試。
 
 ---
 

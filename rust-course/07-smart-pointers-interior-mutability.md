@@ -41,7 +41,9 @@
 ```rust
 fn main() {
     let b = Box::new(5);       // 5 被放到 heap，b 指向它
-    println!("{b}");           // 用起來跟一般的 5 沒兩樣（Deref 的功勞）
+    println!("{b}");           // 印出 5，用起來跟一般的 5 沒兩樣
+    let n = *b + 1;            // *b 解參考，取出 Box 裡的值（Deref 的功勞）
+    println!("{n}");           // 6
 }                              // b 離開作用域，heap 上的 5 被釋放（Drop）
 ```
 
@@ -86,7 +88,7 @@ trait Shape {
 struct Circle { r: f64 }
 struct Square { s: f64 }
 
-impl Shape for Circle { fn area(&self) -> f64 { 3.14 * self.r * self.r } }
+impl Shape for Circle { fn area(&self) -> f64 { std::f64::consts::PI * self.r * self.r } }
 impl Shape for Square { fn area(&self) -> f64 { self.s * self.s } }
 
 fn main() {
@@ -106,7 +108,7 @@ fn main() {
 - 因為不同型別大小不同，得用 `Box`（指標，固定大小）包起來才能放進同一個 `Vec`。
 - 這叫**動態分派（dynamic dispatch）**——呼叫 `area()` 時，執行期才查表決定跑哪個實作。跟泛型的靜態分派相比，多一點點執行期成本，但換來彈性。
 
-> **靜態 vs 動態分派**：泛型（`impl Trait` / `<T: Trait>`）是編譯期展開、零成本、但每種型別各一份程式碼；trait 物件（`dyn Trait`）是執行期查表、有一點成本、但能把不同型別混在一起。**第 09 章架構設計會用 `dyn Trait` 來做「依賴抽象」**（例如 `Box<dyn UserRepository>`），先在這裡認識它。你也會看到 `Box<dyn Error>`（第 04 章）就是這個道理——裝「任何一種錯誤」。
+> **靜態 vs 動態分派**：泛型（`impl Trait` / `<T: Trait>`）是編譯期展開、零成本、但每種型別各一份程式碼；trait 物件（`dyn Trait`）是執行期查表、有一點成本、但能把不同型別混在一起。**第 09 章架構設計會用 `dyn Trait` 來做「依賴抽象」**（例如 `Arc<dyn OrderRepository>`，`Arc` 在 7.7 介紹，它跟 `Box` 一樣能裝 `dyn Trait`），先在這裡認識它。你也會看到 `Box<dyn Error>`（第 04 章）就是這個道理——裝「任何一種錯誤」。
 
 ---
 
@@ -138,7 +140,7 @@ fn main() {
 `Rc` 的運作：
 
 - 它內部維護一個**計數器**，記錄「有幾個擁有者」。
-- `Rc::clone` **不複製資料**，只是把計數 +1（很便宜）。多個 `Rc` 指向同一份 heap 資料。
+- `Rc::clone` **不複製資料**，只是把計數 +1（很便宜）。多個 `Rc` 指向同一份 heap 資料。寫成 `a.clone()` 效果相同，但慣例寫 `Rc::clone(&a)`，讓讀程式的人一眼看出「這只是加計數，不是深拷貝」。
 - 每個 `Rc` 離開作用域時計數 -1；**計數歸零時，資料才真正釋放**。
 
 > **心智模型**：`Rc` 像「一份共用文件 + 一個借閱登記簿」。每多一個人借（`Rc::clone`）就登記 +1，每還一個就 -1，登記簿歸零時才把文件銷毀。這樣就能安全地「多人共享，最後一個離開的人負責清理」。
@@ -176,8 +178,10 @@ fn main() {
 ```rust
 let data = RefCell::new(5);
 let b1 = data.borrow_mut();
-let b2 = data.borrow_mut();     // ❌ 執行期 panic：already borrowed
+let b2 = data.borrow_mut();     // ❌ 執行期 panic：RefCell already borrowed
 ```
+
+`borrow()`/`borrow_mut()` 回傳的 `Ref`/`RefMut` 跟一般借用一樣，活到作用域結束才歸還。上面 `b1` 還沒離開作用域，第二次 `borrow_mut()` 就違規了。如果不想 panic，可以改用 `try_borrow_mut()`，它回傳 `Result`，借不到時給你 `Err` 自己處理。
 
 > **心智模型**：一般借用是「保全在門口檢查（編譯期，過不了就別想進）」；`RefCell` 是「先讓你進去，但裡面有監視器，違規當場抓（執行期 panic）」。你用一點「執行期檢查成本 + 違規會 panic 的風險」，換來「編譯器不擋你」的彈性。
 
@@ -259,10 +263,10 @@ fn main() {
 拆解：
 
 - **`Arc`**：讓 10 個執行緒能共同擁有同一個計數器。為什麼不用 `Rc`？因為 `Rc` 的計數器在多執行緒下會出錯（資料競爭）；`Arc` 用原子操作，安全。
-- **`Mutex`（互斥鎖）**：`lock()` 取得鎖後才能存取內部資料，同時只有一個執行緒能持有鎖。用完（變數離開作用域）自動解鎖。這保證「同時只有一個執行緒在改」。
-- **`lock()` 回傳 `Result`**：因為持鎖的執行緒若 panic，鎖會「中毒（poisoned）」，所以要處理（這裡簡單 `unwrap`）。
+- **`Mutex`（互斥鎖）**：`lock()` 取得鎖後，回傳一個 `MutexGuard`（守衛），透過它存取內部資料；同時只有一個執行緒能持有鎖。守衛離開作用域就自動解鎖（上面的 `num` 就是守衛）。這保證「同時只有一個執行緒在改」。
+- **`lock()` 回傳 `Result`**：持鎖的執行緒若 panic，鎖會「中毒（poisoned）」，之後別人 `lock()` 拿到的是 `Err`，提醒你「資料可能停在改到一半的狀態」。這裡簡單 `unwrap`，等於「中毒就跟著 panic」。
 
-> **這裡藏著 Rust 併發的核心優勢**：如果你少寫了 `Mutex`、想直接在多執行緒改一個共享變數，**Rust 會直接編譯錯誤**——因為那違反第 02 章的借用規則（多個可變存取）。編譯器逼你用 `Arc<Mutex<T>>` 這種安全結構。這就是 Rust 敢說「無懼併發（fearless concurrency）」的底氣，第 08 章會完整展開。
+> **這裡藏著 Rust 併發的核心優勢**：如果你少寫了 `Mutex`、想直接在多執行緒改一個共享變數，**Rust 會直接編譯錯誤**——因為那違反第 02 章的借用規則（多個可變存取）。例如只用 `Arc<i32>` 就想 `*counter += 1`，會得到「cannot assign to data in an `Arc`」。編譯器逼你用 `Arc<Mutex<T>>` 這種安全結構。這就是 Rust 敢說「無懼併發（fearless concurrency）」的底氣，第 08 章會完整展開。
 
 > **`Mutex` vs `RwLock`**：`Mutex` 不管讀寫都獨佔；`RwLock` 允許「多讀或一寫」（讀多寫少時效能更好）。概念上 `RwLock` 更貼近第 02 章的借用規則。
 
@@ -286,11 +290,12 @@ fn main() {
 ## 7.9 常見錯誤
 
 - **在多執行緒用 `Rc`** → 編譯錯誤「`Rc` cannot be sent between threads safely」。換 `Arc`。
-- **`RefCell` 同時 `borrow_mut` 兩次** → 執行期 panic「already borrowed」。縮小借用範圍或重新設計。
-- **忘了 `Mutex` 用完會自動解鎖，卻手動持有太久** → 其他執行緒卡住。讓 `lock()` 的結果盡快離開作用域。
+- **`RefCell` 同時 `borrow_mut` 兩次** → 執行期 panic「RefCell already borrowed」。縮小借用範圍或重新設計。
+- **鎖拿太久** → `lock()` 拿到的守衛（guard）要到作用域結束才解鎖，期間其他執行緒全卡住。用 `{ }` 縮小作用域，或提早 `drop(guard)`。
+- **同一條執行緒對同一把 `Mutex` 連續 `lock()` 兩次** → 第一個 guard 還沒放掉，第二次 `lock()` 永遠等不到（死結，或直接 panic）。`std::sync::Mutex` 不可重入，先放掉再拿。
 - **`Rc` 循環參考** → 記憶體洩漏（計數永遠不歸零）。用 `Weak<T>` 打破循環。
 - **濫用 `Rc<RefCell<T>>` 逃避所有權設計** → 程式難懂、執行期 panic 風險。先想有沒有更單純的所有權結構。
-- **以為 `RefCell`/`Mutex` 讓外層變數要 `mut`** → 不用。內部可變性的重點就是「外面不可變，裡面仍可改」。
+- **以為用 `RefCell`/`Mutex` 時外層變數也要 `mut`** → 不用。內部可變性的重點就是「外面不可變，裡面仍可改」。
 
 ---
 

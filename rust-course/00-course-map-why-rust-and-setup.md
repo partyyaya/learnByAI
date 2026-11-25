@@ -49,15 +49,23 @@ Rust 的野心是：**同時要「像 C 一樣快、能貼近底層」與「像�
 舉例：下面這種函式式的寫法
 
 ```rust
-let sum: i32 = numbers.iter().filter(|&&x| x > 0).sum();
+let numbers = vec![3, -1, 4, -1, 5];
+let sum: i32 = numbers.iter().filter(|&&x| x > 0).sum();   // 只加總正數 → 12
 ```
 
-編譯後的效能，跟你手寫一個 `for` 迴圈逐一判斷、累加幾乎一樣。抽象在「編譯期」就被展開、最佳化掉了，不像某些語言的高階寫法會在執行期多繞好幾層。
+編譯後的效能（以 release 模式編譯時），跟你手寫一個 `for` 迴圈逐一判斷、累加幾乎一樣。抽象在「編譯期」就被展開、最佳化掉了，不像某些語言的高階寫法會在執行期多繞好幾層。
+
+> 現在看不懂 `|&&x|` 沒關係，這是「閉包」加上「解開參考」的寫法，第 05 章會拆開講。這裡只要記得結論：好讀的寫法不用付效能的代價。
 
 ### 「記憶體安全，但沒有 GC」
 
 - **記憶體安全**：不會存取到已經釋放的記憶體（use-after-free）、不會重複釋放、不會讀到未初始化的資料、不會有資料競爭。
 - **沒有 GC**：不像 Java/Go 有一個背景執行緒定期掃描回收記憶體。Rust 靠所有權規則，在編譯期就決定「每塊記憶體什麼時候該釋放」，並在那個確定的時間點插入釋放程式碼。
+
+兩個邊界先講清楚，免得期待落差：
+
+- 上面的保證適用於一般寫的 Rust（稱為 **safe Rust**）。Rust 另外有 `unsafe` 區塊，讓你在必要時（例如呼叫 C 函式庫、寫底層資料結構）自己負責正確性。本課的程式碼都不用寫 `unsafe`。
+- 「記憶體安全」不等於「不會洩漏」。例如第 07 章的 `Rc` 互相參考成環，記憶體就不會被釋放。洩漏不會造成存取錯誤，但會讓用量一直長。
 
 > **心智模型**：GC 語言像「請了清潔工，定時來巡邏收垃圾（你不用管，但清潔工偶爾擋路）」；Rust 像「每個東西都有明確的主人，主人離開房間的那一刻，它負責的東西就被收掉（沒有清潔工、時間點完全確定）」。這個「主人」就是第 02 章要講的**所有權**。
 
@@ -133,6 +141,13 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 ```
 
+Rust 編譯的最後一步要呼叫系統的「連結器（linker）」把程式組成執行檔，所以系統上還需要 C 的建置工具：
+
+- **macOS**：執行 `xcode-select --install` 安裝 Command Line Tools（不用裝完整的 Xcode）。
+- **Linux**：Debian/Ubuntu 裝 `build-essential`（`sudo apt install build-essential`），Fedora 裝 `gcc`。
+
+少了這一步，安裝會成功，但第一次 `cargo run` 會出現 `linker 'cc' not found` 之類的錯誤。
+
 ### Windows
 
 到 [https://rustup.rs](https://rustup.rs) 下載 `rustup-init.exe` 執行。Windows 上通常還需要 **Visual Studio C++ Build Tools**（Rust 編譯連結時需要），安裝程式會提示你。
@@ -146,6 +161,8 @@ rustup --version   # 顯示 rustup 版本
 ```
 
 三個都有版本號跑出來，就成功了。
+
+Rust 大約每 6 週發佈一個新版本。之後要升級，執行 `rustup update` 即可。後面章節用到的第三方 crate 常要求較新的編譯器，遇到「requires rustc 1.xx or newer」這類錯誤時，先 `rustup update` 再試。
 
 ---
 
@@ -187,7 +204,7 @@ cargo run                 # 編譯並執行
 
 ```text
    Compiling hello_rust v0.1.0 (/path/hello_rust)
-    Finished dev [unoptimized + debuginfo] target(s) in 0.5s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.39s
      Running `target/debug/hello_rust`
 Hello, world!
 ```
@@ -198,12 +215,15 @@ Hello, world!
 
 ```text
 hello_rust/
+├── .gitignore          ← cargo new 自動建立，內容是 /target
 ├── Cargo.toml          ← 專案設定與依賴清單（像 package.json）
-├── Cargo.lock          ← 鎖定實際安裝的依賴版本（cargo 自動產生）
+├── Cargo.lock          ← 鎖定實際使用的依賴版本（第一次編譯時自動產生）
 ├── src/
 │   └── main.rs         ← 程式進入點
-└── target/             ← 編譯產物（可 gitignore，別 commit）
+└── target/             ← 編譯產物（第一次編譯時產生，已被 .gitignore 排除）
 ```
+
+`cargo new` 也會順便執行 `git init`，所以專案一建好就是一個 Git repo。
 
 `Cargo.toml` 內容：
 
@@ -211,7 +231,7 @@ hello_rust/
 [package]
 name = "hello_rust"
 version = "0.1.0"
-edition = "2021"        # Rust 的「版本紀元」，決定可用的語言特性集
+edition = "2024"        # Rust 的「版本紀元」，決定可用的語言特性集
 
 [dependencies]
 # 之後要用的第三方 crate 寫在這裡
@@ -259,26 +279,28 @@ fn main() {
 感受一下 Cargo 的套件管理。我們加一個很常用的 `rand`（隨機數）crate。
 
 ```bash
-cargo add rand
+cargo add rand@0.10
 ```
 
-這會在 `Cargo.toml` 的 `[dependencies]` 自動加上 `rand = "0.8"`（版本號會是當前最新）。然後改 `src/main.rs`：
+這會在 `Cargo.toml` 的 `[dependencies]` 加上 `rand = "0.10"`，Cargo 會選 0.10 系列裡最新的修正版（例如 0.10.4），實際選到的版本記在 `Cargo.lock`。`@0.10` 是指定版本系列：`0.x` 的 crate 每換一個 `x` 都可能改 API，指定版本能確保你拿到的跟課文程式碼一致。只寫 `cargo add rand` 會拿到當下最新的版本，未來可能跟課文對不上。後面章節遇到 `0.x` 的 crate（例如 `axum`、`sqlx`）也會這樣標版本；`tokio`、`serde` 這類已經 `1.x` 的 crate，大版本內保證相容，就不另外標。
+
+然後改 `src/main.rs`：
 
 ```rust
-use rand::Rng;   // 引入 Rng trait，才能用 gen_range 這個方法（trait 第 03 章講）
+use rand::RngExt; // 引入 RngExt trait，才能用 random_range 這個方法（trait 第 03 章講）
 
 fn main() {
-    let mut rng = rand::thread_rng();           // 取得一個隨機數產生器
-    let dice: u32 = rng.gen_range(1..=6);        // 產生 1~6 的隨機整數（含 6）
+    let mut rng = rand::rng();                   // 取得一個隨機數產生器
+    let dice: u32 = rng.random_range(1..=6);     // 產生 1~6 的隨機整數（含 6）
     println!("你擲出了 {dice} 點");
 }
 ```
 
-`cargo run` 幾次，每次點數不同。
+`cargo run` 幾次，每次點數不同。第一次編譯時 Cargo 會先從 crates.io 下載 `rand` 和它依賴的 crate，所以要連網，也會比較久。
 
 這裡先劇透兩個語法（後面會細講）：
 
-- `use rand::Rng;`：把某個路徑下的東西引進當前作用域，之後才能直接用。
+- `use rand::RngExt;`：把某個路徑下的東西引進當前作用域，之後才能直接用。少了這行，編譯器會說 `no method named 'random_range' found`，並提示 `items from traits can only be used if the trait is in scope`：方法定義在 trait 上，trait 要先引進來才能用。
 - `1..=6`：這是一個「範圍（range）」，`..=` 表示**包含結尾**（1 到 6）；`1..6` 則是**不含結尾**（1 到 5）。這個區別後面很常用。
 
 ---
@@ -295,7 +317,7 @@ Rust 變數預設是**不可變（immutable）**的，要能改得寫 `let mut`�
 非常正常，尤其學到第 02 章。Rust 的編譯器錯誤訊息其實是**業界數一數二友善**的——它常常直接告訴你「哪裡錯、為什麼錯、可以怎麼改」。**請養成認真讀錯誤訊息的習慣**，不要一看到紅字就慌。很多時候答案就寫在訊息裡。
 
 **Q：Edition 是什麼？跟版本號一樣嗎？**
-不一樣。Rust 的**版本號**（如 1.75）是編譯器本身持續往上更新；**Edition**（2015 / 2018 / 2021 / 2024）是「一組語言慣例的世代」，讓舊程式碼不會因為新特性而壞掉。新專案用最新 edition 即可，本課用 `2021`（或你環境的最新）。
+不一樣。Rust 的**版本號**（如 1.85、1.90）是編譯器本身，大約每 6 週往上更新一次；**Edition**（2015 / 2018 / 2021 / 2024）是「一組語言慣例的世代」，每隔幾年才出一個，讓舊程式碼不會因為新特性而壞掉。新版編譯器同時支援所有 edition，不同 edition 的 crate 也能互相依賴。本課用 `2024`，也就是現在 `cargo new` 的預設值（需要 Rust 1.85 以上）。
 
 ---
 
@@ -313,7 +335,7 @@ Rust 變數預設是**不可變（immutable）**的，要能改得寫 `let mut`�
 
 1. 安裝好工具鏈，`rustc --version`、`cargo --version` 都能跑出版本號。
 2. 用 `cargo new` 建一個專案，改 `main.rs` 印出你的名字，`cargo run` 成功。
-3. `cargo add rand`，寫一支「擲兩顆骰子並印出總和」的程式。
+3. `cargo add rand@0.10`，寫一支「擲兩顆骰子並印出總和」的程式。
 4. 把上面的專案分別用 `cargo build` 與 `cargo build --release` 編譯，觀察 `target/debug` 與 `target/release` 兩個資料夾。
 5. 故意寫一個型別錯誤（例如把數字塞進宣告為字串的變數），跑 `cargo check`，**認真讀那段錯誤訊息**，感受一下 Rust 的錯誤提示長什麼樣。
 

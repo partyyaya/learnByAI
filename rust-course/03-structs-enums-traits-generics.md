@@ -54,7 +54,7 @@ let mut user = User { /* ... */ };
 user.age = 31;          // 要整個 user 是 mut，才能改任何欄位
 ```
 
-Rust **不能只把單一欄位標成可變**；可變性是整個實例的性質。要嘛整個 `mut`，要嘛整個不可變。
+Rust **不能只把單一欄位標成可變**；可變性是整個實例的性質。要嘛整個 `mut`，要嘛整個不可變。（真的需要「不可變的實例裡有個欄位能改」時，有專門的工具，第 07 章的內部可變性會講。）
 
 ### 其他兩種 struct 形式
 
@@ -70,7 +70,7 @@ struct AlwaysEqual;
 
 ### struct 裡存參考：生命週期會出現
 
-第 02 章說過：只要 struct 裡存的是**參考**，Rust 就需要知道「這個參考至少活多久」。所以型別本身要帶生命週期參數：
+第 02 章的生命週期在這裡會再出現：只要 struct 裡存的是**參考**，Rust 就需要知道「這個參考至少活多久」。所以型別本身要帶生命週期參數：
 
 ```rust
 struct Excerpt<'a> {
@@ -97,7 +97,7 @@ let ex;
     let article = String::from("短命文章");
     ex = Excerpt { text: &article };
 } // article 在這裡被 drop
-// println!("{}", ex.text); // ❌ 不能用，因為 ex.text 會指向已釋放的 article
+// println!("{}", ex.text); // ❌ 打開這行就編譯失敗（E0597：`article` does not live long enough），因為 ex.text 會指向已釋放的 article
 ```
 
 > **實務建議**：後端的 domain/entity 多半直接擁有資料（例如 `String`），因為它們要跨層、跨 async、放進資料庫或回傳 JSON。`&str` 欄位常出現在「解析器、暫時視圖、零拷貝效能優化」場景。初學做後端時，優先用 owned 型別；等真的需要避免複製，再引入帶生命週期的 struct。
@@ -278,7 +278,7 @@ fn main() {
 ```
 
 - `<T>`：宣告型別參數，`T` 是一個「之後才決定的型別」。
-- `T: PartialOrd + Copy`：這叫 **trait bound（trait 約束）**，意思是「T 必須實作 `PartialOrd`（可比大小）和 `Copy`（可複製）」。沒有這個約束，編譯器不知道 `T` 能不能用 `>` 比較。
+- `T: PartialOrd + Copy`：這叫 **trait bound（trait 約束）**，意思是「T 必須實作 `PartialOrd`（可比大小）和 `Copy`（可複製）」。沒有 `PartialOrd`，編譯器不知道 `T` 能不能用 `>` 比較；沒有 `Copy`，`list[0]` 和 `for &item` 就不能把元素複製出來（那等於把借來的 slice 裡的值 move 走，但借來的東西不能拿走所有權）。所以 `largest(&vec![String::from("a")])` 會編譯失敗：`String` 不是 `Copy`。
 
 ### 泛型 struct
 
@@ -306,7 +306,10 @@ trait Summary {
     fn summarize(&self) -> String;        // 只有簽章，沒有實作（要求實作者提供）
 
     fn preview(&self) -> String {          // 也可以給「預設實作」
-        format!("{}...", &self.summarize()[..5.min(self.summarize().len())])
+        // 取摘要的前 5 個字元。用 chars() 逐字取（迭代器第 05 章講），
+        // 不用 &s[..5]：那是 byte 位置，遇到中文會切到字的中間而 panic（第 02 章 2.9）
+        let short: String = self.summarize().chars().take(5).collect();
+        format!("{short}...")
     }
 }
 
@@ -335,7 +338,9 @@ impl Summary for Tweet {
 }
 ```
 
-現在 `Article` 和 `Tweet` 都「會 summarize」，但各有各的做法。
+現在 `Article` 和 `Tweet` 都「會 summarize」，但各有各的做法。兩者都沒寫 `preview`，所以都直接用 trait 裡的預設實作；需要時也可以在自己的 `impl` 裡覆寫它。
+
+> **為什麼第 00 章要寫 `use rand::RngExt;`？** trait 的方法，要在**那個 trait 被引入目前作用域**時才能呼叫。`random_range` 是 `RngExt` 這個 trait 提供的方法，少了那行 `use`，編譯器會報 `E0599: no method named random_range found`，並提示 `trait RngExt which provides random_range is implemented but not in scope`。標準庫最常用的 trait（`Clone`、`PartialEq`、`Iterator` 等）已經自動引入，所以平常感覺不到。
 
 ### 用 trait 當參數：接受「任何實作了某 trait 的型別」
 
@@ -389,10 +394,10 @@ fn main() {
 |-------|------------|
 | `Debug` | 用 `{:?}` / `{:#?}` 印出（開發除錯必備） |
 | `Clone` | `.clone()` 深拷貝 |
-| `Copy` | 讓型別變成 Copy 語意（僅限全欄位都是 Copy） |
+| `Copy` | 讓型別變成 Copy 語意（僅限全欄位都是 Copy，而且要跟 `Clone` 一起 derive） |
 | `PartialEq` / `Eq` | 用 `==` `!=` 比較相等 |
 | `PartialOrd` / `Ord` | 用 `<` `>` 比較大小、可排序 |
-| `Hash` | 能當 `HashMap` 的 key |
+| `Hash` | 能當 `HashMap` 的 key（還要搭配 `PartialEq`、`Eq`） |
 | `Default` | 有 `Type::default()` 產生預設值 |
 
 > **實務習慣**：幾乎每個你自訂的 struct/enum 都會加 `#[derive(Debug)]`，因為除錯時要能把它印出來看。要比較、複製、當 key 時再加對應的 derive。
@@ -402,7 +407,22 @@ fn main() {
 - `{}`（Display）：給「人看的、正式的」輸出，**要自己實作 `Display` trait**（不能 derive）。像 `String`、數字這些標準型別已內建。
 - `{:?}`（Debug）：給「開發者除錯看的」輸出，可以直接 `#[derive(Debug)]`。
 
-初學時你自訂的型別大多用 `{:?}` 就好。
+初學時你自訂的型別大多用 `{:?}` 就好。真的要讓上面的 `Point` 支援 `{}`，自己實作 `Display` 長這樣：
+
+```rust
+use std::fmt;
+
+impl fmt::Display for Point {
+    // 簽章照抄即可；Formatter<'_> 的 '_ 是「生命週期交給編譯器推斷」
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)   // 決定 {} 印出來長什麼樣
+    }
+}
+
+// 之後就能：println!("{p1}");   // (1, 2)
+```
+
+第 04 章的自訂錯誤型別也需要 `Display`（錯誤訊息就是用它印的），到時會看到怎麼用 `thiserror` 省掉這段樣板。
 
 ---
 
@@ -422,7 +442,7 @@ enum OrderStatus {
 #[derive(Debug)]
 struct Order {
     id: u64,
-    amount: f64,
+    amount: f64,           // 示範用；真實系統的金額別用浮點數（有誤差），第 09 章會改用整數「分」
     status: OrderStatus,
 }
 
@@ -461,10 +481,11 @@ fn main() {
 ## 3.10 常見錯誤
 
 - **想只讓一個欄位可變** → 不行，可變性是整個實例的。整個 `mut`，或重新設計。
-- **`match` 沒窮盡** → 編譯錯誤，補齊變體或用 `_`。這通常是好事（提醒你漏了）。
-- **把 `Option<T>` 當 `T` 用** → 編譯錯誤，先 `match` / `if let` / `unwrap_or` 拆開。
-- **泛型少了 trait bound** → 「cannot compare」之類的錯，因為編譯器不知道 `T` 有沒有那個能力，補上 `T: SomeTrait`。
-- **忘了 `#[derive(Debug)]` 就用 `{:?}` 印** → 報「doesn't implement Debug」，加上 derive。
+- **`match` 沒窮盡** → 編譯錯誤（E0004：`non-exhaustive patterns: ... not covered`，會列出漏掉的變體），補齊變體或用 `_`。這通常是好事（提醒你漏了）。
+- **把 `Option<T>` 當 `T` 用** → 編譯錯誤（例如 `cannot add {integer} to Option<i32>`），先 `match` / `if let` / `unwrap_or` 拆開。
+- **泛型少了 trait bound** → 例如 `binary operation > cannot be applied to type T`（E0369），因為編譯器不知道 `T` 有沒有那個能力，補上 `T: SomeTrait`（這裡是 `PartialOrd`）。
+- **忘了 `#[derive(Debug)]` 就用 `{:?}` 印** → 報「`Point` doesn't implement `Debug`」（E0277），加上 derive。
+- **呼叫 trait 的方法卻說找不到（E0599）** → 那個 trait 沒被 `use` 進來，照編譯器提示加上 `use`。
 - **`self` vs `&self` 用錯**：用了 `self`（取得所有權）後，實例就被消耗掉不能再用；只想讀就用 `&self`。
 
 ---
@@ -485,7 +506,7 @@ fn main() {
 
 1. 定義 `struct Circle { radius: f64 }`，加 `area(&self)` 與關聯函式 `new`，在 `main` 建立並印面積。
 2. 定義 `enum Shape { Circle(f64), Rectangle(f64, f64) }`，寫函式用 `match` 算面積。
-3. 寫函式 `fn find_user(id: u32) -> Option<String>`：id 為 1 回傳 `Some("alice")`，否則 `None`；在 `main` 用 `match` 處理兩種結果。
+3. 寫函式 `fn find_user(id: u32) -> Option<String>`：id 為 1 回傳 `Some(String::from("alice"))`，否則 `None`；在 `main` 用 `match` 處理兩種結果。
 4. 定義 trait `Animal { fn sound(&self) -> String; }`，讓 `Dog`、`Cat` 各自實作，寫一個 `fn describe(a: &impl Animal)` 印出叫聲。
 5. 幫上面所有 struct/enum 加上 `#[derive(Debug)]`，並用 `{:#?}` 印出來觀察格式。
 6. 在第 2 題的 `Shape` 新增一個 `Triangle`，觀察 `match` 沒補上時的編譯錯誤，再補好。

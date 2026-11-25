@@ -207,8 +207,12 @@ requestAnimationFrame(frame);
 <button id="chunk">分段跑 3 秒</button>
 
 <script type="module">
-  let count = 0;
-  setInterval(() => (document.querySelector("#counter").textContent = ++count), 100);
+  // 每畫一幀就加 1：數字停住，代表畫面沒有更新
+  let frames = 0;
+  (function tick() {
+    document.querySelector("#counter").textContent = ++frames;
+    requestAnimationFrame(tick);
+  })();
 
   function busy(ms) {
     const end = performance.now() + ms;
@@ -239,16 +243,16 @@ requestAnimationFrame(frame);
 
 觀察到的現象：
 
-- **同步跑**：計數器停住 3 秒，再一次跳好幾個數字。旋轉的方塊在大多數瀏覽器仍會轉，因為 CSS 動畫可以在合成執行緒上進行，不依賴主執行緒；但需要主執行緒的東西（計時器、點擊、JavaScript 驅動的動畫）全部停住。
+- **同步跑**：計數器停住 3 秒，之後從原本的數字繼續往上加，停住的那段時間一幀都沒有畫。旋轉的方塊在大多數瀏覽器仍會轉，因為 CSS 動畫可以在合成執行緒上進行，不依賴主執行緒；但需要主執行緒的東西（計時器、點擊、JavaScript 驅動的動畫）全部停住。
 - **包成 async**：結果和同步一模一樣。`async` 只是把工作延後到 microtask 執行，執行時仍然佔住同一條執行緒。
-- **分段跑**：計數器持續更新，按鈕也點得動。總工作量相同，只是每做一小段就讓出執行緒。
+- **分段跑**：計數器持續更新，按鈕也點得動。總工作量相同，只是每做一小段就讓出執行緒。使用 `scheduler.yield()` 的瀏覽器（Chrome、Edge）更新得比較慢，在 Edge 實測大約每 100 毫秒一幀，原因見下面的說明；退回 `setTimeout` 的瀏覽器（例如 Safari）則接近正常的幀率。
 
 ### 讓出執行緒
 
-分段處理的關鍵是 `yieldToMain()`：讓目前的工作暫停，排到 task 佇列後面，讓其他 task 和渲染先執行。
+分段處理的關鍵是 `yieldToMain()`：讓目前的工作暫停，讓渲染與輸入事件有機會先處理。
 
 - `setTimeout(resolve, 0)` 是傳統做法，各環境都能用，但恢復執行時要排在佇列的最後面。
-- `scheduler.yield()` 是專門為此設計的 API，恢復時會優先於其他一般 task，不會被插隊太久。Chrome 129、Firefox 142 起支援，Safari 尚未支援，所以上面的寫法先檢查、再退回 `setTimeout`。
+- `scheduler.yield()` 是專門為此設計的 API，恢復時會優先於其他一般 task，不會被插隊太久。Chrome 129、Firefox 142 起支援，Safari 尚未支援，所以上面的寫法先檢查、再退回 `setTimeout`。代價是：分段迴圈還沒結束前，計時器、`postMessage` 這類一般 task 會一直被延後。上面的頁面如果改用 `setInterval` 更新計數器，在 Chrome 裡分段跑的 3 秒內，數字會完全不動。
 
 `await null` 或 `await Promise.resolve()` **不算**讓出：它們只排入 microtask，而 microtask 會在渲染和其他 task 之前全部執行完。
 
@@ -271,10 +275,10 @@ async function processAll(items) {
 
 ## 10.7 Node 的事件迴圈
 
-Node 的事件迴圈由 libuv 實作，把 task 依來源分成幾個階段（timers、I/O callback、`setImmediate` 等），每個階段之間清空 microtask。概念和瀏覽器相同：一次執行一個 callback，執行到完成，之間清空 microtask。差別在於：
+Node 的事件迴圈由 libuv 實作，把 task 依來源分成幾個階段（timers、I/O callback、`setImmediate` 等）。概念和瀏覽器相同：一次執行一個 callback，執行到完成，**每個 callback 結束後**清空 microtask。差別在於：
 
-- **沒有渲染步驟**，但一樣有「長任務」的問題：一個請求的處理函式跑了 3 秒的同步計算，這 3 秒內伺服器無法處理任何其他請求。
-- **`process.nextTick`** 有自己的佇列，在 CommonJS 裡比 Promise 的 microtask 更早執行；但在 ES Module 的最上層，順序會相反，因為模組本身是在 microtask 裡執行的：
+- **沒有渲染步驟**，但一樣有「長任務」的問題：一個請求的處理函式跑了 3 秒的同步計算，這 3 秒內伺服器無法處理任何其他請求。Node 沒有全域的 `scheduler`，上面的 `yieldToMain` 會退回 `setTimeout`；在 Node 裡分段時，每段之間 `await setImmediate()`（從 `node:timers/promises` 匯入），讓 I/O 的 callback 有機會執行。
+- **`process.nextTick`** 有自己的佇列。一段同步程式碼（CommonJS 的主程式、計時器的 callback）結束後，Node 先清 nextTick、再清 Promise 的 microtask；但如果排入時已經在清 microtask，就要等 microtask 佇列清空才輪到 nextTick。ES Module 的最上層就是這種情況，因為模組本身是在 microtask 裡執行的：
 
 ```js
 Promise.resolve().then(() => console.log("promise"));

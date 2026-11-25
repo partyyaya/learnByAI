@@ -31,13 +31,15 @@ try {
 
 `stack` 是排查問題的關鍵。丟字串、丟一般物件都沒有它；記錄錯誤時也要記 `stack`，不要只記 `message`。
 
+也不要用 `JSON.stringify(err)` 記錄錯誤：`message`、`stack` 是不可列舉的屬性，`JSON.stringify(new Error("x"))` 的結果是 `"{}"`。送到 JSON 格式的日誌時，明確取出需要的欄位：`{ name: err.name, message: err.message, stack: err.stack }`。
+
 ### 內建的錯誤類型
 
 | 類型 | 常見原因 |
 |------|---------|
 | `TypeError` | 對 `null`／`undefined` 讀屬性、呼叫不是函式的值、對唯讀屬性賦值 |
 | `ReferenceError` | 變數不存在、在 TDZ 中存取（[3.2 節](03-scope-closures-and-hoisting.md#32-提升與-tdz)） |
-| `RangeError` | 數值超出允許範圍：`new Array(-1)`、遞迴太深導致堆疊溢位 |
+| `RangeError` | 數值超出允許範圍：`new Array(-1)`；遞迴太深導致堆疊溢位也是（Firefox 例外，丟的是非標準的 `InternalError`） |
 | `SyntaxError` | 語法錯誤；執行時最常見的是 `JSON.parse` 收到格式錯誤的字串 |
 | `AggregateError` | 同時包含多個錯誤，例如 `Promise.any` 全部失敗時，`errors` 陣列裡是每一個錯誤 |
 
@@ -92,6 +94,26 @@ h(); // "swallowed"，錯誤消失了
 
 `finally` 只放清理工作：關閉資源、重設狀態、隱藏 loading。
 
+Node 24 也支援 `using` 宣告，作用類似 Java 的 try-with-resources、C# 的 `using`、Python 的 `with`：物件有 `[Symbol.dispose]()` 方法時，離開區塊就自動呼叫，等於幫你寫好 `try/finally`。
+
+```js
+function openResource(name) {
+  return {
+    name,
+    [Symbol.dispose]() {
+      console.log(`close ${name}`);
+    },
+  };
+}
+
+{
+  using res = openResource("db");
+  console.log(`use ${res.name}`);
+} // 離開區塊時印出 "close db"，即使中間丟出錯誤也一樣
+```
+
+非同步的清理用 `await using` 搭配 `[Symbol.asyncDispose]()`。Chrome 134、Firefox 141 起支援，Safari 正式版還沒有，前端程式碼目前仍以 `finally` 為主。
+
 ## 8.3 錯誤該在哪一層接
 
 **只在能對錯誤做點什麼的地方接。** 能做的事包括：
@@ -136,8 +158,8 @@ class NotFoundError extends Error {
 
 class ValidationError extends Error {
   name = "ValidationError";
-  constructor(fields) {
-    super("validation failed");
+  constructor(fields, options) {
+    super("validation failed", options);
     this.fields = fields; // 例如 { email: "格式錯誤" }
   }
 }
@@ -165,7 +187,13 @@ try {
 - **把 `options` 傳給 `super`**，`cause` 才能運作（8.5 節）。
 - **不認得的錯誤要重新丟出**。`catch` 會接到所有錯誤，包括程式本身的 bug（`TypeError`）。只處理認得的，其他 `throw err`。
 
-錯誤會跨越邊界傳遞時，`instanceof` 可能失效：從 Worker 或 iframe 傳回來的錯誤、經過 JSON 傳輸的錯誤，都不再是原本那個類別的實例。這種情況改用 `code` 欄位（例如 `err.code === "NOT_FOUND"`）判斷，Node 的內建錯誤也是這樣做的（`err.code === "ENOENT"`）。
+錯誤會跨越邊界傳遞時，`instanceof` 可能失效，連欄位都可能不見：
+
+- 從 iframe 來的錯誤屬於另一個執行環境，不是這邊 `Error` 的實例。
+- 經過 `postMessage` 或 `structuredClone`（結構化複製）的錯誤，只保留 `message`、`stack` 和標準的 `name`；自訂的 `name` 會變回 `"Error"`，`code` 這類自訂欄位直接被丟掉。
+- 經過 `JSON.stringify` 的錯誤，`message` 和 `stack` 反而不見（8.1 節）。
+
+所以跨邊界時，自己把錯誤轉成一般物件再傳，例如 `{ name: err.name, message: err.message, code: err.code }`，接收端再用 `code`（例如 `err.code === "NOT_FOUND"`）判斷。Node 的內建錯誤也是用 `code` 區分種類（`err.code === "ENOENT"`）。
 
 ## 8.5 `cause`：包裝錯誤而不丟失原因
 
@@ -188,7 +216,7 @@ Node 印出這個錯誤時，會連同 `cause` 的堆疊一起印：
 Error: 設定檔 config.json 格式錯誤
     at loadConfig (file:///.../app.mjs:30:11)
     ... {
-  [cause]: SyntaxError: Expected property name or '}' in JSON at position 1
+  [cause]: SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
       at JSON.parse (<anonymous>)
       at loadConfig (file:///.../app.mjs:28:10)
       ...
@@ -237,6 +265,8 @@ process.on("unhandledRejection", (reason) => {
 });
 ```
 
+`report` 如果是非同步的（例如送到監控服務），要等它完成（最好加上逾時）再呼叫 `process.exit(1)`，否則程式在送出前就結束了；只寫本機日誌時用同步的 API（`console.error`、`fs.writeSync`）。
+
 這裡只做記錄，不是用來「讓程式繼續跑」。Node 發生未捕捉的例外後，程式可能處於不一致的狀態（一半的資料寫了、連線沒關），記錄完應該結束程式，交給程序管理工具重新啟動。前端的錯誤監控服務（例如 Sentry）也是掛在這兩個事件上。
 
 ## 8.7 判斷一個值是不是錯誤
@@ -245,7 +275,9 @@ process.on("unhandledRejection", (reason) => {
 
 ```js
 function toError(value) {
-  return value instanceof Error ? value : new Error(String(value));
+  if (value instanceof Error) return value;
+  const message = typeof value === "string" ? value : "拋出了非 Error 的值";
+  return new Error(message, { cause: value }); // 原始值保留在 cause
 }
 
 try {
@@ -265,10 +297,12 @@ TypeScript 在 `catch (err)` 裡把 `err` 標成 `unknown`，也是因為接到�
 
 ```js
 function parseAge(input) {
-  const age = Number(input);
-  if (input.trim() === "" || !Number.isInteger(age)) {
+  const text = input.trim();
+  // 不直接用 Number()：它也接受 "0x1e"、"1e2" 這類寫法
+  if (!/^-?\d+$/.test(text)) {
     return { ok: false, error: "請輸入整數" };
   }
+  const age = Number(text);
   if (age < 0 || age > 150) {
     return { ok: false, error: "年齡超出範圍" };
   }

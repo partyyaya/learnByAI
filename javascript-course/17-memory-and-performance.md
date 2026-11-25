@@ -6,7 +6,7 @@
 
 ## 17.1 垃圾回收：可達性
 
-JavaScript 沒有 `free` 或 `delete` 物件的方法。引擎定期從一組**根**（root）出發，沿著參考找出所有還**可達**的物件，找不到的就回收。根包括：全域物件、目前呼叫堆疊上的變數、還在等待執行的 callback（計時器、事件監聽器、Promise 的後續）。
+JavaScript 沒有 `free` 或 `delete` 物件的方法。引擎定期從一組**根**（root）出發，沿著參考找出所有還**可達**的物件，找不到的就回收。根包括：全域物件、目前呼叫堆疊上的變數，以及執行環境替你保管、之後還會呼叫的 callback（計時器、還在進行的 I/O，例如尚未完成的 `fetch`）。事件監聽器透過它綁定的對象被參考：綁在 `window` 上的監聽器會一直存活，綁在已經沒人參考的元素上的監聽器，會跟著元素一起被回收。
 
 ```js
 let user = { name: "Ann" };
@@ -22,14 +22,25 @@ user = null; // { name: "Ann" } 不再可達，之後會被回收
 
 ```js
 // node --expose-gc leak.mjs
+const heapMB = () => process.memoryUsage().heapUsed / 1024 / 1024;
+
+gc();
+let before = heapMB();
 const strong = new Map();
 for (let i = 0; i < 200_000; i++) strong.set({ id: i }, new Array(10).fill(i));
-gc(); // Map 持有 20 萬筆後：約 37.5 MB
+gc();
+console.log(`Map：${(heapMB() - before).toFixed(1)} MB`); // Map：37.5 MB
 
+before = heapMB();
 const weak = new WeakMap();
 for (let i = 0; i < 200_000; i++) weak.set({ id: i }, new Array(10).fill(i));
-gc(); // 鍵沒有其他參考：GC 後約 0 MB
+gc();
+console.log(`WeakMap：${(heapMB() - before).toFixed(1)} MB`); // 約 0 MB，鍵沒有其他參考
+
+console.log(strong.size); // 最後還用到 strong
 ```
+
+最後一行不能省。少了它，`strong` 在第二次 `gc()` 之後不會再被用到，V8 會判定它已經不可達，連 Map 也一起回收，看起來就像 Map 也會自己被回收。可不可達看的是變數之後還會不會被用到，不是它的作用域還在不在。
 
 ## 17.2 常見的記憶體洩漏
 
@@ -79,7 +90,7 @@ function addRow(data) {
 table.replaceChildren(); // 清空表格：元素離開頁面了，但 rows 陣列還抓著它們
 ```
 
-這種元素稱為 **detached** DOM：不在頁面上，卻因為 JavaScript 的參考而留在記憶體裡。一個 detached 節點會連帶留住它的整棵子樹。清空畫面時，相關的陣列、Map 也要一起清空；或改用 `WeakMap`／`WeakRef` 存放這類參考。
+這種元素稱為 **detached** DOM：不在頁面上，卻因為 JavaScript 的參考而留在記憶體裡。一個 detached 節點會連帶留住它的整棵子樹。清空畫面時，相關的陣列、Map 也要一起清空。如果只是要把資料附加在元素上，改用以元素為鍵的 `WeakMap`（[7.3 節](07-collections-iterators-and-generators.md#73-weakmap-與-weakset)），元素被移除、沒有其他參考後，資料會跟著回收。
 
 ### 只增不減的快取
 
@@ -93,6 +104,21 @@ function getUser(id) {
 
 [3.5 節](03-scope-closures-and-hoisting.md#35-閉包的應用)的 `memoize` 也是這樣：鍵的種類沒有上限時，快取會一直長大。快取要有上限（只保留最近的 N 筆，即 LRU）、有過期時間，或以物件為鍵時改用 `WeakMap`。
 
+這段程式還有另一個常見的坑：快取裡存的是 Promise，第一次請求失敗時，失敗的 Promise 會一直留在快取裡，之後網路恢復了也永遠拿到同一個錯誤。失敗時要把它從快取移除：
+
+```js
+function getUser(id) {
+  if (!cache.has(id)) {
+    const promise = fetchUser(id).catch((err) => {
+      cache.delete(id); // 失敗的結果不要留在快取裡，下次才會重試
+      throw err;
+    });
+    cache.set(id, promise);
+  }
+  return cache.get(id);
+}
+```
+
 ### 其他
 
 - **沒有 `terminate()` 的 Worker**（[16.5 節](16-web-worker.md#165-原生寫法)）、沒有 `close()` 的 `BroadcastChannel`、沒有 `revokeObjectURL` 的 Object URL（[15.11 節](15-browser-native-apis.md#1511-在-vue-與-react-中建立與清理要成對)）。
@@ -100,6 +126,8 @@ function getUser(id) {
 - **`console.log` 印出的物件**：DevTools 開著時，Console 會保留印出的物件，讓它們無法回收。量測記憶體前先清空 Console，正式環境也不要留著印出大物件的 log。
 
 ## 17.3 用 DevTools 找記憶體問題
+
+以下以 Chrome 和 Edge 的 DevTools 為準。Firefox、Safari 也有記憶體與效能工具，但面板名稱和功能不同，例如 Performance monitor、heap snapshot 的比較功能在 Safari 裡就找不到同名的面板。
 
 **先確認真的有洩漏**：打開 DevTools 的 Performance monitor（或 Memory 面板），重複執行同一個操作（打開再關閉對話框、切換頁面再切回來）十幾次。正常情況下 JS heap 會上下起伏，GC 之後回到差不多的水位；如果每做一次就往上爬一截、GC 後也不下降，就是有東西沒被回收。
 
@@ -180,9 +208,16 @@ performance.measure("sort", "sort:start", "sort:end"); // 會出現在 Performan
 伺服器上一樣有長任務：一個請求的處理函式做了 300ms 的同步計算，這 300ms 裡其他請求全部在排隊（[10.7 節](10-event-loop.md#107-node-的事件迴圈)）。
 
 ```bash
-node --cpu-prof app.js      # 結束時產生 .cpuprofile 檔，可以拖進 DevTools 的 Performance 面板
-node --heap-prof app.js     # 記錄記憶體配置
-node --inspect app.js       # 用 chrome://inspect 連上，直接使用 DevTools
+node --cpu-prof app.js      # 程式正常結束時產生 .cpuprofile，可以拖進 DevTools 的 Performance 面板
+node --heap-prof app.js     # 程式正常結束時產生 .heapprofile（取樣的配置紀錄），在 Memory 面板載入
+node --inspect app.js       # 用 chrome://inspect（Edge 是 edge://inspect）連上，直接使用 DevTools
+node --inspect-brk app.js   # 很短的程式用這個：停在第一行，等 DevTools 連上再執行
+```
+
+`--cpu-prof`、`--heap-prof` 只在程式**正常結束**時寫出檔案。伺服器用 Ctrl+C 停止，是被訊號終止，不算正常結束，什麼都不會產生。量測期間加上這一行，讓 Ctrl+C 變成正常結束：
+
+```js
+process.on("SIGINT", () => process.exit(0));
 ```
 
 `performance.now()`、`performance.mark()`、`performance.measure()` 在 Node 裡同樣可用。

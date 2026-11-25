@@ -123,7 +123,7 @@ list.replaceChildren();   // 清空所有子節點
 list.replaceChildren(a, b); // 換成指定的子節點
 ```
 
-同一個節點只能在 DOM 裡的一個位置；把已經在頁面上的節點 `append` 到別處，是**移動**而不是複製。要複製用 `cloneNode(true)`（`true` 表示連同子節點）。
+同一個節點只能在 DOM 裡的一個位置；把已經在頁面上的節點 `append` 到別處，是**移動**而不是複製。要複製用 `cloneNode(true)`（`true` 表示連同子節點）。`cloneNode` 不會複製用 `addEventListener` 綁的監聽器，複製出來的節點要另外綁定，這也是 13.7 節的事件委派常和 template 一起用的原因。
 
 ### 用 `<template>` 產生結構
 
@@ -144,7 +144,7 @@ const li = template.content.firstElementChild.cloneNode(true);
 li.querySelector(".title").textContent = todo.title;
 ```
 
-`<template>` 的內容不會顯示，也不會執行裡面的 script，只是一份可以複製的結構。這樣既保留了 HTML 的可讀性，又不會有 `innerHTML` 的 XSS 問題。
+`<template>` 的內容不會顯示，裡面的 script 也不會執行，只是一份可以複製的結構。但複製出來插入頁面後，裡面的 script 就會執行，所以 template 只放自己寫的結構，資料一律用 `textContent` 填入。這樣既保留了 HTML 的可讀性，又不會有 `innerHTML` 的 XSS 問題。
 
 ### 一次插入多個節點
 
@@ -183,7 +183,7 @@ button.removeEventListener("click", () => count++); // 移除不掉
 ```js
 button.addEventListener("click", handler, { once: true }); // 觸發一次後自動移除
 
-window.addEventListener("scroll", onScroll, { passive: true }); // 保證不呼叫 preventDefault
+canvas.addEventListener("touchstart", onTouchStart, { passive: true }); // 保證不呼叫 preventDefault
 
 const controller = new AbortController();
 window.addEventListener("resize", onResize, { signal: controller.signal });
@@ -193,7 +193,12 @@ controller.abort(); // 一次移除所有綁定這個 signal 的監聽器
 
 `signal` 選項很適合元件：掛載時建立一個 `AbortController`，所有監聽器都綁同一個 signal，卸載時 `abort()` 一次清乾淨，不需要保存每個處理函式的參考。
 
-`passive: true` 讓瀏覽器知道這個監聽器不會阻止捲動，可以不等 JavaScript 執行完就先捲動頁面。`touchstart`、`wheel` 這類會影響捲動的事件，沒有需要阻止預設行為時都應該加上。
+`passive: true` 讓瀏覽器知道這個監聽器不會阻止捲動，可以不等 JavaScript 執行完就先捲動頁面。`touchstart`、`touchmove`、`wheel` 這類會影響捲動的事件，沒有需要阻止預設行為時都應該加上。
+
+兩個相關的細節：
+
+- `scroll` 事件本來就不能取消，加不加 `passive` 都一樣。
+- 瀏覽器對 `window`、`document`、`body` 上的 `touchstart`、`touchmove` 預設就當成 passive（Chrome、Firefox 的 `wheel` 也是）。真的要在這些地方阻止預設行為，要明確寫 `{ passive: false }`，否則 `preventDefault()` 會被忽略。
 
 ### 事件物件
 
@@ -275,22 +280,23 @@ Pointer Events 用同一組事件處理滑鼠、觸控與觸控筆：`pointerdow
 ```js
 const box = document.querySelector("#box");
 const offset = { x: 0, y: 0 }; // 目前的位移，下次拖曳從這裡接著算
-let start = null;
+let drag = null; // 拖曳中：{ id, x, y }，記下是哪個指標和起點
 
 box.addEventListener("pointerdown", (event) => {
-  start = { x: event.clientX - offset.x, y: event.clientY - offset.y };
+  if (drag || event.button !== 0) return; // 已經在拖（例如第二根手指），或不是主要按鍵
+  drag = { id: event.pointerId, x: event.clientX - offset.x, y: event.clientY - offset.y };
   box.setPointerCapture(event.pointerId); // 指標移出元素外，仍然收得到後續事件
 });
 
 box.addEventListener("pointermove", (event) => {
-  if (!start) return;
-  offset.x = event.clientX - start.x;
-  offset.y = event.clientY - start.y;
+  if (event.pointerId !== drag?.id) return; // 只理會開始拖曳的那個指標
+  offset.x = event.clientX - drag.x;
+  offset.y = event.clientY - drag.y;
   box.style.translate = `${offset.x}px ${offset.y}px`;
 });
 
-function endDrag() {
-  start = null;
+function endDrag(event) {
+  if (event.pointerId === drag?.id) drag = null;
 }
 box.addEventListener("pointerup", endDrag);
 box.addEventListener("pointercancel", endDrag);
@@ -304,6 +310,7 @@ box.addEventListener("pointercancel", endDrag);
 
 幾個要點：
 
+- **只處理同一個 `pointerId`**。觸控螢幕上每根手指是一個指標，不檢查的話，第二根手指按下會蓋掉起點，方塊會瞬間跳走；`event.button !== 0` 則排除滑鼠右鍵。
 - **`setPointerCapture`** 讓快速拖曳、指標離開元素時，`pointermove` 和 `pointerup` 仍然送到這個元素。沒有它，拖太快會「掉」。
 - **一定要處理 `pointercancel`**：瀏覽器接手手勢（例如開始捲動）、或指標裝置中斷時會觸發，這時不會有 `pointerup`。
 - **位移以按下時的位置為基準計算**（`目前座標 - 起點`），而不是每次 `pointermove` 把移動量累加上去，才不會累積誤差。起點扣掉目前的 `offset`，第二次拖曳才會從上次放開的位置接著動。
@@ -327,17 +334,35 @@ form.addEventListener("submit", (event) => {
   event.preventDefault(); // 不讓瀏覽器整頁送出、重新載入
 
   const data = new FormData(form);
-  const email = data.get("email");     // 一律是字串
-  const age = Number(data.get("age")); // 數字要自己轉
+  const email = data.get("email"); // 文字欄位一律是字串
+  const ageText = data.get("age");
+  const age = ageText === "" ? null : Number(ageText); // 數字要自己轉；Number("") 會變成 0
   const all = Object.fromEntries(data); // { email: "...", age: "..." }
 
   submitSignup({ email, age });
 });
 ```
 
-- **監聽 `submit`，不要監聽按鈕的 `click`**。按 Enter 送出、用輔助科技送出，都會觸發 `submit`，不一定會觸發按鈕的 `click`。
-- **`FormData`** 依 `name` 收集所有欄位，也可以直接當成 `fetch` 的 body（[14.4 節](14-fetch-and-network-requests.md#144-送出資料)）。讀出來的值都是字串（[1.6 節](01-values-types-and-comparison.md#16-型別轉換)）。
-- `required`、`type="email"`、`min` 這些 HTML 驗證，會在觸發 `submit` 之前由瀏覽器檢查。自訂規則可以用 `input.setCustomValidity("訊息")` 接上同一套機制。前端驗證只是改善體驗，伺服器一定要再驗證一次。
+- **監聽 `submit`，不要監聽按鈕的 `click`**。按鈕的 `click` 在瀏覽器驗證之前就觸發，欄位不合法時也會執行；`submit` 只在驗證通過後才觸發。用 `form.requestSubmit()` 送出，或表單沒有送出按鈕時按 Enter，也都只有 `submit`。
+- **`FormData`** 依 `name` 收集所有欄位，也可以直接當成 `fetch` 的 body（[14.4 節](14-fetch-and-network-requests.md#144-送出資料)）。文字欄位讀出來都是字串（[1.6 節](01-values-types-and-comparison.md#16-型別轉換)），檔案欄位是 `File`，沒有送出的欄位是 `null`。
+- `required`、`type="email"`、`min` 這些 HTML 驗證，會在觸發 `submit` 之前由瀏覽器檢查。前端驗證只是改善體驗，伺服器一定要再驗證一次。
+
+`FormData` 有幾個和直覺不同的地方：
+
+```js
+const agree = data.has("agree");  // 沒勾選的核取方塊不會出現在 FormData 裡
+const tags = data.getAll("tags"); // 同名的多個值（核取方塊群組、<select multiple>）
+// Object.fromEntries(data) 遇到同名的欄位只留最後一個
+// disabled 的欄位不會被收集；要唯讀又要送出，用 readonly
+```
+
+自訂驗證規則用 `setCustomValidity` 接上瀏覽器的驗證機制。設了訊息之後，欄位會一直維持不合法，即使值改了也一樣，合法時一定要設回空字串：
+
+```js
+email.addEventListener("input", () => {
+  email.setCustomValidity(isTaken(email.value) ? "這個信箱已註冊" : "");
+});
+```
 - **`input` 事件**在每次輸入時觸發，適合即時搜尋（搭配 [3.5 節](03-scope-closures-and-hoisting.md#35-閉包的應用)的 debounce）；**`change` 事件**在值確定後觸發（輸入框失去焦點、選擇了選項）。
 
 ## 13.10 讀寫版面的成本
@@ -347,6 +372,8 @@ form.addEventListener("submit", (event) => {
 讀寫交錯會讓這個計算在迴圈裡重複發生，稱為 layout thrashing：
 
 ```js
+const items = [...document.querySelectorAll(".card")]; // 轉成陣列，下面才能用 map
+
 // 慢：每一輪都先寫再讀，每次讀都觸發一次版面計算
 for (const el of items) {
   el.style.width = "auto";

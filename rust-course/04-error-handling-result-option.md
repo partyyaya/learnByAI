@@ -28,7 +28,7 @@ Rust 把錯誤分成兩種，處理方式完全不同：
 | **可恢復（recoverable）** | `Result<T, E>` | 「這可能失敗，但失敗了我可以處理」 | 檔案找不到、網路逾時、輸入格式錯 |
 | **不可恢復（unrecoverable）** | `panic!` | 「這是 bug 或不該發生的狀態，直接中止」 | 陣列越界、除以零、程式邏輯錯誤 |
 
-**核心哲學**：Rust **沒有例外（exceptions）**。其他語言用 `throw`/`try`/`catch`，問題是「哪個函式會丟例外」不寫在簽章裡，你常常漏接。Rust 反過來——**會失敗的函式，回傳型別就是 `Result`**，你不處理就編譯不過（至少會警告）。錯誤變成型別系統的一部分。
+**核心哲學**：Rust **沒有例外（exceptions）**。其他語言用 `throw`/`try`/`catch`，問題是「哪個函式會丟例外」不寫在簽章裡，你常常漏接。Rust 反過來——**會失敗的函式，回傳型別就是 `Result`**，你得先處理失敗的情況，才拿得到裡面成功的值；就算整個不理回傳的 `Result`，編譯器也會發出警告。錯誤變成型別系統的一部分。
 
 ### panic！：直接中止
 
@@ -41,7 +41,9 @@ fn main() {
 }
 ```
 
-panic 會印出錯誤訊息與呼叫堆疊，然後中止程式。**它適合「不該發生、發生就代表有 bug」的情況**，不該拿來當一般錯誤流程。
+panic 會印出錯誤訊息和發生位置（檔名:行號），然後結束程式（結束碼 101）。預設不印呼叫堆疊；想看完整堆疊，執行時加上環境變數，例如 `RUST_BACKTRACE=1 cargo run`。嚴格說，panic 結束的是「發生 panic 的那條執行緒」，發生在 `main` 就等於整支程式結束（多執行緒在第 08 章）。
+
+**它適合「不該發生、發生就代表有 bug」的情況**，不該拿來當一般錯誤流程。
 
 ---
 
@@ -86,8 +88,9 @@ fn main() {
 每次都寫 `match` 很累。標準庫提供一堆方法，先認得最常用的：
 
 ```rust
-let ok: Result<i32, String> = Ok(5);
-let err: Result<i32, String> = Err(String::from("boom"));
+// 錯誤型別用 &str，整個 Result 就是 Copy，下面才能對同一個 ok / err 重複呼叫（原因見下方說明）
+let ok: Result<i32, &str> = Ok(5);
+let err: Result<i32, &str> = Err("boom");
 
 // unwrap：成功取值，失敗就 panic（危險，慎用）
 println!("{}", ok.unwrap());              // 5
@@ -100,7 +103,7 @@ println!("{}", ok.expect("應該要有值"));   // 5
 println!("{}", err.unwrap_or(0));         // 0
 
 // unwrap_or_else：失敗時用閉包算預設值（第 05 章講閉包）
-println!("{}", err.clone().unwrap_or_else(|_| -1));  // -1
+println!("{}", err.unwrap_or_else(|_| -1));  // -1
 
 // is_ok / is_err：只想知道成功與否
 println!("{}", ok.is_ok());               // true
@@ -108,6 +111,8 @@ println!("{}", ok.is_ok());               // true
 // map：成功時轉換值，失敗原樣傳遞
 let doubled = ok.map(|n| n * 2);          // Ok(10)
 ```
+
+> **這些方法會「拿走」Result**：`unwrap`、`expect`、`unwrap_or`、`map` 的第一個參數是 `self`（第 03 章：取得所有權），呼叫後原本的 `Result` 就被 move 掉了。上面能重複用，是因為 `Result<i32, &str>` 兩邊都是 Copy。如果錯誤型別是 `String`（不是 Copy），第二次使用就會報 `use of moved value`；要保留原值，先 `.clone()` 一份，或用 `.as_ref()` 轉成借用版的 `Result<&i32, &String>` 再呼叫。`is_ok` / `is_err` 只是借用（`&self`），不會拿走。
 
 ### 關於 `unwrap()` 的實話
 
@@ -133,7 +138,7 @@ let doubled = ok.map(|n| n * 2);          // Ok(10)
 
 ```rust
 use std::fs::File;
-use std::io::{self, Read};
+use std::io::{self, Read};   // Read 是 trait，要引入才能呼叫 read_to_string（第 03 章 3.7）
 
 // 沒有 ? 的寫法：又臭又長
 fn read_username_verbose() -> Result<String, io::Error> {
@@ -172,14 +177,15 @@ fn read_username() -> Result<String, io::Error> {
 
 ### `?` 的兩個前提
 
-1. **所在函式的回傳型別必須是 `Result`（或 `Option`，或實作了 `Try` 的型別）。** 你不能在回傳 `()` 的函式裡用 `?`。
-2. **`?` 前面那個值的錯誤型別，要能轉換成函式回傳的錯誤型別。** 標準庫的錯誤大多能自動轉；跨不同錯誤型別時，`thiserror`/`anyhow`（後面）會幫你搞定。
+1. **所在函式的回傳型別必須是 `Result`（或 `Option`）。** 你不能在回傳 `()` 的函式裡用 `?`，會報 ``the `?` operator can only be used in a function that returns `Result` or `Option` ``。在回傳 `Option` 的函式裡，對 `Option` 用 `?`：遇到 `None` 就直接回傳 `None`。但兩者不能混用——在回傳 `Result` 的函式裡對 `Option` 用 `?` 會編譯失敗，要先用 `.ok_or(錯誤值)` 把 `Option` 轉成 `Result`。
+2. **`?` 前面那個值的錯誤型別，要能轉換成函式回傳的錯誤型別。** `?` 遇到 `Err(e)` 時，回傳的其實是 `Err(From::from(e))`——它會透過 `From` trait 自動轉換錯誤型別。錯誤型別相同就直接傳；不同時，就要有對應的 `From` 實作，否則報 `` `?` couldn't convert the error to ... ``。常見的三種解法：回傳 `Box<dyn Error>`（任何標準錯誤都能轉進去，下面 `main` 的寫法）、用 `thiserror` 的 `#[from]` 產生轉換（4.7），或改用 `anyhow`（4.8）。
 
 ### `main` 也能回傳 Result
 
 ```rust
 use std::error::Error;
 
+// 接續上面的 read_username，放在同一個檔案
 fn main() -> Result<(), Box<dyn Error>> {    // main 回傳 Result，就能在裡面用 ?
     let username = read_username()?;
     println!("{username}");
@@ -188,6 +194,14 @@ fn main() -> Result<(), Box<dyn Error>> {    // main 回傳 Result，就能在�
 ```
 
 `Box<dyn Error>` 先照抄，意思是「任何一種錯誤都能裝」（第 07 章會講 `Box`、`dyn`）。這是「應用程式進入點」很常見的寫法。
+
+`main` 回傳 `Err` 時，Rust 會用 `Debug` 格式印出 `Error: ...`，並以結束碼 1 結束程式。專案目錄裡沒有 `username.txt` 時，`cargo run` 會看到：
+
+```text
+Error: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+```
+
+訊息有點生硬（而且依作業系統略有不同），4.8 的 `anyhow` 會印得好讀很多。
 
 ---
 
@@ -240,16 +254,30 @@ enum OrderError {
     #[error("庫存不足：需要 {need}，只有 {have}")]  // 用欄位名對應
     InsufficientStock { need: u32, have: u32 },
 
-    #[error("資料庫錯誤")]
-    Database(#[from] std::io::Error),             // #[from] 自動從 io::Error 轉過來
+    #[error("讀寫檔案失敗")]
+    Io(#[from] std::io::Error),                   // #[from] 自動從 io::Error 轉過來
+}
+
+fn load_order_note(path: &str) -> Result<String, OrderError> {
+    let note = std::fs::read_to_string(path)?;    // 失敗時，io::Error 經 #[from] 自動轉成 OrderError::Io
+    Ok(note)
+}
+
+fn main() {
+    let e = OrderError::InsufficientStock { need: 3, have: 1 };
+    println!("{e}");                              // 庫存不足：需要 3，只有 1
+
+    if let Err(e) = load_order_note("no-such-file.txt") {
+        println!("{e}");                          // 讀寫檔案失敗
+    }
 }
 ```
 
 `thiserror` 幫你做了什麼：
 
-- **`#[error("...")]`**：自動實作 `Display`，讓錯誤能印成你寫的那句人話。
+- **`#[error("...")]`**：自動實作 `Display`（第 03 章 3.8 手寫過的那個），讓錯誤能用 `{}` 印成你寫的那句人話。
 - **`#[derive(Error)]`**：實作標準的 `std::error::Error` trait，讓它能融入整個錯誤生態。
-- **`#[from]`**：自動生成「從 `io::Error` 轉成 `OrderError::Database`」的轉換。有了它，`?` 就能自動把 `io::Error` 轉成你的 `OrderError`——跨型別的錯誤傳遞變得無痛。
+- **`#[from]`**：自動生成「從 `io::Error` 轉成 `OrderError::Io`」的 `From` 實作。4.5 說過 `?` 會透過 `From` 轉換錯誤，所以有了它，`?` 就能自動把 `io::Error` 轉成你的 `OrderError`——跨型別的錯誤傳遞變得無痛。原本的 `io::Error` 也會被保留成這個錯誤的「來源（source）」，之後印錯誤鏈時看得到。
 
 > **用途定位**：`thiserror` 適合**函式庫（library）**或「你想讓呼叫端能精確分辨錯誤種類」的場景。因為它保留了「具體是哪一種錯誤」的型別資訊，呼叫端可以 `match` 處理。
 
@@ -279,6 +307,17 @@ fn main() -> Result<()> {
 }
 ```
 
+專案目錄裡沒有 `config.toml` 時，`cargo run` 會印出：
+
+```text
+Error: 讀取 config.toml 失敗
+
+Caused by:
+    No such file or directory (os error 2)
+```
+
+第一行是你用 `.context()` 加的說明，`Caused by:` 底下是原本的 `io::Error`。比起 4.5 `Box<dyn Error>` 印出的 `Os { code: 2, ... }`，這樣好讀得多。
+
 `anyhow` 的特點：
 
 - **`anyhow::Error` 能裝下「任何」實作了 `Error` 的錯誤**——你不用定義自己的 enum，各種來源的錯誤都能用同一個 `?` 往上丟。
@@ -291,7 +330,7 @@ fn main() -> Result<()> {
 |---|---|---|
 | 定位 | 定義**具體**錯誤型別 | 裝**任何**錯誤 |
 | 適合 | 函式庫、需要讓呼叫端 `match` 分辨錯誤 | 應用程式、只要往上報 + 記 log |
-| 呼叫端能否分辨錯誤種類 | 可以（保留型別） | 通常不行（型別被抹平） |
+| 呼叫端能否分辨錯誤種類 | 可以（保留型別） | 通常不行（型別被抹平，只能用 `downcast_ref` 去試） |
 | 心智 | 「我要精確描述每種錯誤」 | 「我只想順利把錯誤帶著上下文丟出去」 |
 
 > **實務常見組合**：一個專案裡，**底層的函式庫/模組用 `thiserror` 定義精確錯誤**，**最上層的應用進入點用 `anyhow` 統一接收**。兩者搭配，各取所長。這也是後面第 09~13 章成品專案的做法。
@@ -330,7 +369,17 @@ fn main() -> Result<()> {
 }
 ```
 
-觀察：三個可能失敗的點（讀檔、解析、以及整體流程）都用 `?` 串起來，主邏輯讀起來像「快樂路徑」，錯誤處理不打斷閱讀，卻一個都沒漏。
+觀察：`sum_numbers_in_file` 裡兩個可能失敗的點（讀檔、逐行解析）都用 `?` 串起來，主邏輯讀起來像「快樂路徑」，錯誤處理不打斷閱讀，卻一個都沒漏；錯誤最後統一在 `main` 的 `match` 裡處理。這裡用的是 `.with_context(|| ...)` 而不是 `.context(...)`：訊息要用 `format!` 組字串時，放進閉包裡，只有真的出錯才會去組，成功時不白做工。
+
+試跑看看：在專案目錄（跟 `Cargo.toml` 同一層，`cargo run` 時相對路徑從這裡算）建一個 `numbers.txt`：
+
+```text
+1
+2
+abc
+```
+
+`cargo run` 會印出 `發生錯誤：第 3 行不是有效數字：'abc': invalid digit found in string`——冒號前是你加的上下文，後面是 `parse` 原本的錯誤。把 `abc` 改成 `3` 就會印出 `總和：6`；把檔案刪掉，則會看到 `發生錯誤：讀取檔案失敗：numbers.txt: No such file or directory (os error 2)`。
 
 ---
 
@@ -338,10 +387,12 @@ fn main() -> Result<()> {
 
 - **到處 `unwrap()`** → 產品程式碼在錯誤輸入下就 panic 當掉。改用 `?` 傳遞。
 - **在回傳 `()` 的函式裡用 `?`** → 編譯錯誤。把回傳型別改成 `Result<..., ...>`。
-- **錯誤型別不匹配、`?` 轉換失敗** → 用 `thiserror` 的 `#[from]` 或改用 `anyhow`。
+- **在回傳 `Result` 的函式裡對 `Option` 用 `?`** → `` the `?` operator can only be used on `Result`s, not `Option`s ``。先用 `.ok_or(...)` 把 `Option` 轉成 `Result`。
+- **錯誤型別不匹配、`?` 轉換失敗**（`` `?` couldn't convert the error to ... ``）→ 用 `thiserror` 的 `#[from]` 或改用 `anyhow`。
 - **函式庫直接用 `anyhow`** → 呼叫端無法分辨錯誤種類。函式庫建議用 `thiserror` 保留型別。
 - **用 panic 當一般錯誤流程** → panic 是給「不該發生的 bug」，一般可預期的失敗用 `Result`。
-- **忽略 `Result`**（沒處理回傳的 Result）→ 編譯器會警告 `unused Result`，別忽視它。
+- **忽略 `Result`**（沒處理回傳的 Result）→ 編譯器會警告 `` unused `Result` that must be used ``，別忽視它。
+- **錯誤型別是 `String` 時，連續對同一個 `Result` 呼叫 `unwrap_or`、`map`…** → `use of moved value`。這些方法會拿走 `Result`，見 4.4 的說明。
 
 ---
 

@@ -24,7 +24,7 @@
 | 13 | [13-dom-and-events.md](./13-dom-and-events.md) | DOM 與事件 |
 | 14 | [14-fetch-and-network-requests.md](./14-fetch-and-network-requests.md) | fetch 與網路請求 |
 | 15 | [15-browser-native-apis.md](./15-browser-native-apis.md) | 瀏覽器原生 API：Observer、排程、儲存與頁面互動 |
-| 16 | [16-web-worker.md](./16-web-worker.md) | Web Worker |
+| 16 | [16-web-worker.md](./16-web-worker.md) | Web Worker：把吃力的運算移到背景執行緒 |
 | 17 | [17-memory-and-performance.md](./17-memory-and-performance.md) | 記憶體與效能除錯 |
 | 18 | [18-from-script-to-project.md](./18-from-script-to-project.md) | 從單檔到專案 |
 

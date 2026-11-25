@@ -23,6 +23,14 @@ s.trim().slice(-6);          // "Script"，負數從尾端算
 "abc".at(-1);                // "c"
 ```
 
+寫過 Java、C#、Python 的人要注意：`replace` 的第一個參數是字串時，**只取代第一個**，要全部取代用 `replaceAll`。另外，取代字串裡的 `$&`、`$1` 有特殊意義，即使第一個參數是一般字串也一樣；取代內容來自使用者輸入時，改傳函式：
+
+```js
+"a-b-c".replace("-", "/");              // "a/b-c"，只換了第一個
+"Hello NAME".replace("NAME", "$&$&");    // "Hello NAMENAME"，$& 代表比對到的文字
+"Hello NAME".replace("NAME", () => "$&"); // "Hello $&"，傳函式時照字面放入
+```
+
 嚴格模式下對字串的索引賦值會丟出錯誤，不會默默失敗：
 
 ```js
@@ -193,7 +201,7 @@ const d = new Date(2026, 0, 31); // 2026 年 1 月 31 日，0 代表一月
 d.getMonth(); // 0
 ```
 
-日期、小時、分鐘都從自然數開始，只有月份從 0 開始。
+日（`getDate()`）從 1 開始；時、分、秒和其他語言一樣從 0 開始；只有月份反常地從 0 開始（0 是一月，11 是十二月）。另外 `getDay()` 回傳星期幾，0 是星期日，6 是星期六。
 
 ### 解析字串：只寫日期時是 UTC
 
@@ -210,7 +218,8 @@ new Date("2026-11-13T00:00:00+08:00").toISOString(); // 明確指定 +8
 
 - **傳輸和儲存**一律用帶時區的 ISO 字串（`toISOString()` 的格式）或時間戳記。
 - **解析**只接受 ISO 格式。`"2026/11/13"`、`"Nov 13 2026"` 這類格式的解析方式由瀏覽器自行決定，不保證一致。
-- 解析失敗不會丟錯，而是得到 `Invalid Date`，`getTime()` 是 `NaN`。用 `Number.isNaN(d.getTime())` 檢查。
+- 解析失敗不會丟錯，而是得到 `Invalid Date`，`getTime()` 是 `NaN`。用 `Number.isNaN(d.getTime())` 檢查。不檢查的話，之後呼叫 `toISOString()` 會丟出 `RangeError: Invalid time value`，`JSON.stringify` 則會默默把它變成 `null`。
+- 要取得本地的日期字串（例如 `"2026-11-13"`），不要用 `toISOString().slice(0, 10)`：那是 UTC 的日期，在台灣早上 8 點前會得到前一天。改用本地時間的 getter 組出來，或用 `Intl.DateTimeFormat`（6.5 節）。
 
 ### Date 物件是可變的
 
@@ -240,7 +249,7 @@ d3.setMonth(1);                    // 3 月 3 日：2 月 31 日不存在，溢�
 
 ### Temporal
 
-`Date` 的這些問題，新的 **Temporal** API 都有修正：區分「日期」「時間」「帶時區的時間點」等不同型別、物件不可變、月份從 1 開始、有明確的日期運算。Firefox 139、Chrome 144 起已經支援，Safari 與 Node 24 還沒有正式支援。在支援普及前，可以用 polyfill，或繼續用 `Date` 搭配 date-fns、Day.js 這類函式庫。
+`Date` 的這些問題，新的 **Temporal** API 都有修正：區分「日期」「時間」「帶時區的時間點」等不同型別、物件不可變、月份從 1 開始、有明確的日期運算。瀏覽器方面，Firefox 139、Chrome 與 Edge 144 起已經支援，Safari 正式版還沒有。Node 26 起預設啟用，Node 24 只能用實驗性的 `--harmony-temporal` 旗標。在支援普及前，可以用 polyfill，或繼續用 `Date` 搭配 date-fns、Day.js 這類函式庫。
 
 ## 6.5 Intl：在地化格式
 
@@ -271,7 +280,7 @@ new Intl.NumberFormat("zh-TW", { style: "percent", maximumFractionDigits: 1 }).f
 (1234.5).toLocaleString("de-DE"); // "1.234,5"，德國用點分千位、逗號分小數
 ```
 
-金額用最小單位的整數計算（[1.4 節](01-values-types-and-comparison.md#14-number只有一種數字)），只在顯示時用 `Intl.NumberFormat` 格式化。要格式化很多次時，建立一個 formatter 重複使用，比每次呼叫 `toLocaleString` 快。
+金額用最小單位的整數計算（[1.4 節](01-values-types-and-comparison.md#14-number只有一種數字)），只在顯示時換算回元，再用 `Intl.NumberFormat` 格式化，例如以「分」存的 `199900`，顯示時格式化 `199900 / 100`，得到 `"$1,999.00"`。要格式化很多次時，建立一個 formatter 重複使用，比每次呼叫 `toLocaleString` 快。
 
 ### 日期與時間
 

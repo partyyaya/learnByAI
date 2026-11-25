@@ -39,7 +39,7 @@ Object.hasOwn(item, "toString"); // false，只檢查自己的屬性
 
 ### 鍵的順序
 
-物件的鍵會被轉成字串（Symbol 除外）。走訪順序有固定規則：**整數形式的鍵由小到大排在前面**，其他字串鍵依加入順序：
+物件的鍵會被轉成字串（Symbol 除外）。走訪順序有固定規則：**像陣列索引的鍵**（`"0"`、`"42"` 這種非負整數）由小到大排在前面，其他字串鍵（包括 `"-1"`、`"01"`、`"1.5"`）依加入順序：
 
 ```js
 Object.keys({ b: 1, 2: "two", a: 2, 1: "one" }); // ["1", "2", "b", "a"]
@@ -66,8 +66,10 @@ const { name, price: cost, stock = 0, ...others } = product;
 巢狀解構時，中間那層不存在會報錯，可以給它一個空物件當預設值：
 
 ```js
-const { address: { city } = {} } = user; // user.address 不存在時 city 是 undefined
+const { address: { city } = {} } = user; // user.address 是 undefined 時 city 是 undefined
 ```
+
+和參數的預設值一樣，這個 `= {}` 只在 `undefined` 時生效。後端常回傳 `address: null`，這時一樣會丟出 `TypeError`。資料可能是 `null` 時，改用 `const city = user.address?.city;`（[1.9 節](01-values-types-and-comparison.md#19-邏輯運算子-與-)）。
 
 ### 陣列解構
 
@@ -195,9 +197,19 @@ Array.from(new Set([1, 1, 2]));             // [1, 2]
 
 `Array.from` 可以把任何可迭代物件或「有 `length` 的物件」轉成陣列，第二個參數是轉換函式。
 
+寫過 Java 的人會想用 `new Array(n)` 建立固定長度的陣列，但它產生的是有「空洞」的陣列，`map`、`forEach` 會跳過空洞；而且參數不只一個時，意思完全不同：
+
+```js
+new Array(3).map((_, i) => i); // [ <3 empty items> ]，空洞被 map 跳過
+new Array(3).fill(0);          // [0, 0, 0]
+new Array(3, 4);               // [3, 4]，兩個參數時是「元素」，不是長度
+```
+
+要建立指定長度的陣列，用 `Array.from({ length: n }, fn)` 或 `new Array(n).fill(值)`。
+
 ## 4.5 不可變更新
 
-前端框架判斷「資料有沒有變」，比較的通常是**參考**：新舊兩個值是不是同一個物件。直接改原物件的內容，參考沒變，框架就以為沒有變化，畫面不會更新。
+React 和 Redux 這類狀態管理判斷「資料有沒有變」時，比較的是**參考**：新舊兩個值是不是同一個物件。直接改原物件的內容，參考沒變，就被當成沒有變化，畫面不會更新。Vue 的 `reactive`／`ref` 會追蹤屬性的修改，直接改內容也會更新畫面，但下面的不可變寫法在 Vue 裡一樣適用。
 
 所以更新狀態時，**產生新的物件，而不是修改原本的物件**：
 
@@ -316,7 +328,8 @@ JSON.stringify({ id: 1, password: "x" }, (key, value) =>
 
 - `Date` 會呼叫自己的 `toJSON()`，變成 ISO 格式字串。
 - `Map`、`Set` 變成 `{}`，要自己先轉成陣列或物件。
-- 值為 `undefined`、函式、Symbol 的屬性會被省略；`NaN`、`Infinity` 變成 `null`。
+- 值為 `undefined`、函式、Symbol 的**屬性**會被省略；放在**陣列**裡則變成 `null`。`NaN`、`Infinity` 變成 `null`。
+- 有循環參考，或含有 `bigint` 時，直接丟出 `TypeError`。
 - 物件有 `toJSON()` 方法時，序列化的是它的回傳值。
 
 `JSON.parse` 得到的日期只是字串。需要 `Date` 物件時，用第二個參數 reviver 轉換：
@@ -358,7 +371,12 @@ const byStatus = Object.groupBy(orders, (o) => o.status);
 // }
 ```
 
-回傳的物件沒有原型（Node 印出時會標示 `[Object: null prototype]`），所以不會有 `toString` 這類繼承來的鍵和分組名稱衝突。
+回傳的物件沒有原型（Node 印出時會標示 `[Object: null prototype]`），所以不會有 `toString` 這類繼承來的鍵和分組名稱衝突。用的時候注意兩點：
+
+- 沒有任何元素的分組不會出現：`byStatus.cancelled` 是 `undefined`，不是空陣列，要寫 `byStatus.cancelled ?? []`。
+- 因為沒有原型，`byStatus.hasOwnProperty("paid")` 會丟錯，檢查鍵要用 `Object.hasOwn(byStatus, "paid")`。
+
+分組的鍵不是字串（例如物件或日期）時，改用 `Map.groupBy`，回傳的是 `Map`。
 
 ## 4.9 本章小結
 

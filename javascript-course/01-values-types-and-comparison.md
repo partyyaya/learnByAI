@@ -4,7 +4,7 @@
 
 寫過靜態型別語言的人，最不習慣的是 JavaScript 很少因為型別不合而報錯，而是默默把值轉成另一種型別，繼續算下去。這一章把型別、轉型、比較的規則整理清楚，後面每一章都會用到。
 
-本章的範例都可以存成 `.mjs` 檔用 Node 執行，也可以貼到瀏覽器的 Console 試。
+本章的範例多半是單獨的運算式，最方便的是逐行貼到 `node` REPL 或瀏覽器的 Console 看結果。存成 `.mjs` 檔執行時，要把運算式包在 `console.log()` 裡；示範錯誤的那幾行會丟出例外，中斷後面的程式。
 
 ## 1.1 宣告變數：`const`、`let`、`var`
 
@@ -61,6 +61,8 @@ typeof null;          // "object"   ← 歷史錯誤，無法修正
 - `typeof null` 是 `"object"`，這是語言最早期的錯誤，為了相容一直保留。檢查 `null` 要直接寫 `value === null`。
 - 判斷陣列用 `Array.isArray(value)`，`typeof` 分不出陣列和一般物件。
 
+`"hi".length` 能用，是因為存取屬性時，原始值會暫時包成對應的物件。不要自己寫 `new String()`、`new Number()`、`new Boolean()`：得到的是物件，`typeof` 是 `"object"`，而且永遠是真值，`new Boolean(false)` 放進 `if` 也會成立。轉型用不加 `new` 的 `String(x)`、`Number(x)`、`Boolean(x)`。
+
 ## 1.3 原始值與參考
 
 原始值是**不可變**的，比較時比的是值本身：
@@ -113,7 +115,16 @@ JavaScript 沒有 `int`、`long`、`double` 之分，所有數字都是 **IEEE 7
 
 這不是 JavaScript 的錯誤，所有用二進位浮點數的語言都一樣，只是其他語言通常有整數或 decimal 型別可以避開。處理方式：
 
-- **比較浮點數**時允許誤差：`Math.abs(a - b) < Number.EPSILON`。
+- **比較浮點數**時允許誤差。`Number.EPSILON` 是 1 附近的最小間距，數值一大就不夠用：`1.1 + 2.2` 和 `3.3` 的差已經超過它。容許誤差要隨數值大小調整，或依需求給固定值（例如 `1e-9`）：
+
+  ```js
+  const nearlyEqual = (a, b) =>
+    Math.abs(a - b) <= Number.EPSILON * Math.max(Math.abs(a), Math.abs(b));
+
+  nearlyEqual(0.1 + 0.2, 0.3); // true
+  nearlyEqual(1.1 + 2.2, 3.3); // true
+  ```
+
 - **金額**用最小單位的整數計算（以「分」為單位存 `1999`，而不是 `19.99`），顯示時再格式化（[6.5 節](06-strings-regex-dates-and-intl.md#65-intl在地化格式)）。
 - **顯示**時才四捨五入：`(0.1 + 0.2).toFixed(2)` 得到字串 `"0.30"`。注意 `toFixed` 也受浮點表示影響，`(1.005).toFixed(2)` 是 `"1.00"`，因為 1.005 實際上存成 1.00499999……。
 
@@ -135,7 +146,13 @@ big + 1n;  // 9007199254740994n
 1n + 1;    // TypeError: Cannot mix BigInt and other types
 ```
 
-`bigint` 和 `number` 不能混用，要明確轉換：`BigInt(1)`、`Number(10n)`。後端傳來的大數字 ID 若是 JSON 數字，`JSON.parse` 時就已經失去精度，所以這類 ID 應該以字串傳輸。
+`bigint` 和 `number` 不能混用，要明確轉換：`BigInt(1)`、`Number(10n)`。後端傳來的大數字 ID 若是 JSON 數字，`JSON.parse` 時就已經失去精度，所以這類 ID 應該以字串傳輸。反過來也一樣，`JSON.stringify` 遇到 `bigint` 會直接丟錯，要自己轉成字串：
+
+```js
+JSON.stringify({ id: 1n }); // TypeError: Do not know how to serialize a BigInt
+JSON.stringify({ id: 1n }, (key, value) => (typeof value === "bigint" ? String(value) : value));
+// '{"id":"1"}'
+```
 
 ### `NaN` 與 `Infinity`
 
@@ -172,9 +189,9 @@ parseInt("12px", 10);  // 12，從頭讀到不是數字為止
 parseFloat("3.14abc"); // 3.14
 ```
 
-- 要求整個字串都是數字時用 `Number()`，再用 `Number.isNaN` 檢查。
+- 要求整個字串都是數字時用 `Number()`，再用 `Number.isNaN` 檢查。但 `Number()` 也接受 `"0x1A"`、`"1e3"`、`"Infinity"` 這些寫法；要求嚴格格式時（例如只能是正整數），先用正規表達式檢查，例如 `/^\d+$/`。
 - 要從 `"12px"` 這種字串取出開頭的數字時用 `parseInt`／`parseFloat`；`parseInt` 一律帶第二個參數 `10`，避免被當成其他進位。
-- 注意 `Number("")` 是 `0`：表單欄位空白時，直接 `Number(input.value)` 會得到 0 而不是錯誤。
+- 注意 `Number("")` 和 `Number("   ")` 都是 `0`：表單欄位空白時，直接 `Number(input.value)` 會得到 0 而不是錯誤。
 
 ## 1.5 `undefined` 與 `null`
 
@@ -244,6 +261,13 @@ Boolean("false"); // true ← 非空字串都是 true
 ```js
 const qty = Number(input.value);
 const total = price * qty; // 不轉型時 * 會自動轉，但 + 會變成串接
+```
+
+比較大小也一樣。兩邊都是字串時，`<`、`>` 逐字比較，不是比數值；只要有一邊是數字，才會轉成數字比：
+
+```js
+"10" < "9"; // true，逐字比較："1" 排在 "9" 前面
+"10" < 9;   // false，轉成數字比
 ```
 
 ## 1.7 真值與假值
@@ -326,7 +350,7 @@ Object.is(0, -0);    // false
 [1, 2] === [1, 2];       // false
 ```
 
-JavaScript 沒有內建的深度比較。測試時用 `node:assert` 的 `assert.deepStrictEqual`（[18.4 節](18-from-script-to-project.md#184-第一個測試)），一般程式碼通常比較特定欄位或 ID。
+JavaScript 沒有內建的深度比較。測試時用 `node:assert/strict` 的 `assert.deepEqual`（[18.4 節](18-from-script-to-project.md#184-第一個測試)），Node 的一般程式碼可以用 `node:util` 的 `isDeepStrictEqual(a, b)`；瀏覽器程式碼通常比較特定欄位或 ID。
 
 ## 1.9 邏輯運算子、`??` 與 `?.`
 

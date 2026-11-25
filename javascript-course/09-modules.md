@@ -54,6 +54,8 @@ export * from "./format.js";
 export { default as log } from "./logger.js";
 ```
 
+`export *` 不會轉出預設匯出。`format.js` 若有 `export default`，要像第三行那樣寫 `export { default as 名稱 } from ...` 才轉得出去。
+
 ### 建議用具名匯出
 
 預設匯出讓匯入端可以任意命名，結果同一個東西在不同檔案裡叫不同名字，搜尋和重構都比較困難。具名匯出的名稱是固定的，編輯器也能自動補完與自動 import。
@@ -78,6 +80,8 @@ console.log("counter.js evaluated");
 ```
 
 不管有多少個模組 `import` 了 `counter.js`，`"counter.js evaluated"` 只會印一次，所有匯入端拿到的是**同一個**模組實例。所以模組最上層的狀態，在整個程式裡是共用的單例（singleton）。這很方便（共用一個設定、一個資料庫連線），但也代表測試之間可能互相影響。
+
+這裡的「同一個」以解析後的網址（Node 裡是檔案路徑）為準：`./counter.js` 和 `./counter.js?v=2` 是兩個實例。同一個套件分別被 `import`（ESM 版）和 `require`（CommonJS 版）載入時，也會有兩份狀態。
 
 ### 匯入的是即時繫結，而且唯讀
 
@@ -163,19 +167,18 @@ Node 依副檔名和 `package.json` 決定一個檔案是 ESM 還是 CommonJS：
 |------|---------|
 | `.mjs` | 一律 ESM |
 | `.cjs` | 一律 CommonJS |
-| `.js` | 看最近的 `package.json`：有 `"type": "module"` 就是 ESM，否則是 CommonJS |
+| `.js` | 看最近的 `package.json`：`"type": "module"` 是 ESM，`"type": "commonjs"` 是 CommonJS。沒寫 `"type"` 時先當 CommonJS，但檔案裡有 `import`／`export` 這類 ESM 語法時，Node 22.7 起會改用 ESM 執行，並印出警告 |
 
-新專案在 `package.json` 加上 `"type": "module"`，`.js` 檔就是 ESM。
+新專案在 `package.json` 寫明 `"type": "module"`，`.js` 檔就是 ESM，不要讓 Node 用猜的。
 
 ```js
 import { readFile } from "node:fs/promises"; // 內建模組加上 node: 前綴，一看就知道不是第三方套件
 import path from "node:path";
+// 匯入 JSON 要標註型別
+import data from "./data.json" with { type: "json" };
 
 // ESM 沒有 __dirname、__filename，改用 import.meta
 const configPath = path.join(import.meta.dirname, "config.json");
-
-// 匯入 JSON 要標註型別
-import data from "./data.json" with { type: "json" };
 ```
 
 `import.meta.dirname` 與 `import.meta.filename` 從 Node 20.11 開始提供。在 Node 的 ESM 裡相對路徑同樣要寫副檔名：`"./price.js"`，不能寫成 `"./price"`。
@@ -234,7 +237,7 @@ const fs = require("node:fs");
 ### 兩邊互相使用
 
 - **ESM 匯入 CommonJS**：可以。`module.exports` 會成為預設匯出；Node 也會盡量分析出具名匯出，所以 `import { add } from "./legacy.cjs"` 通常可以用。
-- **CommonJS 匯入 ESM**：Node 22.12 起可以直接 `require()` 一個 ES Module，條件是那個模組（和它的依賴）沒有最上層 `await`。更早的版本只能用動態 `import()`。
+- **CommonJS 匯入 ESM**：Node 22.12 起可以直接 `require()` 一個 ES Module，條件是那個模組（和它的依賴）沒有最上層 `await`，否則丟出 `ERR_REQUIRE_ASYNC_MODULE`。更早的版本只能用動態 `import()`。`require()` 拿到的是整個模組的命名空間物件，預設匯出在 `default` 裡：`const { default: log } = require("./logger.mjs");`。
 
 新程式碼一律寫 ESM。看到 `require` 時知道它是什麼、知道怎麼跟它互通即可。
 

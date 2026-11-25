@@ -31,6 +31,10 @@ obj[userB] = 2;
 Object.keys(obj); // ["[object Object]"]，兩個使用者變成同一個鍵
 ```
 
+反過來，也不要用中括號存取 `Map`。`m["a"] = 1` 不會報錯，但它是在 Map 物件上加了一個一般屬性：`m.get("a")` 仍然是 `undefined`，`m.size` 還是 0。讀寫一律用 `get`／`set`。
+
+物件當鍵時比的是**參考**。JavaScript 沒有 Java `equals()`／`hashCode()` 或 Python `__eq__`／`__hash__` 這種可以自訂的相等規則，所以 `visits.get({ id: 1 })` 是 `undefined`。要依內容當鍵時，自己組出原始值的鍵，例如 `user.id` 或 `` `${x},${y}` ``。
+
 ### 走訪與轉換
 
 `Map` 保證依**加入順序**走訪：
@@ -359,7 +363,7 @@ const everything = await Array.fromAsync(allItems()); // 全部收集成陣列
 
 呼叫端只看到「一串項目」，不需要知道分頁的細節；中途 `break` 時，後面的頁面就不會被請求。
 
-`for await...of` 也可以走訪一般的可迭代物件，遇到 Promise 會等它完成。Node 的串流和瀏覽器的 `ReadableStream`（較新的瀏覽器）都實作了非同步迭代，[14.7 節](14-fetch-and-network-requests.md#147-串流讀取回應)會用它逐段讀取網路回應。
+`for await...of` 也可以走訪一般的可迭代物件，遇到 Promise 會等它完成。但不要拿它走訪一個**已經建立好**的 Promise 陣列：迴圈一次只等一個，排在後面的 Promise 如果先失敗，當下沒有人處理，就成了未處理的 rejection，Node 會直接結束程式，外面的 `try/catch` 也接不到。同時等多個 Promise 用 `Promise.all`／`Promise.allSettled`（[11.7 節](11-promise-and-async-await.md#117-串行與並行)）。Node 的串流和瀏覽器的 `ReadableStream`（較新的瀏覽器）都實作了非同步迭代，[14.7 節](14-fetch-and-network-requests.md#147-串流讀取回應)會用它逐段讀取網路回應。
 
 ## 7.8 本章小結
 

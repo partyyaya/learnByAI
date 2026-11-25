@@ -62,11 +62,14 @@ fn main() {
 
 **可見性核心規則**：**Rust 的東西預設是「私有的」**——只有加了 `pub` 才能被模組外面存取。這跟變數預設不可變是同一種哲學：**預設封閉、要開放才明講**。這強迫你有意識地設計「哪些是對外的 API，哪些是內部細節」。
 
+struct 要特別注意：`pub struct` 只公開型別本身，**欄位仍然各自預設私有**，要外面能讀寫的欄位得另外加 `pub`（6.9 的 `Cart` 就刻意把欄位留成私有）。`pub enum` 則不同，變體會跟著一起公開。
+
 ### `use`：把路徑引進來，少打字
 
 每次都寫完整路徑很煩，`use` 幫你「引入」：
 
 ```rust
+// 跟上面的 mod restaurant 寫在同一個檔案
 use restaurant::front::add_to_waitlist;   // 引入後直接用短名
 
 fn main() {
@@ -74,7 +77,7 @@ fn main() {
 }
 ```
 
-你在前面幾章看到的 `use std::collections::HashMap;`、`use rand::Rng;` 就是這個。
+你在前面幾章看到的 `use std::collections::HashMap;`、`use rand::RngExt;` 就是這個。
 
 ### 把模組拆到不同檔案
 
@@ -84,24 +87,48 @@ fn main() {
 src/
 ├── main.rs           ← crate 根（binary）
 ├── front.rs          ← mod front 的內容
+├── kitchen.rs        ← mod kitchen 的內容
 └── kitchen/
-    ├── mod.rs         或 kitchen.rs  ← mod kitchen 的內容
-    └── cooking.rs     ← mod kitchen::cooking
+    └── cooking.rs    ← mod kitchen::cooking 的內容
 ```
 
-`main.rs` 裡宣告：
+`src/main.rs` 裡宣告：
 
 ```rust
 mod front;             // 告訴編譯器「去 front.rs 找 front 模組的內容」
-mod kitchen;           // 去 kitchen.rs 或 kitchen/mod.rs 找
+mod kitchen;           // 去 kitchen.rs 找
 
 fn main() {
     front::add_to_waitlist();
+    kitchen::cooking::boil();
+}
+```
+
+`src/front.rs`（檔案本身就是模組內容，不用再包一層 `mod front { }`）：
+
+```rust
+pub fn add_to_waitlist() {
+    println!("加入候位");
+}
+```
+
+`src/kitchen.rs`：子模組也要在父模組裡宣告，編譯器才會去找 `kitchen/cooking.rs`：
+
+```rust
+pub mod cooking;       // 去 kitchen/cooking.rs 找；pub 讓 main.rs 能用 kitchen::cooking
+```
+
+`src/kitchen/cooking.rs`：
+
+```rust
+pub fn boil() {
+    println!("煮水");
 }
 ```
 
 - `mod front;`（分號結尾，沒有 `{}`）＝「這個模組的內容在另一個檔案裡」。
-- 檔名 = 模組名。子模組放進同名資料夾。
+- 檔名 = 模組名。子模組放進跟父模組同名的資料夾，並且要在父模組檔案裡用 `mod` 宣告。**沒被任何 `mod` 宣告到的 `.rs` 檔，編譯器根本不會看。**
+- 較舊的專案會把 `kitchen.rs` 的內容寫在 `kitchen/mod.rs`，效果相同。兩種擇一，同時存在會報錯「file for module `kitchen` found at both ...」。
 
 > **心智模型**：`mod xxx;` 像是在說「這裡有一個叫 xxx 的抽屜，內容物在 xxx.rs 這個檔案」。整個 crate 就是一棵從 `main.rs`/`lib.rs` 長出來的模組樹。
 
@@ -112,12 +139,16 @@ mod a {
     pub fn foo() {}
     pub mod b {
         pub fn bar() {
+            self::baz();         // self = 目前這個模組（b）
             super::foo();        // super = 上一層模組（a）
             crate::a::foo();     // crate = 從 crate 根開始的絕對路徑
         }
+        fn baz() {}
     }
 }
 ```
+
+模組拆成多個檔案後，要用到「旁邊那個模組」的東西，最常見的寫法就是 `crate::` 開頭的絕對路徑，例如在 `front.rs` 裡寫 `use crate::kitchen::cooking;`。
 
 ---
 
@@ -129,7 +160,7 @@ mod a {
 [package]
 name = "myapp"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"     # cargo new 產生的預設值
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }   # 帶 feature 的依賴
@@ -138,7 +169,7 @@ anyhow = "1.0"
 
 [dev-dependencies]
 # 只在測試/範例時需要的依賴（不會進正式產物）
-mockall = "0.12"
+mockall = "0.15"
 
 [profile.release]
 opt-level = 3        # 最佳化等級
@@ -147,20 +178,27 @@ lto = true           # 連結期最佳化，產物更小更快（編譯更久）
 
 重點：
 
-- **`[dependencies]`**：正式依賴。用 `cargo add 套件名` 會自動加進來。
+- **`[dependencies]`**：正式依賴。用 `cargo add 套件名` 會自動加進來；要開 feature 就 `cargo add serde --features derive`，加 dev 依賴用 `cargo add --dev mockall`。
 - **feature**：很多 crate 把功能切成可選的「feature」，你只開需要的，減少編譯量與體積。例如 `serde` 的 `derive` feature 才有 `#[derive(Serialize)]`。
 - **`[dev-dependencies]`**：只在 `cargo test`、範例時用的依賴，不會被打包進正式執行檔。
 - **`[profile.release]`**：控制 release 編譯的最佳化（回扣第 00 章 debug/release）。
 
+> 如果你把這份 `Cargo.toml` 原樣貼進新專案，程式卻還沒用到這些套件，`cargo build` 會對沒用到的套件印出「warning: unused dependency」。這只是提醒，不影響編譯；真的用到之後警告就會消失。
+
 ### 版本語意（SemVer）
 
-`"1.0"` 其實是 `"^1.0"` 的意思——「相容 1.x 的最新版，但不跳到 2.0」。Rust 生態嚴格遵循語意化版本（SemVer）：主版號變動代表破壞性改動。`Cargo.lock` 會鎖住實際解析到的版本，確保每次 build 一致（回扣第 00 章的 npm 類比）。
+`"1.0"` 其實是 `"^1.0"` 的意思——「相容 1.x 的最新版，但不跳到 2.0」。Rust 生態嚴格遵循語意化版本（SemVer）：主版號變動代表破壞性改動。`Cargo.lock` 會鎖住實際解析到的版本，確保每次 build 一致（回扣第 00 章的 npm 類比）；想在允許範圍內升級，跑 `cargo update`。
+
+兩個常讓人疑惑的地方：
+
+- **`cargo add` 寫進去的是完整版號**，例如 `anyhow = "1.0.104"`。它一樣是 `^` 範圍，意思是「至少 1.0.104，但不到 2.0」，不是鎖死在 1.0.104。
+- **0.x 版的規則比較緊**：`mockall = "0.15"` 只會升到 0.15.x，不會自動跳到 0.16。因為 0.x 階段的套件，次版號變動就可能有破壞性改動。所以舊文章寫 `0.12`、你 `cargo add` 拿到 `0.15`，兩者可能不相容。
 
 ---
 
 ## 6.5 拆成 lib + bin 的實際結構
 
-前面說「lib 放核心邏輯、bin 當薄進入點」對測試與架構最友善。做法：
+前面說「lib 放核心邏輯、bin 當薄進入點」對測試與架構最友善。做法：在 `cargo new myapp` 建好的專案裡，自己新增 `src/lib.rs`。Cargo 看到 `src/main.rs` 與 `src/lib.rs` 同時存在，就知道這個 package 有一個 bin 和一個 lib，不用改 `Cargo.toml`。
 
 ```text
 myapp/
@@ -200,6 +238,11 @@ fn main() {
 }
 ```
 
+兩個容易卡住的細節：
+
+- **lib 的名字就是 `Cargo.toml` 的 package 名**。名字裡的 `-` 在程式碼裡要換成 `_`：`cargo new my-app` 建出來的專案，`main.rs` 要寫 `use my_app::...`。
+- **`main.rs` 不要再寫 `mod calculator;`**。模組只在 `lib.rs` 宣告一次；如果 `main.rs` 也宣告，同一個檔案會被 bin 再編一份，變成兩個互不相干的模組。bin 要用 lib 的東西，一律透過 `myapp::...`。
+
 **為什麼要這樣分？** 因為「整合測試」和「其他 crate」只能存取 **library crate 的公開 API**，不能直接進到 `main.rs`。把邏輯放 lib，你就能好好測試它，也能在未來被別的東西重用。這正是第 09 章架構設計的雛形。
 
 ---
@@ -212,7 +255,7 @@ fn main() {
 
 ```toml
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/domain",       # 核心領域邏輯
     "crates/db",           # 資料庫存取
@@ -246,6 +289,15 @@ crate 之間用相對路徑互相依賴：
 domain = { path = "../domain" }
 ```
 
+實際建立的步驟：
+
+1. 建 `myproject/` 資料夾，手寫根目錄 `Cargo.toml`：`[workspace]`、`resolver` 照上面寫，`members` 先寫 `[]` 就好。
+2. 在根目錄執行 `cargo new crates/domain --lib`、`cargo new crates/db --lib`、`cargo new crates/api`。`cargo new` 發現自己在 workspace 裡，會自動把新 crate 加進 `members`。
+3. 加 crate 之間的依賴：在 `crates/db` 底下跑 `cargo add domain --path ../domain`（它會多寫一個 `version = "0.1.0"`，對本地路徑依賴沒有影響），或直接手寫上面那行。
+4. 在根目錄跑 `cargo build`、`cargo test` 會處理整個 workspace；只針對某個 crate 用 `-p`，例如 `cargo run -p api`。
+
+> **`resolver = "3"` 是什麼？** resolver 是 Cargo「解析依賴版本與 feature」的規則版本。一般 package 會依 `edition` 自動決定（edition 2024 對應 `"3"`），但像上面這種根目錄只有 `[workspace]`、沒有 `[package]` 的 workspace，**要自己寫**；漏寫的話，Cargo 會退回最舊的 `"1"` 並警告「virtual workspace defaulting to `resolver = "1"`」。成員都是 edition 2024 就寫 `"3"`；較舊的專案或文章常見 `resolver = "2"`（edition 2021 的對應值），也能正常使用。
+
 > **這章埋的伏筆**：第 09 章的架構設計會**大量**用到 workspace——把「領域邏輯」「資料庫」「API」拆成獨立 crate，讓依賴方向清楚、各層能獨立編譯與測試。你現在先知道「workspace 就是把多個 crate 綁在一起管」即可。
 
 > **心智模型**（給 JS/TS 背景的人）：workspace ≈ pnpm/npm workspaces（monorepo）。多個套件放一個 repo，彼此用本地路徑依賴。
@@ -258,7 +310,7 @@ domain = { path = "../domain" }
 
 ### 單元測試：跟被測程式碼放一起
 
-慣例是在同檔案底部放一個 `tests` 模組：
+慣例是在同檔案底部放一個 `tests` 模組。以 6.5 的 `src/calculator.rs` 為例：
 
 ```rust
 pub fn add(a: i32, b: i32) -> i32 {
@@ -303,10 +355,12 @@ mod tests {
 跑測試：
 
 ```bash
-cargo test                 # 跑所有測試
-cargo test test_add        # 只跑名字含 test_add 的
-cargo test -- --nocapture  # 顯示測試中的 println! 輸出
+cargo test                  # 跑所有測試
+cargo test test_add         # 只跑名字含 test_add 的
+cargo test -- --no-capture  # 顯示測試中的 println! 輸出（舊寫法 --nocapture 也可以）
 ```
+
+`--` 後面的參數是交給測試執行器、而不是交給 cargo 的。預設情況下，通過的測試裡 `println!` 的輸出會被吞掉，只有失敗的測試才會印出來。
 
 常用斷言：
 
@@ -343,6 +397,8 @@ fn add_works_from_outside() {
 }
 ```
 
+`tests/` 底下的每個檔案都會被編成一個獨立的 crate，本來就只在 `cargo test` 時編譯，所以不用加 `#[cfg(test)]`，也不用包 `mod tests`。
+
 | | 單元測試 | 整合測試 |
 |---|---|---|
 | 位置 | 被測檔案內的 `#[cfg(test)] mod tests` | 專案根的 `tests/` 資料夾 |
@@ -364,6 +420,8 @@ fn parse_works() -> Result<(), std::num::ParseIntError> {
 
 > **文件測試（doctest）加碼**：Rust 還會把「文件註解裡的程式碼範例」當測試跑！這保證你的範例永遠是能編譯、能跑的，不會過時。這是 Rust 生態文件品質高的原因之一。
 
+`///` 開頭的是文件註解，寫在項目正上方。把 `src/calculator.rs` 的 `add` 改成這樣，`cargo test` 的輸出最後就會多一段「Doc-tests myapp」：
+
 ```rust
 /// 把兩數相加。
 ///
@@ -373,6 +431,8 @@ fn parse_works() -> Result<(), std::num::ParseIntError> {
 /// ```
 pub fn add(a: i32, b: i32) -> i32 { a + b }
 ```
+
+文件範例是站在「外部使用者」的角度寫的，所以要用完整路徑 `myapp::calculator::add`。也因此，文件測試只對 library crate 有效，寫在 `main.rs` 裡的範例不會被執行。
 
 ---
 
@@ -385,15 +445,17 @@ pub fn add(a: i32, b: i32) -> i32 { a + b }
 | `cargo test` | 跑所有測試（含文件測試） |
 | `cargo doc --open` | 依你的文件註解產生 HTML 文件並打開 |
 
-> **實務習慣**：commit 前跑 `cargo fmt` + `cargo clippy` + `cargo test`。很多團隊會把這三個設進 CI（第 06 章的觀念，第 09 章成品會用到），確保進主線的程式碼格式一致、沒有明顯壞味道、測試綠燈。
+`rustup` 預設安裝就帶有 `rustfmt` 與 `clippy`；如果執行時說找不到，補裝一次：`rustup component add rustfmt clippy`。
+
+> **實務習慣**：commit 前跑 `cargo fmt` + `cargo clippy` + `cargo test`。很多團隊會把這三個設進 CI，確保進主線的程式碼格式一致、沒有明顯壞味道、測試綠燈。CI 裡通常改用「只檢查、不修改」的寫法：`cargo fmt --check`（格式不對就失敗）、`cargo clippy -- -D warnings`（把警告當錯誤）。
 
 ---
 
 ## 6.9 綜合範例：一個有模組與測試的小專案
 
-把本章串起來——一個簡單的「購物車」lib：
+把本章串起來——一個簡單的「購物車」lib。沿用 6.5 的 `myapp` 專案即可：
 
-`src/lib.rs`：
+`src/lib.rs`（保留原本的內容，加上這兩行）：
 
 ```rust
 pub mod cart;
@@ -455,7 +517,8 @@ mod tests {
 ## 6.10 常見錯誤
 
 - **忘了加 `pub`** → 外部存取不到，報「function is private」。想被外面用就加 `pub`。
-- **`mod xxx;` 但找不到對應檔案** → 檢查檔名/路徑是否符合模組名規則（`xxx.rs` 或 `xxx/mod.rs`）。
+- **`mod xxx;` 但找不到對應檔案** → 報「file not found for module `xxx`」。檢查檔名/路徑是否符合模組名規則（`xxx.rs` 或 `xxx/mod.rs`）；子模組的檔案要放在父模組同名的資料夾裡。
+- **新增了 `.rs` 檔卻沒寫 `mod`** → 編譯器根本不會讀那個檔案，裡面的東西也就「找不到」。在 `main.rs`/`lib.rs`（或父模組）補上 `mod xxx;`。
 - **整合測試想測私有函式** → 不行。整合測試只能碰公開 API，私有邏輯用單元測試。
 - **測試碼寫在正式模組沒加 `#[cfg(test)]`** → 會被編進正式產物。測試模組記得加 `#[cfg(test)]`。
 - **binary-only 專案想寫整合測試卻沒 lib** → `tests/` 只能引用 library crate。把邏輯抽到 `lib.rs`。
@@ -482,7 +545,7 @@ mod tests {
 3. 為第 1 題加一個 `tests/` 整合測試，從外部呼叫你的公開函式。
 4. 故意把某個函式的 `pub` 拿掉，觀察整合測試報什麼錯，再加回去。
 5. 用 6.9 的 `Cart` 為基礎，新增 `remove` 或 `clear` 方法並補上對應測試。
-6. （挑戰）建一個含兩個 crate 的最小 workspace：`core`（lib，放一個函式）與 `app`（bin，依賴 core 並呼叫它）。
+6. （挑戰）建一個含兩個 crate 的最小 workspace：`calc`（lib，放一個函式）與 `app`（bin，依賴 calc 並呼叫它）。（crate 別取名 `core`、`std`，會跟標準函式庫撞名。）
 
 ---
 

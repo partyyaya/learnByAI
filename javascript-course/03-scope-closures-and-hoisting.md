@@ -69,7 +69,17 @@ console.log(tdz); // ReferenceError: Cannot access 'tdz' before initialization
 let tdz = 2;
 ```
 
-`let`、`const` 其實也被提升了，但從作用域開頭到宣告那一行之間，變數處於**暫時性死區**（Temporal Dead Zone，TDZ），存取就報錯。這比 `var` 默默給 `undefined` 好：錯誤在第一次存取時就出現，而不是帶著 `undefined` 繼續跑。
+`let`、`const` 其實也被提升了，但從進入作用域，到宣告那一行**執行完**之前，變數處於**暫時性死區**（Temporal Dead Zone，TDZ），存取就報錯。這比 `var` 默默給 `undefined` 好：錯誤在第一次存取時就出現，而不是帶著 `undefined` 繼續跑。
+
+TDZ 看的是執行的時間點，不是程式碼的位置。函式寫在 `let` 前面沒關係，只要呼叫發生在宣告執行之後就好：
+
+```js
+function readLater() {
+  return later;
+}
+let later = "ok";
+readLater(); // "ok"
+```
 
 錯誤訊息的差別也能幫忙判斷問題：
 
@@ -144,15 +154,18 @@ for (let j = 0; j < 3; j++) {
 
 ### 抓到舊的狀態
 
-反過來的問題也很常見：閉包建立後，外面的變數換成了**新的變數**，閉包卻還抓著舊的。在 React 裡，每次重新渲染都會建立新的 state 變數和新的函式；如果某個 callback 是在早先的渲染裡建立的，它看到的就是那一次的值：
+反過來的問題也很常見：閉包建立後，外面的變數換成了**新的變數**，閉包卻還抓著舊的。在 React 裡，每次重新渲染都會建立新的 state 變數和新的函式；如果某個 callback 是在早先的渲染裡建立的，它看到的就是那一次的值。用一般函式模擬：
 
 ```js
-function setupTimer(count) {
-  // 這個 count 是呼叫 setupTimer 那一刻的參數
-  setInterval(() => console.log("count is", count), 1000);
+function render(count) {
+  // 模擬 React：每次渲染都有一個新的 count，和一個新建立的 callback
+  return () => console.log("count is", count);
 }
 
-setupTimer(0); // 之後不管外面的計數器變成多少，這裡永遠印 0
+const tickFromFirstRender = render(0);
+render(1);
+render(2);
+tickFromFirstRender(); // "count is 0"：它抓的是第一次渲染的 count
 ```
 
 React 開發時遇到「`useEffect` 裡讀到的 state 永遠是初始值」，原因就在這裡。解法是讓 callback 讀到最新的值（重新建立 callback，或把值放在可變的容器裡，例如 `ref.current`）。
@@ -229,7 +242,7 @@ function throttle(fn, interval) {
 }
 ```
 
-每 100 毫秒呼叫一次、連續 10 次（第 100 到 1000 毫秒），兩者的行為：
+用 `debounce(fn, 300)` 和 `throttle(fn, 300)`，每 100 毫秒呼叫一次、連續 10 次（第 100 到 1000 毫秒），兩者的行為：
 
 ```text
 throttle 1 @100
@@ -250,12 +263,22 @@ debounce 10 @1300
 
 最外層有兩種情況：
 
-- **一般 `<script>`**：最外層的 `var` 和函式宣告會變成全域物件的屬性，不同 `<script>` 之間共用，容易互相覆蓋。
+- **一般 `<script>`**：最外層的宣告都是全域的，不同 `<script>` 之間共用。`var` 和函式宣告還會變成全域物件的屬性，容易互相覆蓋；`let`、`const` 不會掛到 `window` 上，但一樣共用，兩個 script 宣告同名的 `let` 時，後面那個 script 整段不會執行。
 - **ES Module**：最外層就是模組自己的作用域，宣告不會跑到全域，其他模組要透過 `import` 才能用（[第 9 章](09-modules.md)）。
 
 不管在瀏覽器（`window`）、Worker（`self`）還是 Node（`global`），都可以用 `globalThis` 取得全域物件。
 
 新程式碼盡量不要建立全域變數。需要在模組之間共用的東西，用 `export`／`import` 明確傳遞。
+
+舊程式碼常見的 IIFE（立即執行的函式運算式），就是在沒有模組和區塊作用域的年代，用來建立私有作用域的寫法：
+
+```js
+(function () {
+  var counter = 0; // 只在這個函式裡，不會變成全域變數
+})();
+```
+
+看到它時，當成「只用一次的作用域」即可；新程式碼用模組，或 `{}` 加 `let`／`const`。
 
 ## 3.7 閉包與記憶體
 
@@ -270,7 +293,9 @@ function attach(button) {
 }
 ```
 
-只要 `button` 還在、監聽器沒移除，`hugeData` 就一直留在記憶體裡。大部分情況這是預期的行為；問題出在監聽器、計時器忘了清，或閉包意外抓住了用不到的大物件。[17.2 節](17-memory-and-performance.md#172-常見的記憶體洩漏)會整理這類問題的找法和清理方式。
+只要 `button` 還在、監聽器沒移除，`hugeData` 就一直留在記憶體裡。大部分情況這是預期的行為；問題出在監聽器、計時器忘了清，或閉包意外抓住了用不到的大物件。
+
+「意外抓住」最難察覺的情況是：V8 讓同一個作用域裡建立的閉包**共用一份環境**。同一個函式裡只要有任何一個閉包用到 `hugeData`，其他沒用到它的閉包也會讓它留在記憶體裡。要讓長期存在的 callback 不留住大物件，先取出需要的值，或把 callback 建立在沒有大物件的函式裡。[17.2 節](17-memory-and-performance.md#172-常見的記憶體洩漏)會整理這類問題的找法和清理方式。
 
 ## 3.8 本章小結
 

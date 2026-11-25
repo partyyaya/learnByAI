@@ -51,7 +51,7 @@ Web Worker 開一條**獨立的背景執行緒**來跑耗時運算，主執行�
 
 - **要操作 DOM**：Worker 碰不到 DOM，沒有 `window`、`document`，畫面更新只能回主執行緒做。
 - **運算很輕**：幾毫秒就跑完的工作，放進 Worker 反而被「建立 Worker、傳資料」的成本拖累。
-- **超高頻、超小的訊息往返**：每秒上千次 `postMessage` 傳小資料，複製與排程的成本會吃掉好處。
+- **每則訊息的工作量比傳訊成本還小**：小訊息一次往返大約數十微秒，如果每則訊息只做幾微秒的事，時間都花在傳訊上。這時把小訊息合併成一批再送。
 - **只是想要非同步**：`setTimeout`、Promise、`async/await` 能讓程式不阻塞地**排程**，但仍在主執行緒上跑。
 
 ### `async/await` 不等於多執行緒
@@ -81,7 +81,7 @@ Worker 跑在一個獨立的全域環境，全域物件是 `self`，不是 `wind
 | `fetch`、`XMLHttpRequest`、`WebSocket` | 任何 DOM 操作（`document.querySelector`……） |
 | `setTimeout`／`setInterval` | `alert`、`confirm` |
 | `IndexedDB`、Cache API | `localStorage`、`sessionStorage` |
-| `importScripts()`、`import`（module worker） | 直接更新畫面 |
+| `importScripts()`（classic worker）、`import`（module worker） | 直接更新畫面 |
 | `WebAssembly`、`crypto.subtle` | |
 
 Worker 不能直接改畫面。流程一定是：主執行緒把資料送給 Worker → Worker 算完 → 把結果 `postMessage` 回主執行緒 → **主執行緒**更新 DOM。
@@ -115,7 +115,17 @@ worker.postMessage({ buffer }, [buffer]);
 console.log(buffer.byteLength); // 0，已經轉移，這邊只剩空殼
 ```
 
-傳大的二進位資料（影像、檔案、音訊）時用 Transferable，差距可以到「毫秒對數百毫秒」的等級。
+傳大的二進位資料（影像、檔案、音訊）時用 Transferable。64MB 的 `ArrayBuffer` 在桌機上複製要數十毫秒，而且送出那一刻主執行緒就被佔住十幾毫秒；轉移不到 1 毫秒。資料越大、裝置越慢，差距越明顯。
+
+手上拿的通常是 `Uint8Array` 這類 TypedArray，轉移清單要放的是它底層的 `buffer`：
+
+```js
+const pixels = new Uint8Array(1024 * 1024);
+worker.postMessage(pixels, [pixels]);        // DataCloneError：轉移清單要放 ArrayBuffer
+worker.postMessage(pixels, [pixels.buffer]); // 轉移底層的 buffer
+```
+
+如果 `pixels` 只是某個大 buffer 的一段（例如 `subarray()` 切出來的），轉移的是整個 buffer。
 
 ## 16.5 原生寫法
 
@@ -164,19 +174,23 @@ console.log("這行先印出來，因為運算在背景跑");
 ```js
 self.onmessage = (e) => {
   const { id, type, payload } = e.data;
-  let result;
-  switch (type) {
-    case "sum":
-      result = payload.reduce((a, b) => a + b, 0);
-      break;
-    case "sort":
-      result = [...payload].sort((a, b) => a - b);
-      break;
-    default:
-      // 錯誤也帶著 id 回去
-      return self.postMessage({ id, error: `未知任務：${type}` });
+  try {
+    let result;
+    switch (type) {
+      case "sum":
+        result = payload.reduce((a, b) => a + b, 0);
+        break;
+      case "sort":
+        result = [...payload].sort((a, b) => a - b);
+        break;
+      default:
+        throw new Error(`未知任務：${type}`);
+    }
+    self.postMessage({ id, result });
+  } catch (err) {
+    // 錯誤也帶著 id 回去，主執行緒才知道是哪個任務失敗
+    self.postMessage({ id, error: err.message });
   }
-  self.postMessage({ id, result });
 };
 ```
 
@@ -210,13 +224,27 @@ const sorted = await runTask("sort", [3, 1, 2]); // [1, 2, 3]
 
 `Promise.withResolvers()`（[11.6 節](11-promise-and-async-await.md#116-把-callback-api-包成-promisedelay)）讓 `resolve`、`reject` 可以存進 `pending`，等訊息回來時再呼叫。最後兩行用了 top-level await，`main.js` 要用 `<script type="module">` 載入。
 
+`worker.js` 用 `try/catch` 包住整個處理過程。少了它，`payload` 不是陣列這類執行時錯誤不會帶著 id 傳回來，對應的 Promise 會永遠停在 pending。錯誤只傳 `message` 字串，是因為錯誤物件經過結構化複製後，自訂的類別和欄位都會不見（[8.4 節](08-error-handling.md#84-自訂錯誤類別)）。
+
 ### 錯誤處理與終止
 
 ```js
-// 監聽 Worker 內沒有接住的錯誤
+// 監聽 Worker 內沒有接住的錯誤，以及 Worker 載入失敗
 worker.onerror = (e) => {
-  console.error(`Worker 錯誤：${e.message}（${e.filename}:${e.lineno}）`);
+  if (e instanceof ErrorEvent) {
+    console.error(`Worker 錯誤：${e.message}（${e.filename}:${e.lineno}）`);
+  } else {
+    // 檔案 404、module worker 有語法錯誤時，收到的是一般的 Event，沒有 message
+    console.error("Worker 無法載入");
+  }
+  rejectAll(new Error("Worker 發生錯誤"));
 };
+
+// 讓還在等的任務都失敗，呼叫端才不會一直等下去
+function rejectAll(reason) {
+  for (const job of pending.values()) job.reject(reason);
+  pending.clear();
+}
 
 // 用完要關掉，釋放執行緒資源
 worker.terminate(); // 由主執行緒強制終止
@@ -227,11 +255,11 @@ worker.terminate(); // 由主執行緒強制終止
 
 頁面還開著時，Worker 不會自動結束。單頁應用裡元件反覆建立 Worker 卻不關，執行緒和記憶體會一直累積。用完（或元件卸載時）記得 `terminate()`。
 
-`terminate()` 之後，`pending` 裡還在等的 Promise 永遠不會完成。如果呼叫端可能還在等，終止前先把它們逐一 `reject`。
+`terminate()` 之後，`pending` 裡還在等的 Promise 永遠不會完成。如果呼叫端可能還在等，終止時也呼叫 `rejectAll()`。
 
 ### Module Worker：在 Worker 裡用 `import`
 
-預設的 classic worker 要載入其他檔案得用 `importScripts()`。現代瀏覽器支援 **module worker**，可以直接用 ES Modules 的 `import`：
+預設的 classic worker 要載入其他檔案得用 `importScripts()`。現代瀏覽器支援 **module worker**，可以直接用 ES Modules 的 `import`（反過來，module worker 裡不能再呼叫 `importScripts()`，會丟出 `TypeError`）：
 
 ```js
 // 建立時加上 type: "module"
@@ -278,6 +306,8 @@ const worker = new HeavyWorker();
 
 兩種都可以。寫法 A 在 Vite 和 webpack 5 都能用，可攜性最好，本章統一用它。檔名習慣取 `xxx.worker.js`，方便辨識。
 
+寫法 A 要原樣照抄：`new URL(...)` 必須直接寫在 `new Worker(...)` 的括號裡，選項也要是字面值。先把 `new URL(...)` 存進變數再傳進去，`npm run dev` 時正常，打包後 Worker 檔卻被當成一般的靜態檔案，裡面的 `import` 沒有被處理，上線後 Worker 載入失敗。
+
 ### 封裝成 composable：`useHeavyWorker`
 
 把「建立、通訊、Promise 化、卸載時清理」包成一個可重用的 composable。
@@ -308,6 +338,11 @@ export function useHeavyWorker() {
   const pending = new Map();
   let seq = 0;
 
+  function rejectAll(reason) {
+    for (const job of pending.values()) job.reject(reason);
+    pending.clear();
+  }
+
   worker.onmessage = (e) => {
     const { id, result, error } = e.data;
     const job = pending.get(id);
@@ -315,6 +350,7 @@ export function useHeavyWorker() {
     pending.delete(id);
     error ? job.reject(new Error(error)) : job.resolve(result);
   };
+  worker.onerror = () => rejectAll(new Error("Worker 發生錯誤"));
 
   function compute(n) {
     const id = ++seq;
@@ -324,8 +360,11 @@ export function useHeavyWorker() {
     });
   }
 
-  // 元件卸載時關掉 Worker，避免洩漏
-  onUnmounted(() => worker.terminate());
+  // 元件卸載時關掉 Worker，避免洩漏；還在等的任務一併結束
+  onUnmounted(() => {
+    worker.terminate();
+    rejectAll(new Error("Worker 已終止"));
+  });
 
   return { compute };
 }
@@ -340,13 +379,20 @@ import { useHeavyWorker } from "@/composables/useHeavyWorker";
 
 const { compute } = useHeavyWorker();
 const result = ref(null);
+const error = ref(null);
 const loading = ref(false);
 
 async function run() {
   loading.value = true;
-  // 運算再重，這行也不會卡住畫面，按鈕、輸入都正常
-  result.value = await compute(1_000_000_000);
-  loading.value = false;
+  error.value = null;
+  try {
+    // 運算再重，這行也不會卡住畫面，按鈕、輸入都正常
+    result.value = await compute(1_000_000_000);
+  } catch (err) {
+    error.value = err.message;
+  } finally {
+    loading.value = false; // 失敗時也要結束 loading，按鈕才不會一直停在「計算中」
+  }
 }
 </script>
 
@@ -355,6 +401,7 @@ async function run() {
     {{ loading ? "計算中…（畫面依然順暢）" : "開始大運算" }}
   </button>
   <p v-if="result !== null">結果：{{ result.toFixed(2) }}</p>
+  <p v-if="error">發生錯誤：{{ error }}</p>
 </template>
 ```
 
@@ -396,17 +443,27 @@ export function useHeavyWorker() {
       new URL("../workers/heavy.worker.js", import.meta.url),
       { type: "module" },
     );
+    const pending = pendingRef.current;
+    function rejectAll(reason) {
+      for (const job of pending.values()) job.reject(reason);
+      pending.clear();
+    }
+
     worker.onmessage = (e) => {
       const { id, result, error } = e.data;
-      const job = pendingRef.current.get(id);
+      const job = pending.get(id);
       if (!job) return;
-      pendingRef.current.delete(id);
+      pending.delete(id);
       error ? job.reject(new Error(error)) : job.resolve(result);
     };
+    worker.onerror = () => rejectAll(new Error("Worker 發生錯誤"));
     workerRef.current = worker;
 
-    // 元件卸載時清理
-    return () => worker.terminate();
+    // 元件卸載時清理；還在等的任務一併結束
+    return () => {
+      worker.terminate();
+      rejectAll(new Error("Worker 已終止"));
+    };
   }, []);
 
   const compute = useCallback((n) => {
@@ -430,14 +487,20 @@ import { useHeavyWorker } from "./hooks/useHeavyWorker";
 export default function HeavyDemo() {
   const { compute } = useHeavyWorker();
   const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
 
   async function run() {
     setLoading(true);
-    // 運算期間，輸入框、其他 state 更新、動畫都照常運作
-    const r = await compute(1_000_000_000);
-    setResult(r);
-    setLoading(false);
+    setError(null);
+    try {
+      // 運算期間，輸入框、其他 state 更新、動畫都照常運作
+      setResult(await compute(1_000_000_000));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -446,6 +509,7 @@ export default function HeavyDemo() {
         {loading ? "計算中…（畫面依然順暢）" : "開始大運算"}
       </button>
       {result !== null && <p>結果：{result.toFixed(2)}</p>}
+      {error && <p>發生錯誤：{error}</p>}
     </div>
   );
 }
@@ -491,6 +555,21 @@ const r = await api.heavy(1_000_000_000); // 在背景算，UI 不卡
 
 Comlink 背後做的事和 16.5 節的 `runTask()` 一樣：替每次呼叫配 id、用 `postMessage` 傳過去、把回應對回對應的 Promise。任務種類多、通訊邏輯複雜時，它能省掉這些樣板程式碼。
 
+呼叫看起來像本地函式，但參數仍然要經過結構化複製，所以有幾點要注意：
+
+```js
+// 函式不能複製，要傳 callback（例如回報進度）時包一層 Comlink.proxy
+await api.heavyWithProgress(n, Comlink.proxy((percent) => console.log(percent)));
+
+// 大的二進位資料用 Comlink.transfer 轉移，不要複製
+await api.process(Comlink.transfer(buffer, [buffer]));
+
+// 用完一樣要關
+worker.terminate();
+```
+
+`heavyWithProgress`、`process` 是示意的方法名稱，要在 `api.worker.js` 裡自己定義。
+
 ## 16.9 Shared Worker：多分頁共用
 
 需要多個分頁共用同一份狀態、同一條後端連線（例如多開的後台共用一條 WebSocket）時，用 SharedWorker：
@@ -516,7 +595,9 @@ self.onconnect = (e) => {
 };
 ```
 
-SharedWorker 的支援度不如 Dedicated Worker：Android 版 Chrome 長期不支援，iOS Safari 從 16 版才支援。採用前先查 [MDN 的相容性表](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker#browser_compatibility)，一般情境用 Dedicated Worker。
+這個範例的 `ports` 只增不減：分頁關掉後，它的 port 還留在陣列裡（[17.2 節](17-memory-and-performance.md#172-常見的記憶體洩漏)的「只增不減」）。實務上讓分頁在 `pagehide` 時送一則「我要離開了」的訊息，Worker 收到後把那個 port 從 `ports` 移除並 `close()`。
+
+SharedWorker 的支援度不如 Dedicated Worker：Safari（含 iOS）從 16 版才支援，Android 版 Chrome 到 148 版（2026 年 5 月）才支援，Samsung Internet 仍不支援；在 Android 上，分頁進入背景後 SharedWorker 也可能被系統結束。採用前先查 [MDN 的相容性表](https://developer.mozilla.org/en-US/docs/Web/API/SharedWorker#browser_compatibility)，一般情境用 Dedicated Worker。
 
 ## 16.10 常見問題
 
@@ -533,7 +614,7 @@ SharedWorker 的支援度不如 Dedicated Worker：Android 版 Chrome 長期不�
 不是越多越好。每個 Worker 都是一條真的執行緒，會佔記憶體。常見做法是建一個 Worker Pool，數量參考 `navigator.hardwareConcurrency`（邏輯 CPU 核心數），把任務分配給池子裡的 Worker。
 
 **Worker 載入路徑老是 404？**
-原生 `new Worker("worker.js")` 的路徑相對於 HTML 頁面，部署後常因路徑改變而失敗。使用打包工具時，一律寫 `new Worker(new URL("./x.worker.js", import.meta.url), { type: "module" })`，讓打包工具處理路徑。
+原生 `new Worker("worker.js")` 的路徑相對於 HTML 頁面，部署後常因路徑改變而失敗。使用打包工具時，一律寫 `new Worker(new URL("./x.worker.js", import.meta.url), { type: "module" })`，讓打包工具處理路徑；而且要寫在一起，不要把 `new URL(...)` 先存進變數（16.6 節）。
 
 **Worker 裡能不能發 API 請求？**
 可以。`fetch`、`XMLHttpRequest`、`WebSocket` 在 Worker 裡都能用。把「下載大檔 + 解析」整包放進 Worker 是常見的用法。
@@ -547,7 +628,7 @@ SharedWorker 的支援度不如 Dedicated Worker：Android 版 Chrome 長期不�
 通訊    → postMessage／onmessage（預設深拷貝），大資料用 Transferable 轉移
 載入    → 打包環境一律 new Worker(new URL("./x.worker.js", import.meta.url), { type: "module" })
 封裝    → 用 id 對應請求與回應並包成 Promise；Vue 用 composable、React 用 custom hook
-清理    → 卸載時 terminate()，並處理還在等的 Promise
+清理    → 卸載時 terminate()，並 reject 還在等的 Promise；Worker 出錯時也一樣
 進階    → 通訊複雜用 Comlink；多分頁共享用 SharedWorker；池化參考 hardwareConcurrency
 ```
 

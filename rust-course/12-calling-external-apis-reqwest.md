@@ -34,12 +34,13 @@
 加依賴：
 
 ```bash
-cargo add reqwest --features json --no-default-features --features "json,rustls-tls"
+cargo add reqwest@0.13 --features json,query
 cargo add serde --features derive
 cargo add tokio --features full
+cargo add anyhow thiserror async-trait@0.1    # 錯誤處理（第 04 章）與 async trait（第 09 章）
 ```
 
-> `rustls-tls` 用純 Rust 的 TLS 實作，跨平台、不依賴系統 OpenSSL，容器化部署最省心。
+> reqwest 0.13 把 `json`（`.json()` 送出與解析 JSON）和 `query`（`.query()` 加查詢參數）都做成選用 feature，要自己打開；要送表單（`.form()`）再加 `form`。TLS 不用另外設定：0.13 預設就用 rustls（純 Rust 的 TLS 實作，不依賴系統的 OpenSSL），並向作業系統取根憑證來驗證對方。所以精簡的容器映像裡要裝 `ca-certificates`，第 13 章會遇到。
 
 ---
 
@@ -152,7 +153,7 @@ async fn examples(client: &reqwest::Client) -> anyhow::Result<()> {
 | `.header(k, v)` | 自訂標頭 |
 | `.bearer_auth(token)` | `Authorization: Bearer ...` |
 | `.basic_auth(u, p)` | HTTP Basic 認證 |
-| `.form(&t)` | body 設為 `application/x-www-form-urlencoded` |
+| `.form(&t)` | body 設為 `application/x-www-form-urlencoded`（要開 `form` feature） |
 
 ---
 
@@ -218,11 +219,21 @@ match resp {
 
 暫時性失敗（逾時、503、連線重置）常常「再試一次就好」。但重試要有分寸：**不要立刻猛試**（會加重對方負載），而要用**指數退避 + 抖動（jitter）**——每次失敗等更久，並加點隨機避免大家同時重試（thundering herd）。
 
-手寫一個簡單版，讓你看清原理：
+手寫一個簡單版，讓你看清原理。抖動需要亂數，先加 `rand`：
+
+```bash
+cargo add rand@0.10
+```
 
 ```rust
 use std::time::Duration;
 use tokio::time::sleep;
+
+// 指數退避 + 抖動：第 n 次失敗後，在 0 到 100ms × 2^(n-1) 之間隨機挑一個等待時間
+fn backoff_delay(attempt: u32) -> Duration {
+    let cap = 100 * 2u64.pow(attempt - 1);                 // 上限：100ms, 200ms, 400ms...（指數退避）
+    Duration::from_millis(rand::random_range(0..=cap))    // 隨機（抖動），錯開大家的重試時間
+}
 
 async fn get_with_retry(client: &reqwest::Client, url: &str) -> anyhow::Result<reqwest::Response> {
     let mut attempt = 0;
@@ -231,19 +242,19 @@ async fn get_with_retry(client: &reqwest::Client, url: &str) -> anyhow::Result<r
     loop {
         attempt += 1;
         match client.get(url).send().await {
-            // 成功且非 5xx → 直接回
+            // 2xx 成功 → 直接回
             Ok(resp) if resp.status().is_success() => return Ok(resp),
 
             // 5xx 或逾時/連線錯 → 值得重試（若還有次數）
             Ok(resp) if resp.status().is_server_error() && attempt < max_attempts => {
-                let backoff = 100 * 2u64.pow(attempt - 1);   // 100ms, 200ms, 400ms...（指數退避）
-                eprintln!("第 {attempt} 次收到 {}，{backoff}ms 後重試", resp.status());
-                sleep(Duration::from_millis(backoff)).await;
+                let delay = backoff_delay(attempt);
+                eprintln!("第 {attempt} 次收到 {}，{delay:?} 後重試", resp.status());
+                sleep(delay).await;
             }
             Err(e) if (e.is_timeout() || e.is_connect()) && attempt < max_attempts => {
-                let backoff = 100 * 2u64.pow(attempt - 1);
-                eprintln!("第 {attempt} 次錯誤 {e}，{backoff}ms 後重試");
-                sleep(Duration::from_millis(backoff)).await;
+                let delay = backoff_delay(attempt);
+                eprintln!("第 {attempt} 次錯誤 {e}，{delay:?} 後重試");
+                sleep(delay).await;
             }
 
             // 4xx（你送錯了，重試也沒用）或次數用盡 → 放棄
@@ -253,6 +264,8 @@ async fn get_with_retry(client: &reqwest::Client, url: &str) -> anyhow::Result<r
     }
 }
 ```
+
+注意最壞情況的總時間：最多試 4 次，若每次都卡到 `Client` 的 10 秒逾時（12.4），呼叫端最久要等 4 × 10s 再加上退避的等待，超過 40 秒。重試次數和逾時要一起設計，第 14 章的「逾時預算」會專門處理這件事。
 
 哪些該重試、哪些不該：
 
@@ -266,7 +279,7 @@ async fn get_with_retry(client: &reqwest::Client, url: &str) -> anyhow::Result<r
 
 > **冪等性（idempotency）警告**：重試 GET 很安全（讀取無副作用）。但重試「建立資源」的 POST（下單、扣款）可能造成**重複執行**。做法：對方 API 支援「idempotency key」時帶上它（同一 key 對方只處理一次），或只對明確冪等的操作重試。
 
-> **生產建議**：實務別自己手寫，用成熟 crate——`reqwest-retry` + `reqwest-middleware`（把重試做成 middleware）、或 `backoff` crate。原理就是上面這套，但邊界情況處理得更完整。手寫版是給你「理解它在做什麼」。
+> **生產建議**：實務別自己手寫，用成熟 crate——`reqwest-retry` + `reqwest-middleware`（把重試做成 middleware）、或 `backon` crate。原理就是上面這套，但邊界情況處理得更完整。手寫版是給你「理解它在做什麼」。
 
 ---
 
@@ -327,7 +340,7 @@ async fn aggregate(client: &reqwest::Client, user_id: u64) -> anyhow::Result<Das
 若是「同一種請求打很多次」（例如查 100 個 id），別開 100 個一起炸對方——用 `futures::stream` 的 `buffer_unordered` 控制並發數：
 
 ```bash
-cargo add futures
+cargo add futures@0.3
 ```
 
 ```rust
@@ -351,6 +364,13 @@ async fn fetch_many(client: &reqwest::Client, ids: Vec<u64>) -> Vec<anyhow::Resu
 把外部天氣服務包成一個實作 domain trait 的 adapter，讓上層透過抽象使用它——跟第 10 章的 `PgOrderRepo` 完全同一套路。
 
 ```rust
+// domain 層：業務需要的天氣資料（只留用得到的，不是對方 API 的原始格式）
+#[derive(Debug, Clone)]
+pub struct Weather {
+    pub temperature: f64,
+    pub description: String,
+}
+
 // domain 層：定義 port（業務對「取得天氣」的需求，不管來源）
 #[async_trait::async_trait]
 pub trait WeatherProvider: Send + Sync {
@@ -390,9 +410,11 @@ impl WeatherProvider for HttpWeatherProvider {
 測試時**不該真的打外部 API**（慢、不穩、可能收費、對方不希望被測試流量打）。用 `wiremock` 起一個假的 HTTP server，讓你的 client 打它，回你指定的假回應：
 
 ```bash
-cargo add wiremock --dev
-cargo add tokio --dev --features full
+cargo add wiremock@0.6 --dev
+cargo add serde_json --dev      # 測試裡用 serde_json::json! 寫假回應
 ```
+
+`#[tokio::test]` 用的是一般依賴裡已經有的 `tokio`（`full` 已含 `macros`），不用另外加。
 
 ```rust
 #[cfg(test)]
@@ -407,10 +429,12 @@ mod tests {
         let mock = MockServer::start().await;
 
         // 2. 設定：當有人 GET /weather，就回這段 JSON
+        //    （WeatherResponse 的必填欄位都要給，少了 feelsLike 會解析失敗、變成 BadFormat）
         Mock::given(method("GET"))
             .and(path("/weather"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "temperature": 25.5,
+                "feelsLike": 24.0,
                 "type": "Clear"
             })))
             .mount(&mock)

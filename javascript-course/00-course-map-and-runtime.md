@@ -15,7 +15,7 @@
 
 ## 0.2 語言與執行環境
 
-JavaScript 的語言規格叫 **ECMAScript**，由 TC39 委員會維護，每年發布一版（ES2015、ES2016……ES2025）。規格只定義語言本身：語法、型別、運算子、`Object`、`Array`、`Promise`、`Map` 這些內建物件。
+JavaScript 的語言規格叫 **ECMAScript**，由 TC39 委員會維護，每年發布一版（ES2015、ES2016……ES2026）。規格只定義語言本身：語法、型別、運算子、`Object`、`Array`、`Promise`、`Map` 這些內建物件。
 
 規格**沒有**定義怎麼讀檔、怎麼發網路請求、怎麼操作畫面，甚至沒有定義 `setTimeout` 和 `console.log`。這些由**執行環境**（host）提供：
 
@@ -32,7 +32,7 @@ JavaScript 的語言規格叫 **ECMAScript**，由 TC39 委員會維護，每年
 
 - **查文件時知道去哪查**。`Array.prototype.at` 是語言，在 Node 和瀏覽器都能用；`document.querySelector` 是瀏覽器 API，在 Node 裡不存在。
 - **看懂錯誤**。在 Node 執行瀏覽器程式，得到 `ReferenceError: document is not defined`，不是語法錯，而是這個環境沒提供 `document`。
-- **判斷功能能不能用**。語言新功能看引擎版本；Web API 看瀏覽器的支援表。MDN 每個頁面底部都有相容性表，標示 **Baseline** 的功能代表主流瀏覽器都已支援。
+- **判斷功能能不能用**。語言新功能看引擎版本；Web API 看瀏覽器的支援表。MDN 頁面開頭有 **Baseline** 標示：「Widely available」代表主流瀏覽器都支援超過 30 個月，可以放心用；「Newly available」代表各家最新版才剛都支援，使用者的舊版瀏覽器可能還不行。
 
 ## 0.3 寫過其他語言的人要先調整的預期
 
@@ -66,6 +66,8 @@ node example.mjs
 
 用 `.mjs` 而不是 `.js`，是讓 Node 把檔案當成 **ES Module**。這樣可以直接用 `import`／`export` 和最上層的 `await`，而且自動進入嚴格模式（0.5 節）。在專案裡也可以在 `package.json` 設定 `"type": "module"`，讓 `.js` 檔也當成 ES Module（[9.5 節](09-modules.md#95-在-node-使用)）。
 
+如果存成 `.js`，附近也沒有設定 `"type": "module"` 的 `package.json`，檔案裡又沒有 `import`／`export`，Node 會把它當成 CommonJS，以寬鬆模式執行。前幾章的範例多半沒有 `import`，存成 `.js` 時，未宣告的變數、`Object.freeze`、`this` 的結果都會和課文不同。
+
 想快速試一行程式，直接輸入 `node` 進入 REPL，每輸入一行就執行並印出結果，`.exit` 離開。
 
 ### 瀏覽器 DevTools
@@ -78,7 +80,7 @@ Console 印出物件時，展開的內容是**展開當下**的值，不是印�
 
 第三部的範例是 HTML 檔。只有一般 `<script>` 的頁面可以直接雙擊開啟；用到下面任何一項，就要透過本機伺服器開：
 
-- `<script type="module">` 或 `import`
+- `<script type="module" src="...">` 載入模組檔，或任何 `import`
 - `new Worker(...)`
 - `fetch` 本機的 JSON 檔
 
@@ -86,7 +88,7 @@ Console 印出物件時，展開的內容是**展開當下**的值，不是印�
 
 ```bash
 npx serve .                 # Node 提供；第一次執行會詢問是否下載 serve
-python3 -m http.server 8000 # macOS 與多數 Linux 內建
+python3 -m http.server 8000 # 多數 Linux 內建；macOS 第一次執行會要求安裝 Command Line Tools
 ```
 
 再用瀏覽器開 `http://localhost:3000`（serve）或 `http://localhost:8000`（Python）。
@@ -109,6 +111,8 @@ python3 -m http.server 8000 # macOS 與多數 Linux 內建
 </html>
 ```
 
+這個頁面沒有載入其他檔案，直接雙擊開也能執行；改成 `<script type="module" src="./main.js">`，或在裡面加上 `import`，就要透過伺服器開。
+
 ## 0.5 嚴格模式
 
 JavaScript 早期有一些設計會讓錯誤安靜地通過，例如對沒有宣告的變數賦值會自動建立全域變數。ES5 加入**嚴格模式**（strict mode）修正這些行為：
@@ -130,7 +134,7 @@ ES Module 和 `class` 的內容**自動就是嚴格模式**，不用寫 `"use st
 - **MDN Web Docs**（developer.mozilla.org）：語言和 Web API 的主要參考，有繁體中文介面，但最新、最完整的是英文版。
 - **Node.js 文件**（nodejs.org/docs）：`fs`、`process` 等 Node 專屬 API。
 - **ECMAScript 規格**（tc39.es/ecma262）：語言行為的最終依據。平常不需要讀，遇到「到底該印什麼」的爭議時才查。
-- **相容性**：MDN 頁面底部的相容性表，或 caniuse.com。標示 Baseline 的功能代表主流瀏覽器都已支援。
+- **相容性**：MDN 頁面開頭的 Baseline 標示與底部的相容性表，或 caniuse.com。「Widely available」才代表大多數使用者的瀏覽器都能用。
 
 本課提到比較新的功能時，會註明需要的版本。
 

@@ -2,7 +2,7 @@
 
 > 第 15 章你已經跑通「跟 GPU 對話」的骨架——把陣列丟上去、每個執行緒 ×2、讀回來。但「×2」太簡單，體會不到 GPU 的威力。
 > 這一章我們把中間那段運算換成**真正有用的平行演算法**：向量加法、SAXPY、**平行歸約（求和/求最大）**，以及 GPU 運算的當家花旦——**矩陣乘法**（AI 的核心，第 17 章的地基）。
-> 更重要的是，我們會把 GPU 的**執行模型**（workgroup、invocation）與**記憶體階層**講清楚，並談談效能：為什麼有些寫法快 10 倍、傳輸成本怎麼攤、workgroup shared memory 怎麼用。
+> 更重要的是，我們會把 GPU 的**執行模型**（workgroup、invocation）與**記憶體階層**講清楚，並談談效能：為什麼同一件事換個寫法就能快上好幾倍、傳輸成本怎麼攤、workgroup shared memory 怎麼用。
 > 目標是讓你從「會跑一個範例」進化到「能自己設計一個正確又不太慢的 GPU kernel」。
 
 ---
@@ -59,15 +59,18 @@ global_invocation_id.xyz = workgroup_id.xyz × workgroup_size.xyz + local_invoca
 
 > **心智模型**：想像一棟大樓分成很多**樓層（workgroup）**，每層有固定數量的**房間（invocation）**。`local_invocation_id` 是「我在這層的第幾號房」，`workgroup_id` 是「我在第幾層」，`global_invocation_id` 是「我在整棟樓的絕對房號」。處理一維陣列時，你通常只關心「絕對房號」＝`global_invocation_id.x`，拿它當陣列索引；處理矩陣/影像時則會同時用 `.x` 與 `.y`。
 
-> **為什麼要分 workgroup，不乾脆一大堆平行執行緒就好？** 因為硬體現實：GPU 是「一批批」執行執行緒的，同一 workgroup 的執行緒被分配到同一個運算單元、能共享超快的區域記憶體、能彼此同步。這個分組讓你能寫出「組內合作」的演算法（如歸約、矩陣分塊）。`@workgroup_size` 選多少有講究——常見是 64 / 128 / 256，通常取硬體 warp/wavefront（32 或 64）的倍數，太小浪費、太大超過硬體上限。**不確定就先用 64 或 256。**
+> **為什麼要分 workgroup，不乾脆一大堆平行執行緒就好？** 因為硬體現實：GPU 是「一批批」執行執行緒的，同一 workgroup 的執行緒被分配到同一個運算單元、能共享超快的區域記憶體、能彼此同步。這個分組讓你能寫出「組內合作」的演算法（如歸約、矩陣分塊）。`@workgroup_size` 選多少有講究——常見是 64 / 128 / 256。硬體實際上是把 workgroup 再切成一小批一小批、每批用同一道指令一起執行：NVIDIA 叫它 **warp**（32 個執行緒）、AMD 叫 **wavefront**（32 或 64 個）、Apple 叫 **SIMD-group**（32 個）。workgroup_size 通常取這個批量的倍數，太小浪費，太大則會超過上限（wgpu 的 `Limits::default()` 規定一組最多 256 個執行緒）。**不確定就先用 64 或 256。**
 
 ---
 
 ## 16.3 封裝可重用的 GpuContext（先把樣板收起來）
 
-第 15 章的取得裝置、建 buffer、跑 pipeline 這些程式碼，每個範例都要重來一次很囉嗦。先把它封裝成一個小工具，本章後面所有範例都用它——這也回扣第 09 章「把重複的東西抽成抽象」的工程習慣。
+第 15 章的取得裝置、建 buffer、跑 pipeline 這些程式碼，每個範例都要重來一次很囉嗦。先把它封裝成一個小工具，本章後面所有範例都用它。
+
+**專案配置**：本章沿用第 15 章的三個依賴（`wgpu@30`、`pollster`、`bytemuck`），可以直接在 `gpu_hello` 專案裡繼續寫。把下面兩段 `GpuContext` 程式碼放進 `src/gpu.rs`，在 `src/main.rs` 開頭寫 `mod gpu; use gpu::GpuContext;`；每個範例的 WGSL 都存成 `src/` 底下的 `.wgsl` 檔，用 `include_str!` 載入。
 
 ```rust
+// src/gpu.rs
 use wgpu::util::DeviceExt;
 
 /// 持有 GPU 連線，並提供「跑一個 compute shader」的便利方法。
@@ -145,9 +148,9 @@ impl GpuContext {
         let slice = staging.slice(..);
         let (tx, rx) = std::sync::mpsc::channel();
         slice.map_async(wgpu::MapMode::Read, move |r| tx.send(r).unwrap());
-        self.device.poll(wgpu::Maintain::Wait);
+        self.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
         rx.recv().unwrap().unwrap();
-        let data = slice.get_mapped_range();
+        let data = slice.get_mapped_range().unwrap();
         let out = bytemuck::cast_slice(&data).to_vec();
         drop(data);
         staging.unmap();
@@ -156,7 +159,7 @@ impl GpuContext {
 }
 ```
 
-有了它，跑一個 kernel 的樣板剩下「建 pipeline → 建 bind group → dispatch」。我們再加一個小輔助：
+有了它，跑一個 kernel 的樣板剩下「建 pipeline → 建 bind group → dispatch」。我們再加一個小輔助（同樣放在 `src/gpu.rs`）：
 
 ```rust
 impl GpuContext {
@@ -213,7 +216,7 @@ impl GpuContext {
 
 最基礎但最常用的模式：兩個輸入陣列、一個輸出陣列，`c[i] = a[i] + b[i]`。這是「雙輸入單輸出」element-wise kernel 的範本——影像混合、張量逐元素運算全是這個形狀。
 
-WGSL（`add.wgsl`）：
+WGSL（存成 `src/add.wgsl`）：
 
 ```wgsl
 @group(0) @binding(0) var<storage, read>       a: array<f32>;   // 輸入唯讀
@@ -332,22 +335,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 ```text
 初始:  [3, 1, 7, 0, 4, 1, 6, 3]     8 個數
-步驟1:  [3+4, 1+1, 7+6, 0+3, ...] → [7, 2, 13, 3]   相鄰間距 4 相加，4 個執行緒同時做
-步驟2:  [7+13, 2+3]              → [20, 5]           2 個執行緒
-步驟3:  [20+5]                   → [25]              1 個執行緒
-       log2(8) = 3 步就得到總和，而非 8 步
+步驟1:  [3+4, 1+1, 7+6, 0+3]     → [7, 2, 13, 3]   第 i 個加第 i+4 個（間距 4），4 個執行緒同時做
+步驟2:  [7+13, 2+3]              → [20, 5]           間距 2，2 個執行緒
+步驟3:  [20+5]                   → [25]              間距 1，1 個執行緒
+       log2(8) = 3 步就得到總和，而非依序相加的 7 步
 ```
 
-每一步用一半的執行緒把資料兩兩相加，`log2(n)` 步就收斂。做法是把資料載進 **workgroup shared memory**，在裡面做樹狀相加：
+每一步用一半的執行緒把資料兩兩相加，`log2(n)` 步就收斂。做法是把資料載進 **workgroup shared memory**，在裡面做樹狀相加（存成 `src/reduce.wgsl`）：
 
 ```wgsl
 @group(0) @binding(0) var<storage, read>       input: array<f32>;
 @group(0) @binding(1) var<storage, read_write> partial: array<f32>;  // 每個 workgroup 輸出一個部分和
 
-const WG: u32 = 256u;
-var<workgroup> shared: array<f32, 256>;   // workgroup 內共享的暫存（快！）
+const WG: u32 = 256u;                     // workgroup 大小，下面兩處都用它，保證一致
+// workgroup 內共享的暫存（快！）。注意 `shared` 是 WGSL 保留字，不能拿來當變數名。
+var<workgroup> scratch: array<f32, WG>;
 
-@compute @workgroup_size(256)
+@compute @workgroup_size(WG)
 fn main(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_id)  lid: vec3<u32>,
@@ -357,9 +361,9 @@ fn main(
     let i = gid.x;                          // 全域索引
 
     // (1) 每個執行緒把自己負責的一個元素載進 shared memory（越界填 0）
-    shared[tid] = 0.0;
+    scratch[tid] = 0.0;
     if (i < arrayLength(&input)) {
-        shared[tid] = input[i];
+        scratch[tid] = input[i];
     }
     workgroupBarrier();                     // 等全組都載完，才能開始互相加
 
@@ -368,7 +372,7 @@ fn main(
     loop {
         if (stride == 0u) { break; }
         if (tid < stride) {
-            shared[tid] = shared[tid] + shared[tid + stride];
+            scratch[tid] = scratch[tid] + scratch[tid + stride];
         }
         workgroupBarrier();                 // 每一步之間都要同步！
         stride = stride / 2u;
@@ -376,19 +380,19 @@ fn main(
 
     // (3) 每組的 0 號執行緒把這組的總和寫出去
     if (tid == 0u) {
-        partial[wid.x] = shared[0];
+        partial[wid.x] = scratch[0];
     }
 }
 ```
 
 關鍵拆解：
 
-- **`var<workgroup> shared`**：宣告一塊 256 個 f32 的 workgroup 共享記憶體。整組執行緒把資料先搬進來，之後的相加都在這塊快記憶體裡進行，不再碰慢的 global memory。
+- **`var<workgroup> scratch`**：宣告一塊 256 個 f32 的 workgroup 共享記憶體。整組執行緒把資料先搬進來，之後的相加都在這塊快記憶體裡進行，不再碰慢的 global memory。
 - **`workgroupBarrier()` 是靈魂**：載入後要 barrier（確保全組載完）；每一步相加後也要 barrier（確保這一輪的加法都寫完，下一輪才讀）。**漏掉任何一個 barrier，就會讀到髒資料、結果隨機錯誤**——而且這種 bug 極難重現（時序相關），是 GPU 程式最惡名昭彰的坑。
-- **越界處理要用 `if` 包住讀取**：不要寫 `select(0.0, input[i], i < len)` 來避免越界，因為兩邊運算式仍可能先被求值；先填 `0.0`，只有 `i < len` 才讀 `input[i]`，最後一個不滿 256 的 workgroup 才安全。
+- **越界處理要用 `if` 包住讀取**：不要寫 `select(0.0, input[i], i < len)` 來避免越界，因為兩邊運算式仍可能先被求值；先填 `0.0`，只有 `i < len` 才讀 `input[i]`，最後一個不滿 256 的 workgroup 才安全。也不能沿用第 15 章的 `if (i >= ...) { return; }`：後面還有 barrier，越界的執行緒提早離開，留下的執行緒就會在 barrier 前空等（見 16.12）。填 0 讓它們留下來陪跑，加總結果也不受影響。
 - **每個 workgroup 只算出「自己這 256 個數的部分和」**，寫進 `partial[wid.x]`。
 
-**兩階段歸約**：一次 dispatch 只把「每組 256 個」縮成「每組 1 個」。如果原本有 100 萬個數、每組 256，第一趟後剩下約 3907 個部分和。所以要**再跑一次同樣的 kernel**（對 partial 陣列歸約），或當剩下夠少時把最後幾千個搬回 CPU 加完。主機端：
+**兩階段歸約**：一次 dispatch 只把「每組 256 個」縮成「每組 1 個」。如果原本有 100 萬個數、每組 256，第一趟後剩下約 3907 個部分和。所以要**再跑一次同樣的 kernel**（對 partial 陣列歸約），或當剩下夠少時搬回 CPU 加完。下面的主機端兩招都用：GPU 反覆歸約到剩 1024 個以下，再交給 CPU：
 
 ```rust
 fn gpu_sum(gpu: &GpuContext, data: &[f32]) -> f32 {
@@ -430,11 +434,11 @@ C[row][col] = Σ (k=0..K)  A[row][k] × B[k][col]
 
 **平行化策略**：C 有 `M×N` 格，每一格互相獨立——**派一個執行緒算一格**。這天生就適合 GPU。用 **2D dispatch**：`global_invocation_id.x` 當 col、`.y` 當 row。
 
-WGSL（naive 版，`matmul.wgsl`）：
+WGSL（naive 版，存成 `src/matmul.wgsl`）：
 
 ```wgsl
 // 矩陣以一維陣列存放（row-major）：A[row][k] = a[row * K + k]
-struct Dims { m: u32, k: u32, n: u32 }
+struct Dims { m: u32, k: u32, n: u32, _pad: u32 }   // 跟 Rust 端一致，湊滿 16 bytes
 
 @group(0) @binding(0) var<uniform>             dims: Dims;
 @group(0) @binding(1) var<storage, read>       a: array<f32>;
@@ -500,11 +504,11 @@ fn matmul(gpu: &GpuContext, a: &[f32], b: &[f32], m: u32, k: u32, n: u32) -> Vec
   4. 沿 K 方向滑動，重複載入下一組子塊、累加
 ```
 
-核心收益：**把 global memory 的重複讀取，換成「載一次到 shared memory、大家重複用」**。實務上 tiled matmul 比 naive 快數倍。它的完整 WGSL 較長（約 40 行、要處理 shared memory 索引與兩層 barrier），這裡點出思路即可——**理解「為什麼要 tile」比背程式碼重要**：
+核心收益：**把 global memory 的重複讀取，換成「載一次到 shared memory、大家重複用」**。在大矩陣上，tiled 版通常明顯比 naive 版快，實際差幾倍要看硬體與矩陣大小。它的完整 WGSL 較長（約 40 行、要處理 shared memory 索引與兩層 barrier），這裡點出思路即可——**理解「為什麼要 tile」比背程式碼重要**：
 
-> **核心洞見**：naive 版每個執行緒獨立地從遠倉庫（global memory）反覆搬同樣的貨。tiled 版讓一組人先合作把這批貨搬到共用工作檯（shared memory）一次，然後大家在工作檯上反覆取用。**同樣的計算量，記憶體流量大減**——而 GPU 運算的瓶頸，十之八九是記憶體頻寬而非算力。這也是所有高效能 matmul（包括 cuBLAS、第 17 章 AI 框架底層）的共同思想。
+> **核心洞見**：naive 版每個執行緒獨立地從遠倉庫（global memory）反覆搬同樣的貨。tiled 版讓一組人先合作把這批貨搬到共用工作檯（shared memory）一次，然後大家在工作檯上反覆取用。**同樣的計算量，記憶體流量大減**——而很多 GPU kernel 的瓶頸正是記憶體頻寬，而不是算力。這也是所有高效能 matmul（包括 cuBLAS、第 17 章 AI 框架底層）的共同思想。
 
-> **給學習者的定心丸**：你**不需要手刻出最快的 matmul**——那是專門領域，成熟框架（第 17 章的 candle/burn）已經幫你調到極致。本節的目的，是讓你**理解 GPU 為何快、瓶頸在哪、優化的方向是什麼**，這樣你用框架時才知道它在做什麼、效能出問題時知道往哪查。naive 版能跑對，就達到本章目標了。
+> **給學習者的定心丸**：你**不需要手刻出最快的 matmul**——那是專門領域，成熟框架（第 17 章的 candle/burn）已經替各種硬體調校好了。本節的目的，是讓你**理解 GPU 為何快、瓶頸在哪、優化的方向是什麼**，這樣你用框架時才知道它在做什麼、效能出問題時知道往哪查。naive 版能跑對，就達到本章目標了。
 
 ---
 
@@ -524,18 +528,18 @@ fn matmul(gpu: &GpuContext, a: &[f32], b: &[f32], m: u32, k: u32, n: u32) -> Vec
 
 ### 心法二：提高佔用率（occupancy）
 
-GPU 靠「大量執行緒輪流上工」來掩蓋記憶體延遲——某些執行緒在等資料時，硬體切去跑別的執行緒，讓運算單元不閒置。要餵飽它：
+GPU 靠「大量執行緒輪流上工」來掩蓋記憶體延遲——某些執行緒在等資料時，硬體切去跑別的執行緒，讓運算單元不閒置。**佔用率**指的就是：一個運算單元上同時待命的執行緒，佔它最多能容納數量的比例。比例越高，等資料時越有替補可換。要餵飽它：
 
-- **workgroup_size 別太小**（如 8），會浪費硬體排程單位；也別超過硬體上限。**64 / 128 / 256 是安全區**。
+- **workgroup_size 別太小**（如 8，連一個 warp 都湊不滿），會浪費硬體排程單位；也別超過上限。**64 / 128 / 256 是安全區**。
 - **總執行緒數要夠多**，讓 GPU 有東西可切換。資料太少時 GPU 跑不滿。
 - **shared memory / 暫存器別用過頭**——用太多會限制能同時上工的 workgroup 數，反而降低佔用率。
 
 ### 心法三：記憶體合併存取（coalesced access）與避免分支發散
 
 - **合併存取**：相鄰的執行緒最好存取相鄰的記憶體位址，GPU 能把它們合併成一次寬頻讀取。跳著存取（strided）會浪費頻寬。（這也是 matmul 索引順序要講究的原因。）
-- **避免分支發散（divergence）**：同一 workgroup 的執行緒最好走同一條路徑。如果 `if/else` 讓組內執行緒走不同分支，硬體得「兩條都跑、各自遮罩」，等於兩倍工。邊界檢查那種「只有最後一組少數執行緒 return」的發散無傷大雅；但**資料相關的大量分支**要盡量避免。
+- **避免分支發散（divergence）**：同一個 warp／SIMD-group（16.2 說的那一小批）裡的執行緒最好走同一條路徑。如果 `if/else` 讓同一批執行緒走不同分支，硬體得「兩條都跑、各自遮罩」，等於兩倍工。邊界檢查那種「只有最後一組少數執行緒 return」的發散無傷大雅；但**資料相關的大量分支**要盡量避免。
 
-> **鐵律（回扣第 14 章）**：**先量測，再優化**。GPU 效能問題常反直覺，用工具（wgpu 的 timestamp query、或廠商的 profiler 如 Nsight）量出真正的瓶頸——通常是記憶體頻寬或傳輸，而非算力。憑感覺調 workgroup_size 常常白忙。
+> **鐵律（回扣第 14 章）**：**先量測，再優化**。GPU 效能問題常反直覺，用工具（wgpu 的 timestamp query、或廠商的 profiler：NVIDIA 的 Nsight、macOS 上 Xcode Instruments 的 Metal System Trace）量出真正的瓶頸——通常是記憶體頻寬或傳輸，而非算力。憑感覺調 workgroup_size 常常白忙。
 
 ---
 
@@ -584,23 +588,30 @@ let params = Params { scale: 2.5, count: 1024, _pad0: 0, _pad1: 0 };
 let params_buf = gpu.uniform_from_pod(&params);
 ```
 
-**對齊陷阱（GPU 程式的經典坑）**：WGSL 的記憶體佈局規則跟 Rust `#[repr(C)]` **不完全一樣**，尤其 uniform buffer 有嚴格的對齊要求：
+**對齊陷阱（GPU 程式的經典坑）**：WGSL 的記憶體佈局規則跟 Rust `#[repr(C)]` **不完全一樣**，最常踩到的是 `vec3`：
 
-- `vec3<f32>` 在 WGSL 佔 **16 bytes 對齊**（不是 12！），常需補一個 padding 欄位。
-- 雖然現代 WGSL 正逐步放寬 uniform layout，但跨平台教學與舊硬體最穩妥的做法仍是把小型 uniform struct 湊成 16 bytes 的倍數（所以 16.7 的 `Dims` 加了 `_pad: u32`）。
-- 欄位順序與型別要**兩邊完全對上**，否則 shader 讀到的值會錯位、產生莫名其妙的結果。
+- `vec3<f32>` 本身佔 12 bytes，但**對齊是 16**：它必須從 16 的倍數位址開始。Rust 的 `[f32; 3]` 只要求對齊 4，所以當 `vec3` 前面還有別的欄位時，WGSL 會在中間自動空出 padding，Rust 卻不會，兩邊的位址就錯開了。
+- struct 的總大小會補到它「最大對齊」的倍數，所以含 `vec3`／`vec4` 的 struct 一定是 16 的倍數。
+- 欄位順序與型別要**兩邊完全對上**。把小型 uniform struct 湊成 16 bytes 的倍數是最穩妥的習慣（所以 16.7 的 `Dims` 兩邊都加了 `_pad: u32`）。
 
 ```rust
-// ❌ 危險：WGSL 端若是 vec3，這樣佈局會對不上
-struct Bad { v: [f32; 3], scale: f32 }   // WGSL vec3 佔 16 bytes，這裡卻緊接 scale
+// WGSL 端：
+//   struct Params { scale: f32, v: vec3<f32> }
+//   scale 在 offset 0；v 要對齊 16 → 從 offset 16 開始；整個 struct 32 bytes
 
-// ✅ 安全：明確補齊，讓 Rust 佈局符合 WGSL 規則
+// ❌ 對不上：Rust 緊密排列，v 從 offset 4 開始，整個 struct 只有 16 bytes
+#[repr(C)]
+struct Bad { scale: f32, v: [f32; 3] }
+
+// ✅ 手動補齊，讓每個欄位的位址都跟 WGSL 一樣
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Good { v: [f32; 3], _pad: f32, scale: f32, _pad2: [f32; 3] }
+struct Good { scale: f32, _pad0: [f32; 3], v: [f32; 3], _pad1: f32 }
 ```
 
-> **除錯心法**：GPU 結果「數字全錯、或某些欄位是垃圾值」，第一個要懷疑的就是 **uniform struct 的對齊/佈局對不上**。對照 WGSL 的對齊規則（WebGPU 規格的 memory layout 章節）逐欄檢查，必要時多加 `_pad` 欄位。用 `bytemuck` 能擋掉「型別不是 Pod」的錯，但擋不掉「佈局不符 WGSL 規則」——這要靠你手動對齊。
+反過來，如果 WGSL 是 `struct { v: vec3<f32>, scale: f32 }`，`scale` 剛好填進 `vec3` 後面那 4 bytes（offset 12），Rust 寫 `{ v: [f32; 3], scale: f32 }` 不用補就對得上。所以別無腦加 `_pad`，要照規則逐欄算位址。
+
+> **除錯心法**：Rust 端整體**比 WGSL 端小**時（上面的 `Bad` 只有 16 bytes，WGSL 要 32），wgpu 會在建立 bind group 時直接報驗證錯誤（「Binding size 16 … is less than minimum 32」），還算好抓。麻煩的是**大小對了、位址錯開**：wgpu 不會報錯，shader 只會安靜地讀到錯位的值。所以 GPU 結果「數字全錯、或某些欄位是垃圾值」時，第一個要懷疑的就是 **uniform struct 的佈局**。對照 WGSL 的對齊規則（WGSL 規格的 Memory Layout 章節）逐欄檢查。`bytemuck` 能擋掉「型別不是 Pod」的錯，但擋不掉「佈局不符 WGSL 規則」——這要靠你自己對齊。
 
 > **簡化技巧**：能用 `u32`/`f32`/`vec4` 就別用 `vec3`，把參數湊成 16 bytes 的倍數，對齊問題會少很多。維度這種整數參數，全用 `u32` 並補 `_pad` 到 16 bytes 邊界最省心。
 
@@ -633,11 +644,11 @@ struct Good { v: [f32; 3], _pad: f32, scale: f32, _pad2: [f32; 3] }
 ## 16.12 常見錯誤
 
 - **漏掉 `workgroupBarrier()`** → shared memory 讀到還沒寫完的髒資料，結果隨機錯、極難重現。凡是「寫 shared memory 後又要讀別人寫的」，中間必須 barrier。
-- **在發散的分支裡呼叫 barrier** → 部分執行緒 return 了卻還有人在等 barrier，導致死結或未定義行為。barrier 必須讓 workgroup **全員都會執行到**（別放在 `if (i < n) { ...barrier... }` 裡）。
+- **在發散的分支裡呼叫 barrier** → 部分執行緒 return 了卻還有人在等 barrier，導致死結或未定義行為。barrier 必須讓 workgroup **全員都會執行到**：別放在 `if (i < n) { ...barrier... }` 裡，barrier 之前也別有 `if (i >= n) { return; }` 這種提早離開。WGSL 規格要求 barrier 只能出現在全組一致的控制流程裡；瀏覽器的 WebGPU 會在編譯 shader 時拒絕，但 wgpu 目前不擋，要等執行時才出事。
 - **矩陣一維索引算錯** → `a[row*K + k]` 寫成 `a[row*N + k]` 之類，結果全錯。row-major 索引要反覆核對。
 - **2D dispatch 的 x/y 對應弄反** → 記住慣例：`gid.x` 對 col（N 方向）、`gid.y` 對 row（M 方向），dispatch 的 gx 對 N、gy 對 M。
 - **uniform struct 對齊不符 WGSL 規則** → 讀到錯位的垃圾值。補 `_pad`、湊 16 bytes 倍數，`vec3` 特別小心。
-- **workgroup_size 與 shared memory 陣列大小對不上** → `array<f32, 256>` 卻用 `@workgroup_size(128)`，浪費或越界。兩者要一致。
+- **workgroup_size 與 shared memory 陣列大小對不上** → `array<f32, 256>` 卻用 `@workgroup_size(128)`，浪費或越界。像 16.6 那樣用同一個 `const WG` 同時寫在兩處，就不會對不上。
 - **歸約只做一趟就當成最終結果** → 一趟只得到「每組的部分和」，要多階段歸約或 CPU 收尾。
 - **小資料還硬用 GPU 並困惑為何比 CPU 慢** → 傳輸/啟動成本蓋過收益。GPU 要大資料 + 密集運算才划算。
 - **每次運算都重建 pipeline** → 熱路徑奇慢。pipeline 建立一次、重複用（16.11）。
@@ -652,7 +663,7 @@ struct Good { v: [f32; 3], _pad: f32, scale: f32, _pad2: [f32; 3] }
 - **平行歸約**：用 shared memory + 樹狀相加 + `workgroupBarrier()`，`log(n)` 步完成求和/求極值；需多階段或 CPU 收尾。barrier 漏了就出隨機錯。
 - **矩陣乘法**：一執行緒算一格、2D dispatch；矩陣攤平成一維要小心索引。naive 可跑對，tiled 用 shared memory 減少重複讀取而更快——這是 AI 的核心運算（第 17 章）。
 - **效能三心法**：攤平傳輸成本（大批、留在 GPU）、提高佔用率（workgroup_size 64~256、餵飽執行緒）、合併存取 + 避免分支發散。
-- **uniform buffer** 傳純量/維度參數，注意 WGSL 的**對齊陷阱**（`vec3` 佔 16、struct 湊 16 倍數、補 `_pad`）。
+- **uniform buffer** 傳純量/維度參數，注意 WGSL 的**對齊陷阱**（`vec3` 要對齊 16、struct 湊 16 倍數、照規則補 `_pad`）。
 - 正式使用要把 **pipeline 建立一次、資料留在 GPU 連續運算**（初始化 vs 熱路徑分離）——這是第 17 章推論引擎的骨架。
 
 ---
@@ -661,11 +672,11 @@ struct Good { v: [f32; 3], _pad: f32, scale: f32, _pad2: [f32; 3] }
 
 1. 把 16.4 的向量加法跑起來，改成向量點對點相乘 `c[i] = a[i] * b[i]`，再改成 `c[i] = max(a[i], b[i])`。
 2. 實作 SAXPY（`y = a*x + y`），用 uniform buffer 傳純量 `a`（練習 16.10 的對齊）。
-3. 把 16.6 的歸約跑起來求 100 萬個數的總和，跟 CPU 的 `iter().sum()` 比對結果與耗時。再把 `+` 改成 `max` 做「求最大值」。
+3. 把 16.6 的歸約跑起來求 100 萬個數的總和，跟 CPU 的 `iter().sum()` 比對結果與耗時（浮點數相加的順序不同，結果可能在最後幾位有差異，這是正常的；想精確比對，可以先用小整數當資料）。再把 `+` 改成 `max` 做「求最大值」。
 4. 故意拿掉歸約 kernel 中的一個 `workgroupBarrier()`，多跑幾次觀察結果是否偶爾出錯——親身體會 barrier 的必要性（這是最有價值的一個實驗）。
 5. 實作 16.7 的 naive 矩陣乘法（例如 512×512），跟 CPU 三重迴圈版比對正確性與耗時，感受 GPU 在 matmul 上的加速。
-6. 把 matmul 的 `@workgroup_size` 從 `(16,16)` 改成 `(8,8)` 和 `(32,32)`（注意別超過硬體上限），量測耗時差異，體會佔用率的影響。
-7. （挑戰）查 WebGPU 規格的 memory layout，實作一個含 `vec3<f32>` 的 uniform struct，正確補齊 padding 讓 shader 讀到正確值。
+6. 把 matmul 的 `@workgroup_size` 從 `(16,16)` 改成 `(8,8)` 和 `(32,8)`（host 端的 `div_ceil` 要跟著改），量測耗時差異，體會佔用率的影響。也試試 `(32,32)`：1024 個執行緒超過 `Limits::default()` 每組 256 的上限，建立 pipeline 時就會報錯。
+7. （挑戰）查 WGSL 規格的 Memory Layout 章節，實作一個含 `vec3<f32>` 的 uniform struct，正確補齊 padding 讓 shader 讀到正確值。
 8. （挑戰）把 16.11 的建議落實：改寫 `GpuContext`，讓 pipeline 只建立一次、可重複 `dispatch`，量測相對 16.3 版本的加速。
 
 ---

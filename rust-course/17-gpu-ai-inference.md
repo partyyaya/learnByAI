@@ -65,7 +65,7 @@
 CPU │ 8 核心輪流算 1600 萬格… 慢         │
    └─────────────────────────────────┘
    ┌─────────────────────────────────┐
-GPU │ 數千核心同時開算… 快數十~數百倍     │
+GPU │ 數千核心同時開算… 快得多（倍數看硬體） │
    └─────────────────────────────────┘
 ```
 
@@ -155,7 +155,7 @@ fn softmax(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 ### 主機端把三個 kernel 串成前向傳播
 
-關鍵是實踐第 16.11 節的「**資料上傳一次，所有層在 GPU 上連續 dispatch，最後才讀回**」：
+關鍵是實踐第 16.11 節的「**資料上傳一次，所有層在 GPU 上連續 dispatch，最後才讀回**」（為了聚焦在推論流程，這裡沿用 16.3 的教學版 `run`，每次呼叫仍會重建 pipeline）：
 
 ```rust
 // 用第 16 章的 GpuContext（含 run / storage_from_slice / empty_storage / read_buffer）
@@ -218,13 +218,15 @@ fn mlp_forward(gpu: &GpuContext, input: &[f32], weights: &ModelWeights) -> Vec<f
 }
 ```
 
-跑起來，你會拿到 3 個加總為 1 的機率——**這就是一次完整的神經網路推論，而它完全由你第 16 章寫的 matmul / element-wise / 歸約組成。**
+跑起來，你會拿到 3 個加總為 1 的機率——**這就是一次完整的神經網路推論，而它完全由你第 16 章寫的 matmul / element-wise / 歸約組成。** 輸出的形狀大致如下（實際數字取決於你填的權重）：
 
 ```text
 輸入 [0.5, -1.2, 0.3, 0.8]
   → Linear(4→8) → ReLU → Linear(8→3) → Softmax
-  → 輸出 [0.71, 0.22, 0.07]（三類的機率，和為 1；最大者 = 預測類別 0）
+  → 輸出 [0.71, 0.22, 0.07]（示意：三類的機率，和為 1；最大者 = 預測類別 0）
 ```
+
+驗證手刻版最簡單的方法，是用 CPU 照同一條公式算一遍（幾個巢狀迴圈就夠），兩邊的機率應該幾乎一樣（差異在 1e-6 以下，來自浮點運算順序不同）。
 
 > **這一節的價值**：你親眼看到 AI 推論「就是一串 GPU 運算」，再也不會覺得它是黑魔法。同時你也體會到——**手刻很累**：每加一種層（卷積、attention、normalization…）就要寫一個 kernel、管一堆 buffer 與維度。真實模型有幾十種運算、上百層，手刻不現實。這自然帶出下一節：**用框架**。
 
@@ -252,7 +254,7 @@ Rust 的 AI 推論生態這幾年成熟很多，四個主角要認識：
 | 框架 | 定位 | 後端 / 加速 | 適合場景 |
 |---|---|---|---|
 | **candle**（Hugging Face） | 極簡、輕量的張量與推論框架 | CPU / CUDA / Metal | 想用純 Rust 跑 LLM、影像模型；追求小體積、快啟動 |
-| **burn** | 功能完整的深度學習框架（能訓練也能推論） | **wgpu** / CUDA / Metal / ndarray / LibTorch | 想要跨平台 GPU（靠 wgpu！）、型別安全、彈性後端 |
+| **burn** | 功能完整的深度學習框架（能訓練也能推論） | **wgpu**（Vulkan / Metal / DX12 / WebGPU）/ CUDA / ROCm / CPU | 想要跨平台 GPU（靠 wgpu！）、型別安全、彈性後端 |
 | **tract**（Sonos） | 純 Rust 的 ONNX / TF 推論引擎 | CPU（主打） | 嵌入式、邊緣裝置、只要 CPU 推論、無外部相依 |
 | **ort** | ONNX Runtime 的 Rust 綁定 | CPU / CUDA / TensorRT / CoreML… | 已有 ONNX 模型、要用微軟成熟的高效能執行環境 |
 
@@ -269,23 +271,24 @@ Rust 的 AI 推論生態這幾年成熟很多，四個主角要認識：
 
 ## 17.7 用 candle 跑推論
 
-`candle` 是體驗「Rust 做 AI」最快的方式，API 很像 PyTorch。加依賴：
+`candle` 是體驗「Rust 做 AI」最快的方式，API 很像 PyTorch。本節程式碼對應 candle 0.11，加依賴：
 
 ```bash
-cargo add candle-core
+cargo add candle-core@0.11
 # 選配加速後端：
-# cargo add candle-core --features cuda     # NVIDIA GPU
-# cargo add candle-core --features metal    # Apple GPU
-cargo add candle-nn                          # 神經網路層（Linear、activation…）
+# cargo add candle-core@0.11 --features cuda     # NVIDIA GPU
+# cargo add candle-core@0.11 --features metal    # Apple GPU
+cargo add candle-nn@0.11                          # 神經網路層（Linear、activation…）
 ```
 
 ### 張量與裝置：選 CPU / CUDA / Metal
 
 ```rust
-use candle_core::{Device, Tensor, DType};
+use candle_core::{Device, Tensor};
 
 fn main() -> candle_core::Result<()> {
-    // 自動選最佳裝置：有 CUDA 用 CUDA，否則退回 CPU（Mac 可用 Device::new_metal(0)）
+    // 有 CUDA 用 CUDA，否則退回 CPU。
+    // Mac 開了 metal feature 後，改用 Device::metal_if_available(0)。
     let device = Device::cuda_if_available(0)?;
     println!("使用裝置：{:?}", device);
 
@@ -311,17 +314,19 @@ fn main() -> candle_core::Result<()> {
 同樣的 MLP，用 candle 幾行就完成，且自動在 GPU 上跑：
 
 ```rust
-use candle_core::{Device, Tensor};
-use candle_nn::{Linear, Module, VarBuilder, VarMap};
+use candle_core::Tensor;
+use candle_nn::{Linear, Module}; // Module 提供 .forward()
 
 fn mlp_forward(x: &Tensor, l1: &Linear, l2: &Linear) -> candle_core::Result<Tensor> {
     let h = l1.forward(x)?.relu()?;          // Linear + ReLU（= 17.4 的第 1 層）
     let logits = l2.forward(&h)?;            // Linear（= 17.4 的輸出層）
-    candle_nn::ops::softmax(&logits, 1)      // Softmax（= 17.4 的 softmax kernel）
+    candle_nn::ops::softmax(&logits, 1)      // Softmax（= 17.4 的 softmax kernel）；1 = 沿第 1 維（每一列）
 }
 ```
 
-對照 17.4 那一大段手刻 WGSL + buffer 管理——**同一件事，框架讓你聚焦在「網路結構」而非「GPU 細節」**。
+對照 17.4 那一大段手刻 WGSL + buffer 管理——**同一件事，框架讓你聚焦在「網路結構」而非「GPU 細節」**。`l1`、`l2` 可以用 `candle_nn::linear(4, 8, vb.pp("layer1"))` 這類函式建立，`vb` 就是下面載入權重時拿到的 `VarBuilder`。
+
+> **權重的形狀方向**：candle（跟 PyTorch 一樣）的 `Linear` 把權重存成 `[out, in]`，計算的是 `x · Wᵀ + b`；17.4 手刻版用的是 `[in, out]`。拿同一組權重對照兩邊結果時，記得先轉置。
 
 ### 載入真實模型（safetensors）
 
@@ -340,7 +345,7 @@ let vb = unsafe {
 // let l1 = candle_nn::linear(4, 8, vb.pp("layer1"))?;
 ```
 
-這裡的 `unsafe` 來自 memory-mapped file：candle 會把檔案映射到記憶體並假設檔案在使用期間不被外部修改或截斷。正式服務通常在啟動時載入不可變的模型檔，滿足這個前提；若不想碰 `unsafe`，可改用讀入記憶體的載入 API（代價是多一份記憶體）。
+這裡的 `unsafe` 來自 memory-mapped file：candle 會把檔案映射到記憶體並假設檔案在使用期間不被外部修改或截斷。正式服務通常在啟動時載入不可變的模型檔，滿足這個前提；若不想碰 `unsafe`，可改用 `VarBuilder::from_buffered_safetensors(std::fs::read("model.safetensors")?, DType::F32, &device)` 先把整個檔案讀進記憶體（代價是多一份記憶體）。
 
 > candle 的 `candle-transformers` 還內建了很多知名模型（LLaMA、Whisper、Stable Diffusion 等）的實作，可以直接載入權重跑——非常適合「拿開源模型做服務」。
 
@@ -348,34 +353,38 @@ let vb = unsafe {
 
 ## 17.8 用 burn + wgpu 後端（首尾呼應）
 
-還記得第 15 章說「連 AI 框架都用 wgpu 當跨平台 GPU 後端」嗎？**Burn** 就是最好的例子。它的殺手級特性是**後端可抽換**——同一份模型程式碼，換個型別參數就能跑在不同硬體上，其中 **wgpu 後端**讓你的 AI 在 Windows(DX12)、Mac(Metal)、Linux(Vulkan) 甚至瀏覽器上都能用 GPU 跑，**不被 CUDA 綁死**。
+還記得第 15 章說「連 AI 框架都用 wgpu 當跨平台 GPU 後端」嗎？**Burn** 就是最好的例子。它的殺手級特性是**後端可抽換**——同一份模型程式碼，換一個 `Device` 就能跑在不同硬體上，其中 **wgpu 後端**讓你的 AI 在 Windows(DX12)、Mac(Metal)、Linux(Vulkan) 甚至瀏覽器上都能用 GPU 跑，**不被 CUDA 綁死**。
+
+本節程式碼對應 burn 0.22（需要 Rust 1.95 以上）：
 
 ```bash
-cargo add burn --features wgpu
+cargo add burn@0.22 --features wgpu
 ```
 
 ```rust
-use burn::backend::wgpu::{Wgpu, WgpuDevice};
-use burn::tensor::Tensor;
-
-// 關鍵：後端選 Wgpu —— 概念上走的是第 15、16 章那套 GPU compute 管線。
-type Backend = Wgpu;
+use burn::tensor::{Device, Distribution, Tensor};
 
 fn main() {
-    let device = WgpuDevice::default();
+    // 關鍵：選 wgpu 裝置 —— 底下走的就是第 15、16 章那套 GPU compute 管線。
+    let device = Device::wgpu(Default::default());
 
     // 建立張量，運算會被派發到 wgpu → 你的 GPU
-    let a = Tensor::<Backend, 2>::random([2, 3], burn::tensor::Distribution::Default, &device);
-    let b = Tensor::<Backend, 2>::random([3, 4], burn::tensor::Distribution::Default, &device);
+    let a = Tensor::<2>::random([2, 3], Distribution::Default, &device);
+    let b = Tensor::<2>::random([3, 4], Distribution::Default, &device);
 
     let c = a.matmul(b);      // 這個 matmul 最終由 wgpu 送到 GPU 執行
     println!("{:?}", c.shape());
+    println!("{c}");          // 印出內容時，結果才會從 GPU 讀回 CPU
 }
 ```
 
-> **首尾呼應的時刻**：你在第 15、16 章手寫的 buffer、dispatch、資料留在 GPU 上連續運算，正是 Burn wgpu 後端背後的共同 GPU compute 心智模型。不過 Burn 不是直接使用你手寫的 WGSL pipeline；現代 Burn 透過 **CubeCL** 產生與最佳化 kernel（例如 operator fusion），再派發到 wgpu/CUDA 等後端。你不是「學了 wgpu 然後用不到」，而是「因為學過 wgpu，所以你理解框架為何要這樣組織張量、kernel 與資料搬運」。這就是這條學習路線的設計用意：**先懂底層，再站上框架**。
+- **`Tensor::<2>`**：`2` 是維度數（2 維＝矩陣）。張量用哪個後端，由建立它時傳入的 `device` 決定，不寫在型別上。網路上較舊的 burn 範例會寫成 `Tensor::<B, 2>`（用型別參數 `B` 選後端），那是舊版 API。
+- **換硬體只換 `Device`**：開 `cuda` feature 後用 `Device::cuda(0)`；開 `flex` feature 用 `Device::flex()` 跑純 Rust 的 CPU 版。張量運算的程式碼都不用改。
+- **第一次編譯很久**：burn 會連同 CubeCL、wgpu 一起編譯，第一次 `cargo run` 要等上好幾分鐘，之後的增量編譯就快了。
 
-> **burn vs candle 一句話**：candle 更輕、更像 PyTorch、CUDA/Metal 直連；burn 更完整（含訓練）、後端更多元、**wgpu 讓它跨平台 GPU 無敵**。要跨平台 GPU 或想在瀏覽器/邊緣裝置跑，burn+wgpu 是獨門優勢。版本 API 會演進，實作時對照官方文件。
+> **首尾呼應的時刻**：你在第 15、16 章手寫的 buffer、dispatch、資料留在 GPU 上連續運算，正是 Burn wgpu 後端背後的共同 GPU compute 心智模型。用 `cargo tree -i wgpu` 看依賴樹，會發現 burn 0.22 底下用的正是 wgpu 30——跟你前兩章用的是同一個 crate。不過 Burn 不是直接使用你手寫的 WGSL pipeline；它透過 **CubeCL** 產生與最佳化 kernel（例如把好幾個運算融合成一個 kernel，稱為 operator fusion），編譯成 WGSL（或該平台原生的 SPIR-V、MSL）後再透過 wgpu 派發；開 `cuda` feature 時則改走 CUDA。你不是「學了 wgpu 然後用不到」，而是「因為學過 wgpu，所以你理解框架為何要這樣組織張量、kernel 與資料搬運」。這就是這條學習路線的設計用意：**先懂底層，再站上框架**。
+
+> **burn vs candle 一句話**：candle 更輕、更像 PyTorch、CUDA/Metal 直連；burn 更完整（含訓練）、後端更多元、**靠 wgpu 一份程式碼跨各家 GPU**。要跨平台 GPU 或想在瀏覽器/邊緣裝置跑，burn+wgpu 是它最大的優勢。
 
 ---
 
@@ -385,9 +394,17 @@ fn main() {
 
 **架構決策（回扣第 09 章）**：模型只該**載入一次**，放進第 11 章的 `AppState` 共享給所有請求。載入模型很慢（讀檔、搬上 GPU），若每個請求都重載會慢到不可用。
 
+依賴跟第 11 章相同，另外加上 `anyhow`：
+
+```bash
+cargo add axum@0.8 anyhow
+cargo add tokio --features full
+cargo add serde --features derive
+```
+
 ```rust
 use std::sync::Arc;
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 
 // 你的模型封裝（candle 或 burn 皆可），持有已載入的權重與裝置
@@ -413,24 +430,25 @@ struct PredictResponse { probabilities: Vec<f32>, predicted_class: usize }
 async fn predict(
     State(state): State<AppState>,
     Json(req): Json<PredictRequest>,
-) -> Json<PredictResponse> {
-    let model = state.model.clone();
+) -> Result<Json<PredictResponse>, StatusCode> {
+    // 實務上這裡要先檢查 features 長度是否等於模型的輸入維度，不符就回 400（第 11 章的請求驗證）
+    let model = state.model.clone();   // 只複製 Arc 指標，不複製模型
     let features = req.features;
 
     // 關鍵：推論是「CPU/GPU 密集」的同步工作，不要卡住 async runtime！
     // 用 spawn_blocking 丟到專用執行緒池（回扣第 08 章的鐵則）
     let probs = tokio::task::spawn_blocking(move || model.predict(&features))
         .await
-        .unwrap();
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;   // 推論執行緒 panic 時回 500
 
     let predicted_class = probs
         .iter()
         .enumerate()
-        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .max_by(|a, b| a.1.total_cmp(b.1))   // total_cmp：遇到 NaN 也不會 panic
         .map(|(i, _)| i)
         .unwrap_or(0);
 
-    Json(PredictResponse { probabilities: probs, predicted_class })
+    Ok(Json(PredictResponse { probabilities: probs, predicted_class }))
 }
 
 #[tokio::main]
@@ -463,7 +481,7 @@ async fn main() -> anyhow::Result<()> {
 
 - **批次化（batching）**：GPU 最怕「一次只算一筆」——那樣它的上千核心大部分閒著。把短時間內到達的多個請求**湊成一批**（batch）一起餵給 GPU（矩陣的 batch 維度變大），吞吐量可翻數倍。代價是單筆延遲略增，用「最大批次大小 + 最長等待時間」平衡（回扣第 14 章的取捨思維）。
 - **暖機（warmup）**：第一次推論常特別慢（pipeline 編譯、記憶體配置、快取未熱）。啟動時先跑幾筆假資料**暖機**，別讓第一個真實使用者當白老鼠。
-- **模型格式與量化**：**量化（quantization）** 把權重從 f32 壓成 f16/int8，模型變小、算更快、記憶體省，精度損失通常可接受。LLM 服務幾乎都用量化模型（如 gguf 的 int4）。
+- **模型格式與量化**：**量化（quantization）** 把權重從 f32 壓成 f16/int8，模型變小、算更快、記憶體省，精度損失通常可接受。在本機或顯存有限的機器上跑 LLM，常用量化模型（如 gguf 的 4-bit 量化版本）。
 - **記憶體管理**：GPU 記憶體有限且珍貴。大模型可能塞不下——要注意模型大小、批次大小對顯存的佔用，OOM 會直接讓服務掛掉。
 - **並發與限流（第 14 章）**：GPU 是**單一稀缺資源**，不能讓無限請求同時擠上去。用第 14 章的 **`Semaphore`** 限制同時推論數、用 **bounded channel** 做批次佇列與背壓、過載時 **load shed** 回 503。
 - **可觀測性（第 14 章）**：盯推論延遲 p99、GPU 使用率、佇列深度、批次大小、OOM 次數。
@@ -523,12 +541,12 @@ async fn main() -> anyhow::Result<()> {
 
 1. 用第 16 章的 `GpuContext` 把 17.4 的手刻 MLP 跑起來（權重可隨機初始化），確認輸出是「和為 1 的 3 個機率」。
 2. 把手刻版的 ReLU 換成 `sigmoid`（`1/(1+exp(-x))`），觀察輸出變化——體會激活函數就是 element-wise kernel。
-3. `cargo add candle-core candle-nn`，用 candle 建立兩個張量做 `matmul`，並套 `.relu()` 與 `softmax`，對照你手刻的結果。
+3. `cargo add candle-core@0.11 candle-nn@0.11`，用 candle 建立兩個張量做 `matmul`，並套 `.relu()` 與 `softmax`，對照你手刻的結果。
 4. 用 candle 把 17.4 的 MLP 重寫成 17.7 的 `mlp_forward` 版本，比較兩者的程式碼量與可讀性。
 5. （若有 Mac/NVIDIA）分別用 `Device::Cpu` 與 GPU 裝置跑同一個較大的 matmul，量測耗時差異。
 6. 用第 11 章的 Axum 建一個 `/predict` 端點，把（任一）推論包進去，模型放 `AppState`、推論用 `spawn_blocking`，用 `curl` 送 JSON 測試。
 7. 為第 6 題的服務加上第 14 章的 `Semaphore`（限同時推論數 = 2）與 bounded channel，用 `oha` 壓測，觀察過載時的行為。
-8. （挑戰）用 `burn --features wgpu` 跑一個 matmul，確認它真的走 GPU（可對照 CPU backend `ndarray` 的耗時），體會「wgpu 當 AI 後端」。
+8. （挑戰）用 burn（開 `wgpu` feature）跑一個較大的 matmul，確認它真的走 GPU（可再開 `flex` feature，用 `Device::flex()` 跑純 Rust 的 CPU 版對照耗時），體會「wgpu 當 AI 後端」。
 9. （挑戰研究）找一個 Hugging Face 上的小型開源模型（如簡單分類器），用 candle 載入其 `safetensors` 權重跑一次真實推論。
 
 ---

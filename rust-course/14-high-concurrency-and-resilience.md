@@ -14,7 +14,7 @@
 - 說出「服務在高併發下是怎麼一步步倒的」，並理解 Little's Law 的直覺。
 - 用 **bounded channel** 建立背壓（backpressure），避免記憶體無限膨脹。
 - 用 **`tokio::sync::Semaphore`** 限制並發數，保護自己與下游。
-- 用 **Tower layer**（`ConcurrencyLimitLayer` + `LoadShedLayer` + rate limit）在伺服器端限流與負載卸除。
+- 用 **Tower layer**（`GlobalConcurrencyLimitLayer` + `LoadShedLayer` + rate limit）在伺服器端限流與負載卸除。
 - 手寫一個**斷路器（circuit breaker）**，理解 Closed / Open / Half-Open 三態。
 - 診斷並化解**鎖競爭**：`RwLock`、縮小臨界區、不跨 `.await` 持鎖、`DashMap`。
 - 用**快取**（`moka` / Redis）擋掉重複的昂貴工作，並處理 cache stampede。
@@ -65,7 +65,12 @@
 
 ## 14.3 背壓（Backpressure）：滿了就要能「推回去」
 
-回扣第 08 章——我們用 `mpsc` channel 做生產者-消費者。但那時用的是 **unbounded**（無上限）channel，這在高併發下是顆炸彈：**生產者比消費者快時，訊息會無限堆積在 channel 裡，記憶體爆掉。**
+第 08 章用標準庫的 `std::sync::mpsc` 在執行緒之間傳訊息，它的 `channel()` 沒有容量上限，而且 `recv()` 會卡住整條執行緒，不適合放在 async 程式裡。async 程式改用 Tokio 的版本 **`tokio::sync::mpsc`**，用法幾乎一樣（`tx.send(..)`、`rx.recv()`），差別是要 `.await`，而且分成兩種：
+
+- `mpsc::channel(容量)`：**bounded**（有上限），滿了 `send().await` 會等到有空位。
+- `mpsc::unbounded_channel()`：**unbounded**（無上限），`send()` 永遠立刻成功。
+
+無上限的 channel 在高併發下是顆炸彈：**生產者比消費者快時，訊息會無限堆積在 channel 裡，記憶體爆掉。**
 
 **背壓**的意思是：「下游忙不過來時，要能讓上游**慢下來或擋住**」，而不是默默把工作堆到記憶體。做法就是用 **bounded channel**：
 
@@ -78,7 +83,7 @@ async fn main() {
     let (tx, mut rx) = mpsc::channel::<Job>(100);
 
     // 消費者：慢慢處理
-    tokio::spawn(async move {
+    let consumer = tokio::spawn(async move {
         while let Some(job) = rx.recv().await {
             process(job).await;           // 假設處理很慢
         }
@@ -90,8 +95,13 @@ async fn main() {
         // → 生產者自動被「拖慢」到跟消費者同步，記憶體不會爆
         tx.send(Job(i)).await.unwrap();
     }
+
+    drop(tx);                    // 關掉發送端：消費者收完剩下的訊息後，recv() 回 None、迴圈結束
+    consumer.await.unwrap();     // 等消費者做完再結束程式，否則 main 一返回，還沒處理的工作就被丟掉
 }
 ```
+
+（`Job` 是你的工作型別，例如 `struct Job(u32);`；`process` 是處理它的 async 函式。）
 
 - **`mpsc::channel(100)`**（bounded）：容量滿時，`send().await` 會**等待**直到有空位——這股「等待」就沿著呼叫鏈往上傳，形成背壓。
 - **`mpsc::unbounded_channel()`**（unbounded）：`send` 永不阻塞，但**沒有背壓**，堆積無上限。高併發服務**避免使用**。
@@ -140,7 +150,7 @@ async fn main() {
 - **`.acquire().await`**：領一張；沒得領就等。回傳的 `permit` 一 drop 就自動歸還——你不用手動釋放，靠所有權（第 02 章）。
 - 這保證「無論丟進來幾千個任務，同時真正執行的最多 10 個」。
 
-> **和第 12 章 `buffer_unordered(N)` 的關係**：`buffer_unordered` 是「處理一個 stream 時限並發」的**便利糖**，底層概念就是號誌。`Semaphore` 是更通用的原語——你可以用它包住**任何**一段程式（handler 內某段、背景任務、跨多個不同操作共用同一個限額）。兩者都在做同一件事：**替並發設一個天花板。**
+> **和第 12 章 `buffer_unordered(N)` 的關係**：`buffer_unordered` 是「處理一個 stream 時限並發」的**便利寫法**，效果跟號誌一樣（它自己數「在飛的 future 有幾個」，不需要號誌）。`Semaphore` 是更通用的原語——你可以用它包住**任何**一段程式（handler 內某段、背景任務、跨多個不同操作共用同一個限額）。兩者都在做同一件事：**替並發設一個天花板。**
 
 > **為什麼限並發能救命**：不限的話，過載時你會同時開 10000 個 task 去打下游 → 打垮下游、也吃光自己的記憶體與連線。限 10 個 → 多的乖乖排隊或被拒，下游只承受它能承受的量。**限並發同時保護了下游和你自己。**
 
@@ -148,14 +158,17 @@ async fn main() {
 
 ## 14.5 伺服器端限流與負載卸除（Tower layer）
 
-上面是「零件」，現在把它裝到第 11 章的 Axum server 上。Axum 的 middleware 是 Tower layer（第 11 章），Tower 內建了整套過載保護 layer。
+上面是「零件」，現在把它裝到第 11 章的 Axum server 上。Axum 的 middleware 是 Tower layer（第 11 章），Tower 內建了整套過載保護 layer，但每一種都要用 feature 打開：
+
+```bash
+cargo add tower@0.5 --features limit,load-shed,timeout     # timeout 是 14.13 會用到的
+```
 
 ### 經典組合：並發上限 + 負載卸除
 
 ```rust
-use axum::{error_handling::HandleErrorLayer, http::StatusCode, BoxError, Router};
-use tower::{ServiceBuilder, load_shed::LoadShedLayer, limit::ConcurrencyLimitLayer};
-use std::time::Duration;
+use axum::{error_handling::HandleErrorLayer, http::StatusCode, routing::get, BoxError, Router};
+use tower::{ServiceBuilder, load_shed::LoadShedLayer, limit::GlobalConcurrencyLimitLayer};
 
 fn build_router(state: AppState) -> Router {
     Router::new()
@@ -173,18 +186,22 @@ fn build_router(state: AppState) -> Router {
                 }))
                 // 2. 過載時「快速失敗」，不排隊
                 .layer(LoadShedLayer::new())
-                // 1. 同時最多處理 100 個請求（超過的讓內層變 not-ready）
-                .layer(ConcurrencyLimitLayer::new(100))
+                // 1. 整個服務同時最多處理 100 個請求（超過的讓內層變 not-ready）
+                .layer(GlobalConcurrencyLimitLayer::new(100))
         )
         .with_state(state)
 }
 ```
 
+先看順序：`ServiceBuilder` 裡**寫在最上面的是最外層**，請求由上往下穿過：`HandleErrorLayer` → `LoadShedLayer` → `GlobalConcurrencyLimitLayer` → handler。這跟連續呼叫 `Router::layer(...)` 剛好相反（那種寫法是最後加的在最外層，第 11 章）。
+
 發生了什麼（layer 由內往外）：
 
-1. **`ConcurrencyLimitLayer::new(100)`**：同時最多 100 個請求在處理。第 101 個到來時，內層服務「還沒 ready」。
+1. **`GlobalConcurrencyLimitLayer::new(100)`**：同時最多 100 個請求在處理。第 101 個到來時，內層服務「還沒 ready」。
 2. **`LoadShedLayer`**：看到內層 not-ready，**立刻**回一個 `Overloaded` 錯誤（而不是排隊等）——這就是負載卸除：**寧可快速拒絕，不要拖著大家慢死。**
 3. **`HandleErrorLayer`**：把 `Overloaded` 錯誤轉成 `503 Service Unavailable`，客戶端就知道「該退避重試」，而不是傻等到逾時。
+
+> **為什麼用 `GlobalConcurrencyLimitLayer`，不用 `ConcurrencyLimitLayer`？** `Router::layer` 會把 layer 分別套到**每個路由的每個 HTTP 方法**上。`ConcurrencyLimitLayer` 每套一次就建一個新的號誌，結果變成 `GET /books`、`POST /books`、`GET /books/{id}`⋯⋯各自 100 個，整個服務的上限是 100 乘上端點數。`GlobalConcurrencyLimitLayer` 在 `new` 的時候就建好一個號誌，所有端點共用，才是「整個服務同時最多 100 個」。
 
 > **為什麼是 503 而不是排隊？** 排隊會讓每個請求的延遲越來越長（Little's Law），最後全部超時——使用者體驗是「什麼都打不開」。快速回 503 則是「保住能處理的那 100 個、明確拒絕多的」——**部分成功遠勝全體失敗**。這就是 fail-fast 哲學。
 
@@ -193,10 +210,11 @@ fn build_router(state: AppState) -> Router {
 限「同時數量」是並發限流；限「每秒幾個」是速率限流。Tower 有 `RateLimitLayer`（全域固定速率），但實務更常要**「每個 IP / 每個 API key」分別限流**，用 `tower_governor`：
 
 ```bash
-cargo add tower_governor
+cargo add tower_governor@0.8
 ```
 
 ```rust
+use std::net::SocketAddr;
 use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
 
 let governor_conf = GovernorConfigBuilder::default()
@@ -208,15 +226,19 @@ let governor_conf = GovernorConfigBuilder::default()
 let app = Router::new()
     .route(/* ... */)
     .layer(GovernorLayer::new(governor_conf));           // 超過限額回 429 Too Many Requests
+
+// 預設用「連線來源 IP」當限流的 key，所以 serve 時要把連線資訊帶進請求
+axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 ```
 
 - 底層是**令牌桶（token bucket）**：桶裡的令牌以固定速率補充，每個請求耗一個令牌，沒令牌就回 `429`。`burst_size` 允許短暫爆發。
-- `tower_governor` 的 `per_second(n)` 不是「每秒 n 個」，而是「每 n 秒補 1 個 token」。若要近似每秒 10 個，應使用更短的補充週期或改用其他支援每秒速率語意的 limiter。照官方範例時，務必讀清楚這個語意，否則限流量級會差很多。
+- `tower_governor` 的 `per_second(n)` 不是「每秒 n 個」，而是「每 n 秒補 1 個 token」。要每秒 10 個，改用 `.per_millisecond(100)`（每 100ms 補 1 個）。照抄範例前務必讀清楚這個語意，否則限流量級會差很多。
+- **別漏了 `into_make_service_with_connect_info`**：直接 `axum::serve(listener, app)` 的話，請求裡沒有來源 IP，`tower_governor` 取不到 key，**每個請求都回 500**（`Unable To Extract Key!`）。服務放在反向代理或負載均衡後面時，看到的來源 IP 都是代理的，要改用 `SmartIpKeyExtractor`（讀 `X-Forwarded-For` 等標頭；只在前面確實有代理會覆寫這些標頭時才用，否則客戶端可以自己偽造）。
 - 限流保護你不被單一惡意/失控的客戶端打爆，也讓資源公平分配。
 
 | 手法 | 限制什麼 | Rust 工具 | 過載時回 |
 |------|---------|-----------|---------|
-| 並發限制 | 同時處理數 | `ConcurrencyLimitLayer` / `Semaphore` | 排隊 or 503 |
+| 並發限制 | 同時處理數 | `GlobalConcurrencyLimitLayer` / `Semaphore` | 排隊 or 503 |
 | 負載卸除 | 過載即拒 | `LoadShedLayer` | 503 |
 | 速率限流 | 每秒/每來源數 | `tower_governor` | 429 |
 | 背壓 | 佇列長度 | bounded channel | 等 or 拒 |
@@ -227,19 +249,27 @@ let app = Router::new()
 
 第 11、12 章都講了逾時。高併發下要多想一層：**逾時要有「整體預算」，不能各層各設一個大數字。**
 
-想像一條呼叫鏈：API handler(逾時 10s) → 用例 → 打下游 A(逾時 10s，重試 3 次) → 打下游 B(逾時 10s)。最壞情況：光下游 A 就可能 30s，早就超過 handler 的 10s，那些重試全是白做工、還佔著資源。
+想像一條呼叫鏈：API handler(逾時 10s) → 用例 → 打下游 A(逾時 10s，失敗再重試 3 次) → 打下游 B(逾時 10s)。最壞情況：光下游 A 就是 10s × 4 次嘗試 = 40s（還沒算退避的等待），早就超過 handler 的 10s。handler 逾時回錯誤給使用者之後，那些重試全是白做工、還佔著資源。
 
 原則：
 
 - **從外往內分配預算**：整體 10s，扣掉自己處理，剩下的分給下游；下游的逾時要**小於**剩餘預算。
 - **重試要算進預算**：`逾時 × (重試次數+1)` 不能超過上層預算。
-- **越靠近使用者，逾時越短**：使用者不會等 30s。前端逾時 3s，那你的內部逾時全都要更短。
+- **越往內層，逾時越短**：整體預算由最外層、最靠近使用者的那一端決定，而使用者不會等 30s。前端逾時 3s，你的服務就得在 3s 內回應，內部每一層的逾時都要比它外面那層短——內層先放棄，外層才有時間降級或回一個明確的錯誤。
 
 ```rust
-// 概念示意：把「剩餘預算」往下傳，下游取 min(自己上限, 剩餘)
-async fn call_with_budget(client: &reqwest::Client, url: &str, budget: Duration) -> Result<Resp, Err> {
-    let timeout = budget.min(Duration::from_secs(2));   // 不超過整體預算，也不超過自己的 2s
-    client.get(url).timeout(timeout).send().await // ...
+use std::time::{Duration, Instant};
+
+// 請求一進來就算出截止時間（例如 handler 收到時 Instant::now() + 3s），一路往下傳；
+// 每次打下游前取 min(剩餘預算, 這個下游自己的上限)
+async fn call_with_budget(
+    client: &reqwest::Client,
+    url: &str,
+    deadline: Instant,
+) -> reqwest::Result<reqwest::Response> {
+    let remaining = deadline.saturating_duration_since(Instant::now());   // 已經超過就是 0
+    let timeout = remaining.min(Duration::from_secs(2));   // 不超過剩餘預算，也不超過自己的 2s
+    client.get(url).timeout(timeout).send().await
 }
 ```
 
@@ -302,7 +332,7 @@ impl CircuitBreaker {
         let mut g = self.inner.lock().unwrap();
         match g.state {
             State::Closed => true,
-            State::HalfOpen => true,     // 半開：放行試探
+            State::HalfOpen => true,     // 半開：放行試探（簡化版：結果回來前都放行）
             State::Open => {
                 // 冷卻時間到了？到了就轉半開、放行一個試探
                 if g.opened_at.map_or(false, |t| t.elapsed() >= self.cooldown) {
@@ -332,18 +362,18 @@ impl CircuitBreaker {
 }
 
 // 用法：包住第 12 章的外部呼叫
-async fn lookup_with_breaker(cb: &CircuitBreaker, /* client... */) -> Result<Book, MetadataError> {
+async fn lookup_with_breaker(cb: &CircuitBreaker, /* client... */) -> Result<BookMetadata, MetadataError> {
     if !cb.allow_request() {
         return Err(MetadataError::Upstream("circuit open（快速失敗）".into()));  // 不打下游，秒回
     }
     match do_actual_lookup(/* ... */).await {
-        Ok(book) => { cb.on_success(); Ok(book) }
+        Ok(meta) => { cb.on_success(); Ok(meta) }
         Err(e)   => { cb.on_failure(); Err(e) }
     }
 }
 ```
 
-> **注意**：`Instant::now()` 在一般程式可用（本課的 workflow 限制不影響你的專案）。這個手寫版是為了讓你**看懂三態怎麼運作**；生產環境建議用成熟 crate（如 `failsafe`），它處理了滑動視窗統計、半開的並發試探數控制等細節。
+> **注意**：這裡用 `std::sync::Mutex` 沒問題，因為每次上鎖都在同步函式裡做完就放掉，不會握著鎖跨 `.await`（14.8 第 3 招）。這個手寫版是為了讓你**看懂三態怎麼運作**，有兩個簡化：半開時在第一個結果回來前會放行所有請求（不是「少量」），而且只看「連續失敗次數」。生產環境建議用成熟 crate（如 `failsafe`），它處理了滑動視窗統計、半開的並發試探數控制等細節。
 
 > **斷路器 vs 重試**：兩者互補。**重試**應付「偶發、單次」的暫時失敗；**斷路器**應付「持續性」的故障——當重試都救不回來時，斷路器出手「別再試了，先放棄一陣子」。沒有斷路器的重試，在下游全掛時反而會用重試風暴補刀。
 
@@ -353,7 +383,7 @@ async fn lookup_with_breaker(cb: &CircuitBreaker, /* client... */) -> Result<Boo
 
 第 07、08 章教你用 `Arc<Mutex<T>>` 共享可變狀態。在低併發下沒事，但**高併發下，`Mutex` 會變成瓶頸**：所有 task 都要搶同一把鎖，搶不到就排隊——你以為在並發，其實大家在鎖前面排成一條線，並發度被鎖「序列化」了。
 
-### 症狀與四招解法
+### 症狀與五招解法
 
 **第 1 招：縮小臨界區（最重要）**。鎖只在「真的要改共享資料」的那一瞬間持有，別把耗時操作包在鎖裡。
 
@@ -402,6 +432,8 @@ let map: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());
 map.insert("a".into(), 1);                     // 不同 key 的並發寫入互不阻塞
 ```
 
+`DashMap` 的 `get()` / `get_mut()` 回傳的參照握著那一片的鎖，規則跟 `MutexGuard` 一樣：別握著它跨 `.await`，也別在握著它的時候再對同一張表 `insert`（剛好落在同一片就會死結）。需要的值先 `.clone()` 出來再用。
+
 **第 5 招（釜底抽薪）：用訊息取代共享**。回扣第 08 章那句話——「用溝通來共享記憶體」。與其多個 task 搶一把鎖改狀態，不如把狀態交給**單一 owner task**，其他人透過 channel 送指令給它（actor 模式）。沒有鎖，就沒有鎖競爭。
 
 > **診斷心法**：服務在高併發下「CPU 沒滿、卻很慢」，很可能就是鎖競爭——大家都在等鎖，CPU 閒著。用 profiling / tracing 找出熱點鎖，先套第 1 招（縮小臨界區），再考慮換工具。
@@ -414,10 +446,10 @@ map.insert("a".into(), 1);                     // 不同 key 的並發寫入互�
 
 ### 記憶體快取：`moka`
 
-`moka` 是 Rust 的高效能並發快取，支援 TTL（過期）、容量上限（LRU 淘汰）、且**並發安全**：
+`moka` 是 Rust 的高效能並發快取，支援 TTL（過期）、容量上限（滿了就淘汰較少被用到的項目）、且**並發安全**：
 
 ```bash
-cargo add moka --features future
+cargo add moka@0.12 --features future
 ```
 
 ```rust
@@ -454,21 +486,39 @@ async fn lookup_cached(cache: &Cache<String, BookMetadata>, isbn: String) -> Boo
 記憶體快取的問題：**多個服務實例各有各的快取**，不共享、也會隨重啟消失。要跨實例共享，用 **Redis**：
 
 ```bash
-cargo add redis --features tokio-comp
+cargo add redis --features tokio-comp,connection-manager
 ```
 
+連線的處理方式跟 `PgPool`、`reqwest::Client` 一樣：開機時在組合根建一次，放進 `AppState` 共用，不要每個請求重新連。`ConnectionManager` 斷線會自動重連，clone 很便宜（共用同一條連線）：
+
 ```rust
-// 概念示意：先查 Redis，miss 才查 DB 並回填
-async fn get_book(redis: &redis::Client, db: &PgPool, id: i64) -> Book {
+// main.rs（組合根）
+let redis = redis::Client::open("redis://127.0.0.1/")?.get_connection_manager().await?;
+```
+
+快取的值存成 JSON 字串，所以 `Book` 要 derive `Serialize` / `Deserialize`；`query_db` 代表第 10 章那種 SQLx 查詢：
+
+```rust
+use redis::AsyncCommands;     // 提供 get / set_ex 等指令方法
+
+// 先查 Redis，miss 才查 DB 並回填
+async fn get_book(redis: &redis::aio::ConnectionManager, db: &PgPool, id: i64) -> anyhow::Result<Book> {
+    let mut conn = redis.clone();                 // 指令方法要 &mut，clone 一份來用
+    let key = format!("book:{id}");
+
     // 1. 查快取
-    if let Some(cached) = redis_get(redis, id).await { return cached; }
+    if let Some(json) = conn.get::<_, Option<String>>(&key).await? {
+        return Ok(serde_json::from_str(&json)?);
+    }
     // 2. miss → 查 DB
-    let book = query_db(db, id).await;
-    // 3. 回填快取（設 TTL）
-    redis_set_ex(redis, id, &book, 300).await;
-    book
+    let book = query_db(db, id).await?;
+    // 3. 回填快取，300 秒後過期
+    let _: () = conn.set_ex(&key, serde_json::to_string(&book)?, 300).await?;
+    Ok(book)
 }
 ```
+
+這段沒有處理 stampede：熱門 key 過期的瞬間，所有 miss 的請求都會去查 DB，就是上一小節說的要自己補「單飛鎖」或「提前更新」的地方。
 
 | | `moka`（記憶體） | Redis（分散式） |
 |---|---|---|
@@ -487,7 +537,7 @@ async fn get_book(redis: &redis::Client, db: &PgPool, id: i64) -> Book {
 
 第 10 章開了 `max_connections(10)`，第 12 章開了 HTTP 連線池。高併發下，這些數字**不能亂設**——太小會排隊、太大會壓垮下游。用 Little's Law 算：
 
-- 假設每個請求要用 DB 連線 20ms、目標 500 req/s → 同時需要 = 500 × 0.02 = **10 條連線**。設 `max_connections(10~15)` 合理。
+- 假設每個請求要用 DB 連線 20ms、目標 500 req/s → 同時需要 = 500 × 0.02 = **10 條連線**。這是**平均值**：流量有起伏，池子一用到滿就開始排隊，所以要留餘裕，設 `max_connections(15)` 左右合理。
 - **多實例要相乘**：如果跑 8 個服務實例、每個池 10 條 → DB 同時面對 **80 條連線**。PostgreSQL 預設上限約 100，你已逼近。**池大小 × 實例數 ≤ DB 連線上限**（還要留額度給 migration、維運工具）。
 
 ```text
@@ -565,26 +615,42 @@ oha -c 200 -z 30s http://localhost:8080/books
 
 把本章縫進第 13 章的成品。目標：讓 Bookshelf 在流量尖峰與下游故障時，**優雅降級而非崩潰**。
 
-```rust
-// state.rs：韌性元件放進共享狀態（第 09、11 章）
-use std::sync::Arc;
-use moka::future::Cache;
+`CachedProvider` 放在 infrastructure crate：新增 `src/cached_provider.rs`（下面的程式），14.7 的 `CircuitBreaker` 放進 `src/circuit_breaker.rs`，再到 `lib.rs` 加上 `mod cached_provider; mod circuit_breaker;` 與對應的 `pub use`。它會用到 moka 和 Tokio 的 `Semaphore`，先補依賴（在 `bookshelf/` 根目錄執行）：
 
-#[derive(Clone)]
-pub struct AppState {
-    pub add_book: Arc<application::AddBook<CachedProvider, PgBookRepository>>,
-    pub repo: Arc<dyn domain::BookRepository>,
-    pub meta_cache: Cache<String, domain::BookMetadata>,   // 14.9 快取
-}
+```bash
+cargo add moka@0.12 --features future -p infrastructure
+cargo add tokio -p infrastructure          # workspace 已宣告 tokio，cargo 會自動寫成 { workspace = true }
+cargo add tower@0.5 --features limit,load-shed,timeout -p api
+cargo add tower_governor@0.8 -p api
+cargo add moka@0.12 --features future -p api     # main.rs 要建 Cache
 ```
 
 ```rust
 // infrastructure：用「快取 + 斷路器 + 號誌」包住原本的 OpenLibraryProvider
+use std::sync::Arc;
+use std::time::Duration;
+use async_trait::async_trait;
+use domain::{BookMetadata, BookMetadataProvider, Isbn, MetadataError};
+use moka::future::Cache;
+use tokio::sync::Semaphore;
+use crate::{CircuitBreaker, OpenLibraryProvider};
+
 pub struct CachedProvider {
     inner: OpenLibraryProvider,          // 第 13 章的實作
     cache: Cache<String, BookMetadata>,  // 14.9
     breaker: Arc<CircuitBreaker>,        // 14.7
     limiter: Arc<Semaphore>,             // 14.4：限制同時打外部的數量
+}
+
+impl CachedProvider {
+    pub fn new(inner: OpenLibraryProvider, cache: Cache<String, BookMetadata>) -> Self {
+        Self {
+            inner,
+            cache,
+            breaker: Arc::new(CircuitBreaker::new(5, Duration::from_secs(30))),  // 連 5 次失敗跳閘 30 秒
+            limiter: Arc::new(Semaphore::new(10)),                               // 同時最多 10 個外呼
+        }
+    }
 }
 
 #[async_trait]
@@ -594,7 +660,7 @@ impl BookMetadataProvider for CachedProvider {
 
         // try_get_with 具備 single-flight：同 ISBN 並發 miss 時，只會有一個閉包真的打外部。
         // 成功才寫入快取；失敗不快取，避免把暫時性錯誤保存起來。
-        self.cache.try_get_with(key.clone(), async {
+        self.cache.try_get_with(key, async {
             // 1. 斷路器：外部若已掛，快速失敗、不浪費資源
             if !self.breaker.allow_request() {
                 return Err(MetadataError::Upstream("書目服務暫時停用中".into()));
@@ -602,32 +668,87 @@ impl BookMetadataProvider for CachedProvider {
             // 2. 號誌：同時最多 N 個打外部，保護對方也保護自己
             let _permit = self.limiter.acquire().await.unwrap();
 
-            // 3. 真的呼叫（內部已有第 12 章的逾時 + 重試）
+            // 3. 真的呼叫（逾時在第 13 章的 reqwest::Client 設好了；重試可照第 12 章加上）
             match self.inner.lookup(isbn).await {
                 Ok(meta) => { self.breaker.on_success(); Ok(meta) }
-                Err(e)   => { self.breaker.on_failure(); Err(e) }
+                // 「查無此書」是對方正常的回答，不是故障，不能算進斷路器
+                Err(MetadataError::NotFound) => { self.breaker.on_success(); Err(MetadataError::NotFound) }
+                Err(e) => { self.breaker.on_failure(); Err(e) }
             }
-        }).await.map_err(|e| MetadataError::Upstream(e.to_string()))
+        }).await.map_err(Arc::unwrap_or_clone)
     }
 }
 ```
 
-> **注意 `try_get_with` 的錯誤型別**：moka 會把初始化錯誤包成 `Arc<E>` 回傳，因為同一個 miss 可能有多個並發呼叫在等待同一個錯誤。上面為了保持示例簡短，把它轉成 `Upstream(String)`；正式專案可讓錯誤型別實作 `Clone` 後保留原始 variant，或在 cache 層統一回傳 `Arc<MetadataError>`。
+> **注意 `try_get_with` 的錯誤型別**：moka 會把初始化錯誤包成 `Arc<E>` 回傳，因為同一個 miss 可能有多個並發呼叫在等待同一個錯誤。第 13 章的 `MetadataError` 有 derive `Clone`，所以用 `Arc::unwrap_or_clone` 拿回原本的值，`NotFound`、`Timeout` 這些 variant 原封不動往上傳，API 層照樣回 404 / 504。若把它攤平成 `Upstream(e.to_string())`，查無此書就會變成 502。
+
+在組合根把它包上去就好。第 13 章的 `AppState` 只認 `Arc<dyn BookMetadataProvider>`，所以 `state.rs`、handler、用例都不用改——這正是當初把具體型別留給組合根決定的回報：
 
 ```rust
-// handlers.rs / router：伺服器端限流 + 負載卸除（14.5）
-Router::new()
-    .route("/books", get(list_books).post(add_book))
-    .route("/books/{id}", get(get_book).delete(delete_book))
-    .layer(
-        ServiceBuilder::new()
-            .layer(HandleErrorLayer::new(handle_overload))    // 503
-            .layer(LoadShedLayer::new())
-            .layer(ConcurrencyLimitLayer::new(200))           // 依壓測結果設定
-            .layer(TimeoutLayer::new(Duration::from_secs(5))) // 逾時預算（14.6）
-    )
-    .layer(GovernorLayer::new(governor_conf))                 // 每 IP 限流（14.5）
-    .with_state(state)
+// main.rs：第 13 章第 5 步的 provider 改成包一層
+let meta_cache = moka::future::Cache::builder()
+    .max_capacity(10_000)
+    .time_to_live(Duration::from_secs(300))      // 書目很少變，快取 5 分鐘
+    .build();
+let provider: Arc<dyn domain::BookMetadataProvider> = Arc::new(infrastructure::CachedProvider::new(
+    infrastructure::OpenLibraryProvider::new(http, config.open_library_base.clone()),
+    meta_cache,
+));
+```
+
+伺服器端的防護沿用 14.5，再加上逾時。這裡的 `TimeoutLayer` 是 Tower 自己的 `tower::timeout::TimeoutLayer`，逾時會變成 `Elapsed` 錯誤，所以錯誤處理函式要多一個分支：
+
+```rust
+// handlers.rs：伺服器端限流 + 負載卸除（14.5）+ 逾時（14.6），取代第 13 章的 router 函式
+// （StatusCode、get、Router 第 13 章已經 use 過，這裡只列新增的）
+use std::time::Duration;
+use axum::{error_handling::HandleErrorLayer, BoxError};
+use tower::{
+    limit::GlobalConcurrencyLimitLayer, load_shed::LoadShedLayer, timeout::TimeoutLayer, ServiceBuilder,
+};
+use tower_governor::{governor::GovernorConfigBuilder, GovernorLayer};
+use tower_http::trace::TraceLayer;
+
+async fn handle_overload(err: BoxError) -> (StatusCode, &'static str) {
+    if err.is::<tower::load_shed::error::Overloaded>() {
+        (StatusCode::SERVICE_UNAVAILABLE, "系統忙碌，請稍後再試")      // 503
+    } else if err.is::<tower::timeout::error::Elapsed>() {
+        (StatusCode::GATEWAY_TIMEOUT, "處理逾時")                     // 504
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+    }
+}
+
+pub fn router(state: AppState) -> Router {
+    let governor_conf = GovernorConfigBuilder::default()
+        .per_millisecond(200)                    // 每 200ms 補 1 個 = 每 IP 每秒 5 個
+        .burst_size(10)
+        .finish()
+        .unwrap();
+
+    Router::new()
+        .route("/health", get(health))
+        .route("/books", get(list_books).post(add_book))
+        .route("/books/{id}", get(get_book).delete(delete_book))
+        .layer(
+            ServiceBuilder::new()                                 // 由上往下 = 由外往內
+                .layer(HandleErrorLayer::new(handle_overload))    // 把下面三層的錯誤轉成 503 / 504
+                .layer(LoadShedLayer::new())
+                .layer(GlobalConcurrencyLimitLayer::new(200))     // 依壓測結果設定
+                .layer(TimeoutLayer::new(Duration::from_secs(5))) // 逾時預算（14.6）
+        )
+        .layer(GovernorLayer::new(governor_conf))                 // 每 IP 限流（14.5）
+        .layer(TraceLayer::new_for_http())                        // 最後加 = 最外層：連被擋下的 429 也記得到 log
+        .with_state(state)
+}
+```
+
+`main.rs` 的 `axum::serve` 也要照 14.5 改成 `app.into_make_service_with_connect_info::<SocketAddr>()`，每 IP 限流才拿得到來源 IP。13.9 的整合測試用 `oneshot` 直接把請求餵給 router，沒有經過 `serve`，請求裡一樣沒有來源 IP，會變成 500；測試請求要自己帶上：
+
+```rust
+Request::post("/books")
+    .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from(([127, 0, 0, 1], 0))))
+    // ...其餘照舊
 ```
 
 這樣一來，Bookshelf 具備了層層防護：
@@ -664,7 +785,10 @@ Router::new()
 - **有重試卻沒斷路器**→ 下游全掛時重試風暴補刀。加斷路器「別再試了」。
 - **把 session/檔案存在實例本機**→ 無法水平擴展。狀態外置到 Redis/DB/物件儲存。
 - **不量測就調參數**→ 瞎猜瓶頸、優化錯地方。先壓測 + 指標，再對症下藥。
-- **逾時各層各設大數字**→ 重試 × 多層放大延遲。設整體逾時預算、越外層越短。
+- **逾時各層各設大數字**→ 重試 × 多層放大延遲。設整體逾時預算，內層的逾時要比外層短。
+- **在 Axum 用 `ConcurrencyLimitLayer` 以為是全服務上限**→ `Router::layer` 會替每個端點各建一個號誌，上限變成「每個端點各 N 個」。要全服務共用一個上限，用 `GlobalConcurrencyLimitLayer`。
+- **加了 `tower_governor` 後每個請求都回 500**→ 取不到來源 IP。`axum::serve` 要用 `into_make_service_with_connect_info::<SocketAddr>()`，`oneshot` 測試要自己帶 `ConnectInfo`。
+- **把「查無資料」算成斷路器的失敗**→ 使用者多查幾個不存在的 key 就跳閘，正常請求跟著被拒。只有逾時、5xx 這類下游故障才算失敗。
 
 ---
 
@@ -673,9 +797,9 @@ Router::new()
 - 服務崩潰多是「**無上限地接受工作**」導致的連鎖故障；核心心態是「**寧可明確拒絕一部分，也不要全體慢死**」（load shedding）。
 - **Little's Law**（在途 = 到達率 × 處理時間）解釋了「下游變慢為何拖垮你」，也是容量規劃的依據。
 - **背壓**：用 bounded channel，滿了就 `await`（拖慢上游）或 `try_send` 拒絕，避免記憶體爆掉。
-- **`Semaphore`**：替並發設天花板，同時保護下游與自己（`buffer_unordered` 是其便利糖）。
-- **Tower 過載保護**：`ConcurrencyLimitLayer` + `LoadShedLayer`（→ 503）+ `tower_governor`（每來源限流 → 429）。
-- **逾時預算**：從外往內分配、把重試算進去、越靠使用者越短。
+- **`Semaphore`**：替並發設天花板，同時保護下游與自己（處理 stream 時的同類便利寫法是 `buffer_unordered`）。
+- **Tower 過載保護**：`GlobalConcurrencyLimitLayer` + `LoadShedLayer`（→ 503）+ `tower_governor`（每來源限流 → 429）。`ServiceBuilder` 裡寫在上面的是外層。
+- **逾時預算**：從外往內分配、把重試算進去、內層逾時比外層短。
 - **斷路器**：Closed/Open/Half-Open 三態，持續故障時快速失敗、給下游喘息，補重試的不足。
 - **鎖競爭**：縮小臨界區、`RwLock` 多讀、不跨 `.await` 持 `std::Mutex`、`DashMap` 分片、或用訊息取代共享。
 - **快取**：`moka`（記憶體、`get_with` 防 stampede）、Redis（跨實例）；先量測再加，小心失效。
@@ -686,9 +810,9 @@ Router::new()
 
 ## 14.16 動手作業
 
-1. 把第 08 章的 unbounded `mpsc` 改成 bounded（容量 10），生產者快速送 1000 筆、消費者慢速處理，觀察 `send().await` 被背壓拖慢。
+1. 用 14.3 的 `tokio::sync::mpsc::channel(10)`（bounded，容量 10）寫生產者–消費者：生產者快速送 1000 筆、消費者每筆 `sleep` 10ms 慢速處理，印出生產者每送 100 筆的時間點，觀察 `send().await` 被背壓拖慢；再換成 `unbounded_channel()` 比較。
 2. 用 `tokio::sync::Semaphore` 限制「同時最多 5 個」任務執行昂貴操作，丟 100 個進去驗證同時只有 5 個在跑。
-3. 為第 11/13 章的 Axum 服務加上 `ConcurrencyLimitLayer + LoadShedLayer + HandleErrorLayer`，用 `oha -c 500` 壓測，觀察過載時回 503 而非全部逾時。
+3. 為第 11/13 章的 Axum 服務加上 `GlobalConcurrencyLimitLayer + LoadShedLayer + HandleErrorLayer`，用 `oha -c 500` 壓測，觀察過載時回 503 而非全部逾時。
 4. 加 `tower_governor` 每 IP 每秒限 5 個，用 `curl` 連打驗證第 6 個開始回 429。
 5. 實作 14.7 的 `CircuitBreaker`，用一個「連續失敗 3 次就 Open」的設定 + wiremock（第 12 章）模擬下游持續 500，驗證跳閘後請求秒回、冷卻後半開恢復。
 6. 用 `moka` 為外部查詢加快取（TTL 60s），用 `get_with` 讓「同 ISBN 的 100 個並發請求只打一次外部」，並印出實際打了幾次。
@@ -702,7 +826,7 @@ Router::new()
 - [ ] 我能說明服務在高併發下的連鎖崩潰過程，並用 Little's Law 解釋。
 - [ ] 我知道「負載卸除（快速回 503）」為何優於「無限排隊」。
 - [ ] 我會用 bounded channel 建立背壓、用 `Semaphore` 限制並發數。
-- [ ] 我會用 Tower 的 `ConcurrencyLimitLayer`/`LoadShedLayer` 與 `tower_governor` 做伺服器端過載保護與限流。
+- [ ] 我會用 Tower 的 `GlobalConcurrencyLimitLayer`/`LoadShedLayer` 與 `tower_governor` 做伺服器端過載保護與限流。
 - [ ] 我能手寫並解釋斷路器的三個狀態，也知道它跟重試如何互補。
 - [ ] 我能診斷鎖競爭，並用縮小臨界區、`RwLock`、`DashMap`、不跨 await 持鎖等手法化解。
 - [ ] 我會用 `moka`/Redis 快取，並知道 cache stampede 與失效的坑。

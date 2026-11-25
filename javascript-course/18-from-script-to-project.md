@@ -49,9 +49,11 @@ npm run dev                # 執行 scripts 裡的 dev
 npx eslint .               # 執行專案裡安裝的工具（或臨時下載執行）
 ```
 
+Node 24 附帶的 npm 11 預設**不執行**依賴套件的安裝腳本（`preinstall`、`install`、`postinstall`），安裝結束時會列出被略過的套件。多數套件不需要；需要原生編譯的套件（例如 `sharp`、`better-sqlite3`）確定要用時，用 `npm install-scripts approve 套件名` 允許，結果記在 `package.json` 的 `allowScripts`，要一起提交。
+
 ### 版本範圍與 lock 檔
 
-`"^4.1.0"` 表示「4.x.x 中、不低於 4.1.0 的最新版」：允許次版號與修訂號更新，不允許主版號更新。依照語意化版本（semver）的約定，主版號變動才代表不相容的修改。
+`"^4.1.0"` 表示「4.x.x 中、不低於 4.1.0 的最新版」：允許次版號與修訂號更新，不允許主版號更新。依照語意化版本（semver）的約定，主版號變動才代表不相容的修改。0.x 的套件被視為還不穩定，範圍窄很多：`^0.2.3` 只允許到 `0.2.x`，次版號變動就當成不相容。
 
 範圍允許變動，所以不同時間安裝可能拿到不同版本。`npm install` 會產生 `package-lock.json`，記錄實際安裝的每一個套件的確切版本：
 
@@ -112,6 +114,8 @@ VITE_API_URL=http://localhost:3000
 const api = createApiClient(import.meta.env.VITE_API_URL);
 ```
 
+`.env.development` 只在 `npm run dev` 時載入；`npm run build` 讀的是 `.env.production`（以及各模式共用的 `.env`）。正式環境的網址要放在 `.env.production`，否則打包後 `import.meta.env.VITE_API_URL` 是 `undefined`。
+
 只有 `VITE_` 開頭的變數會被放進前端程式，而且**會原樣出現在打包後的檔案裡**，任何人都看得到。API 金鑰、資料庫密碼這類秘密不能放在前端的環境變數裡。
 
 開發時前端（5173）和 API（3000）埠號不同，會遇到 CORS（[14.8 節](14-fetch-and-network-requests.md#148-跨來源請求cors)）。可以讓 Vite 代理 API 請求：
@@ -129,7 +133,25 @@ export default defineConfig({
 });
 ```
 
-前端改成請求 `/api/...`（同源），由 Vite 轉送到 3000 埠。這只在開發伺服器有效；正式環境要由伺服器或反向代理處理。
+前端改成請求 `/api/...`（同源），由 Vite 轉送到 3000 埠。路徑會原樣轉送：`/api/orders` 到了後端還是 `/api/orders`。後端的路由沒有 `/api` 前綴時，加上 `rewrite`：
+
+```js
+// vite.config.js
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://localhost:3000",
+        rewrite: (path) => path.replace(/^\/api/, ""), // /api/orders → /orders
+      },
+    },
+  },
+});
+```
+
+這只在 Vite 的開發伺服器（以及 `vite preview`）有效；正式環境要由伺服器或反向代理處理。
 
 Vite 的內部原理（為什麼開發時不用打包、HMR 怎麼運作、建置時做了什麼）在 [Vite 原理與內核課程](../vite-course/README.md)。
 
@@ -145,9 +167,10 @@ npm install -D eslint @eslint/js globals
 // eslint.config.js
 import js from "@eslint/js";
 import globals from "globals";
-import { defineConfig } from "eslint/config";
+import { defineConfig, globalIgnores } from "eslint/config";
 
 export default defineConfig([
+  globalIgnores(["dist"]), // 打包輸出不檢查
   js.configs.recommended,
   {
     languageOptions: {
@@ -178,7 +201,9 @@ src/bad.js
   4:10  error    'totl' is not defined                no-undef
 ```
 
-拼錯的變數名稱、用了 `==`（[1.8 節](01-values-types-and-comparison.md#18-相等-與-objectis)）、忘了用的變數，在執行之前就被抓出來。`js.configs.recommended` 是官方建議的規則集，從它開始，再依團隊需要加減規則。在 Node 執行的程式，把 `globals.browser` 換成 `globals.node`。
+拼錯的變數名稱、用了 `==`（[1.8 節](01-values-types-and-comparison.md#18-相等-與-objectis)）、忘了用的變數，在執行之前就被抓出來。`js.configs.recommended` 是官方建議的規則集，從它開始，再依團隊需要加減規則。在 Node 執行的程式，把 `globals.browser` 換成 `globals.node`；同一個專案裡兩種都有時（例如 `vite.config.js` 在 Node 執行），用 `files` 欄位分開設定，Worker 檔則用 `globals.worker`。
+
+ESLint 預設只忽略 `node_modules` 和 `.git`。沒有 `globalIgnores(["dist"])` 的話，執行過 `npm run build` 之後，`npx eslint .` 會連打包輸出一起檢查，報出一堆和你的程式碼無關的錯誤。
 
 ### Prettier：統一格式
 
@@ -256,8 +281,8 @@ $ node --test
 
 `node --test` 會自動找出 `*.test.js` 這類命名的檔案。`node:assert/strict` 裡：
 
-- `assert.equal` 用 `===` 比較（[1.8 節](01-values-types-and-comparison.md#18-相等-與-objectis)）。第二個測試用它確認回傳的是**同一個**陣列。
-- `assert.deepEqual` 遞迴比較內容，用在物件與陣列上。
+- `assert.equal` 用 `Object.is` 比較（[1.8 節](01-values-types-and-comparison.md#18-相等-與-objectis)）：和 `===` 只差在 `NaN` 等於 `NaN`、`0` 不等於 `-0`。第二個測試用它確認回傳的是**同一個**陣列。
+- `assert.deepEqual` 遞迴比較內容，用在物件與陣列上。它也比較原型：class 的實例和內容相同的一般物件不相等。
 - `await assert.rejects(promise)` 檢查非同步函式會失敗。
 
 第三個測試確認了「不修改原陣列」：這正是 [4.5 節](04-objects-and-arrays.md#45-不可變更新)不可變更新的要求，寫成測試之後，以後有人不小心改成直接修改，測試就會失敗。
@@ -280,6 +305,8 @@ import assert from "node:assert/strict";
 npx vitest        # 監看模式：存檔後自動重跑相關的測試
 npx vitest run    # 執行一次，CI 用
 ```
+
+同時把 `package.json` 的 `"test"` 改成 `"vitest"`。`node --test` 執行不了從 `vitest` 匯入的測試，沿用 18.1 節的 `"node --test"`，`npm test` 會失敗。
 
 Vitest 也提供 `expect(x).toEqual(y)` 這種寫法，以及模擬函式、模擬計時器、模擬瀏覽器環境等功能。元件測試、整合測試、E2E 測試在 [前端測試課程](../frontend-testing-course/README.md)。
 

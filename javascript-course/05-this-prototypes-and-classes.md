@@ -50,7 +50,10 @@ setTimeout(() => counter.increment(), 1000);
 setTimeout(counter.increment.bind(counter), 1000);
 ```
 
-`addEventListener` 呼叫一般函式時，會把 `this` 設成觸發事件的元素。這是瀏覽器的規則，和上表不衝突：瀏覽器呼叫時用的是 `fn.call(element, event)`。
+函式交給別的 API 呼叫時，`this` 由那個 API 決定，和上表不衝突，只是呼叫的人換成了它：
+
+- `addEventListener` 呼叫一般函式時，把 `this` 設成**註冊這個監聽器的元素**，也就是 `event.currentTarget`，不一定是被點到的 `event.target`（[13.6 節](13-dom-and-events.md#136-事件傳遞捕獲目標冒泡)）。
+- `setTimeout`、`setInterval` 呼叫一般函式時，`this` 在瀏覽器是 `window`，在 Node 是計時器物件，都不是 `undefined`。所以下一節的 `startBroken` 不會丟錯，而是把值寫到別的物件上。
 
 ## 5.2 `call`、`apply`、`bind`
 
@@ -83,9 +86,9 @@ const timer = {
     }, 1000);
   },
   startBroken() {
-    // 一般函式：由 setInterval 呼叫，this 不是 timer
+    // 一般函式：由 setInterval 呼叫，this 是 window（Node 是計時器物件），不是 timer
     setInterval(function () {
-      this.seconds += 1; // 出錯
+      this.seconds += 1; // 不會丟錯：NaN 被寫到別的物件上，timer.seconds 一直是 0
     }, 1000);
   },
 };
@@ -188,7 +191,10 @@ class Account {
   }
 
   deposit(amount) {
-    if (amount <= 0) throw new RangeError("amount must be positive");
+    // 只寫 amount <= 0 擋不住 undefined、NaN、字串：它們和 0 比較都是 false
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new RangeError("amount must be a positive number");
+    }
     this.#balance += amount;
     return this; // 回傳 this 讓呼叫可以串接
   }
@@ -202,7 +208,9 @@ class Account {
   }
 
   static from(json) {
-    return new Account(json.owner).deposit(json.balance);
+    const acc = new Account(json.owner);
+    if (json.balance > 0) acc.deposit(json.balance);
+    return acc;
   }
 }
 
@@ -230,6 +238,10 @@ acc.balance = 999; // TypeError：只有 getter，沒有 setter
 Object.keys(acc);       // ["owner"]
 JSON.stringify(acc);    // '{"owner":"Ann"}'
 ```
+
+私有狀態需要序列化時（例如存檔後再用 `Account.from` 還原），自己定義 `toJSON()` 回傳要保存的欄位。
+
+`#` 欄位只認原本的物件。用 `Proxy` 包起來的物件存取不到，會丟出 `TypeError: Cannot read private member #balance from an object whose class did not declare it`。Vue 3 的 `reactive()` 就是用 Proxy 包住物件，所以 `reactive(new Account("Ann")).balance` 會丟錯；要交給這類響應式工具管理的物件，改用一般欄位或閉包。
 
 舊程式碼用底線開頭（`_balance`）表示「請不要從外面用」，但那只是慣例，外面仍然讀得到。
 
@@ -262,6 +274,27 @@ s instanceof Account;        // true
 - `super.method()` 呼叫父類別的同名方法。
 - `instanceof` 檢查的是原型鏈：`Account.prototype` 在 `s` 的原型鏈上，所以為 `true`。
 - 子類別存取不到父類別的 `#` 私有欄位，只能透過父類別公開的方法或 getter。
+- 子類別的欄位要等 `super()` 返回後才初始化。父類別的 constructor 若呼叫了被子類別覆寫的方法，那個方法讀到的子類別欄位還是 `undefined`。這和 Java 相同；寫 C# 的人要注意，C# 的欄位在呼叫基底建構子之前就初始化了。
+
+```js
+class Base {
+  constructor() {
+    this.init();
+  }
+  init() {}
+}
+
+class Child extends Base {
+  items = [];
+  init() {
+    console.log(this.items); // undefined：super() 還沒返回，欄位還沒初始化
+  }
+}
+
+new Child();
+```
+
+所以不要在父類別的 constructor 裡呼叫可能被覆寫的方法。
 
 繼承層級不要太深。需要共用的只是一部分功能時，把功能寫成獨立的函式或物件、傳進來使用（組合），通常比多一層繼承容易修改。
 
@@ -288,6 +321,17 @@ handleMethod(); // undefined，this 已經遺失
 
 - 這個函式在**每個實例上各建立一份**，不在原型上共用。實例很多時佔記憶體。
 - 子類別不能用 `super.handleArrow()` 呼叫它，因為它不在原型上。
+- 子類別也**無法用一般方法覆寫它**：欄位直接放在實例上，會擋住原型鏈上子類別的同名方法。
+
+```js
+class FancyButton extends Button {
+  handleArrow() {
+    return "fancy";
+  }
+}
+
+new FancyButton().handleArrow(); // "OK"：父類別的實例欄位擋住了子類別的方法
+```
 
 要當事件處理器傳出去的方法，適合這樣寫；其他方法照一般方法寫。
 

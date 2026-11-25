@@ -144,7 +144,7 @@ async function loadProfile(userId) {
 }
 ```
 
-兩個版本的錯誤處理也不同：`then` 版要在鏈尾加 `catch`，`async` 版可以把整段包進一個 `try/catch`，同步錯誤（例如 `user` 是 `undefined` 時讀 `user.id`）和非同步錯誤一起接住。
+兩個版本的錯誤處理也不同：`then` 版要在鏈尾加 `catch`，`async` 版可以把整段包進一個 `try/catch`。還有一個容易忽略的差別：`fetchUser` 如果在回傳 Promise 之前就同步丟錯（例如一開始檢查參數），`then` 版的 `loadProfile` 會直接同步丟出，鏈尾的 `catch` 接不到；`async` 函式則一律把錯誤變成 rejected Promise，呼叫端只需要處理一種失敗方式。
 
 ```js
 async function getDashboardData(userId) {
@@ -333,7 +333,7 @@ function withTimeout(promise, ms) {
       reject(new Error(`timeout after ${ms}ms`));
     }, ms);
 
-    promise.then(
+    Promise.resolve(promise).then(
       (value) => {
         clearTimeout(timer);
         resolve(value);
@@ -359,8 +359,9 @@ withTimeout(slowTask, 1000)
 timeout after 1000ms
 ```
 
-兩個細節：
+幾個細節：
 
+- 用 `Promise.resolve(promise)` 包一層，傳入一般值或其他函式庫的 thenable（[12.5 節](12-implementing-promise-and-async-await.md#和規範的差距)）也能用。
 - 原本的工作先完成時要 `clearTimeout`。不清掉的話，計時器還在佇列裡，Node 會等它觸發才結束程式；網頁裡則是留下一個沒用的計時器。
 - 逾時只是**不再等它**，`slowTask` 照樣在 1.5 秒後完成。如果包的是網路請求，請求仍在進行。要讓請求本身停下，用 `fetch` 的 `signal` 搭配 `AbortSignal.timeout(ms)`，見 [14.5 節](14-fetch-and-network-requests.md#145-取消請求abortcontroller)。
 
@@ -370,18 +371,24 @@ timeout after 1000ms
 
 ```js
 async function mapLimit(items, limit, asyncMapper) {
-  if (limit <= 0) {
-    throw new Error("limit must be greater than 0");
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new RangeError("limit must be a positive integer");
   }
 
   const results = new Array(items.length);
   let nextIndex = 0;
+  let failed = false;
 
   async function worker() {
-    while (nextIndex < items.length) {
+    while (!failed && nextIndex < items.length) {
       const current = nextIndex;
       nextIndex += 1;
-      results[current] = await asyncMapper(items[current], current);
+      try {
+        results[current] = await asyncMapper(items[current], current);
+      } catch (err) {
+        failed = true; // 不再領新的工作；已經開始的仍會跑完
+        throw err;
+      }
     }
   }
 
@@ -406,29 +413,31 @@ console.log(res, `${Date.now() - start}ms`);
 
 做法是開 `limit` 個 worker，每個 worker 迴圈領下一筆工作。`nextIndex` 被幾個 worker 共用卻不需要鎖，因為 JavaScript 只有一條執行緒：`const current = nextIndex; nextIndex += 1;` 這兩行之間沒有 `await`，不會被別的 worker 插進來。5 筆、同時 2 筆、每筆 300ms，分三輪跑完，大約 900ms。
 
-結果放在 `results[current]`，所以輸出順序和輸入一致，不受完成先後影響。任一筆失敗時，`Promise.all(workers)` 會失敗，但其他 worker 會繼續把手上那筆跑完。
+結果放在 `results[current]`，所以輸出順序和輸入一致，不受完成先後影響。
+
+`failed` 旗標處理的是失敗的情況。任一筆失敗時，`Promise.all(workers)` 會立刻失敗，但其他 worker 並不知道，沒有這個旗標的話，它們會繼續領取、執行剩下的**所有**項目，只是結果沒人收。有了旗標，其他 worker 跑完手上那筆就停下來。已經開始的那幾筆無法中途停止，要能取消就把 `signal` 傳給 `asyncMapper`（[14.5 節](14-fetch-and-network-requests.md#145-取消請求abortcontroller)）。
 
 ## 11.10 重試與退避
 
 API 偶發失敗時，自動重試能提高成功率。每次重試前等久一點（退避），避免在對方出問題時一直打：
 
 ```js
-async function retry(taskFn, retries = 3, backoffMs = 300) {
-  let lastError;
+// attempts 是總共嘗試的次數（含第一次），不是「重試」的次數
+async function retry(taskFn, attempts = 3, backoffMs = 300) {
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new RangeError("attempts must be a positive integer");
+  }
 
-  for (let attempt = 1; attempt <= retries; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     try {
       return await taskFn();
     } catch (err) {
-      lastError = err;
-      if (attempt === retries) break;
+      if (attempt >= attempts) throw err; // 用完次數，丟出最後一次的錯誤
 
       // 線性退避：300ms, 600ms, 900ms...
       await new Promise((r) => setTimeout(r, backoffMs * attempt));
     }
   }
-
-  throw lastError;
 }
 ```
 
@@ -489,7 +498,9 @@ console.log("all saved?"); // 這行會先印，save 還沒完成
 - `await` 只暫停「當前這個 async callback」，不會暫停外層函式。
 - 每次 `save(item)` 的 Promise 沒人接，失敗時會變成未處理的 rejection。
 
-`map`、`filter`、`reduce` 也一樣不會等。改用 `for...of`（串行）或 `Promise.all`（並行）：
+`map`、`filter`、`reduce` 也一樣不會等。`filter` 更危險：async callback 回傳的是 Promise，Promise 一律是真值，所以每一筆都會留下，`[1, 2, 3, 4].filter(async (n) => n % 2 === 0)` 得到的是 `[1, 2, 3, 4]`。要先算出所有結果，再依結果過濾：`const keep = await Promise.all(items.map(isValid)); items.filter((_, i) => keep[i]);`。
+
+改用 `for...of`（串行）或 `Promise.all`（並行）：
 
 ```js
 for (const item of items) {

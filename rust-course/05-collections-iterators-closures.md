@@ -53,10 +53,12 @@ println!("{:?}", v);         // ✅ v 仍可用
 
 let mut v2 = vec![1, 2, 3];
 for i in &mut v2 {           // 可變借用遍歷，可以改元素
-    *i += 10;                // *i 解參考後修改（第 07 章講解參考）
+    *i += 10;                // i 是 &mut i32，*i 取到它指向的元素再修改
 }
 println!("{:?}", v2);        // [11, 12, 13]
 ```
+
+`*i` 叫**解參考（dereference）**：`i` 只是指向元素的參考，要改的是它指向的那個整數，所以寫 `*i`。第 07 章講智慧指標時會再碰到 `*`。
 
 > **注意**：`for i in v`（不加 `&`）會**把 v 的所有權 move 進迴圈**，之後 v 不能再用（回扣第 02 章）。想保留 v 就用 `&v`。這個 `&` 的有無，是初學者最常忽略的地方。
 
@@ -109,7 +111,7 @@ fn main() {
         *counts.entry(word).or_insert(0) += 1;   // 每出現一次就 +1
     }
 
-    println!("{:?}", counts);    // {"the": 3, "quick": 1, ...}
+    println!("{:?}", counts);    // {"the": 3, "quick": 1, ...}（順序每次執行可能不同）
 }
 ```
 
@@ -156,6 +158,38 @@ let doubled: Vec<i32> = v2.into_iter().map(|x| x * 2).collect();  // 消耗 v2
 ```
 
 這又是第 02 章所有權的延伸：你要「借看」用 `iter`，要「拿走」用 `into_iter`。
+
+`for` 迴圈背後用的就是這三個方法：`for x in &v` 等於 `for x in v.iter()`、`for x in &mut v` 等於 `v.iter_mut()`、`for x in v` 等於 `v.into_iter()`。所以 5.2 那個「`&` 的有無」，講的是同一件事。
+
+> **陣列也一樣**：從 edition 2021 起，`[1, 2, 3].into_iter()` 跟 `Vec` 一樣產生值本身（`i32`）。較舊的文章若說「陣列的 `into_iter()` 產生參考」，那是 2018 edition 以前的行為。
+
+### 元素是 `String` 時：`iter()` 給的是 `&String`
+
+整數是 `Copy` 型別（第 02 章），從 `&i32` 拿回 `i32` 只要 `*x` 或 `.copied()`，幾乎沒成本；元素換成 `String` 這種擁有 heap 資料的型別，就得想清楚「要借還是要拿」：
+
+```rust
+let names = vec![String::from("Alice"), String::from("Bob"), String::from("Amy")];
+
+// iter() 給 &String：收集起來是一堆參考，names 還在
+let a_names: Vec<&String> = names.iter().filter(|n| n.starts_with('A')).collect();
+
+// 想要一份獨立的 Vec<String>：用 cloned() 把每個元素複製一份
+let copied: Vec<String> = names.iter().filter(|n| n.starts_with('A')).cloned().collect();
+
+// names 之後用不到了：into_iter() 直接拿走所有權，不必複製
+let owned: Vec<String> = names.into_iter().filter(|n| n.starts_with('A')).collect();
+```
+
+如果把 `names.iter()` 的結果直接 `collect` 成 `Vec<String>`，編譯器會報「a value of type `Vec<String>` cannot be built from an iterator over elements of type `&String`」——意思是「你手上是借來的 `&String`，不是 `String`」。照上面三種寫法擇一即可。
+
+函式參數也是同樣的道理：只需要「讀一串元素」時，參數寫成 slice `&[T]`。它跟 `Vec<T>` 的關係，就像第 02 章 `&str` 跟 `String` 的關係：
+
+```rust
+fn total(nums: &[i32]) -> i32 {
+    nums.iter().sum()
+}
+// total(&v)、total(&[4, 5, 6])、total(&v[1..]) 都可以
+```
 
 ---
 
@@ -247,17 +281,20 @@ fn main() {
 ### 閉包語法
 
 ```rust
-let add = |a, b| a + b;              // 型別可省略（編譯器推斷）
+let add = |a, b| a + b;              // 型別可省略，由第一次呼叫推斷
+println!("{}", add(1, 2));           // 3（從這裡推斷出 a、b 是 i32）
+
 let add = |a: i32, b: i32| -> i32 { a + b };   // 完整寫法
 
 let say_hi = || println!("hi");      // 無參數
+say_hi();
 ```
 
-跟函式的差別：閉包用 `|參數|` 而非 `(參數)`，型別通常可省略。
+跟函式的差別：閉包用 `|參數|` 而非 `(參數)`，型別通常可省略。省略時，編譯器靠「第一次怎麼呼叫它」推斷型別，之後型別就固定了；如果定義了閉包卻從沒呼叫，編譯器無從推斷，會報「type annotations needed」。
 
 ### 閉包如何捕捉變數：借用 vs move
 
-閉包捕捉環境變數時，遵循第 02 章的所有權規則，有三種方式（編譯器會依你怎麼用自動選最寬鬆的）：
+閉包捕捉環境變數時，遵循第 02 章的所有權規則，有三種方式。編譯器會看閉包裡怎麼用那個變數，自動選「影響最小」的一種：只讀就不可變借用、要改才可變借用，非拿走不可才 move：
 
 ```rust
 let s = String::from("hello");
@@ -284,6 +321,44 @@ consume();
 **`move` 關鍵字**很重要：它強制閉包「取得」捕捉變數的所有權，而非借用。**這在多執行緒（第 08 章）幾乎必用**——因為把工作丟到別的執行緒時，那些變數必須「搬過去」，不能只是借用（借用的東西可能在別處被 drop）。
 
 > **心智模型**：閉包預設「能借就借」（盡量不奪走所有權）；加 `move` 就是明確說「這些變數整個搬進閉包裡歸它管」。判斷要不要 `move`：如果閉包會活得比外面的變數久（例如丟到別的執行緒、存起來之後才用），就要 `move`。
+
+### 把閉包當參數或回傳值：`Fn`、`FnMut`、`FnOnce`
+
+`map`、`filter` 能收閉包，是因為它們的參數型別寫的是「某個閉包 trait」。閉包依「它對捕捉到的變數做了什麼」，自動實作下列 trait：
+
+| trait | 閉包對捕捉的變數做什麼 | 能呼叫幾次 |
+|-------|------------------------|-----------|
+| `Fn` | 只讀 | 任意次 |
+| `FnMut` | 會修改 | 任意次，但持有閉包的變數要 `mut` |
+| `FnOnce` | 把捕捉的值交出去（消耗掉） | 只能一次 |
+
+自己寫的函式要收閉包時，用泛型加上這些 trait 當約束（第 03 章的 trait bound）：
+
+```rust
+// f 可以是任何「收 i32、回傳 i32」且只讀環境的閉包（一般函式也行）
+fn apply<F: Fn(i32) -> i32>(f: F, x: i32) -> i32 {
+    f(x)
+}
+
+// FnMut：閉包會改它捕捉的變數，所以參數要宣告成 mut f
+fn call_twice<F: FnMut()>(mut f: F) {
+    f();
+    f();
+}
+
+fn main() {
+    let offset = 10;
+    println!("{}", apply(|x| x + offset, 5));   // 15
+
+    let mut count = 0;
+    call_twice(|| count += 1);
+    println!("{count}");                         // 2
+}
+```
+
+回傳閉包時則寫 `impl Fn(i32) -> i32`，意思是「回傳某個實作了這個 trait 的型別」（5.10 作業第 4 題會用到）。
+
+> **`move` 不決定是哪一種 trait**：`move` 決定的是「怎麼捕捉」（搬進來 vs 借用），`Fn`/`FnMut`/`FnOnce` 看的是「閉包裡怎麼用」。一個 `move` 進來但只讀的閉包，仍然是 `Fn`、可以呼叫很多次。
 
 ---
 
@@ -312,7 +387,7 @@ fn main() {
         .filter(|o| o.paid)               // 只留已付款
         .map(|o| o.amount)                // 取金額
         .sum();                            // 加總
-    println!("已付款總額：{paid_total}");   // 480.0
+    println!("已付款總額：{paid_total}");   // 480（f64 用 {} 印時，整數值不帶 .0）
 
     // 2. 金額 > 100 的訂單 id 清單
     let big_ids: Vec<u64> = orders.iter()
@@ -331,7 +406,7 @@ fn main() {
     for o in &orders {
         *group.entry(o.paid).or_insert(0) += 1;
     }
-    println!("分組：{:?}", group);           // {true: 3, false: 1}
+    println!("分組：{:?}", group);           // {true: 3, false: 1}（順序不一定）
 }
 ```
 
@@ -342,10 +417,11 @@ fn main() {
 ## 5.8 常見錯誤
 
 - **`for x in v` 忘了加 `&`** → v 被 move 進迴圈，之後不能用。要保留就 `for x in &v`。
-- **迭代器建了卻沒消費** → 編譯器警告「iterators are lazy and do nothing unless consumed」。加上 `collect`/`sum`/`for` 等消費者。
-- **`collect` 沒標型別** → 編譯器不知道你要收成 `Vec` 還是 `HashMap` 等，報「type annotations needed」。用 `let x: Vec<_> = ...` 或 `.collect::<Vec<_>>()` 指定。
+- **迭代器建了卻沒消費** → 編譯器警告「unused `Map` that must be used」，附註「iterators are lazy and do nothing unless consumed」。加上 `collect`/`sum`/`for` 等消費者。
+- **`collect`、`sum` 沒標型別** → 編譯器不知道你要收成 `Vec` 還是 `HashMap`、加總成 `i32` 還是 `i64`，報「type annotations needed」。用 `let x: Vec<_> = ...`、`let total: i32 = ...` 或 `.collect::<Vec<_>>()` 指定。
+- **`iter()` 之後想收成 `Vec<String>`** → 報「cannot be built from an iterator over elements of type `&String`」。改用 `.cloned()`，或用 `into_iter()` 拿走所有權（5.4）。
 - **閉包裡 `*` / `**` 用錯層數** → 型別對不上。可改在參數用模式解構（如 `|&x|`）減少 `*`。
-- **該 `move` 沒 `move`**（例如把閉包丟到執行緒） → 借用活不夠久的錯誤。加 `move`。
+- **該 `move` 沒 `move`**（例如把閉包丟到執行緒） → 報「closure may outlive the current function, but it borrows ...」。照編譯器提示加 `move`。
 - **`HashMap` 忘了 `use std::collections::HashMap;`** → 找不到型別。
 
 ---
@@ -358,6 +434,7 @@ fn main() {
 - `iter()`（借用）/ `iter_mut()`（可變借用）/ `into_iter()`（move）對應第 02 章的所有權。
 - 常用方法：`map`、`filter`、`collect`、`sum`、`find`、`any`、`all`、`enumerate`、`fold`。
 - **閉包**是能捕捉環境變數的匿名函式；捕捉方式有借用/可變借用/`move`，多執行緒場景常用 `move`。
+- 函式收閉包時用 `Fn`（只讀）/ `FnMut`（會改）/ `FnOnce`（只能呼叫一次）當 trait bound；回傳閉包用 `impl Fn(...)`。
 
 ---
 
@@ -366,7 +443,7 @@ fn main() {
 1. 建一個 `Vec<i32>`，用迭代器鏈算出「所有偶數的平方和」。
 2. 用 `HashMap` 統計一句英文裡每個字母出現幾次（提示：`s.chars()`）。
 3. 給一個 `Vec<String>` 名字清單，用迭代器過濾出「長度 > 3」的名字，轉成大寫（`.to_uppercase()`），收成新的 `Vec<String>`。
-4. 寫一個閉包 `make_adder`，接收一個數字 `n`，回傳「一個會把輸入加上 n 的閉包」（提示：回傳型別用 `impl Fn(i32) -> i32`，並可能需要 `move`）。
+4. 寫一個函式 `make_adder`，接收一個數字 `n`，回傳「一個會把輸入加上 n 的閉包」（提示：回傳型別用 `impl Fn(i32) -> i32`，並可能需要 `move`）。
 5. 用 5.7 的 `Order` 結構，算出「未付款訂單的平均金額」（提示：`filter` 後 `sum` 除以 `count`，注意除以 0）。
 6. 把第 1 題同時用「命令式 for 迴圈」和「迭代器鏈」各寫一次，比較兩者可讀性。
 
@@ -380,6 +457,7 @@ fn main() {
 - [ ] 我分得清 `iter`/`iter_mut`/`into_iter` 對所有權的影響。
 - [ ] 我能用 `map`/`filter`/`collect` 等組成處理鏈，並理解它零成本。
 - [ ] 我會寫閉包，理解它捕捉環境的三種方式與何時要 `move`。
+- [ ] 我看得懂 `F: Fn(i32) -> i32` 這類參數，知道 `Fn`/`FnMut`/`FnOnce` 的差別。
 
 ---
 
