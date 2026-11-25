@@ -4,6 +4,8 @@
 > 這章的目標是讓你能回答一個實務問題：**這段邏輯應該放在哪個類別裡？**
 > 答不出來，Spring Boot 的分層架構就只是抄目錄結構；答得出來，你自然會寫出可測、可改的程式。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。`List.copyOf` 自 JDK 10、`String.strip` 自 11、`formatted` 自 15、`record` 與 `instanceof Point other` 自 16 可用；舊版替代寫法見[版本速查](./12-modern-java-records-sealed-pattern.md#jdk-api-version-notes)。JDK 25 可在顯式 `this(...)` 前驗證參數。
+
 ---
 
 ## 2.1 學習目標
@@ -140,7 +142,7 @@ public class Main {
 
 ### `main` 不是關鍵字
 
-`main` 只是一個普通的方法名稱，剛好是 JVM 約定的入口：執行 `java Main` 時，JVM 會到 `Main` 類別裡，找簽章完全是 `public static void main(String[] args)` 的方法來呼叫（第 00 章 0.8 節逐字拆解過）。
+`main` 是 Java 啟動器約定的入口方法名稱。本課 Java 21 主線使用 `public static void main(String[] args)`；`String... args` 也可用。Java 25 正式支援實例 `main` 與無參數入口，見[第 12 章版本對照](./12-modern-java-records-sealed-pattern.md#jdk-writing-by-version)。
 
 因為不是關鍵字，`main` 可以拿來當類別名稱、變數名稱：
 
@@ -331,7 +333,7 @@ public class Todo {
 
 **`this(...)` 的規則：**
 
-1. 必須是建構子的**第一行**。
+1. Java 21 的正式語法要求放在建構子本體的開頭。Java 25 可先驗證或計算參數，再呼叫 `this(...)`，見[第 12 章逐版對照](./12-modern-java-records-sealed-pattern.md#jdk-writing-by-version)。
 2. 一個建構子只能呼叫一次 `this(...)`（不能同時呼叫 `super(...)`）。
 
 > **實務價值**：驗證邏輯集中在**一個**建構子。如果每個建構子各自驗證，總有一天有人新增建構子忘記驗證，
@@ -1248,7 +1250,7 @@ public final class SafeTodoList {
 ```
 
 > **`List.copyOf` vs `Collections.unmodifiableList`**：
-> `List.copyOf` 建立**新的**不可變 List（真拷貝，安全）。
+> `List.copyOf`【JDK 10+】提供不隨輸入清單結構改變的不可修改結果；輸入已是適當的不可修改 List 時，可能重用同一實例。元素本身仍是淺層共享。
 > `Collections.unmodifiableList(x)` 只是**唯讀的視圖**——別人改 `x`，視圖跟著變。
 > 存進欄位時用 `List.copyOf`。第 05 章會再細講。
 

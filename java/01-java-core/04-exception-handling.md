@@ -6,6 +6,8 @@
 > 或者訊息裡完全沒有「是哪一筆訂單、哪一個使用者、哪一個參數」。
 > 這章要教的不只是 `try-catch` 語法，而是一套**能上線的例外策略**。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。multi-catch 與 try-with-resources 自 JDK 7、把既有 effectively final 變數放進資源括號自 9 可用。範例另外使用 `Map.copyOf`（10）、`Path.of`／`Files.readString`（11）、`formatted`（15）及 `record`／`Stream.toList()`（16）。
+
 ---
 
 ## 4.1 學習目標
@@ -161,7 +163,8 @@ public class CommonExceptions {
             s.length();
         } catch (NullPointerException e) {
             System.out.println("NPE: " + e.getMessage());
-            // Cannot invoke "String.length()" because "s" is null   ← Java 14+ 的訊息很好用
+            // Cannot invoke "String.length()" because "s" is null
+            // JDK 14 可開啟詳細 NPE 訊息，15+ 預設啟用
         }
 
         // IllegalArgumentException：參數不合法（呼叫方傳錯）

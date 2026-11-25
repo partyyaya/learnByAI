@@ -9,7 +9,7 @@
 
 ## 學完你可以
 
-- 選對 JDK 版本，說明 LTS、發行節奏與 Java 8 / 17 / 21 的關鍵差異。
+- 選對 JDK 版本，說明 LTS、發行節奏與 Java 8 / 11 / 17 / 21 / 25 的寫法差異。
 - 用 OOP 四大特性設計類別，而不是把所有程式塞進 `main`。
 - 正確處理例外：知道什麼該 catch、什麼該往上拋、什麼該包成自訂例外。
 - 熟練 Collections 與 Stream，寫出宣告式而非一堆 for 迴圈的資料處理。
@@ -82,7 +82,7 @@
 ## 練習專案：一個純 Java 的待辦事項 CLI
 
 課文會帶你從第 02 章一路寫到第 13 章，做出同一個**不用任何框架**的待辦事項 CLI。
-**專案由你自己在本機建立**（第 00 章 0.10 節有骨架），repo 以課程 `.md` 為主；第 14 章另附可擷取課文的範例驗證工具。
+**專案由你自己在本機建立**（第 00 章 0.10 節有骨架），repo 以課程 `.md` 為主；第 14 章 14.3 節提供獨立工具練習專案的建置方式。
 
 刻意不用框架，是為了讓你在第 02 站看到 Spring 時，能清楚分辨
 「這是 Java 語言本來就有的」和「這是 Spring 加上去的」。
@@ -131,6 +131,12 @@
 ## 關於書裡的程式碼
 
 **基準版本**：Java 21（Temurin）/ Maven 3.9。
+Java 25 的正式功能與預覽功能另有[逐版對照及可執行範例](./12-modern-java-records-sealed-pattern.md#jdk-writing-by-version)。
+各章開頭的「JDK 版本備註」列出常用語法及 API 的最低版本；完整範例要取其中最高需求。可在[API 版本速查表](./12-modern-java-records-sealed-pattern.md#jdk-api-version-notes)查到 Java 8／11／17 的替代寫法及語意差異。
+
+本次版本備註以 JDK 25 的 javac／`--release` 檢查 53 組版本邊界，包含舊版 reflective preview 的警告；另外擷取修正的 ToListVariants 範例，以 `--release 16` 編譯並執行驗證輸出。此範圍未涵蓋在所有舊版 JDK 上重跑全部章節。
+
+最近一輪跨章驗證以 JDK 21、Jackson 2.18.2、Boot 3.5.0 抽取兩站 25 個類別，28 個測試通過。其中 8 個確認 Todo 的舊／新 JSON、備份、遷移重跑、拒絕數值強制轉型與序列化欄位契約；第 12 章已補上派生 getter 的 `@JsonIgnore` 與新格式欄位驗證。測試在暫存專案執行，未涵蓋所有章節、JDK 組合及部署環境。
 測試相關的版本在第 11 章 11.4 節宣告：JUnit 5.11、AssertJ 3.26、Mockito 5.17、
 Awaitility 4.2、ArchUnit 1.3、JaCoCo 0.8.12；第 07 章用 Jackson 2.18.2。
 
@@ -142,7 +148,7 @@ Awaitility 4.2、ArchUnit 1.3、JaCoCo 0.8.12；第 07 章用 Jackson 2.18.2。
 > 第 11 章的跨模組測試工具以 test-jar 提供，Mockito agent 使用 5.17.0；
 > 第 08 章 CSV 範例需加上 Apache Commons CSV 1.11.0。
 > 第 14 章為獨立練習專案，依賴版本另列在 14.3，不覆寫前章的版本；
-> 該章的 25 個完整範例與 43 個檢查已另行驗證，見 [verification/toolbox](./verification/toolbox/README.md)。
+> 第 14 章的範例依 14.3 節在本機建立、編譯及執行，邊界練習見 14.27 節。
 > 先前抽取教材組成的 Maven 四模組驗證包含 93 個測試（含測試工具可見性檢查），
 > 另驗證第 12、13 章的 6 個回歸案例。
 > 2026-11-13 再審修正後，另抽取課文執行 34 個針對性測試，涵蓋 CSV／JSON 邊界、
@@ -154,6 +160,10 @@ Awaitility 4.2、ArchUnit 1.3、JaCoCo 0.8.12；第 07 章用 Jackson 2.18.2。
 > GC 數字、Maven 全專案覆蓋率／突變分數，以及 Gradle、Docker、jlink 的輸出，
 > 都要在自己的專案與環境驗證；文中的報告格式示意不等於完整建置已通過。
 > 第 12 章先依 12.16 節完成 API 遷移，再執行測試。
+
+> 2026-11-25 再審：以 JDK 21 驗證第 08 章併行結果與失敗取消，以 JDK 21／25 確認 record canonical constructor 的參數命名限制及 Java 25 的委派前檢查。也修正第 10 章診斷題、Maven toolchain 說明與第 14 章不存在的驗證工具指令。本次未重跑全部章節的範例。
+
+> 同日第二輪再審：322 段可獨立編譯的 JDK 21 範例編譯通過，另將 7 段依賴同章前置類別的範例組合後編譯通過。第 14 章 25 個完整範例以原 POM 編譯通過，其中金額、換匯、國家、字串、Unicode、JSON、CSV、編碼及 DTO 映射的 9 個 main 已執行。以 JDK 21 Instrumentation 確認傳統標頭、壓縮指標、8-byte 對齊下的 String 與陣列大小，並修正第 09 章的 48-byte 計算及 Class／Metaspace 說明。編譯通過不代表所有範例的輸出與外部服務契約都已驗證。
 
 ---
 

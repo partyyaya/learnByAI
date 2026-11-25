@@ -6,6 +6,8 @@
 > **CSV 用 `split(",")` 遇到欄位內含逗號就崩**、**寫檔寫到一半當機留下半個檔案**。
 > 這些都不是「進階題」，是每個後端每年都會遇到一次的東西。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。`java.time` 自 JDK 8、`Matcher.results()` 與函式型取代自 9、`Path.of`／`Files.readString/writeString`／`String.strip` 自 11、`formatted`／文字區塊自 15、`record`／`Stream.toList()` 自 16 可用。排序範例的 `Comparator.reversed()` 自 JDK 8 就有。
+
 ---
 
 ## 7.1 學習目標
@@ -375,13 +377,13 @@ public class BytesAndChars {
         System.out.println(new String(utf8, StandardCharsets.ISO_8859_1)); // 亂碼（用錯編碼）
 
         System.out.println("預設編碼: " + java.nio.charset.Charset.defaultCharset());
-        // Java 18+ 固定是 UTF-8（JEP 400）；之前跟隨作業系統
+        // JDK 18+ 預設 UTF-8（JEP 400）；可有相容性設定，console 編碼也另有規則
     }
 }
 ```
 
 > **鐵律：`getBytes()` 和 `new String(byte[])` 永遠帶上 `StandardCharsets.UTF_8`。**
-> 不帶的版本在 Windows（MS950）和 Linux（UTF-8）上結果不同——這是「本機正常、正式環境亂碼」的頭號原因。
+> JDK 8～17 的預設編碼可能隨作業系統不同；JDK 18+ 一般預設 UTF-8，但檔案若是 Big5 等格式，仍須明確選擇對應 Charset。
 
 ---
 

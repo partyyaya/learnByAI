@@ -11,6 +11,8 @@
 > 看懂這三步，你就能解釋「為什麼我的 Bean 沒生效」，也能自己寫一個 starter，
 > 讓公司內部的共用元件變成「加一行依賴就能用」。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。稽核事件使用 `record`（JDK 16+），`Map.copyOf`／`List.copyOf` 需要 10+，`isBlank` 需要 11+，文字區塊需要 15+。starter 與自動組態的套件差異依 Boot 版本判讀。
+
 ---
 
 ## 2.1 學習目標
@@ -1303,7 +1305,7 @@ public class JdbcAuditRecorder implements AuditRecorder {
             ps.executeUpdate();
 
         } catch (SQLException e) {
-            // 稽核失敗不應該讓業務流程失敗 —— 這是重要的設計決定
+            // 保留資料庫失敗供呼叫端處理；第 04 章 AuditAspect 會記錄錯誤並保留業務結果
             throw new AuditException("寫入稽核紀錄失敗", e);
         }
     }
@@ -1773,7 +1775,7 @@ public class OrderService {
 ## 2.12 測試自動組態：`ApplicationContextRunner`
 
 自動組態的測試很特別——你要驗證的是「**在不同 classpath 與設定組合下，Bean 有沒有正確出現**」。
-用 `@SpringBootTest` 做不到（它只能測一種組合）。
+`ApplicationContextRunner` 可以在測試裡快速組合 classpath、屬性與使用者 Bean，適合測這些條件分支。`@SpringBootTest` 也能用不同測試組態涵蓋多種情境，但通常會載入較完整的應用程式環境。
 
 Spring Boot 提供了 `ApplicationContextRunner`：
 
@@ -1827,6 +1829,7 @@ class AuditAutoConfigurationTest {
         runner.withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class))
               .withPropertyValues(
                       "shop.audit.target=JDBC",
+                      "spring.datasource.type=org.springframework.jdbc.datasource.DriverManagerDataSource",
                       "spring.datasource.url=jdbc:h2:mem:audit-test",
                       "spring.datasource.driver-class-name=org.h2.Driver")
               .run(context -> {
@@ -1915,6 +1918,8 @@ class AuditAutoConfigurationTest {
 ```
 
 **`ApplicationContextRunner` 的關鍵能力：**
+
+上面的 JDBC 測試明確使用 `DriverManagerDataSource`。本章 autoconfigure 的測試依賴包含 spring-jdbc 與 H2，沒有強制引入 HikariCP；指定 URL 卻沒有可用連線池或明確的 DataSource 型別時，不能假設 DataSource 一定會自動建立。
 
 | 方法 | 用途 |
 |---|---|

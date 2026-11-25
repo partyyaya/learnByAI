@@ -4,6 +4,8 @@
 > 金額算出 `299.99999999999997`、庫存數字跑到負的、`==` 比字串在測試環境剛好過、正式環境炸掉。
 > 所以本章不只教語法，每一個型別都會告訴你**它會在什麼情況下騙你**。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。`var` 自 JDK 10、`strip/isBlank/repeat` 自 11、箭頭 `switch`／`yield` 自 14、文字區塊與 `formatted` 自 15、`Math.ceilDiv` 自 18 可用。未標成預覽的語法以正式加入版本為準。
+
 ---
 
 ## 1.1 學習目標
@@ -527,7 +529,7 @@ public class NullUnboxing {
 
 這個 NPE 的堆疊訊息**不會**指向 `stock.get()`，它指向那一行的賦值。很多人盯著看半天。
 
-Java 14+ 的 Helpful NullPointerException 訊息會清楚說明：
+Helpful NullPointerException 自 JDK 14 加入，14 可用 `-XX:+ShowCodeDetailsInExceptionMessages` 開啟，15 起預設開啟。JDK 21 的訊息會清楚說明：
 
 ```
 Exception in thread "main" java.lang.NullPointerException:
@@ -1210,7 +1212,8 @@ switch (day) {
 }
 ```
 
-判斷原則：**case 之間沒有程式碼 → 刻意共用；case 底下有程式碼卻沒有 `break` → 幾乎都是忘了寫。** 下一節的箭頭語法直接寫成 `case "SAT", "SUN" -> "假日";`，連共用都不需要靠 fall-through。
+判斷原則：**case 之間沒有程式碼 → 刻意共用；case 底下有程式碼卻沒有 `break` → 幾乎都是忘了寫。**
+下一節的箭頭語法直接寫成 `case "SAT", "SUN" -> "假日";`，連共用都不需要靠 fall-through。
 
 ### 【Java 14+】箭頭語法 `switch`：預設就該用這個
 
@@ -1245,9 +1248,11 @@ public class SwitchYield {
         return switch (month) {
             case 1, 3, 5, 7, 8, 10, 12 -> 31;
             case 4, 6, 9, 11 -> 30;
-            case 2 -> {
+            case 2 -> {                      // 要先算閏年，一行寫不完，所以改用 { } 區塊
                 boolean leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-                yield leap ? 29 : 28;        // 多行區塊要用 yield 回傳值
+                // { } 區塊本身沒有值，要用 yield 指定這個 case 的結果
+                // 不能寫 return：return 是離開整個方法，在這裡會編譯錯誤
+                yield leap ? 29 : 28;
             }
             default -> throw new IllegalArgumentException("月份不合法: " + month);
         };

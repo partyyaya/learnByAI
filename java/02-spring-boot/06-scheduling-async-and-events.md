@@ -15,6 +15,8 @@
 >
 > 這三個陷阱我都見過造成線上事故。這一章會把它們講到你不可能踩到。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。`ProcessHandle` 自 JDK 9、`record` 自 16、一般 `List.getFirst/getLast` 自 21 可用；JDK 17 可改用 `get(0)`／`get(size - 1)`，但須依原契約處理空清單。虛擬執行緒需要 JDK 21+ 與 Boot 3.2+，JDK 21～23 的 monitor pinning 限制於 24 起改善。
+
 ---
 
 ## 6.1 學習目標
@@ -3216,7 +3218,7 @@ public class ExportRunRepository {
     public Optional<Instant> lastSuccessfulFinishedAt() {
         return jdbc.query("SELECT MAX(finished_at) FROM export_run WHERE status = 'SUCCESS'",
                 (rs, row) -> Optional.ofNullable(rs.getTimestamp(1)).map(Timestamp::toInstant))
-                .getFirst();
+                .getFirst(); // JDK 21+ 的 List API；JDK 17 可用 get(0)，此查詢會回傳一列聚合結果
     }
 }
 ```
@@ -3352,7 +3354,7 @@ public class OrderExportService {
                         writer.write(toCsvLine(order));
                         count++;
                     }
-                    afterId = page.getLast().id();
+                    afterId = page.getLast().id(); // JDK 21+；JDK 17 可用 page.get(page.size() - 1).id()，上面已檢查空頁
                 }
             } // 關閉 writer 必須代表上傳已完成；multipart 失敗時 adapter 必須中止上傳。
         } catch (Exception e) {

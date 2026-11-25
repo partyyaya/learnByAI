@@ -6,6 +6,8 @@
 > 這章要做兩件事：**建立選型直覺**（什麼情況用什麼集合），
 > 以及**講清楚 `equals` / `hashCode` 契約**——它是實務上最常被違反、後果最詭異的一條規則。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。集合工廠 `of` 自 JDK 9、`copyOf` 自 10、`record`／`Stream.toList()` 自 16、`sealed` 自 17 正式可用。`SequencedCollection` 與一般 `List.getFirst/getLast/reversed` 自 21 可用；`Deque.getFirst/getLast` 與 `Comparator.reversed()` 在更早版本已存在。
+
 ---
 
 ## 5.1 學習目標
@@ -632,7 +634,7 @@ public class MapVariants {
 | `null` key | ✅ 一個 | ✅ 一個 | ❌ NPE | ❌ NPE |
 | 記憶體 | 中 | 略高（多兩個參考） | 高 | **最低** |
 
-### `Map` 的現代 API（很多人還在用舊寫法）
+### `Map` 的現代 API【JDK 8+】
 
 ```java
 import java.util.ArrayList;

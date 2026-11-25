@@ -6,6 +6,8 @@
 > Spring、Spring Boot、Spring MVC、Spring Cloud 到底誰是誰；`main()` 那一行 `SpringApplication.run()` 背後跑了什麼。
 > 之後每一章我們都會回頭指著這張圖說「現在在講這一格」。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。Boot 3.x 與 4.0 的最低 JDK 都是 17；範例的 `record` 語法自 JDK 16 正式加入。Boot 4.0／JDK 25 的完整建置組合另見第 09 章，切換 JDK 時也要調整編譯目標與部署映像。
+
 ---
 
 ## 0.1 學習目標
@@ -451,21 +453,24 @@ Prometheus 抓指標的基礎。第 05 章會完整處理。
 | Spring Boot | Spring Framework | 最低 JDK | Jakarta 命名空間 |
 |---|---|---|---|
 | 2.7.x | 5.3.x | 8 | ❌ `javax.*`（已終止 OSS 支援） |
-| 3.0 ～ 3.1 | 6.0 / 6.1 | **17** | ✅ `jakarta.*` |
+| 3.0 ～ 3.1 | 6.0 | **17** | ✅ `jakarta.*` |
 | 3.2 ～ 3.4 | 6.1 / 6.2 | **17** | ✅ `jakarta.*` |
 | 3.5.x | 6.2.x | **17** | ✅ `jakarta.*` |
+| 4.0.x | 7.0.x | **17** | ✅ `jakarta.*`（Jakarta EE 11、Servlet 6.1） |
 
-> **本課基準：Spring Boot 3.x + JDK 21。**
+> **本課基準：Spring Boot 3.5 + JDK 21。**
 > 用到 3.2 以後才有的功能（如 `RestClient`、虛擬執行緒開關）我會標註 `【Boot 3.2+】`。
 > Spring Boot 2 → 3 的遷移雷點集中在第 09 章。
-> Spring Boot 4 / Spring Framework 7 已經發布，主要方向是 API 版本控管、null-safety 標註與 HTTP 介面用戶端的強化；
-> 但企業專案目前絕大多數仍在 3.x，本課以 3.x 為準，觀念完全可以平移。
+> Spring Boot 3.5 的 OSS 支援於 2026 年 6 月結束。JDK 版本與 Boot 版本可分開升級：[Boot 3.5.16](https://docs.spring.io/spring-boot/3.5/system-requirements.html) 支援 Java 25，[Boot 4.0](https://docs.spring.io/spring-boot/4.0/system-requirements.html) 的最低需求仍是 Java 17。
+> JDK 25 搭配 Boot 4.0 的建置範例與升版對照見[第 09 章](./09-spring-boot-3-and-pitfalls.md#boot-writing-by-version)。
 
 ---
 
 ## 0.8 建立第一個專案
 
 三種方式，選一種就好。
+
+下方使用本課的 Boot 3.5／JDK 21。若 Initializr 已不提供 3.5，方式 C 可手動建立同版。要直接練習 Boot 4.0／JDK 25，可使用[完整 Maven 範例](./09-spring-boot-3-and-pitfalls.md#boot-4-mvc-project)。
 
 ### 方式 A：網頁 start.spring.io
 

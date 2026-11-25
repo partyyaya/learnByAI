@@ -5,7 +5,7 @@
 > **前半是遷移手冊**：如果你手上有 Spring Boot 2 的專案要升到 3，這裡是完整的步驟與雷點清單。
 > 遷移最痛的不是「改 import」（那個 IDE 幫你做），而是那些**編譯通過、啟動成功、但行為變了**的地方——
 > 例如 `/orders/` 這個網址突然變成 404、`@RequestParam` 突然報「參數名稱找不到」、
-> MySQL 突然多出一張 `hibernate_sequence` 表。
+> 新訂單突然撞主鍵（Hibernate 改找一張叫 `orders_seq` 的號碼表）。
 >
 > **後半是除錯手冊**：四份可以直接照著跑的 SOP——
 > 「Bean 找不到」「啟動變慢」「註解沒生效」「升版後行為改變」。
@@ -14,13 +14,15 @@
 >
 > 這也是這一站的最後一章。結尾會回顧整站，並接到下一站。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21，並提供 Boot 4.0／JDK 25 對照。Boot 2.7 最低 JDK 8、Boot 3.x／4.0 最低 17；範例使用的 `record` 與文字區塊分別在 JDK 16、15 正式加入。舊版專案需先配合語法、API 與函式庫版本再移植範例。
+
 ---
 
 ## 9.1 學習目標
 
 完成本章後，你應該可以：
 
-- 說明為什麼要升到 Spring Boot 3，以及「不升」的實際風險。
+- 說出 Boot 2 和 Boot 3 的主要差別、為什麼要升到 Spring Boot 3，以及「不升」的實際風險。
 - 規劃一次安全的遷移：**正確的順序、每一步的驗證方式、可以回頭的檢查點**。
 - 完成 `javax.*` → `jakarta.*` 的命名空間遷移，並知道**哪些 `javax` 不用改**。
 - 檢查第三方函式庫的相容性，並處理「還沒支援 Jakarta」的依賴。
@@ -36,7 +38,25 @@
 
 ---
 
-## 9.2 為什麼要升，不升的風險是什麼
+## 9.2 Boot 2 和 3 差在哪，為什麼要升
+
+### 先看全貌
+
+| | Spring Boot 2.x | Spring Boot 3.x | 細節 |
+|---|---|---|---|
+| 最低 Java 版本 | Java 8 | **Java 17** | 9.3 階段 2 |
+| Spring Framework | 5.x | 6.x | — |
+| Java EE API 的套件名稱 | `javax.*` | **`jakarta.*`**（Jakarta EE 9+） | 9.4 |
+| Spring Security | 5.x，繼承 `WebSecurityConfigurerAdapter` | 6.x，這個類別已移除，改成註冊 `SecurityFilterChain` bean | 9.7 |
+| Hibernate | 5.x | 6.x，ID 生成、`@Type`、HQL 都有變 | 9.9 |
+| 網址結尾的斜線 | `/orders/` 也會對到 `/orders` | 不再自動匹配，`/orders/` 回 404 | 9.8 |
+| `@RequestParam` 沒寫名稱時 | 編譯時沒加 `-parameters`，也能從 class 檔的 debug 資訊讀到參數名稱 | 3.2 起一定要用 `-parameters` 編譯 | 9.8 |
+| 設定屬性 | — | 一批更名或移除，例如 `spring.redis.*` → `spring.data.redis.*` | 9.6 |
+| 自動組態註冊檔 | `META-INF/spring.factories` | `META-INF/spring/…AutoConfiguration.imports` | 9.11 |
+| 分散式追蹤 | Spring Cloud Sleuth | Micrometer Tracing | 9.10 |
+
+表上沒有的部分，例如 Controller、Service、`@Transactional` 的寫法和自動組態的觀念，兩版幾乎一樣。
+所以升級的工作量集中在這張表上，其中最難抓的是斜線、參數名稱和 Hibernate 這幾項：編譯會過、啟動也成功，只有行為變了。
 
 ### Spring Boot 2.7 的公開 OSS 支援已結束；商業支援另依合約
 
@@ -72,7 +92,7 @@
 
 | 項目 | 說明 |
 |---|---|
-| 持續的安全性修補 | 最重要的理由 |
+| 通往持續修補的必經之路 | 3.x 的免費支援也已結束，要繼續拿免費修補得再升 4.x；但官方要你先升到最新的 3.5.x 才能升 4.0，所以 2 → 3 省不掉（9.18 結尾） |
 | Java 17 / 21 的語言特性 | `record`、`sealed`、pattern matching（01-java-core 第 12 章） |
 | **虛擬執行緒** | Boot 3.2+，一行設定（第 06 章 6.7） |
 | **可觀測性統一** | Micrometer Observation API，指標與追蹤一次埋（第 05 章） |
@@ -157,7 +177,7 @@ class OrderControllerContractTest {
 
     @Test
     void 尾斜線的網址也要能通() throws Exception {
-        // ★ 這個測試會在階段 4 抓到「尾斜線行為改變」（見 9.9）★
+        // ★ 這個測試會在階段 4 抓到「尾斜線行為改變」（見 9.8）★
         given(orderService.findById(1L)).willReturn(sampleOrder());
         mockMvc.perform(get("/orders/1/")).andExpect(status().isOk());
     }
@@ -220,10 +240,12 @@ sdk use java 21.0.5-tem
 | 問題 | 原因 | 解法 |
 |---|---|---|
 | `InaccessibleObjectException` | JDK 17 的強封裝（JEP 403） | 加 `--add-opens`，或升級那個函式庫 |
-| Lombok 編譯失敗 | 舊版 Lombok 不支援 JDK 17+ | 升到 1.18.30+ |
+| Lombok 編譯失敗 | 舊版 Lombok 未支援所選 JDK | 本章 JDK 21 用 1.18.30+；JDK 25 至少 1.18.40，依官方紀錄核對 |
 | Mockito 無法 mock final | 舊版限制 | 升到 5.x（Boot 3 的 BOM 已含） |
 | 反射相關的 `IllegalAccessError` | 同 JEP 403 | 找出是哪個函式庫，升版 |
-| `NoClassDefFoundError: javax/xml/bind/...` | JAXB 在 JDK 11 就被移除了 | 加 `jakarta.xml.bind-api` 依賴 |
+| `NoClassDefFoundError: javax/xml/bind/...` | JDK 11 移除隨附的 JAXB；舊程式仍引用 javax | 尚在 Boot 2／javax 階段時補 JAXB 2.3.x 的 API 與 runtime；升 Boot 3 時才同步改 jakarta import 與對應的 JAXB 版本 |
+
+JAXB 從 JDK 11 移出與 javax → jakarta 改名是不同的遷移步驟。[JDK 11 遷移指南](https://docs.oracle.com/en/java/javase/11/migrate/index.html)說明模組移除；命名空間可對照 [JAXB 2.3 API](https://jakarta.ee/specifications/xml-binding/2.3/apidocs/javax/xml/bind/JAXBContext.html)與 [JAXB 3.0 API](https://jakarta.ee/specifications/xml-binding/3.0/apidocs/jakarta.xml.bind/jakarta/xml/bind/JAXBContext.html)。
 
 > **`--add-opens` 是最後手段**。它只是把封裝打開，問題還在。
 > 正確做法是升級那個用了內部 API 的函式庫。
@@ -253,7 +275,7 @@ sdk use java 21.0.5-tem
 </parent>
 ```
 
-**這一步會產生大量編譯錯誤，這是正常的。** 9.5～9.13 逐項處理。
+**這一步會產生大量編譯錯誤，這是正常的。** 9.4～9.12 逐項處理。
 
 ### 階段 5：逐步升到最新
 
@@ -262,7 +284,8 @@ sdk use java 21.0.5-tem
 ```
 
 **每一小版都是獨立的 commit，每次都跑完整測試。**
-3.x 之間的變動比 2 → 3 小很多，但仍有雷點（9.20 列出）。
+3.x 之間的變動比 2 → 3 小很多，但仍有雷點（9.18 列出）。
+3.5 是 3.x 的最後一個版本，它的免費支援也已結束，升完 3.5 的下一步是 4.x（9.18 結尾）。
 
 ---
 
@@ -380,7 +403,7 @@ grep -rn 'javax\.' src/ --include='*.java' --include='*.xml' --include='*.yml' -
   | grep -vE 'javax\.(sql|crypto|net|naming|management|security|imageio|swing|script|tools|xml\.(parsers|xpath|transform|stream|namespace|datatype)|annotation\.processing|lang\.model)'
 ```
 
-#### 方式 C：OpenRewrite（最省力，見 9.13）
+#### 方式 C：OpenRewrite（最省力，見 9.12）
 
 ### 容易漏掉的地方
 
@@ -469,7 +492,7 @@ done
 | QueryDSL | 5.0+ 且要用 `jakarta` classifier | ⚠️ 見下方 |
 | Flyway | 9.x+ | |
 | Liquibase | 4.20+ | |
-| Lombok | 1.18.30+ | 主要是 JDK 21 支援 |
+| Lombok | JDK 21 用 1.18.30+；JDK 25 用 1.18.40+ | 以[官方 changelog](https://projectlombok.org/changelog)核對編譯器支援；使用 Boot BOM 時先查看其管理版本 |
 | Testcontainers | 1.19+ | |
 | WireMock | 3.x | ⚠️ 2.x 用 Jetty 9（javax） |
 | POI / EasyExcel | 依版本 | 要個別確認 |
@@ -523,7 +546,7 @@ springdoc:
 ```
 
 > **這通常是整個遷移中最花時間的一項**（如果專案有大量 Swagger 註解）。
-> 好消息是 OpenRewrite 有對應的 recipe（9.13）。
+> 好消息是 OpenRewrite 有對應的 recipe（9.12）。
 
 #### ② QueryDSL 的 classifier
 
@@ -1160,10 +1183,11 @@ spring:
 
 Boot 3 用 Hibernate 6.x，這是一次**大改版**（不只是 Jakarta 改名）。
 
-### ★ 雷點 1：`@GeneratedValue(strategy = AUTO)` 的行為變了 ★
+### ★ 雷點 1：`@GeneratedValue(strategy = AUTO)` 換了一張號碼表 ★
 
 ```java
 @Entity
+@Table(name = "orders")
 public class Order {
     @Id
     @GeneratedValue(strategy = GenerationType.AUTO)      // ⚠️ 危險
@@ -1171,35 +1195,67 @@ public class Order {
 }
 ```
 
-```
-Hibernate 5（Boot 2）：
-  MySQL → 使用 IDENTITY（AUTO_INCREMENT）
+`AUTO` 的意思是「讓 Hibernate 決定怎麼發號碼」。MySQL 沒有 sequence，Hibernate 會用一張表來模擬，
+問題是 Boot 2 和 Boot 3 找的不是同一張表。在 MySQL 8.0 上實測
+（Boot 2.7.18／Hibernate 5.6 對比 Boot 3.2.5／Hibernate 6.4，Boot 3.5.0／Hibernate 6.6 結果相同）：
 
-Hibernate 6（Boot 3）：
-  MySQL → 使用 SequenceStyleGenerator
-       → MySQL 沒有 sequence，所以用一張表模擬
-       → ★ 自動建立一張 hibernate_sequence 表 ★
-       → 每次 INSERT 前要先查那張表拿號碼（多一次查詢）
-       → 而且與既有資料的 AUTO_INCREMENT 值不同步！
+```
+Boot 2，預設：
+  所有 Entity 共用一張 hibernate_sequence 表，每次 +1
+
+Boot 2，設了 spring.jpa.hibernate.use-new-id-generator-mappings=false：
+  用 IDENTITY（AUTO_INCREMENT），不建號碼表
+
+Boot 3：
+  ★ 每個 Entity 各用一張「表名_seq」（orders → orders_seq），一次預取 50 個號碼 ★
+  上面那個 false 設定已移除（9.6），寫了也沒有作用
 ```
 
-> **真實案例**：某團隊升版後測試環境正常（因為 `ddl-auto: update` 幫他們建了
-> `hibernate_sequence` 表，且資料是新的）。上線到正式環境後：
-> - 正式環境 `ddl-auto: validate`，找不到 `hibernate_sequence` 表 → 啟動失敗（還好）
-> - 有人手動建了那張表，初始值是 1
+所以不管 Boot 2 走的是哪一種，升到 Boot 3 之後 Hibernate 都會去找 `orders_seq`，而舊資料庫裡沒有這張表：
+
+```
+ddl-auto: validate → 啟動失敗：Schema-validation: missing table [orders_seq]
+ddl-auto: update   → 自動建 orders_seq，從 1 開始發號
+                   → Duplicate entry '1' for key 'orders.PRIMARY'
+```
+
+> **真實案例**：某團隊升版後測試環境正常（測試庫是新建的，`ddl-auto: update` 幫他們建了
+> `orders_seq` 表）。上線到正式環境後：
+> - 正式環境 `ddl-auto: validate`，找不到 `orders_seq` 表 → 啟動失敗（還好）
+> - 有人照錯誤訊息手動建了那張表，初始值是 1
 > - → 新訂單的 ID 從 1 開始，與既有的 380 萬筆訂單主鍵衝突
 > - → `DuplicateKeyException` 大爆發
 
-**解法：一律明確指定 `IDENTITY`（MySQL）**
+**解法：先看舊資料庫的主鍵是哪一種，再決定**
+
+| 舊資料庫 | 怎麼認 | 解法 |
+|---|---|---|
+| `AUTO_INCREMENT`（Boot 2 設了 `false`） | `SHOW CREATE TABLE orders` 的 `id` 欄有 `AUTO_INCREMENT` | 改成 `IDENTITY`，會接著原本的號碼發 |
+| `hibernate_sequence` 表（Boot 2 預設） | 資料庫裡有 `hibernate_sequence` 這張表 | 先用 `legacy` 命名繼續用舊表；要改 `IDENTITY` 得先 `ALTER TABLE`（見下方） |
+
+第一種直接改註解：
 
 ```java
-@Entity
-public class Order {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)    // ★ 明確 ★
-    private Long id;
-}
+@Id
+@GeneratedValue(strategy = GenerationType.IDENTITY)    // ★ 明確 ★
+private Long id;
 ```
+
+第二種如果只改註解，`id` 欄沒有 `AUTO_INCREMENT`，INSERT 會失敗：`Field 'id' doesn't have a default value`。有兩條路：
+
+```properties
+# ① 過渡：讓 Hibernate 6 繼續用 hibernate_sequence（所有 Entity 共用、每次 +1，跟 Boot 2 一樣）
+spring.jpa.properties.hibernate.id.db_structure_naming_strategy=legacy
+```
+
+```sql
+-- ② 長期：先讓 id 欄有 AUTO_INCREMENT，再把 Entity 改成 IDENTITY
+-- MySQL 會自動從目前最大的 id + 1 接著發
+ALTER TABLE orders MODIFY id BIGINT NOT NULL AUTO_INCREMENT;
+```
+
+> ① 這個設定在 Hibernate 6 標成 incubating，啟動時會印一行 `HHH90006001` 警告，適合當過渡。
+> ② 在 MySQL 8.0 只能用 `ALGORITHM=COPY`：整張表重建，期間擋寫入。幾百萬筆的表要排維護時段。
 
 ```bash
 # ★ 遷移前務必掃一遍所有 Entity ★
@@ -1207,9 +1263,9 @@ grep -rn 'GenerationType.AUTO' src/main/java/
 grep -rn '@GeneratedValue' src/main/java/ | grep -v 'IDENTITY\|SEQUENCE\|TABLE\|UUID'
 ```
 
-> **檢查方式**：升版後在測試環境開 `spring.jpa.show-sql=true`，
-> 觀察 INSERT 前有沒有多出 `select next_val from hibernate_sequence` 之類的查詢。
-> 有 → 就是中招了。
+> **檢查方式**：用正式環境的 schema 複本跑一次 `ddl-auto: validate`，不要只在新建的測試庫上測，
+> 上面的案例就是因為測試庫是新的才沒抓到。
+> 也可以開 `spring.jpa.show-sql=true`，看 INSERT 前是不是在查 `orders_seq` 這類 `_seq` 結尾的表。
 
 ### ★ 雷點 2：`@Type` 已移除 ★
 
@@ -1702,7 +1758,7 @@ Day 1（1 小時）階段 1：2.5.14 → 2.7.18
 
 Day 2（3 小時）階段 2：JDK 11 → 21
   ├─ Lombok 1.18.22 → 1.18.34（★ 花了 1 小時查為什麼編譯失敗 ★）
-  ├─ 加 jakarta.xml.bind-api（JAXB 在 JDK 11 已移除）
+  ├─ 若仍引用 javax.xml.bind，補 JAXB 2.3.x API 與 runtime；jakarta 命名空間留待 Boot 3 遷移
   ├─ 修 2 處 InaccessibleObjectException
   └─ commit：chore: 升級到 JDK 21
 
@@ -2259,7 +2315,7 @@ echo "── 設定值差異 ──"       && diff <(jq -S . $BASE/configprops.j
 |---|---|---|---|
 | MVC 尾斜線匹配 | `true` | **`false`** | `/orders/` → 404（9.8） |
 | `spring.mvc.pathmatch.matching-strategy` | `ANT_PATH_MATCHER`（2.6 前） | `PATH_PATTERN_PARSER` | `/**/x` 樣式報錯 |
-| Hibernate `AUTO` ID 策略 | IDENTITY（MySQL） | **SequenceStyle** | 主鍵衝突（9.9） |
+| Hibernate `AUTO` ID 策略（MySQL） | 共用 `hibernate_sequence` 表（設 `use-new-id-generator-mappings=false` 則是 IDENTITY） | **每個 Entity 一張 `表名_seq`** | 啟動失敗或主鍵衝突（9.9） |
 | `spring.jpa.open-in-view` | `true`（有警告） | `true`（仍有警告） | 建議設 `false` |
 | `spring.main.allow-circular-references` | `true`（2.6 前） | **`false`** | 循環依賴啟動失敗（第 01 章 1.13） |
 | `server.error.include-message` | `always`（2.3 前） | `never` | 錯誤訊息不再回給前端 |
@@ -2286,7 +2342,7 @@ echo "── 設定值差異 ──"       && diff <(jq -S . $BASE/configprops.j
 □ 尾斜線的請求（分析既有 access log 找出有多少）
 □ 錯誤回應格式（前端有沒有依賴 message 欄位）
 □ JSON 序列化格式（日期格式、null 欄位、BigDecimal）
-□ 資料庫主鍵生成（有沒有出現 hibernate_sequence）
+□ 資料庫主鍵生成（有沒有出現 _seq 結尾的新表）
 □ 排程任務有沒有全部註冊（/actuator/scheduledtasks，第 06 章）
 □ 快取有沒有生效（/actuator/caches）
 □ Actuator 端點清單（部署腳本可能依賴某個端點）
@@ -2351,7 +2407,7 @@ class OrderJsonContractTest {
 
 ---
 
-## 9.18 Boot 3.x 各版本的重點
+## 9.18 Boot 3.x 各版本的重點與 Boot 4.0 寫法
 
 ### 3.1
 
@@ -2400,26 +2456,211 @@ Boot 3.5 延續 3.4 的方向（結構化日誌、可觀測性、native image �
 > **升版建議**：3.x 之間逐版升，每版都跑完整測試。
 > 每一版的官方 Release Notes 都有「Upgrading」章節，值得花 15 分鐘讀完。
 
-### 展望：Spring Boot 4 / Spring Framework 7
+<a id="boot-writing-by-version"></a>
 
-Spring Boot 4 已經發布。主要方向：
+### Spring Boot 2.7／3.x／4.0 的寫法對照
 
+下表的 Boot 3.x 以 3.5 為主，較早小版的差異另註。Boot 4 範例以 4.0 系列為準。
+
+| 要做的事 | Boot 2.7 | Boot 3.x | Boot 4.0 |
+|---|---|---|---|
+| 最低 Java／Framework | Java 8／Spring 5.3 | Java 17／Spring 6.x | Java 17／Spring 7.0；以下範例選 Java 25 |
+| 驗證、Servlet 的 import | `javax.validation.*`、`javax.servlet.*` | `jakarta.validation.*`、`jakarta.servlet.*` | 延續 `jakarta.*`；Servlet 6.1，內嵌 Tomcat 11 |
+| 加入 Spring MVC | `spring-boot-starter-web` | `spring-boot-starter-web` | `spring-boot-starter-webmvc`；舊 starter 在 4.0 已標為 deprecated |
+| 加入 MVC 切片測試 | `spring-boot-starter-test` | `spring-boot-starter-test` | `spring-boot-starter-webmvc-test`，會帶入通用測試 starter |
+| 以 mock 取代 Service Bean | `@MockBean` | 3.0～3.3 用 `@MockBean`；3.4 起改用 `@MockitoBean` | `@MockitoBean`；`@MockBean` 已移除 |
+| 注入 JSON mapper | `com.fasterxml.jackson.databind.ObjectMapper` | 同 Boot 2.7 | 預設用 `tools.jackson.databind.json.JsonMapper`；`@JsonProperty` 等 Jackson 註解仍在 `com.fasterxml.jackson.annotation` |
+| 同步 HTTP 用戶端 | `RestTemplate` | 3.2 起可注入 `RestClient.Builder` | 加 `spring-boot-starter-restclient`，仍可使用 `RestClient.Builder` |
+| 依 HTTP header 選路由版本 | `@GetMapping(headers = "X-Api-Version=2")` | 同 Boot 2.7 | 可設定版本 header 並使用 `@GetMapping(version = "2")` |
+| 依賴 AOP／遷移工具 | `spring-boot-starter-aop` | `spring-boot-starter-aop`；Flyway 可從 `flyway-core` 觸發自動組態 | `spring-boot-starter-aspectj`；Flyway 由 `spring-boot-starter-flyway` 提供自動組態 |
+
+`@SpringBootApplication`、建構子注入和一般的 `@GetMapping` 在三個版本的基本寫法相同。[Boot 4.0 官方遷移指南](https://github.com/spring-projects/spring-boot/wiki/Spring-Boot-4.0-Migration-Guide)列出完整的 starter、更名與移除項目。
+
+<a id="boot-4-mvc-project"></a>
+
+#### 同一個 MVC 專案：Boot 3.5／JDK 21 與 Boot 4.0／JDK 25
+
+下列是 Boot 4.0 的完整 `pom.xml`。若要跑 Boot 3.5 對照版，只需依表更換這四個值，Java 應用程式沿用同一份：
+
+| POM 項目 | Boot 3.5 對照版 | Boot 4.0 範例 |
+|---|---|---|
+| Parent `version` | `3.5.16` | `4.0.10` |
+| `java.version` | `21` | `25` |
+| MVC starter | `spring-boot-starter-web` | `spring-boot-starter-webmvc` |
+| Test starter | `spring-boot-starter-test` | `spring-boot-starter-webmvc-test` |
+
+```xml
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>4.0.10</version>
+        <relativePath/>
+    </parent>
+    <groupId>com.example</groupId>
+    <artifactId>version-demo</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <properties>
+        <java.version>25</java.version>
+    </properties>
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
 ```
-□ 模組重構（spring-boot-* 拆得更細，減少不必要的依賴）
-□ JSpecify null-safety 標註（編譯期的 null 檢查）
-□ 內建宣告式 HTTP 用戶端（@HttpExchange 介面）
-□ Spring MVC 的 API 版本控管支援
-□ Jackson 3
+
+存成 `src/main/java/com/example/demo/DemoApplication.java`：
+
+```java
+package com.example.demo;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.stereotype.Service;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+@SpringBootApplication
+public class DemoApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(DemoApplication.class, args);
+    }
+}
+
+@RestController
+class GreetingController {
+    private final GreetingService service;
+
+    GreetingController(GreetingService service) {
+        this.service = service;
+    }
+
+    @GetMapping("/greeting")
+    Greeting greeting() {
+        return new Greeting(service.message());
+    }
+}
+
+@Service
+class GreetingService {
+    String message() {
+        return "hello";
+    }
+}
+
+record Greeting(String message) {}
 ```
 
-> **實務建議：現在（2026 年）的重點是「把 3.x 做穩」。**
->
-> 企業專案絕大多數仍在 3.x，而且 3.x 的支援期還很長。
-> Boot 4 的觀念與 3.x 高度延續——這一站學的每一件事
-> （IoC、自動組態、AOP、可觀測性、部署）都可以平移。
->
-> **等你的專案已經在 3.5 且穩定運行，再評估 4.x。**
-> 遷移的原則與這一章完全一樣：逐版升、先建安全網、比對基準。
+```bash
+mvn -v                 # 確認 Maven 使用所選的 JDK
+mvn spring-boot:run
+# 在另一個終端機執行，預期回傳 {"message":"hello"}
+curl -fsS http://localhost:8080/greeting
+```
+
+<a id="boot-mvc-test-by-version"></a>
+
+#### MVC 測試：starter、import 與 mock 註解
+
+以下用 Boot 3.5 和 4.0 比較同一支測試。存成 `src/test/java/com/example/demo/GreetingControllerTest.java`，Boot 3.5 只需換掉標出的 `WebMvcTest` import。
+
+```java
+package com.example.demo;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+// Boot 3.5：import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.web.servlet.MockMvc;
+
+import static org.mockito.BDDMockito.given;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+@WebMvcTest(GreetingController.class)
+class GreetingControllerTest {
+    @Autowired MockMvc mvc;
+    @MockitoBean GreetingService service;
+
+    @Test
+    void returnsGreeting() throws Exception {
+        given(service.message()).willReturn("hello from test");
+
+        mvc.perform(get("/greeting"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.message").value("hello from test"));
+    }
+}
+```
+
+執行 `mvn test`。如果在 Boot 2.7 或 3.0～3.3 的專案做同樣的測試，`WebMvcTest` 用 Boot 3.5 的 import，並把 mock 換成 `org.springframework.boot.test.mock.mockito.MockBean` 與 `@MockBean`。Boot 2.7 若仍用 Java 8，應用程式裡的 `Greeting` 也要改成具有 `getMessage()` 的一般類別。
+
+#### JSON：注入預設的 mapper
+
+Controller 直接回傳物件時，Spring MVC 會自己選 JSON 轉換器。需要在 Service 手動轉 JSON 時，兩版分別注入下列型別。讓 Boot 建立 mapper，設定及註冊的模組才會跟框架一致。
+
+```java
+// Boot 3.5
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+// Boot 4.0：改為
+import tools.jackson.databind.json.JsonMapper;
+```
+
+例如以 `mapper.writeValueAsString(greeting)` 序列化。若原本有 `Jackson2ObjectMapperBuilderCustomizer`，遷移時要改成 `org.springframework.boot.jackson.autoconfigure.JsonMapperBuilderCustomizer`。升版前後應用同一份測試比對日期、null 欄位、自訂序列化與既有 JSON payload。必要時可暫用 `spring.jackson.use-jackson2-defaults=true` 讓 Jackson 3 的預設值更接近 Boot 3.5。
+
+#### API 版本：由 MVC 解析 header
+
+Boot 3.5 可以用 header 條件指定版本。Boot 4.0／Framework 7 可以將版本交給 MVC，以下是 `GreetingController` 內路由註解的替換範例：
+
+```java
+// Boot 3.5：舊 handler 可以依 header 條件配對
+@GetMapping(value = "/greeting", headers = "X-Api-Version=2")
+```
+
+```java
+// Boot 4.0：改用 MVC 的版本條件
+@GetMapping(value = "/greeting", version = "2")
+```
+
+在 Boot 4.0 的 `src/main/resources/application.properties` 指定版本來源：
+
+```properties
+spring.mvc.apiversion.use.header=X-Api-Version
+```
+
+以 `curl -fsS -H 'X-Api-Version: 2' http://localhost:8080/greeting` 驗證。若替換了範例原有的路由，也要在 MVC 測試的 `get("/greeting")` 上補 `.header("X-Api-Version", "2")`。遷移既有 API 時，另外對缺少、無效與不支援的版本補契約測試，因為 MVC 的版本解析行為不同於單純的 header 條件。[Boot 4.0 MVC 版本設定](https://docs.spring.io/spring-boot/4.0/reference/web/servlet.html#web.servlet.spring-mvc.api-versioning)
+
+#### 既有服務的升級順序
+
+1. 先將應用程式升到最新的 3.5.x，清掉 `@MockBean` 等已淘汰的 API，建立 MVC、JSON 和資料庫測試基準。3.5 的最後一個 OSS 版本為 [3.5.16](https://spring.io/blog/2026/06/25/spring-boot-3-5-16-available-now/)。
+2. 先保留原 Java 目標升到 Boot 4.0，檢查 starter、測試 import、Jackson、自訂組態與第三方依賴。用 Undertow 的服務也要調整容器，Boot 4.0 的內嵌容器改用 Tomcat 或 Jetty。
+3. 以 JDK 25 建置和執行測試，再依需要把 `java.version` 從 21 提高到 25，讓 CI、IDE 及正式環境同步。若執行於 JDK 25 的目的只是升級執行環境，可先維持既有的編譯目標。
+
+[Boot 3.5 系統需求](https://docs.spring.io/spring-boot/3.5/system-requirements.html)、[Boot 4.0 系統需求](https://docs.spring.io/spring-boot/4.0/system-requirements.html)、[Boot 4.0.10 發布公告](https://spring.io/blog/2026/11/20/spring-boot-4-0-10-available-now/)
+
+> 範例驗證：Boot 3.5.16／JDK 21 與 Boot 4.0.10／JDK 25 的 MVC 切片測試均通過，另以 Boot 4.0.10 測過指定版本 header 的路由。
 
 ---
 
@@ -2455,7 +2696,7 @@ Spring Boot 4 已經發布。主要方向：
 
 ### ⑧ 沒處理 `GenerationType.AUTO`
 
-出現 `hibernate_sequence` 表，主鍵衝突。
+Hibernate 6 改找 `表名_seq`：`validate` 啟動失敗，`update` 從 1 發號撞主鍵。
 
 ### ⑨ 沒有比對 mappings / beans
 
@@ -2926,9 +3167,9 @@ class AutoConfigurationRegistrationTest {
    ⚠️ 2.6 起 pathmatch 預設改變 → 檢查路徑樣式（9.8）
 □ JDK 8 → 17
    ├─ Lombok / Mockito / ByteBuddy 升版
-   ├─ 加 jakarta.xml.bind-api（JAXB 在 JDK 11 移除）
+   ├─ 若仍引用 javax.xml.bind，補 JAXB 2.3.x API 與 runtime；Boot 3 階段再改 jakarta
    ├─ 處理 InaccessibleObjectException
-   └─ 檢查有沒有用到已移除的 API（sun.misc.Unsafe 等）
+   └─ 檢查 JDK 11 已移除的 Java EE／CORBA 模組與其他內部 API；sun.misc.Unsafe 須另查使用的方法及 JDK 版本
 □ 清掉所有 deprecation
 
 ╔══════════════════════════════════════════════════════════════╗
@@ -2952,7 +3193,8 @@ class AutoConfigurationRegistrationTest {
 □ 人工處理：
    ├─ Jakarta import 的漏網之魚（XML、字串、測試）
    ├─ Security 5 → 6 的 API（antMatchers → requestMatchers 等）
-   ├─ 45 個 Entity 的 GenerationType.AUTO → IDENTITY
+   ├─ 45 個 Entity 的 GenerationType.AUTO：先查舊庫是 hibernate_sequence
+   │  還是 AUTO_INCREMENT，再決定改 IDENTITY 或先用 legacy 過渡（9.9）
    ├─ @Type → @JdbcTypeCode / @Convert
    ├─ HQL 位置參數編號
    ├─ MyBatis starter 2.1 → 3.0
@@ -3066,7 +3308,7 @@ class AutoConfigurationRegistrationTest {
 - [ ] **我知道 Boot 3 的尾斜線不再匹配，並能用 Filter 做 301/308 轉址。**
 - [ ] **我知道 Spring Framework 6.1 需要 `-parameters` 編譯旗標。**
 - [ ] 我知道 `PathPatternParser` 不支援 `/**/x` 這種樣式。
-- [ ] **我知道 `GenerationType.AUTO` 在 Hibernate 6 會產生 `hibernate_sequence`，且可能造成主鍵衝突。**
+- [ ] **我知道 `GenerationType.AUTO` 在 Hibernate 6 改用 `表名_seq` 表，並能依舊資料庫的主鍵方式選擇解法。**
 - [ ] 我知道 `@Type` 已移除，並會用 `@JdbcTypeCode` / `@Convert` 取代。
 - [ ] 我知道 Hibernate 6 的 HQL 位置參數必須編號。
 - [ ] 我知道 `/actuator/httptrace` 改名為 `httpexchanges`，且需要自己提供 Repository Bean。

@@ -8,6 +8,8 @@
 >
 > 這章講的就是這件事。它不炫，但它是「能不能出貨」的門檻。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。`--release` 自 JDK 9 可用，控制可用語法、標準 API 與 class 版本；Maven toolchain 可另選編譯器。範例中的 `formatted`／文字區塊自 15、`Stream.toList()` 自 16 可用。JDK 25 還要核對 Gradle、測試 agent 與位元組碼外掛的支援版本。
+
 ---
 
 ## 10.1 學習目標
@@ -526,6 +528,8 @@ mvn -pl todo-model -am install
 ### 三個要特別解釋的地方
 
 **① `maven.compiler.release` vs `source` + `target`**
+
+可先用 JDK 25 執行建置，並保留 `<maven.compiler.release>21</maven.compiler.release>`，確認仍可輸出 Java 21 相容的 class。要開始使用 Java 25 語法，再將目標改為 `25`，同步更新測試與部署用的 JDK。Gradle 以 Java 25 啟動或使用 Java 25 toolchain，兩者都至少需要 [Gradle 9.1.0](https://docs.gradle.org/current/userguide/compatibility.html#java)。
 
 你會在網路上看到大量這種寫法：
 
@@ -5400,7 +5404,7 @@ A) [ERROR] Failed to execute goal ... Could not resolve dependencies for
    project com.example:todo-cli:jar:1.0.0-SNAPSHOT: The following artifacts
    could not be resolved: com.example:todo-core:jar:1.0.0-SNAPSHOT (absent)
 
-B) [ERROR] Source option 8 is no longer supported. Use 8 or later.
+B) [ERROR] Source option 7 is no longer supported. Use 8 or later.
 
 C) 建置成功，但 JaCoCo 報告顯示覆蓋率 0%，而測試明明有跑而且通過
 
@@ -5436,9 +5440,8 @@ E) [ERROR] Failure to find com.example:internal-lib:jar:2.1.0 in
 
 **B) `release`/`source` 設得比 JDK 支援的還舊**
 
-- **原因**：你用 JDK 21 或更新的版本，但 pom 裡寫 `<source>8</source>`。
-  JDK 21 移除了對 `source 7` 的支援，JDK 25 移除了 `source 8`
-  （每個大版本會逐步淘汰最舊的目標）。
+- **原因**：例如你用 JDK 21，但 pom 裡寫 `<source>7</source>`。
+  JDK 21 已不支援 `source 7`；[JDK 25 仍接受 `source 8`](https://docs.oracle.com/en/java/javase/25/migrate/preparing-migration.html)，但會發出淘汰警告。用 `javac --help` 查目前編譯器接受哪些目標。
 - **診斷**：
   ```bash
   mvn -v                                                    # 看 Maven 用的是哪個 JDK

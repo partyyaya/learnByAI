@@ -12,6 +12,10 @@
 > **這一章是 01 站和 02 站之間的橋。** 讀完之後，Spring 的「魔法」對你來說
 > 會變成一句話：「喔，它就是在 classpath 上掃註解，然後動態產代理。」
 
+> **JDK 版本備註**：本章主線使用 JDK 21。反射、註解與動態代理本身早於 JDK 8；範例中的 `Class.isRecord/getRecordComponents` 自 16、`Class.isSealed/getPermittedSubclasses` 自 17 可用。JDK 9 引入模組存取邊界，JDK 17 的強封裝限制見 13.6。
+
+> 這裡列的是正式版本。部分反射 API 在更早的 record／sealed 預覽期已存在，編譯器可能只警告其屬於 reflective preview API；不能只用「編譯成功」判斷它已正式支援。
+
 ---
 
 ## 13.1 學習目標

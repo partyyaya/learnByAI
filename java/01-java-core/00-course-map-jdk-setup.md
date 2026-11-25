@@ -4,6 +4,8 @@
 > 「我電腦裡到底有幾個 Java？」「公司專案是 8，教材是 21，我該裝哪個？」「為什麼同事跑得起來我跑不起來？」
 > 這章先把版本、發行商、安裝、編譯流程弄清楚，之後每一章你才有一個能跑、能重現的環境。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。單檔啟動 `java Hello.java` 自 JDK 11 可用；精簡原始檔與 `void main()` 在 JDK 25 正式加入。JDK 21 的教學範例與 JDK 25 對照範例請用各自的編譯目標。
+
 ---
 
 ## 0.1 學習目標
@@ -150,22 +152,24 @@
 | switch 模式比對 | ❌ | ❌ | preview | ✅ 正式 | |
 | **虛擬執行緒** | ❌ | ❌ | ❌ | ✅ | |
 | 循序集合 `SequencedCollection` | ❌ | ❌ | ❌ | ✅ | |
-| 簡化 main（`void main()`） | ❌ | ❌ | ❌ | ❌ | ✅ |
+| 簡化 main（`void main()`） | ❌ | ❌ | ❌ | preview | ✅ 正式 |
 | 模組匯入宣告 | ❌ | ❌ | ❌ | ❌ | ✅ |
+| 彈性建構子本體 | ❌ | ❌ | ❌ | ❌ | ✅ 正式 |
+| `ScopedValue` | ❌ | ❌ | ❌ | preview | ✅ 正式 |
 | GC 預設 | Parallel | G1 | G1 | G1（+ZGC 分代） | G1（+ZGC/Shenandoah 分代） |
 
 ### 決策建議
 
 | 你的情況 | 選什麼 |
 |---|---|
-| 新專案，可自由選 | 優先 **21**；選 25 時須確認具體 Spring Boot 版本的相容範圍（不能一概套用到 3.2+） |
-| 公司專案在 Spring Boot 3.x | 至少 17，建議 21 |
+| 新專案，可自由選 | 可考慮 **25**；先確認框架、建置外掛、CI 與部署環境的相容性 |
+| 既有 Spring Boot 專案 | [Boot 3.5.16](https://docs.spring.io/spring-boot/3.5/system-requirements.html) 與 [Boot 4.0](https://docs.spring.io/spring-boot/4.0/system-requirements.html) 都支援 Java 25；其他小版查各自需求 |
 | 公司專案在 Spring Boot 2.7 或更舊 | 卡在 8 或 11，升級前先讀第 12 章了解你錯過什麼 |
-| 學這門課 | **21**（本課所有範例以 21 驗證，會標註需要 17 / 25 的地方） |
+| 學這門課 | 主線用 **21**，標註 `【Java 25】` 的範例用 **25** |
 
 > **相容性要看完整版本**：例如 [Spring Boot 3.2.12 官方需求](https://docs.spring.io/spring-boot/docs/3.2.12/reference/html/getting-started.html#getting-started.system-requirements) 列到 Java 23，不能據此推論它也支援 Java 25。
 >
-> **本課約定**：預設 JDK 21。用到 Java 21 以後才有的語法，我會標 `【Java 25】`；只有 8 有的舊寫法，我會標 `【Java 8 舊寫法】`。
+> **本課約定**：預設 JDK 21。新功能會標正式加入的版本，預覽功能另外標示。參見[同題逐版寫法](./12-modern-java-records-sealed-pattern.md#jdk-writing-by-version)。
 
 ---
 
@@ -669,23 +673,23 @@ mvn -version | grep "Java version"      # Java version: 1.8.0_432
 | 4.0.x | 17 |
 
 Maven 3.9.x 的下限是 Java 8，而本課最舊也只用到 Java 8，**所以一份 3.9.x 就通吃本課全部版本**。
-反過來如果你裝了 Maven 4，就不能再用它跑 Java 8 或 11 的舊專案——這是選 3.9.x 當預設的實際理由。
+Maven 4 本身需要 Java 17 以上；編譯 Java 8 或 11 的專案時，可以用 `--release` 或另外設定 compiler toolchain。
 
-**邊界 2（上限）：不能編譯比「跑 Maven 的 JDK」更新的目標版本**
+**邊界 2（編譯器）：目標版本必須在編譯用 JDK 的支援範圍內**
 
 ```xml
 <maven.compiler.release>25</maven.compiler.release>
 ```
 
-在 JDK 21 上跑會直接失敗：
+預設使用執行 Maven 的 JDK 編譯。如果 Maven 用 JDK 21，且未另外指定 toolchain 或外部編譯器，會失敗：
 
 ```
 error: release version 25 not supported
 ```
 
-因為 `--release 25` 需要 JDK 25 自己的編譯器和 API 描述檔，Maven 變不出來。**往下編可以（21 的 JDK 編 release=8 沒問題），往上編不行。**
+因為 JDK 21 的編譯器不認得目標 25。可以改用 JDK 25 執行 Maven，也可以讓 Maven 繼續用 JDK 21，並透過 toolchain 選 JDK 25 來編譯。往下編時也要查編譯器支援範圍，例如 JDK 21 接受 `--release 8`。
 
-**結論**：`8 ≤ 你的 JDK`、`JDK ≥ pom 裡的 release`，這兩個條件成立，任何 Java 版本都能配同一份 Maven 3.9.x。
+執行 Maven 的 JDK 要符合 Maven 本身的最低需求，編譯用 JDK 則要支援 POM 裡的 `release`。兩者可透過 toolchain 分別指定，第三方建置外掛的 JDK 需求也要一併檢查。
 
 > **想在 JDK 21 上用「真正的 JDK 8 編譯器」怎麼辦？**
 > `release=8` 只是限制語法和 API 表面，編譯器仍然是 21 的。如果公司要求用原生 8 編譯，
@@ -856,7 +860,7 @@ java demo/Hello.java   # 原始檔可以用路徑；這跟 `java Hello` 吃類�
 Java 25 正式支援「精簡原始檔與實例 main 方法」，入口可以短到這樣：
 
 ```java
-// Java 25 才能編譯
+// Java 25 正式語法。存成 Hello.java，執行 java Hello.java
 void main() {
     IO.println("Hello");
 }
@@ -864,10 +868,7 @@ void main() {
 
 不需要 `class`、不需要 `public static`、不需要 `String[] args`。這是為了降低初學門檻。
 
-**但本課一律用完整寫法**，因為：
-
-1. 真實專案的 class 是必要的（要放欄位、要被注入、要被測試）。
-2. 你面試、看別人的程式、讀 Spring 原始碼，看到的都是完整寫法。
+這個範例直接以 `java Hello.java` 執行，Java 25 無需 `--enable-preview`。課程的多檔案專案沿用具名 package、明確類別與傳統入口，方便 IDE、建置工具和 Spring 找到入口。兩種寫法見[第 12 章](./12-modern-java-records-sealed-pattern.md#jdk-writing-by-version)。
 
 ### jshell：不用建檔案就能實驗
 

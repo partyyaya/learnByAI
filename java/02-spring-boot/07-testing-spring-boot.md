@@ -14,6 +14,8 @@
 > 而是教你**選對測試的層級**——什麼該用純單元測試、什麼該用切片測試、什麼才真的需要啟動整個應用程式。
 > 以及一個大多數人不知道但威力極大的機制：**測試 context 快取**。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。測試中的 `var` 自 JDK 10、文字區塊自 15、`record` 自 16 可用；`@MockitoBean` 需要 Framework 6.2／Boot 3.4+。`HttpHeaders.getFirst("X-Trace-Id")` 是 Spring API，無需 JDK 21 的 Sequenced Collections。
+
 ---
 
 ## 7.1 學習目標
@@ -327,7 +329,7 @@ Root WebApplicationContext: initialization completed in 3184 ms    ← C 建立
 ### 查看快取統計
 
 ```yaml
-# src/test/resources/logback-test.xml 或用 application.properties
+# src/test/resources/application.yml
 logging:
   level:
     org.springframework.test.context.cache: DEBUG
@@ -342,7 +344,7 @@ Spring test ApplicationContext cache statistics:
 | 欄位 | 意義 |
 |---|---|
 | `size` | 目前快取了幾個 context |
-| `maxSize` | 上限（預設 32，可用 `spring.test.context.cache.maxSize` 調整） |
+| `maxSize` | 上限預設 32；以測試 JVM 的 `-Dspring.test.context.cache.maxSize=64` 或 classpath 根目錄的 `spring.properties` 設定 |
 | `hitCount` | 命中次數（越高越好） |
 | `missCount` | **建立次數（越低越好）** |
 
@@ -655,6 +657,8 @@ class OrderEndToEndTest {
 
 ## 7.7 切片測試：`@WebMvcTest`
 
+本節沿用 Boot 3.5。Boot 4.0 的 MVC 切片要使用 `spring-boot-starter-webmvc-test`，`@WebMvcTest` 和 `@AutoConfigureMockMvc` 也搬到 `org.springframework.boot.webmvc.test.autoconfigure`。`@MockitoBean` 沿用原本的 Spring Framework import。見[同一支測試的逐版寫法](./09-spring-boot-3-and-pitfalls.md#boot-mvc-test-by-version)。
+
 ### 它載入什麼、不載入什麼
 
 ```
@@ -676,7 +680,7 @@ class OrderEndToEndTest {
   ❌ 排程、非同步的設定
 ```
 
-**所以 Service 一定要用 mock 提供。**
+Service 可以用 `@MockitoBean` 提供，也可以用 `@Import` 明確載入實作或測試組態。
 
 ### 完整範例
 
@@ -908,14 +912,14 @@ class SecuredControllerTest {
 }
 ```
 
-> ⚠️ **`@WebMvcTest` 會載入你的 `SecurityFilterChain`**，
-> 所以「沒帶身分的請求」會被擋。這常讓人困惑（明明只想測路由卻回 401）。
+> 有 Spring Security 依賴時，`@WebMvcTest` 會啟用 Security 自動組態，未登入的請求可能回 401。若自訂的 `SecurityFilterChain` 宣告在一般 `@Configuration` 類別裡，應以 `@Import(SecurityConfig.class)` 明確載入，才能測到應用程式自己的規則。
 >
-> 想暫時關掉 Security：
+> 只想驗證 Controller 並暫時略過 MockMvc 的 Filter：
 > ```java
-> @WebMvcTest(controllers = OrderController.class,
->             excludeAutoConfiguration = SecurityAutoConfiguration.class)
+> @WebMvcTest(OrderController.class)
+> @AutoConfigureMockMvc(addFilters = false)
 > ```
+> `addFilters = false` 會略過所有 Filter；權限測試應保留 Filter 並載入實際的 Security 組態。
 > 但**更好的做法是連 Security 一起測**——因為「權限沒設對」是真實會發生的 bug。
 > 09-spring-security 第 08 章會完整處理。
 

@@ -12,6 +12,8 @@
 > 你有沒有記錄追蹤 ID、有沒有把關鍵欄位寫進去、有沒有暴露正確的指標。
 > 事故發生時才想補，就來不及了。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。遮蔽範例的 `String.isBlank/repeat` 自 JDK 11、`formatted` 自 15、`record` 自 16 可用；JUL 自 JDK 1.4 就有。`logging.structured.*` 則需要 Boot 3.4+，依 Boot 版本檢查。
+
 ---
 
 ## 5.1 學習目標

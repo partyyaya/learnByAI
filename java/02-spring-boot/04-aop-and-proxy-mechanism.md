@@ -10,6 +10,8 @@
 > 2. 把 Spring AOP 的織入時機，接回第 01 章的 Bean 生命週期。
 > 3. 把「自呼叫失效」從「一句口訣」變成「你能畫出記憶體裡發生什麼事」。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。AOP 範例的事件與結果使用 `record`（JDK 16+），`Map.of` 自 9、`String.isBlank` 自 11 可用。JDK 動態代理與 Spring 選用的代理機制，須依介面、類別及 Spring 組態判讀。
+
 ---
 
 ## 4.1 學習目標
@@ -683,7 +685,7 @@ public class ProxyInspector implements CommandLineRunner {
 
 > **`ultimateTargetClass()` 在寫框架程式碼時很重要**：
 > 例如你要讀方法上的自訂註解，直接對代理類別做反射可能拿不到
-> （CGLIB 子類別不會繼承方法上的註解，除非該註解標了 `@Inherited`——而方法註解根本不支援 `@Inherited`）。
+> （代理覆寫的方法未必帶有目標方法的註解；`@Inherited` 只影響類別註解的繼承）。
 > 正確做法是先用 `AopUtils.getTargetClass()` 拿到原始類別再找方法。
 
 ---
@@ -1898,6 +1900,8 @@ at com.example.shop.web.OrderController.create(OrderController.java:31)
 
 ### 切面 1：稽核（`@Auditable`）
 
+SpEL 的參數名稱要從實作方法取得。JDK 代理的 `MethodSignature.getMethod()` 可能回傳介面方法，兩邊參數名稱可以不同；下方先用 `AopUtils.getMostSpecificMethod` 找實作，再以 `MethodBasedEvaluationContext` 建立參數上下文。具名參數仍需編譯器保留 `-parameters`，也可用 `#p0`／`#a0` 引用第一個參數。
+
 ```java
 package com.example.shop.audit;
 
@@ -1967,7 +1971,8 @@ import org.springframework.core.annotation.Order;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.context.expression.MethodBasedEvaluationContext;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
@@ -2020,21 +2025,17 @@ public class AuditAspect {
         }
     }
 
-    /** 用 SpEL 解析 resource 運算式，可以引用方法參數名稱 */
+    /** 用實作方法建立 SpEL 上下文，支援參數名稱與 #p0／#a0 等位置別名 */
     private String evaluateResource(ProceedingJoinPoint pjp, String expression) {
         if (expression == null || expression.isBlank()) {
             return pjp.getSignature().toShortString();
         }
         try {
             MethodSignature signature = (MethodSignature) pjp.getSignature();
-            EvaluationContext context = new StandardEvaluationContext();
-            String[] names = nameDiscoverer.getParameterNames(signature.getMethod());
-            Object[] args = pjp.getArgs();
-            if (names != null) {
-                for (int i = 0; i < names.length; i++) {
-                    context.setVariable(names[i], args[i]);
-                }
-            }
+            java.lang.reflect.Method method = AopUtils.getMostSpecificMethod(
+                    signature.getMethod(), pjp.getTarget().getClass());
+            EvaluationContext context = new MethodBasedEvaluationContext(
+                    pjp.getTarget(), method, pjp.getArgs(), nameDiscoverer);
             return String.valueOf(parser.parseExpression(expression).getValue(context));
         } catch (Exception e) {
             log.warn("解析 resource 運算式失敗：{}", expression, e);
@@ -2779,6 +2780,8 @@ public void save(Item item) {
 
 ### 練習 3：寫一個限流切面
 
+下方限流 key 的 SpEL 也使用實作方法建立上下文，讓 JDK 介面代理與 CGLIB 代理都能取得一致的參數值。
+
 需求：
 
 1. 自訂註解 `@RateLimit(key = "'user:' + #userId")`，速率與突發容量沿用第 02 章全域設定。
@@ -2847,7 +2850,8 @@ import org.springframework.core.annotation.Order;
 import org.springframework.expression.EvaluationContext;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
-import org.springframework.expression.spel.support.StandardEvaluationContext;
+import org.springframework.aop.support.AopUtils;
+import org.springframework.context.expression.MethodBasedEvaluationContext;
 import org.springframework.stereotype.Component;
 
 /**
@@ -2889,14 +2893,10 @@ public class RateLimitAspect {
         }
         try {
             MethodSignature signature = (MethodSignature) pjp.getSignature();
-            EvaluationContext context = new StandardEvaluationContext();
-            String[] names = nameDiscoverer.getParameterNames(signature.getMethod());
-            Object[] args = pjp.getArgs();
-            if (names != null) {
-                for (int i = 0; i < names.length; i++) {
-                    context.setVariable(names[i], args[i]);
-                }
-            }
+            java.lang.reflect.Method method = AopUtils.getMostSpecificMethod(
+                    signature.getMethod(), pjp.getTarget().getClass());
+            EvaluationContext context = new MethodBasedEvaluationContext(
+                    pjp.getTarget(), method, pjp.getArgs(), nameDiscoverer);
             Object value = parser.parseExpression(rateLimit.key()).getValue(context);
             return String.valueOf(value);
         } catch (Exception e) {
@@ -3258,7 +3258,7 @@ public class OrderImporter {
 - [ ] 我知道 Spring Boot 2.0+ 預設用 CGLIB，也知道為什麼這樣改比較好。
 - [ ] 我能指出 AOP 代理在 Bean 生命週期的哪一步產生（`postProcessAfterInitialization`）。
 - [ ] 我知道 `@PostConstruct` 裡的 `this` 還不是代理。
-- [ ] 我知道 `@Aspect` 一定要配 `@Component` 才會生效。
+- [ ] 我知道 `@Aspect` 類別必須註冊成 Spring Bean，可用 `@Component` 掃描或 `@Bean` 方法註冊。
 - [ ] 我能讀寫 `execution` / `within` / `@annotation` / `@within` / `args` / `bean` 切點。
 - [ ] 我知道 Spring AOP 只支援「方法執行」這一種 join point。
 - [ ] 我能說出五種 Advice 的實際執行順序（含例外路徑）。

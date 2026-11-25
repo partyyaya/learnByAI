@@ -9,6 +9,8 @@
 > 2. 容器怎麼知道要建立哪些物件、怎麼決定注入誰。
 > 3. 一個 Bean 從無到有經過哪些階段——你可以在哪些點插手。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。`record` 與 `Stream.toList()` 自 JDK 16、`List.copyOf` 自 10、`String.isBlank` 自 11 可用。IoC、DI 與 Bean 註冊方式屬於 Spring 的功能；使用 Boot 3.5 時整體仍至少需要 JDK 17。
+
 ---
 
 ## 1.1 學習目標

@@ -7,6 +7,8 @@
 >
 > 這章的目標是讓你**寫出比 for 迴圈更好讀的 Stream**，並且知道**什麼時候該用回 for 迴圈**。
 
+> **JDK 版本備註**：Lambda、Stream 與 Optional 的起點是 JDK 8，本章完整範例以 JDK 21 為主。`filtering/flatMapping` 自 9、`toUnmodifiableList` 自 10、`teeing` 自 12、`mapMulti`／`Stream.toList()` 自 16 可用。範例中的 `List.getFirst` 自 21、執行緒池的 try-with-resources 自 19 可用。
+
 ---
 
 ## 6.1 學習目標
@@ -1242,6 +1244,8 @@ public class TerminalOperations {
 
 ### `Collectors.toList()` vs `Stream.toList()` vs `toUnmodifiableList()`
 
+> **【JDK 8／10／16】** 下方完整範例因為同時使用 `Stream.toList()`，最低需 JDK 16。若專案停在 8／11，只採用該版可用的分支，並明確決定結果是否可修改。
+
 ```java
 import java.util.List;
 import java.util.stream.Collectors;
@@ -1250,10 +1254,11 @@ import java.util.stream.Stream;
 public class ToListVariants {
     public static void main(String[] args) {
 
-        // ① Collectors.toList()：回傳「未指定型別」的可變 List（實務上是 ArrayList，但不保證）
+        // ① Collectors.toList()【JDK 8+】：API 未保證結果型別與可修改性
         List<String> a = Stream.of("x", "y").collect(Collectors.toList());
-        a.add("z");                                  // ✅ 可以改
-        System.out.println("① " + a);
+        List<String> mutable = new java.util.ArrayList<>(a); // 明確建立可修改的複本
+        mutable.add("z");
+        System.out.println("① " + mutable);
 
         // ② Collectors.toUnmodifiableList()【Java 10+】：不可變，不允許 null
         List<String> b = Stream.of("x", "y").collect(Collectors.toUnmodifiableList());
@@ -1284,7 +1289,8 @@ public class ToListVariants {
 
 | | 可變 | 允許 null | 何時用 |
 |---|---|---|---|
-| `Collectors.toList()` | ✅ | ✅ | 需要之後修改結果時 |
+| `Collectors.toList()` | 未保證 | ✅ | JDK 8+ 的一般收集；不可依賴特定實作 |
+| `Collectors.toCollection(ArrayList::new)` | ✅ | ✅ | JDK 8+，需要之後修改結果時 |
 | `Collectors.toUnmodifiableList()` | ❌ | ❌ | Java 10~15 且要不可變 |
 | `Stream.toList()` | ❌ | ✅ | **Java 16+ 的預設選擇** |
 
@@ -2883,8 +2889,7 @@ public class Buggy {
 
 **六個問題：**
 
-1. **`getNames`**：`Collectors.toList()` 回傳可變 List。Java 16+ 應該用 `.toList()`（不可變，
-   也不會被呼叫方偷改）。
+1. **`getNames`**：`Collectors.toList()` 未保證結果不可修改。JDK 16+ 可用 `.toList()` 明確回傳不可修改的結果；JDK 8 可在收集後包 `Collections.unmodifiableList`。
 2. **`getConfig`**：`orElse(loadFromDatabase(key))` —— **每次都會查資料庫**，
    就算快取有值（6.14 節）。應該用 `orElseGet`。
 3. **`indexByEmail`**：`toMap` 沒給合併函式 —— 有兩個使用者同 email 就丟

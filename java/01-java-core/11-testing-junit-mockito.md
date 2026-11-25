@@ -11,6 +11,8 @@
 > 這一章要蓋的是**安全網**——它不會讓你的程式變快、變好看，
 > 但它是唯一能讓你「三個月後還敢改這段程式碼」的東西。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。JUnit 5 是測試框架版本；本章 Java 範例另外使用 `record`／`Stream.toList()`（JDK 16+）、`RandomGenerator`／`HexFormat`（17+）、一般 `List.getFirst` 與虛擬執行緒（21+）。若改用 JDK 25，須同步調整本章固定的 Byte Buddy 與 JaCoCo 版本，見 11.4 的版本表。
+
 ---
 
 ## 11.1 學習目標
@@ -255,6 +257,19 @@ class MarkDone {
 ---
 
 ## 11.4 環境設定與第一個測試
+
+### JDK 21 與 JDK 25 的測試建置版本
+
+下方 POM 固定為本課的 JDK 21 組合。若切換成 JDK 25，除了編譯目標，也要核對讀取及插樁 class 檔的工具：
+
+| 項目 | 本章 JDK 21 範例 | JDK 25 的調整 |
+|---|---|---|
+| `maven.compiler.release` | `21` | 要使用 25 語法才改成 `25`；建置與測試也用 JDK 25 |
+| `byte-buddy.version` | `1.15.11` | 至少 `1.17.0`，並讓 `byte-buddy` 與 `byte-buddy-agent` 使用相同版本 |
+| `jacoco.version`／JaCoCo plugin | `0.8.12` | 至少 `0.8.14`，此版正式支援 Java 25 |
+| Mockito agent | 下方 Surefire 明確指定 `-javaagent` | 沿用顯式 agent，並驗證與所選 Mockito／Byte Buddy 版本的組合 |
+
+Byte Buddy 的最低支援版本見[官方相容表](https://github.com/raphw/byte-buddy#java-version-compatibility)，JaCoCo 見[官方版本紀錄](https://www.jacoco.org/jacoco/trunk/doc/changes.html)。編譯成 Java 21 的程式，也可能在 JDK 25 測試時碰到測試工具的版本限制。
 
 ### JUnit 5 的三層架構
 
@@ -4978,6 +4993,8 @@ class FileSourceTest {
 ## 11.16 覆蓋率與突變測試
 
 ### 設定 JaCoCo
+
+> **【JDK 21／25】** 下方使用本課的 JaCoCo 0.8.12。若使用 JDK 25 或 Java 25 class，將此處 plugin 及 POM 內的 `jacoco.version` 一起改成至少 0.8.14。
 
 ```xml
 <plugin>

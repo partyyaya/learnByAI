@@ -8,6 +8,8 @@
 > 重點不是「學會新語法」，而是知道**什麼時候該用、什麼時候不該用**。
 > 一個把每個地方都塞滿新特性的專案，和一個停在 Java 8 的專案，同樣難維護。
 
+> **JDK 版本備註**：本章主線使用 JDK 21，JDK 25 範例另標。`var`（10）、文字區塊（15）、`record`／`instanceof` 模式（16）、`sealed`（17）、`switch` 模式／record pattern（21）、精簡入口／模組匯入／彈性建構子（25）皆以正式版本標記。可用 API 與舊版寫法見[版本速查](#jdk-api-version-notes)。
+
 ---
 
 ## 12.1 學習目標
@@ -897,8 +899,7 @@ public record Todo(long id, String title, Priority priority, Instant createdAt) 
 }
 ```
 
-**幾乎沒有理由這樣寫**——compact 版短得多也不會漏掉欄位。
-唯一的用途是「參數名稱要和元件名稱不同」，而那本身就是可疑的設計。
+compact 版適合驗證、正規化參數，並由編譯器完成欄位賦值。完整 canonical constructor 可以自行安排賦值邏輯，但必須完整初始化所有元件欄位，而且**參數名稱與型別必須和 record 元件一致**；改名會編譯失敗。
 
 ### 額外的建構子
 
@@ -916,7 +917,7 @@ public record Todo(long id, String title, Priority priority, Instant createdAt) 
 }
 ```
 
-**規則：所有其他建構子的第一行必須是 `this(...)`，最終委派到 canonical constructor。**
+**規則：額外建構子必須透過 `this(...)` 最終委派到 canonical constructor。** Java 21 要把委派放在建構子本體開頭；Java 25 允許先驗證、計算參數再委派。
 這保證了驗證邏輯只有一份、且一定會執行。
 
 ### 可變元件：record **不會**幫你防禦性複製
@@ -2456,37 +2457,127 @@ List.copyOf(existing);                       // 不可變複本（第 05 章 5.1
 > ③ **`Set.of` / `Map.of` 的迭代順序是隨機化的**（每次 JVM 啟動不同）——
 >    刻意的，防止你依賴未定義的順序。第 11 章 11.18 節那個 flaky test 的來源之一。
 
-### Java 25 的新東西（先知道，不急著用）
+<a id="jdk-writing-by-version"></a>
 
-Java 25 是 Java 21 之後的下一個 LTS。幾個和寫程式方式有關的：
+### 同一個需求，Java 8／11／17／21／25 怎麼寫
 
-**① 精簡原始檔與實例 main 方法**——讓入門程式不用寫 `class` 和 `String[] args`：
+下表以各版的**正式功能**為準。已正式加入的寫法也可以沿用到後續版本。
+
+| 基準 | 同樣要印出問候、描述待辦或處理資料時可以怎麼寫 |
+|---|---|
+| Java 8 | 完整 `main`，先 `javac Hello.java` 再 `java Hello`；資料用一般類別，`instanceof` 後手動轉型；收集 Stream 用 `collect(Collectors.toList())` |
+| Java 11 | 同一個完整 `main` 可直接用 `java Hello.java`；區域變數可用 `var`（Java 10 起） |
+| Java 17 | 用 `record Todo(String title) {}` 表示資料，`obj instanceof Todo todo` 直接取得變數；用 `sealed` 限制子型別；Stream 可用 `toList()`，結果不可修改 |
+| Java 21 | 用 `case Todo(String title) -> title` 拆解 record；可搭配 `sealed` 讓編譯器檢查 `switch` 是否涵蓋所有分支；`Executors.newVirtualThreadPerTaskExecutor()` 已正式可用 |
+| Java 25 | 小程式可用 `void main()`；可用 `import module java.base;`；建構子可在 `super(...)` 前驗證；唯讀上下文可用 `ScopedValue` |
+
+#### 問候程式：完整入口與精簡入口
+
+分別將下列其中一段存成 `Hello.java`。兩版都印出 `Hello, World!`。
 
 ```java
-// Hello.java —— 這是完整的檔案內容
+// Java 8+：Java 8 用 javac Hello.java 後執行 java Hello
+// Java 11+ 也可直接執行 java Hello.java
+public class Hello {
+    public static void main(String[] args) {
+        System.out.println("Hello, World!");
+    }
+}
+```
+
+```java
+// Java 25 正式語法：java Hello.java
 void main() {
     IO.println("Hello, World!");
 }
 ```
 
-```bash
-java Hello.java
-```
+精簡原始檔由編譯器提供隱含類別，屬於未命名套件。`IO` 是 JDK 25 的 `java.lang.IO`。多套件專案可繼續使用通常的具名類別與 `public static void main(String[] args)`。
 
-主要是為了教學與腳本，**正式專案還是寫完整的類別**。
+#### 待辦標題：從型別檢查到 record pattern
 
-**② 模組匯入宣告**——一行匯入整個模組的公開套件：
+以下是同一個方法的三個版本。Java 8／11 的 `Todo` 是具有 `title()` 方法的普通類別；Java 17 起可定義成 `record Todo(String title) {}`。三種寫法都會在傳入 `null` 或其他型別時回傳 `"未知"`。
 
 ```java
-import module java.base;      // 取代一堆 java.util.*、java.io.* 的 import
+// Java 8／11
+static String describe(Object value) {
+    return value instanceof Todo ? ((Todo) value).title() : "未知";
+}
 ```
 
-**③ 彈性建構子本體**——`super()` 之前可以有陳述式：
+```java
+// Java 17（instanceof 模式在 16 正式加入）
+static String describe(Object value) {
+    return value instanceof Todo todo ? todo.title() : "未知";
+}
+```
 
 ```java
-public class Sub extends Base {
-    public Sub(int value) {
-        if (value < 0) {                    // 以前這行不能寫在 super() 之前
+// Java 21 正式語法，也可在 Java 25 使用
+static String describe(Object value) {
+    return switch (value) {
+        case Todo(String title) -> title;
+        case null, default -> "未知";
+    };
+}
+```
+
+#### 匯入 List 與 Stream：一般匯入與模組匯入
+
+下例有明確的類別可分別存成 `ImportsDemo.java` 執行。Java 21 的版本用兩個明確匯入，Java 25 也可以合成一個模組匯入。
+
+```java
+// Java 21：以這兩行開頭
+import java.util.List;
+import java.util.stream.Stream;
+```
+
+```java
+// Java 25：可用這一行代替上面兩行
+import module java.base;
+```
+
+```java
+// 接在所選的匯入後面
+public class ImportsDemo {
+    public static void main(String[] args) {
+        List<String> titles = Stream.of("買牛奶", "複習 Java").toList();
+        System.out.println(titles);
+    }
+}
+```
+
+模組匯入讓匯出的套件中的公開頂層型別可用簡名引用。遇到撞名時可用明確的單一型別匯入或完整限定名稱。
+
+#### 建構子驗證：輔助方法與 `super` 前置檢查
+
+兩版都可在呼叫父類別前拒絕負數。舊版可以把驗證包成傳給 `super` 的靜態方法；Java 25 可以把檢查放在呼叫前。下例兩個子類別可以放在同一檔案比較。
+
+```java
+class BaseQuantity {
+    BaseQuantity(int value) {
+        System.out.println(value);
+    }
+}
+
+// Java 8／11／17／21 可用的寫法
+class CheckedQuantity extends BaseQuantity {
+    CheckedQuantity(int value) {
+        super(requireNonNegative(value));
+    }
+
+    private static int requireNonNegative(int value) {
+        if (value < 0) {
+            throw new IllegalArgumentException("不可為負");
+        }
+        return value;
+    }
+}
+
+// Java 25 正式語法
+class CheckedQuantity25 extends BaseQuantity {
+    CheckedQuantity25(int value) {
+        if (value < 0) {
             throw new IllegalArgumentException("不可為負");
         }
         super(value);
@@ -2494,9 +2585,36 @@ public class Sub extends Base {
 }
 ```
 
-> 這三個都不影響既有程式碼。**知道它們存在就好**，
-> 等你的專案升到 Java 25 再考慮採用。
-> 升級前一定要看官方的 release notes——本書寫作時的資訊可能已經有變動。
+在 `super(...)` 或 `this(...)` 前，先用參數和區域變數做檢查或計算。此階段仍不能讀取正在建立的物件欄位或呼叫它的實例方法。
+
+#### Java 25 的正式功能與預覽功能
+
+| 狀態 | 功能 | 如何使用 |
+|---|---|---|
+| 正式 | 精簡原始檔與實例 `main`、模組匯入、彈性建構子、`ScopedValue` | 以 Java 25 為目標編譯，無需預覽旗標。`ScopedValue` 與 `ThreadLocal` 的程式對照見[第 08 章 8.13](./08-concurrency-thread-executor.md#scoped-value-java-25) |
+| 預覽 | primitive patterns（JEP 507）、Structured Concurrency（JEP 505） | 用 JDK 25 編譯及執行，兩步都要開預覽旗標。升版時要核對該版 API 與旗標 |
+
+使用預覽功能編譯出的 class 必須由同一個 JDK 主版本執行，例如 25 的預覽 class 要用 25 搭配 `--enable-preview`。升到下一版時應以該版 API 重新編譯，並重新確認預覽狀態。
+
+下面用 primitive pattern 判斷 `long` 能否無損轉成 `int`，並直接綁定轉換結果。存成 `PreviewDemo.java`：
+
+```java
+public class PreviewDemo {
+    public static void main(String[] args) {
+        long value = 42L;
+        if (value instanceof int number) {
+            System.out.println(number);
+        }
+    }
+}
+```
+
+```bash
+javac --release 25 --enable-preview PreviewDemo.java
+java --enable-preview PreviewDemo      # 42
+```
+
+上一個 LTS 到 25 之間也有已正式加入的功能，例如 Java 22 的未具名變數與模式 `_`，以及 Java 24 的 [Stream Gatherers](https://openjdk.org/jeps/485)。確定目標版本後，再選該版能編譯的寫法。見 [Java 語言版本表](https://docs.oracle.com/en/java/javase/25/language/java-language-changes-summary.html)及 [JDK 25 遷移指南](https://docs.oracle.com/en/java/javase/25/migrate/significant-changes-jdk-25.html)。
 
 ### 一個消失了的特性：字串樣板
 
@@ -2513,23 +2631,62 @@ Java 21／22 有過 `STR."Hello \{name}"` 的預覽功能，後來被移除重�
 
 ## 12.14 版本對照：你現在能用什麼
 
+<a id="jdk-api-version-notes"></a>
+
+### 本課常見語法與 API 的最低正式版本
+
+下表的最低版本只針對該項語法或 JDK API。完整範例若同時使用多項功能，必須滿足其中最高的版本需求；Spring Boot 與第三方函式庫也要符合各自的版本需求。
+
+| 寫法 | 最低正式 JDK | 較舊版本的選擇與差異 |
+|---|---|---|
+| Lambda、Stream、Optional、`java.time` | 8 | 7 以前需匿名類別、迴圈或舊日期 API |
+| `List.of/Set.of/Map.of`、`Map.entry` | 9 | 8 可用 `Arrays.asList` 或自行建立集合；`Arrays.asList` 固定大小但可 `set`，且允許 null |
+| `List.copyOf/Set.copyOf/Map.copyOf` | 10 | 8 可先複製到新集合，再包 `Collections.unmodifiableXxx`；若要符合 `copyOf` 的 null 拒絕規則，還要驗證元素、key 與 value |
+| 區域變數 `var` | 10 | 寫出明確型別；Lambda 參數中的 `var` 是 11 起，與一般區域變數不同 |
+| `String.strip/isBlank/lines/repeat` | 11 | 8 可自行實作；`trim()` 只處理較窄的字元範圍，須先確認空白規則 |
+| `Path.of`、`Files.readString/writeString` | 11 | `Paths.get` 自 7 可用；讀寫可用 `Files.newBufferedReader/newBufferedWriter` 並指定 UTF-8 |
+| `InputStream.readNBytes(int)` | 11 | 8 可用有界的讀取迴圈；`readNBytes(byte[], off, len)` 則在 9 就有 |
+| 箭頭 `switch`、`switch` expression、`yield` | 14 | 8／11 用冒號 case、`break` 與區域變數，或在各分支 `return` |
+| 文字區塊、`String.formatted` | 15 | 字串串接搭配 `\n`，或 `String.format`；要保留換行與縮排語意 |
+| `record`、`instanceof T value` | 16 | 普通類別；`instanceof` 後明確轉型 |
+| `Stream.toList()`、`mapMulti` | 16 | 8 用 collector、`flatMap`；若需要可修改結果，可用 `collect(Collectors.toCollection(ArrayList::new))` |
+| `sealed`、`HexFormat`、`RandomGenerator` | 17 | 普通繼承結構、手寫 hex 編碼、`Random` 或自訂亂數介面；繼承限制須另外管理 |
+| `Math.ceilDiv` | 18 | 舊版可由商與餘數計算向上取整；以 `(total + size - 1) / size` 處理非負整數時，仍須避免加法溢位 |
+| `Collectors.filtering/flatMapping`、`Optional.or/stream/ifPresentOrElse` | 9 | 8 自行組合 collector 或用條件分支；分組前過濾與分組後過濾的空組行為不同 |
+| `Collectors.toUnmodifiableList`／`teeing` | 10／12 | 8 可自行收集、包不可修改視圖或合併統計結果；要檢查 null 規則與是否接受重複走訪 |
+| `Optional.orElseThrow()`（無參數）／`Optional.isEmpty()` | 10／11 | 8 可用 `orElseThrow(NoSuchElementException::new)`／`!isPresent()` |
+| `CompletableFuture.orTimeout/completeOnTimeout` | 9 | 8 可另設排程；`Future.get(timeout, unit)` 只限制該次等待，取消底層工作須另處理 |
+| `ExecutorService.close()` 與執行緒池的 try-with-resources | 19 | 8～17 用 `finally` 裡的 `shutdown`／`awaitTermination`，逾時或中斷時再處理取消 |
+| `Thread.sleep(Duration)`、`Thread.threadId()` | 19 | 舊版用毫秒／奈秒多載、`getId()`；將 Duration 轉成毫秒時要考慮精度及範圍 |
+| JDK `HttpClient`／其 `close()` 與 try-with-resources | 11／21 | 11～20 建立及共用 client，讀完並關閉串流本文；8 可用其他 HTTP client |
+| 虛擬執行緒、一般 `List.getFirst/getLast/reversed`、`switch` 模式、record pattern | 21 | 17 用平台執行緒、List 索引與舊模式寫法；`Deque.getFirst/getLast` 與 `Comparator.reversed` 早已存在 |
+| 精簡原始檔與實例 `main`、模組匯入、彈性建構子、`ScopedValue` | 25 | 用傳統入口、明確 import、靜態驗證方法，以及管理好生命週期的 `ThreadLocal`；後者的綁定與可變性不同 |
+
+`Stream.toList()` 保證結果不可修改。`Collectors.toList()` 的 API 契約未保證結果的可修改性；如果舊版也要不可修改，應明確包裝結果。一般 `List.getFirst()` 在空清單拋 `NoSuchElementException`，`get(0)` 則拋 `IndexOutOfBoundsException`。版本替換時也要驗證這些行為。
+
+語言功能的正式／預覽狀態見 [Java 語言版本表](https://docs.oracle.com/en/java/javase/25/language/java-language-changes-summary.html)。API 的加入時間可查官方文件中的 Since，例如 [String](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/String.html)、[Optional](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/Optional.html)、[Collectors](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Collectors.html)。
+
+### 依版本查看
+
 ```
 Java 8  (2014, LTS)  ── lambda、Stream、Optional、java.time、介面 default 方法
                         ⚠️ 仍有大量企業系統停在這裡
 Java 9  (2017)       ── 模組系統、List.of/Set.of/Map.of、Optional.or/stream、
                         私有介面方法、Stream.takeWhile/dropWhile
-Java 10 (2018)       ── var
+Java 10 (2018)       ── var、List.copyOf/Set.copyOf/Map.copyOf
 Java 11 (2018, LTS)  ── String.isBlank/strip/lines/repeat、Files.readString/writeString、
                         HttpClient、單檔案執行、lambda 參數的 var
+Java 12 (2019)       ── Collectors.teeing
 Java 14 (2020)       ── switch expression（正式）、有用的 NPE 訊息
 Java 15 (2020)       ── 文字區塊（正式）、String.formatted
 Java 16 (2021)       ── record（正式）、instanceof 模式（正式）、Stream.toList
 Java 17 (2021, LTS)  ── sealed（正式）、HexFormat、強封裝 JDK 內部 API
-                        ⚠️ 目前企業的主流基準
+Java 18 (2022)       ── Math.ceilDiv、標準 API 的預設 Charset 改為 UTF-8
+Java 19 (2022)       ── ExecutorService.close、Thread.sleep(Duration)、threadId
 Java 21 (2023, LTS)  ── switch 模式比對（正式）、record pattern（正式）、
                         虛擬執行緒、Sequenced Collections、Math.clamp
-                        ⚠️ 新專案的建議起點
 Java 22 (2024)       ── 未具名變數與模式 `_`（正式）
+Java 24 (2025)       ── Stream Gatherers（正式）、改善 synchronized 的虛擬執行緒 pinning
 Java 25 (2025, LTS)  ── 精簡原始檔與實例 main、模組匯入宣告、彈性建構子本體、
                         Scoped Values（正式）、精簡物件標頭
 ```
@@ -2538,7 +2695,7 @@ Java 25 (2025, LTS)  ── 精簡原始檔與實例 main、模組匯入宣告�
 
 | 你的基準版本 | 這一章可以用的 |
 |---|---|
-| **Java 8** | ❌ 都不行。**升級的優先度高於任何重構**（第 00 章 0.4 節） |
+| **Java 8** | Lambda、Stream、Optional、java.time；本章的 record／sealed／模式語法需換回普通類別與條件分支 |
 | **Java 11** | `var`、`String` 新方法、`Files.readString` |
 | **Java 17** | ➕ 文字區塊、`record`、`instanceof` 模式、`sealed`、`Stream.toList` |
 | **Java 21** | ➕ switch 模式比對、record pattern、Sequenced Collections、虛擬執行緒 |
@@ -2715,6 +2872,8 @@ public String getName(Object obj) {
 ```java
 package com.example.todo.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.time.Instant;
 import java.util.Objects;
 import java.util.Optional;
@@ -2762,14 +2921,17 @@ public sealed interface Completion {
         return new Cancelled(at, reason);
     }
 
+    @JsonIgnore
     default boolean isPending() {
         return this instanceof Pending;
     }
 
+    @JsonIgnore
     default boolean isDone() {
         return this instanceof Done;
     }
 
+    @JsonIgnore
     default boolean isFinished() {
         return !isPending();
     }
@@ -2801,6 +2963,8 @@ package com.example.todo.model;
 
 import com.example.todo.exception.InvalidTodoException;
 import com.example.todo.exception.TodoAlreadyDoneException;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 import java.time.Instant;
 import java.util.LinkedHashSet;
@@ -2876,10 +3040,12 @@ public record Todo(
 
     // ── 查詢（從元件算出來，不新增狀態） ──
 
+    @JsonIgnore
     public boolean isDone() {
         return completion.isDone();
     }
 
+    @JsonIgnore
     public boolean isPending() {
         return completion.isPending();
     }
@@ -3376,6 +3542,8 @@ public final class CommandParser {
 
 ### `Json`：序列化 sealed 型別
 
+`Todo.isDone/isPending` 與 `Completion` 的布林查詢方法是從狀態算出的輔助方法。上面的完整模型用 `@JsonIgnore` 排除它們，避免 Jackson 把它們當成 JavaBean getter，多輸出 `done/pending/finished`。持久化欄位由 record 元件與明確的 `state` 型別識別碼決定。
+
 `Completion` 是 sealed，Jackson 需要知道怎麼區分三種子型別。
 用多型型別資訊（第 07 章 7.17 節說過「不要用 Default Typing」，
 但**明確宣告的多型是安全的**）：
@@ -3477,7 +3645,19 @@ public final class TodoJsonCodec {
                 Set<String> tags = tags(row);
                 Todo todo;
                 if (row.has("completion")) {
-                    // 包含 null／未知 state 的新格式須失敗，不可退回 legacy 猜測。
+                    // 新格式也先驗證 JSON 型別，避免 Jackson 把數字轉成時間或原因文字。
+                    JsonNode completion = row.get("completion");
+                    if (!completion.isObject())
+                        throw new IllegalArgumentException("completion 必須是物件");
+                    switch (text(completion, "state")) {
+                        case "PENDING" -> { }
+                        case "DONE" -> text(completion, "at");
+                        case "CANCELLED" -> {
+                            text(completion, "at");
+                            text(completion, "reason");
+                        }
+                        default -> throw new IllegalArgumentException("未知 completion state");
+                    }
                     todo = Json.mapper().treeToValue(row, Todo.class);
                 } else {
                     legacy = true;

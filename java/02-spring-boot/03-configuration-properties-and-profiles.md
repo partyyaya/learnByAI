@@ -12,6 +12,8 @@
 >
 > 這三件事都不是「不會寫程式」，而是**不知道設定是怎麼被讀取、被覆寫、被曝露的**。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。不可變設定的 `record` 語法自 JDK 16、`List.copyOf/Map.copyOf` 自 10、`String.isBlank` 自 11、`formatted`／文字區塊自 15 可用。`@DefaultValue` 與建構子綁定是 Spring Boot 的功能，使用 Boot 3.x 的最低 JDK 仍是 17。
+
 ---
 
 ## 3.1 學習目標
@@ -432,8 +434,6 @@ spring.datasource.url          →    SPRING_DATASOURCE_URL
 spring.profiles.active         →    SPRING_PROFILES_ACTIVE
 shop.notification.email-from   →    SHOP_NOTIFICATION_EMAILFROM
                                     （連字號直接刪掉！）
-                               或   SHOP_NOTIFICATION_EMAIL_FROM
-                                    （底線也可以，relaxed binding 兩者都認）
 shop.gateways[0].name          →    SHOP_GATEWAYS_0_NAME
 ```
 
@@ -441,7 +441,7 @@ shop.gateways[0].name          →    SHOP_GATEWAYS_0_NAME
 
 ```
 1. 點（.）→ 底線（_）
-2. 連字號（-）→ 刪除，或轉底線
+2. 連字號（-）→ 刪除
 3. 全部大寫
 4. 陣列索引 [0] → _0_
 ```
@@ -694,6 +694,7 @@ public class NotificationService {
 package com.example.shop.config;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.DefaultValue;
 
 import java.time.Duration;
 import java.util.List;
@@ -701,9 +702,9 @@ import java.util.Map;
 
 @ConfigurationProperties(prefix = "shop.notification")
 public record NotificationProperties(
-        boolean enabled,
+        @DefaultValue("true") boolean enabled,
         String emailFrom,
-        int retryCount,
+        @DefaultValue("3") int retryCount,
         Duration timeout,
         List<Channel> channels,
         Map<String, String> templates) {
@@ -712,7 +713,6 @@ public record NotificationProperties(
 
     /** 緊湊建構子：套用預設值與驗證 */
     public NotificationProperties {
-        retryCount = retryCount == 0 ? 3 : retryCount;
         timeout = timeout == null ? Duration.ofSeconds(5) : timeout;
         channels = channels == null || channels.isEmpty() ? List.of(Channel.EMAIL) : List.copyOf(channels);
         templates = templates == null ? Map.of() : Map.copyOf(templates);
@@ -729,6 +729,8 @@ public record NotificationProperties(
 1. **不可變**——沒有 setter，執行期不可能被改掉。
 2. **程式碼少一半**——不用寫 getter / setter。
 3. **緊湊建構子可以做預設值與驗證**——而且**在啟動時就執行**。
+
+預設的啟用狀態與重試次數使用 `@DefaultValue`，只在設定缺漏時套用。明確寫 `retry-count=0` 應保留 0，才能表示不重試。改用 record 後，呼叫端也要把 `isEnabled()`、`getChannels()` 等 getter 換成 `enabled()`、`channels()` 等元件存取方法。
 
 > **Spring Boot 3 的規則**：`@ConfigurationProperties` 類別如果**只有一個帶參數的建構子**，
 > 就自動使用建構子綁定，不需要 `@ConstructorBinding`。
@@ -908,8 +910,10 @@ shop:
 
 ```bash
 SHOP_NOTIFICATION_EMAILFROM=a@b.com     # ✅
-SHOP_NOTIFICATION_EMAIL_FROM=a@b.com    # ✅
+SHOP_NOTIFICATION_EMAIL_FROM=a@b.com    # 此例在 Boot 3.5.0 的相容查找也能命中，正式設定優先用上一行
 ```
+
+環境變數採用官方轉換規則：點換底線、刪除連字號、轉成大寫。相容查找可以接受部分其他拼法，但不應將「任意插入底線」當成一般規則，尤其有巢狀屬性或索引時應實測。[Spring Boot 環境變數綁定規則](https://docs.spring.io/spring-boot/3.5/reference/features/external-config.html#features.external-config.typesafe-configuration-properties.relaxed-binding.environment-variables)
 
 ### 官方建議：yml 裡一律用 kebab-case
 
@@ -1176,7 +1180,7 @@ logging:
 >     activate:
 >       on-profile: dev
 > ```
-> 這是升版時的靜默失敗來源——**舊語法不會報錯，只是不生效**。
+> Boot 3.5 會以 `InvalidConfigDataPropertyException` 拒絕舊的 `spring.profiles` 文件啟用語法，並提示改用 `spring.config.activate.on-profile`。
 
 **建議：用獨立檔案，不要用單檔多文件。** 理由：
 

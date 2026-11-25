@@ -254,7 +254,7 @@ mvn exec:java -Dexec.mainClass=com.example.toolbox.DateTimeExamples
 # 換成其他範例的類別名稱即可；第一次會下載依賴。
 ```
 
-需要一次驗證本文所有範例時，直接用 repo 內的 `verification/toolbox/run.py`（14.27）。
+將後續範例依註明的檔名加入同一個專案，再用 `mvn compile` 編譯。各項邊界情境的驗證練習見 14.27。
 
 <a id="tool-java-time"></a>
 
@@ -972,6 +972,8 @@ public class HtmlExamples {
 
 **`src/main/java/com/example/toolbox/HttpExamples.java`**
 
+> **【JDK 11+／21+】** `java.net.http.HttpClient` 在 11 正式加入，但下面把 client 放進 try-with-resources 的寫法需要 21。若改在 11／17 使用，將 client 宣告移到資源括號外，沿用 `fetch` 並關閉每次回應的 InputStream；client 由服務共用。`readNBytes(int)` 需要 11。
+
 ```java
 package com.example.toolbox;
 
@@ -1407,19 +1409,15 @@ public class CheckoutPreviewExamples {
 
 ## 14.27 執行驗證與練習
 
-repo 附有 `verification/toolbox/`，直接擷取**目前這份 Markdown**的 POM 與 Java 區塊，
-編譯所有範例，再檢查日期、幣別、過期報價、國家／電話、Unicode、JSON、CSV、Excel、PDF、
-HTML 清理、快取到期、設定與驗證的邊界；HTTP 用本機 fixture，不需要外部服務／Docker。
+先依 14.3 建立 toolbox-lab，將想練習的完整範例存成對應的 Java 檔案。從該專案根目錄編譯，再選一個 main class 執行：
 
 ```bash
-# 從 learnbyai 根目錄執行；第一次需要網路下載 Maven 相依套件。
-python3 java/01-java-core/verification/toolbox/run.py
-# 已下載後可離線重跑。
-python3 java/01-java-core/verification/toolbox/run.py --offline
+# 從 toolbox-lab 根目錄執行；第一次需要網路下載 Maven 相依套件。
+mvn compile
+mvn exec:java -Dexec.mainClass=com.example.toolbox.DateTimeExamples
 ```
 
-驗證說明與當次結果見 [verification/toolbox/README.md](./verification/toolbox/README.md)。
-這個工具不會修改 Todo 專案，也不證明真實匯率／金流／SMTP 服務已串接成功。
+編譯後，依下方情境補上測試。日期與報價用固定 Clock，HTTP 可用本機測試伺服器，檔案輸出用暫存目錄並重新讀取結果。
 
 練習：
 
@@ -1467,6 +1465,8 @@ python3 java/01-java-core/verification/toolbox/run.py --offline
 | HTML、HTTP | [jsoup](https://jsoup.org/)、[JDK HttpClient](https://docs.oracle.com/en/java/javase/21/docs/api/java.net.http/java/net/http/HttpClient.html) |
 | 快取、驗證、設定 | [Caffeine](https://github.com/ben-manes/caffeine)、[Hibernate Validator](https://hibernate.org/validator/)、[SnakeYAML](https://github.com/snakeyaml/snakeyaml) |
 | 日誌、重試、單位 | [SLF4J](https://www.slf4j.org/manual.html)、[Resilience4j Retry](https://resilience4j.readme.io/docs/retry)、[Indriya](https://github.com/unitsofmeasurement/indriya) |
+
+> **JDK 版本備註**：本章完整專案使用 JDK 21。`var`／`List.copyOf` 自 10、`readNBytes(int)`／JDK HttpClient 自 11、`record`／`Stream.toList()` 自 16、`HexFormat` 自 17 可用。HttpClient 的 try-with-resources 需 21，外部函式庫另有自己的最低 JDK 與相依版本。
 
 ---
 

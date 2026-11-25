@@ -8,6 +8,8 @@
 > 所以這章的重點不是「怎麼開執行緒」（那很簡單），而是**怎麼在錯誤發生前就看出它**，
 > 以及**怎麼用高階工具讓自己少寫低階的鎖**。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。`CompletableFuture` 自 JDK 8、`orTimeout/completeOnTimeout` 自 9、`ExecutorService.close()`／`Thread.sleep(Duration)`／`threadId()` 自 19 可用。虛擬執行緒在 21 正式加入，`ScopedValue` 在 25 正式加入；結構化併發分別標出 21 與 25 的預覽寫法。
+
 ---
 
 ## 8.1 學習目標
@@ -2384,7 +2386,7 @@ public class ExecutorLifecycle {
         System.out.println("\n=== try-with-resources（Java 19+）===");
         try (var pool4 = newPool()) {
             submitTasks(pool4, 4);
-        }   // close() = shutdown() + 無限等待 awaitTermination()（會被中斷打斷）
+        }   // close() 等待終止；若等待被中斷，會嘗試取消任務，繼續等終止後再恢復中斷旗標
         System.out.println("  離開 try 區塊時已全部完成");
 
         // ===== 監控指標 =====
@@ -3148,59 +3150,54 @@ public class ThreadLocalInheritance {
                     ① 手動把上下文當參數傳給任務（最可靠）
                     ② 用 TaskDecorator 包裝任務，在執行前複製上下文
                        （Spring 的 ThreadPoolTaskExecutor.setTaskDecorator）
-                    ③ Java 25：用 ScopedValue（見下方）
+                    ③ Java 25：同一呼叫鏈可用 ScopedValue 綁定；跨到一般執行緒池仍需顯式傳遞
                 """);
     }
 }
 ```
 
-### 【Java 25】`ScopedValue`：`ThreadLocal` 的現代替代品
+<a id="scoped-value-java-25"></a>
+
+### 【Java 25】`ScopedValue`：唯讀上下文的作用域綁定
+
+用兩種方式把請求的 trace ID 傳到較深的呼叫層。`ThreadLocal` 的值要在 `finally` 裡清除，`ScopedValue` 的綁定會在 `run(...)` 結束時自動解除。兩段都存成 `TraceDemo.java`，分別在該版 JDK 執行 `java TraceDemo.java`。
 
 ```java
-public class ScopedValueDemo {
+// Java 21：ThreadLocal
+public class TraceDemo {
+    private static final ThreadLocal<String> TRACE_ID = new ThreadLocal<>();
 
     public static void main(String[] args) {
-        System.out.println("""
-                Java 25 正式加入 ScopedValue（JEP 506），解決 ThreadLocal 的三個問題：
+        TRACE_ID.set("trace-001");
+        try {
+            handleRequest();
+        } finally {
+            TRACE_ID.remove();
+        }
+    }
 
-                  ① 不可變 —— 沒有 set()，只能在一個明確的範圍內綁定值
-                  ② 自動清理 —— 離開範圍就失效，不可能忘記 remove()
-                  ③ 對虛擬執行緒友善 —— 不需要每條執行緒各存一份
-
-                寫法（Java 25）：
-
-                    private static final ScopedValue<RequestContext> CONTEXT =
-                            ScopedValue.newInstance();
-
-                    // 綁定值並在範圍內執行
-                    ScopedValue.where(CONTEXT, new RequestContext("trace-001", "u001"))
-                               .run(() -> handleRequest());
-
-                    // 範圍內的任何地方都讀得到
-                    void repositoryLayer() {
-                        String traceId = CONTEXT.get().traceId();
-                    }
-
-                    // 範圍外讀取 → 丟 NoSuchElementException（比 ThreadLocal 回 null 好）
-
-                對照表：
-                  ┌─────────────┬──────────────┬──────────────┐
-                  │             │ ThreadLocal  │ ScopedValue  │
-                  ├─────────────┼──────────────┼──────────────┤
-                  │ 可變        │ ✅ set()      │ ❌ 不可變     │
-                  │ 需手動清理  │ ✅ remove()   │ ❌ 自動      │
-                  │ 洩漏風險    │ 高            │ 無           │
-                  │ 百萬虛擬執行緒│ 記憶體壓力大  │ 幾乎無成本   │
-                  │ 傳給子任務  │ 需 Inheritable│ 結構化併發自動│
-                  │ 可用版本    │ Java 1.2+     │ Java 25+     │
-                  └─────────────┴──────────────┴──────────────┘
-
-                → 本課基準是 Java 21，所以練習專案仍用 ThreadLocal。
-                  但升級到 25 之後，新的上下文傳遞一律該用 ScopedValue。
-                """);
+    private static void handleRequest() {
+        System.out.println(TRACE_ID.get());
     }
 }
 ```
+
+```java
+// Java 25 正式 API：ScopedValue
+public class TraceDemo {
+    private static final ScopedValue<String> TRACE_ID = ScopedValue.newInstance();
+
+    public static void main(String[] args) {
+        ScopedValue.where(TRACE_ID, "trace-001").run(TraceDemo::handleRequest);
+    }
+
+    private static void handleRequest() {
+        System.out.println(TRACE_ID.get());
+    }
+}
+```
+
+兩版都印出 `trace-001`。`ScopedValue` 的綁定是唯讀的。如果綁的是可變物件，物件本身仍可修改。可用 `isBound()` 查是否有綁定，直接對未綁定的 key 呼叫 `get()` 會拋 `NoSuchElementException`。普通的執行緒池任務需要顯式傳遞上下文，結構化併發的子任務則可繼承綁定。需要可變的執行緒區域狀態時，依原用途使用 `ThreadLocal`。[JDK 25 ScopedValue API](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ScopedValue.html)
 
 ---
 
@@ -3554,7 +3551,7 @@ public class StructuredConcurrencyPreview {
 import java.util.List;
 import java.util.concurrent.*;
 
-/** 在等 StructuredTaskScope 正式化之前，用虛擬執行緒 + invokeAll 達到類似效果 */
+/** 用虛擬執行緒並行查詢，再比較等待全部與失敗取消兩種策略 */
 public class ParallelFetch {
 
     record User(String id, String name) { }
@@ -3562,10 +3559,8 @@ public class ParallelFetch {
     record Dashboard(User user, List<Order> orders, int unreadCount) { }
 
     /**
-     * ✅ 用 invokeAll + 虛擬執行緒：
-     *   - try-with-resources 保證執行緒池關閉
-     *   - invokeAll 等全部完成
-     *   - 任一失敗時，其餘的 Future 會在 close() 時被取消
+     * 使用 submit 並行啟動，再依序 get 結果。
+     * close() 會等待已提交任務結束，不會因某個 get() 失敗就取消其他任務。
      */
     static Dashboard loadDashboard(String userId) throws Exception {
         try (var scope = Executors.newVirtualThreadPerTaskExecutor()) {
@@ -3574,7 +3569,7 @@ public class ParallelFetch {
             Future<List<Order>> ordersF = scope.submit(() -> fetchOrders(userId));
             Future<Integer> unreadF = scope.submit(() -> fetchUnreadCount(userId));
 
-            // get() 會在任一失敗時丟 ExecutionException
+            // 依序讀取結果；輪到的 Future 失敗時會拋 ExecutionException
             return new Dashboard(userF.get(), ordersF.get(), unreadF.get());
         }
     }
@@ -3582,29 +3577,32 @@ public class ParallelFetch {
     /** 失敗時要快速失敗並取消其他任務 */
     static Dashboard loadDashboardFailFast(String userId) throws Exception {
         try (var scope = Executors.newVirtualThreadPerTaskExecutor()) {
-            List<Callable<Object>> tasks = List.of(
-                    () -> fetchUser(userId),
-                    () -> fetchOrders(userId),
-                    () -> fetchUnreadCount(userId));
+            var completed = new ExecutorCompletionService<Part>(scope);
+            var futures = new java.util.ArrayList<Future<Part>>();
+            try {
+                futures.add(completed.submit(() -> new Part(0, fetchUser(userId))));
+                futures.add(completed.submit(() -> new Part(1, fetchOrders(userId))));
+                futures.add(completed.submit(() -> new Part(2, fetchUnreadCount(userId))));
 
-            List<Future<Object>> futures = scope.invokeAll(tasks);
-
-            // 檢查是否有失敗
-            for (Future<Object> f : futures) {
-                if (f.isCancelled()) {
-                    throw new IllegalStateException("子任務被取消");
+                Object[] values = new Object[3];
+                for (int i = 0; i < futures.size(); i++) {
+                    // 依完成順序取結果，任何任務失敗都會在這裡被觀察到
+                    Part part = completed.take().get();
+                    values[part.index()] = part.value();
                 }
-                f.get();       // 有例外會在這裡丟出
-            }
 
-            @SuppressWarnings("unchecked")
-            Dashboard result = new Dashboard(
-                    (User) futures.get(0).get(),
-                    (List<Order>) futures.get(1).get(),
-                    (Integer) futures.get(2).get());
-            return result;
+                @SuppressWarnings("unchecked")
+                List<Order> orders = (List<Order>) values[1];
+                return new Dashboard((User) values[0], orders, (Integer) values[2]);
+            } finally {
+                for (Future<Part> future : futures) {
+                    future.cancel(true);
+                }
+            }
         }
     }
+
+    private record Part(int index, Object value) { }
 
     public static void main(String[] args) throws Exception {
         long start = System.currentTimeMillis();
@@ -3615,7 +3613,7 @@ public class ParallelFetch {
 
         System.out.println("\n--- 其中一個失敗 ---");
         try {
-            loadDashboard("fail");
+            loadDashboardFailFast("fail");
         } catch (ExecutionException e) {
             System.out.println("捕捉到: " + e.getCause().getMessage());
         }
@@ -3648,6 +3646,8 @@ Dashboard[user=User[id=u001, name=小明], orders=[Order[id=ORD-1, amount=29900]
 --- 其中一個失敗 ---
 捕捉到: 使用者服務 503
 ```
+
+這裡的 fail-fast 是依完成順序觀察失敗，並立即對其他 Future 發出中斷取消。任務仍須配合中斷、設定 IO 逾時，因為 executor 的 `close()` 會等待任務真正結束。`invokeAll` 則會等所有任務完成或取消後才回傳，無法提供這個失敗即取消的行為。[ExecutorService API](https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/concurrent/ExecutorService.html)
 
 ---
 
@@ -4758,7 +4758,7 @@ Repository 現有筆數: 222
 | 24 | `if (!map.containsKey(k)) map.put(k, v)` | `putIfAbsent` / `computeIfAbsent` |
 | 25 | 頻繁呼叫 `ConcurrentLinkedQueue.size()` | 自己維護 `LongAdder` |
 | 26 | 併發寫同一個檔案 | 集中到單執行緒，或用檔案鎖 |
-| 27 | 期待 `InheritableThreadLocal` 在執行緒池中傳遞 | 手動傳、用 `TaskDecorator`、或 `ScopedValue` |
+| 27 | 期待 `InheritableThreadLocal` 在執行緒池中傳遞 | 手動傳或用 `TaskDecorator`；也可在任務入口重新綁定 `ScopedValue` |
 
 ---
 

@@ -14,6 +14,8 @@
 >
 > 這一章會把這些一次講清楚，並給出一份可以直接抄的上線檢查清單。
 
+> **JDK 版本備註**：本章主線使用 Boot 3.5／JDK 21。以 `--release 21` 建置的 class 需要 JRE/JDK 21+，Docker 執行階段也須配合。虛擬執行緒需 JDK 21+；JDK 21～23 與 24+ 的 pinning 行為另註。Boot 的 AOT、GraalVM native image 與一般 JVM 執行各有版本需求。
+
 ---
 
 ## 8.1 學習目標

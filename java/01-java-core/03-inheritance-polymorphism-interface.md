@@ -6,6 +6,8 @@
 > 但這章同時也是最容易被誤用的：**繼承常被拿來「複用程式碼」，那是錯的用法。**
 > 我們會把「什麼時候該用繼承、什麼時候該用組合、什麼時候該用介面」講到你能直接套在專案上。
 
+> **JDK 版本備註**：本章主線使用 JDK 21。介面 `default/static` 方法自 JDK 8、介面 `private` 方法與 `List.of` 自 9、`List.copyOf` 自 10、`formatted`／文字區塊自 15、`record`／`instanceof` 模式自 16、`sealed` 自 17、`switch` 型別模式自 21 正式可用。JDK 25 的建構子規則另見下方對照。
+
 ---
 
 ## 3.1 學習目標
@@ -62,7 +64,7 @@ public class SalesEmployee extends Employee {
     private final int commissionPercent;  // 抽成百分比
 
     public SalesEmployee(String name, long baseSalary, long salesAmount, int commissionPercent) {
-        super(name, baseSalary);           // ① 必須先呼叫父類別建構子，且必須是第一行
+        super(name, baseSalary);           // ① Java 21 正式語法要求先呼叫父類別建構子
         if (commissionPercent < 0 || commissionPercent > 100) {
             throw new IllegalArgumentException("抽成需在 0~100，收到: " + commissionPercent);
         }
@@ -96,11 +98,13 @@ public class InheritDemo {
 ### `super` 的兩種用途
 
 ```java
-super(args);              // 呼叫父類別建構子（必須在子類別建構子的第一行）
+super(args);              // 呼叫父類別建構子（Java 21 要放在建構子本體的開頭）
 super.methodName();       // 呼叫父類別的方法實作
 ```
 
 ### 隱含的 `super()`
+
+Java 25 正式允許先驗證參數再顯式呼叫 `super(...)` 或 `this(...)`。兩種版本的寫法見[第 12 章逐版對照](./12-modern-java-records-sealed-pattern.md#jdk-writing-by-version)。
 
 ```java
 public class ImplicitSuper {
@@ -2886,7 +2890,7 @@ public class NotificationRoutingDemo {
 
 ## 3.18 驗收清單
 
-- [ ] 我能說出 `super(...)` 必須在第一行，以及父類別沒有無參數建構子時的後果。
+- [ ] 我能解釋 Java 21 與 Java 25 對 `super(...)` 位置的限制，以及父類別沒有無參數建構子時的後果。
 - [ ] 我能說出方法覆寫的四條規則（簽章、回傳型別、存取權、例外）。
 - [ ] 我一律加 `@Override`，也知道漏加時 `equals` 會怎麼失效。
 - [ ] 我能解釋多型如何讓「新增實作不用改既有程式碼」。

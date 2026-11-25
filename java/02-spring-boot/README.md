@@ -16,7 +16,7 @@
 - 用 Actuator 做健康檢查與指標，把服務接上監控。
 - 依「下游容量」定出執行緒池大小與逾時，而不是留著預設值上線。
 - 寫出跑得快的測試：分清楚 `@SpringBootTest` 與切片測試的差別。
-- 規劃一次 Spring Boot 2 → 3 的遷移，並執行四份除錯 SOP。
+- 規劃 Spring Boot 2 → 3 → 4 的遷移，並執行四份除錯 SOP。
 
 ## 前置知識
 
@@ -38,7 +38,7 @@
 | 06 | [06-scheduling-async-and-events.md](./06-scheduling-async-and-events.md) | 排程、非同步與事件 | `@Scheduled`、`@Async` 與執行緒池設定、`ApplicationEvent`、事務事件監聽 |
 | 07 | [07-testing-spring-boot.md](./07-testing-spring-boot.md) | Spring Boot 測試策略 | `@SpringBootTest` vs 切片測試、**測試 context 快取**、`@MockitoBean`、Testcontainers |
 | 08 | [08-packaging-docker-and-deployment.md](./08-packaging-docker-and-deployment.md) | 打包與部署 | 可執行 jar 結構、分層 Dockerfile、**執行緒池與逾時調參**、優雅關閉、健康檢查 |
-| 09 | [09-spring-boot-3-and-pitfalls.md](./09-spring-boot-3-and-pitfalls.md) | Spring Boot 3 與常見雷點 | Jakarta 命名空間遷移、設定變更清單、**四份除錯 SOP** |
+| 09 | [09-spring-boot-3-and-pitfalls.md](./09-spring-boot-3-and-pitfalls.md) | Spring Boot 2 → 3 → 4 與常見雷點 | Jakarta 命名空間遷移、Boot 4 寫法、設定變更、**四份除錯 SOP** |
 
 ### 怎麼讀
 
@@ -148,6 +148,12 @@
 ## 關於書裡的程式碼
 
 **基準版本**：Java 21 / Spring Boot 3.5（Spring Framework 6.2）/ Maven 3.9。
+另有 [Boot 2.7／3.x／4.0 寫法對照與 JDK 25 的最小 MVC 專案](./09-spring-boot-3-and-pitfalls.md#boot-writing-by-version)。
+各章開頭另列 JDK 版本備註。`【Boot 3.2+】` 代表框架版本，`【JDK 21+】` 代表語言或標準 API 需求；必須同時滿足。語法及 API 的較舊版本替代方式見 [Java 版本速查](../01-java-core/12-modern-java-records-sealed-pattern.md#jdk-api-version-notes)。
+
+這次也核對 JDK 21／25 的測試及建置工具支援版本，並在遷移章補正 JAXB 舊命名空間的處理階段；版本備註未取代實際 Spring／外部服務的整合測試。
+
+最近一輪跨章驗證以 JDK 21／Boot 3.5.0 執行兩站共 28 個測試，涵蓋原文的 9 個 audit 自動組態測試、5 個限流切面測試、4 個 JDK／CGLIB 代理參數測試、2 個環境變數綁定測試，以及 Java 01 的 8 個 JSON 遷移測試。修正實作方法參數解析與 JDBC 測試的 DataSource 型別；未重跑外部服務與部署環境。
 其餘版本由 `spring-boot-starter-parent` 決定，不需要自己指定
 （3.5.0 上是 Logback 1.5、Micrometer 1.15、JUnit 5.12、Mockito 5.17、Testcontainers 1.21）；
 只有 ArchUnit（1.3）與 logstash-logback-encoder（8.0）要自己寫版本號。
@@ -181,6 +187,10 @@
 程序強制終止後留在 `RUNNING` 的工作，需要先確認舊 worker 已停止再復原；外部儲存 adapter 的發布契約仍須由專案實作。
 Gradle、Buildpacks／Jib、CDS／native image 及其他未列出的部署分支，未做完整執行驗證。
 版本行為請以對應版本官方文件為準；教材輸出示意與一般效能數字不能代替自己環境的驗證。
+
+2026-11-25 再審以 Boot 3.5.16／JDK 21 執行 4 個針對性測試，驗證 MVC 切片的預設 Security、自訂 SecurityFilterChain、略過 Filter 及 spring.properties 的 context 快取上限。另修正 AOP 的方法註解繼承與切面 Bean 註冊說明。本次未重跑外部服務與部署範例。
+
+同日第二輪再審另以 Boot 3.5.16／JDK 21 執行 5 個設定測試，驗證缺漏屬性的預設值、明確指定的 0／false、負數重試次數拒絕，以及舊 Profile 語法的啟動失敗與新版替代寫法。第 03 章已修正，不再把 0 改成預設重試次數。
 
 ---
 

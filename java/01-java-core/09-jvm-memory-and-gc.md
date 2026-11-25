@@ -8,6 +8,8 @@
 > 目標不是讓你變成 JVM 調校專家（那是另一個職業），而是讓你能在半小時內
 > **從症狀定位到根因**，並知道該調哪個參數、該找誰。
 
+> **JDK 版本備註**：本章以 JDK 21 HotSpot 為主。GC 選項與預設值依 JDK 版本而異；JDK 25 的精簡物件標頭另行標示。程式範例中的文字區塊自 JDK 15、`record` 自 16、`Path.of`／`Files.readString` 自 11 可用；記憶體數字也須配合壓縮指標與對齊設定判讀。
+
 ---
 
 ## 9.1 學習目標
@@ -660,7 +662,7 @@ public class MetaspaceLeak {
 
 ```
 載入 (Loading)
-  → 讀取 .class 位元組流，在 Metaspace 建立 Class 物件
+  → 讀取 .class 位元組流，在 Metaspace 建立類別中繼資料，並在 Java heap 建立對應的 java.lang.Class 物件
      ↓
 連結 (Linking)
   ├─ 驗證 (Verification)  檢查 bytecode 合法性（防止惡意 class 檔）
@@ -871,9 +873,9 @@ public class ObjectLayout {
                 │ 物件標頭 (Object Header)                     │
                 │  ├─ Mark Word         8 bytes               │
                 │  │   存：hashCode、GC 分代年齡、鎖狀態         │
-                │  │   （synchronized 的偏向鎖/輕量鎖就存在這裡） │
+                │  │   （鎖的標頭表示法依 JDK 實作而異）         │
                 │  └─ Class Pointer     4 bytes（壓縮）/ 8      │
-                │      指向 Metaspace 裡的 Class 物件            │
+                │      指向 Metaspace 裡的類別中繼資料           │
                 ├─────────────────────────────────────────────┤
                 │ 實例資料 (Instance Data)                     │
                 │  各欄位。JVM 會「重排」欄位順序以減少填充        │
@@ -894,7 +896,7 @@ public class ObjectLayout {
                   Integer                   16 bytes（12 + 4 int）
                   Long                      24 bytes（12 + 8 + 4 填充）
                   空 String                 40 bytes（String 物件 24 + 空 byte[] 16）
-                  "hello"（Latin-1）        40 bytes（24 + byte[5] → 16+5→24）
+                  "hello"（Latin-1）        48 bytes（String 24 + byte[5] 對齊後 24）
                   空 ArrayList              ~40 bytes（+ 首次 add 時的 Object[10] = 56）
                   空 HashMap                ~48 bytes（+ 首次 put 時的 Node[16] = 80）
                   HashMap 的每個 Entry      ~32 bytes（★ 這是 Map 很吃記憶體的原因）
