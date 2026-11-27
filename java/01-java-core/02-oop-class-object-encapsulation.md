@@ -389,7 +389,7 @@ public void setName(String name) {
 
 存取修飾子寫在欄位、方法、建構子前面，決定**哪些地方的程式碼可以使用它**。表格裡有兩個名詞後面才會完整介紹，先知道意思就好：
 
-- **package**：類別所屬的「資料夾」。檔案第一行 `package com.example.todo;` 就是在宣告這件事，`package` 宣告相同的類別就是「同 package」（2.13 節）。
+- **package**：類別所屬的命名空間，專案中通常對應資料夾路徑。`package com.example.todo;` 就是在宣告這件事，`package` 宣告相同的類別就是「同 package」（2.13 節）。
 - **子類別**：用 `extends` 繼承另一個類別的類別，例如 `class UrgentTodo extends Todo`（第 03 章）。
 
 | 修飾子 | 同類別 | 同 package | 子類別（不同 package） | 任何地方 |
@@ -399,7 +399,13 @@ public void setName(String name) {
 | `protected` | ✅ | ✅ | ✅ | ❌ |
 | `public` | ✅ | ✅ | ✅ | ✅ |
 
-由上往下一列比一列寬，每一列都包含上一列的範圍。注意第二列：**什麼都不寫不等於 `public`**，而是只有同 package 看得到，所以叫 package-private。
+由上往下一列比一列寬，每一列都包含上一列的範圍。注意第二列：**`package-private` 就是「只允許同一個 package 的程式碼存取」**，不限定同一個類別，也不需要有繼承關係。
+
+它沒有專用關鍵字。對一般 `class` 的欄位、方法或建構子，**不寫 `public`、`protected`、`private` 就是 package-private**；仍然可以寫 `static`、`final` 等其他修飾子。例如 `static int count;` 也是 package-private。最外層類別不寫 `public` 時，也具有 package-private 存取範圍。
+
+「同 package」要求名稱完全相同：`com.example.todo` 和 `com.example.todo.internal` 是不同 package，子套件不會自動取得存取權限；寫 `import` 也不能繞過這個限制。
+
+> 這裡討論的是一般類別。`interface` 中未寫存取修飾子的欄位和一般抽象方法預設是 `public`，不能套用「沒寫就是 package-private」的判斷。
 
 實際放到兩個 package 裡，看哪些寫法編譯得過：
 
@@ -535,7 +541,7 @@ public class GoodTodo {
 
 ### `package-private` 的實務用途：讓測試呼叫得到內部方法
 
-package-private 沒有關鍵字，**前面什麼修飾子都不寫**就是。下面的 `applyDiscount` 和 `discountPercent` 前面沒有 `public`，也沒有 `private`，所以兩個都是 package-private：
+package-private 沒有關鍵字，**在一般類別的方法前不寫 `public`、`protected`、`private`** 就是。下面的 `applyDiscount` 和 `discountPercent` 都符合這個條件，所以只有同 package 的程式碼能直接呼叫：
 
 ```java
 package com.example.todo;
@@ -547,7 +553,7 @@ public class PriceCalculator {
         return applyDiscount(listPrice, discountPercent(memberLevel));
     }
 
-    // ↓ 下面兩個方法前面什麼都沒寫 = package-private
+    // ↓ 下面兩個方法都省略存取修飾子 = package-private（僅限同 package 呼叫）
     long applyDiscount(long listPrice, int percent) {
         return listPrice * (100 - percent) / 100;
     }
@@ -1086,6 +1092,7 @@ public final class Money {                      // ① final：不能被繼承�
     public static Money of(String amount, String currency) {
         Objects.requireNonNull(amount, "amount 不可為 null");
         Objects.requireNonNull(currency, "currency 不可為 null");
+        // 幣別代碼用 Locale.ROOT 正規化，避免土耳其語系把 inr 轉成帶點的 İNR。
         return new Money(new BigDecimal(amount).setScale(2, RoundingMode.HALF_UP),
                          currency.toUpperCase(java.util.Locale.ROOT));
     }
@@ -1150,7 +1157,6 @@ public final class Money {                      // ① final：不能被繼承�
 }
 ```
 
-幣別代碼用 `Locale.ROOT` 正規化，避免土耳其語系把 inr 轉成帶點的 İNR。
 這個不可變示例的兩位小數是教學契約，並非所有幣別／支付商都適用；通用換算見第 14 章 14.5。
 
 ### 不可變帶來什麼好處
@@ -1210,11 +1216,12 @@ import java.util.Objects;
 
 public final class SafeTodoList {
 
-    private final List<String> items;
+    private final List<String> items;             // final 只限制參考不能改指向其他清單
 
     public SafeTodoList(List<String> items) {
         Objects.requireNonNull(items, "items 不可為 null");
-        this.items = List.copyOf(items);          // ✅ 進來時拷貝成不可變 List（Java 10+）
+        // Java 10+：取得不可修改的 List，不允許新增、刪除或替換元素。
+        this.items = List.copyOf(items);
     }
 
     public List<String> getItems() {
@@ -1238,9 +1245,12 @@ public final class SafeTodoList {
         System.out.println(list.getItems());        // [A]     ✅ 不受影響
 
         try {
+            // List 介面有 add()，所以可以通過編譯；但這份清單來自 List.copyOf()，
+            // 執行 add("C") 時會拋出 UnsupportedOperationException，內容不會改變。
             list.getItems().add("C");
         } catch (UnsupportedOperationException e) {
-            System.out.println("唯讀，不能改");      // ✅ 擋下來了
+            // catch 負責接住例外，讓程式繼續執行；限制修改的是清單本身。
+            System.out.println("唯讀，不能改");
         }
 
         System.out.println(list.with("C").getItems());   // [A, C]
@@ -1385,7 +1395,9 @@ public class Point {
 
         Set<Point> set = new HashSet<>();
         set.add(a);
-        System.out.println(set.contains(b));  // true  ✅ 因為 hashCode 也一致
+        // 這裡使用 HashSet：先用 hashCode() 縮小查找範圍；a、b 是不同實例，再用 equals() 確認。
+        // hashCode 相同仍可能是不同的值（雜湊碰撞），不能只憑 hashCode 判斷相等。
+        System.out.println(set.contains(b));  // true：hashCode 相同，且 b.equals(a) 為 true
     }
 }
 ```
@@ -1653,6 +1665,9 @@ public class NameClash {
 
 > `java.util.Date` / `java.sql.Date` / `java.sql.Timestamp` 的撞名，是 Java 8 之前處理日期的日常痛苦。
 > 第 07 章會告訴你：新專案一律用 `java.time`，這個問題就消失了。
+>
+> **版本備註**：`java.time` 是 Java 8（也就是 JDK 8）加入的標準函式庫。
+> Java 8 的版本號寫成 `1.8`，`java -version` 會顯示 `1.8.0_xxx`，`1.8` 就是 8；從 Java 9 開始才拿掉前面的「1.」。
 
 ---
 
@@ -1664,9 +1679,15 @@ public class NameClash {
 public enum Priority {
 
     // 每個常數都是 Priority 的一個實例
+    // ① 常數清單規定寫在 enum 的最前面，欄位、建構子、方法都放後面
+    //    （把欄位寫在常數前面會編譯錯誤：enum constant expected here）
+    // ② HIGH("高", 3, "🔴") 就是呼叫下面的建構子，等於
+    //    public static final Priority HIGH = new Priority("高", 3, "🔴");
+    //    括號裡的值依序對應建構子的 (label, weight, icon)
+    // ③ 建構子寫在後面也能呼叫：編譯器會先讀完整個類別，宣告的先後不影響
     HIGH("高", 3, "🔴"),
     MEDIUM("中", 2, "🟡"),
-    LOW("低", 1, "⚪");
+    LOW("低", 1, "⚪");     // 分號結束常數清單，後面才能接欄位和方法
 
     private final String label;
     private final int weight;      // 數字大 = 優先度高，排序時直接比大小
@@ -1688,13 +1709,19 @@ public enum Priority {
     public String icon() { return icon; }
 
     public boolean needsAttentionToday() {
+        // this：呼叫這個方法的常數（p.needsAttentionToday() 的 this 就是 p）
+        // HIGH：本類別自己的 static 常數，類別內可以省略 Priority.
+        // 用 == 就對了：Java 不准任何地方 new 一個 enum（連 enum 自己裡面也不行），
+        //   所以每個常數在整個程式裡只有一個物件
         return this == HIGH;
     }
 
     /** 從外部輸入（API 參數、CSV）安全轉換 */
     public static Priority fromWeight(int weight) {
+        // values() 不用自己寫：編譯器會替每個 enum 自動產生，依宣告順序回傳 [HIGH, MEDIUM, LOW]
+        // （下面 main 用到的 valueOf(String) 也是自動產生的）
         for (Priority p : values()) {
-            if (p.weight == weight) return p;
+            if (p.weight == weight) return p;    // private 的範圍是「同一個類別」，所以能讀 p 的 weight
         }
         throw new IllegalArgumentException("無效的優先度: " + weight);
     }
